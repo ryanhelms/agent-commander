@@ -23,6 +23,9 @@ type Local struct {
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
+	Adapter, Harness, NodePath        string `json:",omitempty"`
+	FocusedProof                      bool   `json:",omitempty"`
+	DevflowUI                         string `json:",omitempty"`
 }
 
 func New(stateDir, socketPath, executable string) (*Local, error) {
@@ -74,14 +77,35 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if !validID.MatchString(w.ID) {
 		return errors.New("invalid worker ID")
 	}
-	if w.Client != "" && !strings.EqualFold(w.Client, "claude") && !strings.EqualFold(w.Client, "claude code") {
+	focused := os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
+	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && !focused
+	client := strings.ToLower(strings.TrimSpace(w.Client))
+	switch client {
+	case "", "claude", "claude code":
+		client = "claude"
+	case "codex":
+		if useACP {
+			return errors.New("managed Codex planning is unavailable: the installed ACP profile cannot isolate workspace MCP servers and permission escalation; the SDK supports standalone Codex sessions")
+		}
+		fallthrough
+	default:
 		return fmt.Errorf("managed provider unavailable: %s", w.Client)
 	}
 	tmux, err := executablePath("tmux", "AGENT_COMMANDER_TMUX")
 	if err != nil {
 		return err
 	}
-	claude, err := executablePath("claude", "AGENT_COMMANDER_CLAUDE")
+	var claude, adapter, harness, nodePath string
+	if useACP {
+		adapter, err = executablePath("claude-agent-acp", "AGENT_COMMANDER_CLAUDE_ACP")
+		harness = client
+		// tmux may retain an older server PATH after the service is restarted.
+		if node, e := executablePath("node", "AGENT_COMMANDER_NODE"); e == nil {
+			nodePath = filepath.Dir(node)
+		}
+	} else {
+		claude, err = executablePath("claude", "AGENT_COMMANDER_CLAUDE")
+	}
 	if err != nil {
 		return err
 	}
@@ -91,7 +115,11 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	}
 	jobPath := filepath.Join(dir, "launch.json")
 	// The prompt and scoped credential stay in a private file, outside shell argv.
-	contents, err := json.Marshal(job{w, l.socket, l.executable, claude, l.label})
+	contents, err := json.Marshal(job{
+		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
+		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath,
+		DevflowUI: coordinatorDevflow(ctx, w),
+	})
 	if err != nil {
 		return err
 	}

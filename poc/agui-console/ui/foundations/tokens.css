@@ -1,0 +1,49 @@
+/* ATOMIC LEVEL: Foundations.
+   Local Commander black-glass tokens (design/system/tokens.json) and the terminal ink roles built
+   on them. Sizes are CSS px and match the macOS point values. */
+
+:root {
+  color-scheme: dark;
+
+  /* Commander surfaces */
+  --ac-window: #090a0d;
+  --ac-panel: #14151a;
+  --ac-well: #0b0c10;
+  --ac-border: #383b44;
+  --ac-foreground: #f5f5f9;
+  --ac-secondary: #b7bac6;
+  --ac-focus: #b5d6ff;
+  --ac-selection: #283344;
+
+  /* Terminal inks: a restrained ANSI-like set. Every role is paired with a glyph or word. */
+  --term-bg: var(--ac-window);
+  --term-bar: #0e1014;
+  --term-rule: #23262d;
+  --term-fg: #d9dce3;
+  --term-bright: var(--ac-foreground);
+  --term-dim: #808794; /* metadata */
+  --term-cyan: #7fd4e6; /* paths, commands, Claude */
+  --term-violet: #b9a2f2; /* tool names */
+  --term-amber: #f1c587; /* pending input (Commander attention) */
+  --term-green: #a8e0c0; /* success, answered (Commander working) */
+  --term-red: #ec9b92; /* failure (Commander failure) */
+  --term-hover: rgba(255, 255, 255, 0.05);
+  --term-amber-wash: rgba(241, 197, 135, 0.07);
+
+  /* type */
+  --term-font: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --term-size: 13px;
+  --term-line: 1.5;
+
+  /* layout, in character cells */
+  --term-gutter: 2ch;
+  --term-inset: 1.5ch;
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --term-dim: #c9ccd6;
+    --term-rule: #a6a8b2;
+    --term-fg: #ffffff;
+  }
+}

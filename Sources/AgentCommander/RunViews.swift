@@ -379,7 +379,10 @@ struct NewRunView: View {
         Task {
             do {
                 try await create(runPath, runTask, runTitle, runKey)
-                UserDefaults.standard.set(runPath, forKey: "recentProject")
+                // Remember real directories only, so a sample path never becomes the next default.
+                if FileManager.default.fileExists(atPath: runPath) {
+                    UserDefaults.standard.set(runPath, forKey: "recentProject")
+                }
             } catch {
                 message = error.localizedDescription
             }

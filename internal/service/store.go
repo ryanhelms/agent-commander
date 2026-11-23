@@ -26,30 +26,43 @@ type Launcher interface {
 	Stop(context.Context, string) error
 }
 
+// ConsoleEvent preserves a provider event for structured conversation views.
+type ConsoleEvent struct {
+	Sequence int    `json:"sequence"`
+	Kind     string `json:"kind"`
+	ToolID   string `json:"tool_id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
 type Worker struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Role      string `json:"role"`
-	ParentID  string `json:"parent_id"`
-	RunID     string `json:"run_id"`
-	State     string `json:"state"`
-	Host      string `json:"host"`
-	Worktree  string `json:"worktree"`
-	Branch    string `json:"branch,omitempty"`
-	Client    string `json:"client,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-	Task      string `json:"task"`
-	Output    string `json:"output"`
-	Error     string `json:"error,omitempty"`
-	Result    string `json:"result,omitempty"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Role          string         `json:"role"`
+	ParentID      string         `json:"parent_id"`
+	RunID         string         `json:"run_id"`
+	State         string         `json:"state"`
+	Host          string         `json:"host"`
+	Worktree      string         `json:"worktree"`
+	Branch        string         `json:"branch,omitempty"`
+	Client        string         `json:"client,omitempty"`
+	CreatedAt     string         `json:"created_at,omitempty"`
+	Task          string         `json:"task"`
+	Output        string         `json:"output"`
+	Error         string         `json:"error,omitempty"`
+	Result        string         `json:"result,omitempty"`
+	Console       []ConsoleEvent `json:"console,omitempty"`
+	Control       *WorkerControl `json:"control,omitempty"`
+	NativeSession *NativeSession `json:"native_session,omitempty"`
 }
 
 type Question struct {
-	ID       string `json:"id"`
-	WorkerID string `json:"worker_id"`
-	Question string `json:"question"`
-	Status   string `json:"status"`
-	Answer   string `json:"answer"`
+	ID       string           `json:"id"`
+	WorkerID string           `json:"worker_id"`
+	Question string           `json:"question"`
+	Status   string           `json:"status"`
+	Answer   string           `json:"answer"`
+	Choices  []QuestionChoice `json:"choices,omitempty"`
 }
 
 type Run struct {
@@ -80,11 +93,13 @@ type database struct {
 }
 
 type service struct {
-	mu       sync.Mutex
-	process  sync.Mutex // order launches and stops across their external effects
-	path     string
-	state    database
-	launcher Launcher
+	mu               sync.Mutex
+	process          sync.Mutex // order launches and stops across their external effects
+	path             string
+	state            database
+	launcher         Launcher
+	consoleObservers map[chan struct{}]struct{} // guarded by mu
+	readingHistory   map[string]bool
 }
 
 func randomID(prefix string) string {
@@ -145,7 +160,7 @@ func (s *service) persist() error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err = json.NewEncoder(tmp).Encode(&s.state); err == nil {
+	if err = json.NewEncoder(tmp).Encode(s.durableState()); err == nil {
 		err = tmp.Sync()
 	}
 	closeErr := tmp.Close()
@@ -155,7 +170,20 @@ func (s *service) persist() error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(name, s.path)
+	if err := os.Rename(name, s.path); err != nil {
+		return err
+	}
+	s.notifyConsole()
+	return nil
+}
+
+func (s *service) notifyConsole() {
+	for observer := range s.consoleObservers {
+		select {
+		case observer <- struct{}{}:
+		default: // An outstanding notification already covers this commit.
+		}
+	}
 }
 
 func (s *service) saveBackground() {
@@ -271,7 +299,7 @@ func (r *Run) refreshOutcome() {
 				return
 			}
 		}
-		if !ended(w.State) {
+		if !ended(w.State) || (w.Control != nil && w.Control.next() != nil) {
 			allEnded = false
 		}
 	}

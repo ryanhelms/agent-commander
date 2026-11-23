@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct AgentCommander: App {
     @State private var model = CockpitModel()
+    @State private var consoleModes = ConsoleModeStore()
 
     var body: some Scene {
         Window("Agent Commander", id: "cockpit") {
@@ -15,6 +16,7 @@ struct AgentCommander: App {
                     CockpitView(model: model)
                 }
             }
+            .environment(consoleModes)
             .frame(minWidth: 800, minHeight: 540)
             .preferredColorScheme(.dark)
         }

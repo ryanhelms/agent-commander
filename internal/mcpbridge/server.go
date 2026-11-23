@@ -37,6 +37,16 @@ type finding struct {
 	Result string `json:"result"`
 }
 
+type workerTarget struct {
+	Worker string `json:"worker_id"`
+}
+
+type followUp struct {
+	Worker string `json:"worker_id"`
+	Text   string `json:"text"`
+	Key    string `json:"idempotency_key,omitempty" jsonschema:"reuse this key when retrying the same follow-up"`
+}
+
 func register[T any](s *mcp.Server, name, desc string, handle func(context.Context, T) (json.RawMessage, error)) {
 	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc}, func(ctx context.Context, _ *mcp.CallToolRequest, in T) (*mcp.CallToolResult, any, error) {
 		data, err := handle(ctx, in)
@@ -114,10 +124,29 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	register(s, "commander_result", "Report findings and test results to your coordinator.", func(ctx context.Context, in finding) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/result", in)
 	})
+	register(s, "commander_send", "Queue a follow-up for a managed worker you control. It runs when the worker is ready for a new turn.", func(ctx context.Context, in followUp) (json.RawMessage, error) {
+		id, err := localapi.Segment(in.Worker)
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(ctx, "POST", "/v1/workers/"+id+"/messages", map[string]string{"text": in.Text, "idempotency_key": in.Key})
+	})
+	register(s, "commander_interrupt", "Interrupt a worker's current turn and keep its conversation available for follow-up.", workerCommand(c, "interrupt"))
+	register(s, "commander_stop_worker", "Stop one managed worker you control without stopping the run.", workerCommand(c, "stop"))
 	register(s, "commander_status", "Read worker assignments, findings and questions. While waiting on workers, set wait_seconds to 30 to return on a status change or timeout.", func(ctx context.Context, in statusInput) (json.RawMessage, error) {
 		return runStatus(ctx, c, runPath, in.Seconds)
 	})
 	return s.Run(ctx, &mcp.StdioTransport{})
+}
+
+func workerCommand(c *localapi.Client, action string) func(context.Context, workerTarget) (json.RawMessage, error) {
+	return func(ctx context.Context, in workerTarget) (json.RawMessage, error) {
+		id, err := localapi.Segment(in.Worker)
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(ctx, "POST", "/v1/workers/"+id+"/"+action, struct{}{})
+	}
 }
 
 // Keep this projection small and stable while workers print output. Console

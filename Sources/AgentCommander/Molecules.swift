@@ -7,8 +7,9 @@ import SwiftUI
 
 // MARK: - WorkerIdentity
 
-/// Who a worker is: client mark, name and a line of attribution. Used by the wall tile, the focused
-/// worker, the coordinator console and the PiP.
+/// Who a worker is: client mark, name and a line of attribution. Used where a worker is named
+/// outside a terminal pane (the attention drawer, the request inspector). Terminal panes use
+/// ConsoleTitleBar instead.
 struct WorkerIdentity: View {
     enum Density { case tile, console, focused, pip }
 
@@ -58,81 +59,260 @@ struct WorkerIdentity: View {
     }
 }
 
-/// Host and branch (or worktree) of a worker in the tile's metadata row.
-struct WorkerLocation: View {
+// MARK: - ConsoleTitleBar
+
+/// The one title bar of an embedded terminal pane: the coordinator, a wall tile, the focused worker
+/// and the PiP terminal all render it. One slim row carries a small client mark, the console title,
+/// the execution host with its platform, and the branch or worktree. The trailing slot holds the
+/// pane's real controls. It draws no window buttons, because a pane is not a window.
+///
+/// The host reads by platform, from explicit metadata only:
+///   this Mac          apple mark, host name
+///   Mac over SSH      apple mark, `ssh host`
+///   Linux over SSH    `linux`, `ssh host`
+///   not reported      neutral host mark, host name
+///
+/// The bar is always one line at a fixed height for its density, and nothing in it wraps. The
+/// title, the trailing controls and the platform mark are kept at every width. As the pane
+/// narrows the bar gives up, in order: the client word, the visible `ssh` prefix, the lineage,
+/// and the branch. After that the title and then the host name truncate at the tail. The full
+/// statement, SSH hop included, stays in the help tag and the accessibility label.
+struct ConsoleTitleBar<Accessory: View>: View {
+    enum Density { case tile, console, focused, pip }
+
+    let title: String
+    let client: AgentClient
     let host: String
-    let location: String
-    let isBranch: Bool
+    let platform: HostPlatform
+    var location: String = ""
+    var locationIsBranch = true
+    /// Names above this console (run, then parent workers), shown before the title where needed.
+    var lineage: [String] = []
+    var density: Density = .tile
+    @ViewBuilder let accessory: Accessory
+
+    private enum HostForm { case full, named }
+
+    private var height: CGFloat {
+        switch density {
+        case .tile: 30
+        case .console: 32
+        case .focused: 34
+        case .pip: 28
+        }
+    }
+
+    private var titleSize: CGFloat {
+        switch density {
+        case .tile: 12.5
+        case .console: 13
+        case .focused: 13.5
+        case .pip: 12
+        }
+    }
+
+    private var metaSize: CGFloat {
+        switch density {
+        case .tile, .pip: 10
+        case .console: 10.5
+        case .focused: 11
+        }
+    }
+
+    /// Matches the inset of the terminal text beneath, so the bar and the scrollback share an edge.
+    private var inset: CGFloat {
+        switch density {
+        case .tile, .pip: Metric.tileInset
+        case .console: 17
+        case .focused: 21
+        }
+    }
+
+    /// The client word is left out when the console is named after its client.
+    private var showsClientWord: Bool {
+        title.caseInsensitiveCompare(client.displayName) != .orderedSame
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            MetaItem(symbol: "desktopcomputer", text: host, help: "Host \(host)")
-            if !location.isEmpty {
-                MetaItem(symbol: isBranch ? "arrow.triangle.branch" : "folder", text: location,
-                         help: (isBranch ? "Branch " : "Worktree ") + location)
+        HStack(spacing: 7) {
+            AgentAvatar(client: client, size: density == .tile || density == .pip ? 16 : 18)
+            // One horizontal line in every density, most complete first.
+            ViewThatFits(in: .horizontal) {
+                row(lineage: true, client: true, host: .full, branch: true)
+                row(lineage: true, client: false, host: .full, branch: true)
+                // Named host and branch are kept together for as long as both fit.
+                row(lineage: true, client: false, host: .named, branch: true)
+                row(lineage: false, client: false, host: .named, branch: true)
+                // Then the branch goes as a whole; platform and host stay.
+                row(lineage: false, client: false, host: .named, branch: false)
+                // Last, the title and then the host name truncate. The platform mark never does.
+                row(lineage: false, client: false, host: .named, branch: false, truncates: true)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(statement)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(statement)
+            .accessibilityAddTraits(.isHeader)
+            accessory
         }
+        .padding(.leading, inset)
+        .padding(.trailing, max(6, inset - 5))
+        .frame(height: height)
+        .harnessHeaderFill(client)
+        .overlay(alignment: .bottom) { Rectangle().fill(Term.rule).frame(height: 1) }
+    }
+
+    private func row(lineage showLineage: Bool, client showClient: Bool, host form: HostForm,
+                     branch showBranch: Bool, truncates: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            titleCluster(lineage: showLineage, truncates: truncates)
+            if showClient, showsClientWord {
+                Text("— " + client.displayName.lowercased())
+                    .font(Term.font(metaSize)).foregroundStyle(Term.text)
+                    .lineLimit(1).fixedSize()
+            }
+            Spacer(minLength: 6)
+            hostCluster(form, truncates: truncates)
+            if showBranch { branchCluster }
+        }
+    }
+
+    @ViewBuilder private func titleCluster(lineage showLineage: Bool, truncates: Bool) -> some View {
+        if showLineage, !lineage.isEmpty {
+            Text(lineage.joined(separator: " › ") + " ›")
+                .font(Term.font(metaSize)).foregroundStyle(Term.text)
+                .lineLimit(1).fixedSize()
+        }
+        Text(title)
+            .font(.system(size: titleSize, weight: .semibold))
+            .foregroundStyle(Palette.foreground)
+            .lineLimit(1).truncationMode(.tail)
+            .fixedSize(horizontal: !truncates, vertical: false)
+            // When truncating, the title keeps its width ahead of the host name.
+            .layoutPriority(truncates ? 1 : 0)
+    }
+
+    /// Platform and host. `.full` spells out the SSH hop for a remote host; `.named` keeps the
+    /// platform mark and the host name. The spoken statement names the SSH hop in both forms.
+    /// When `truncates` is set the host name may shorten at the tail; the platform mark does not.
+    private func hostCluster(_ form: HostForm, truncates: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            PlatformMark(platform: platform, size: metaSize)
+            if form == .full, platform.isRemote { Text("ssh").foregroundStyle(Term.cyan).fixedSize() }
+            Text(host).foregroundStyle(Term.text)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: !truncates, vertical: false)
+        }
+        .font(Term.font(metaSize)).lineLimit(1)
+    }
+
+    @ViewBuilder private var branchCluster: some View {
+        if !location.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Image(systemName: locationIsBranch ? "arrow.triangle.branch" : "folder")
+                    .font(.system(size: metaSize - 1))
+                Text(location)
+            }
+            .font(Term.font(metaSize)).foregroundStyle(Term.text)
+            .lineLimit(1).fixedSize()
+        }
+    }
+
+    /// Everything the bar can show, in one sentence, whatever the width has room for.
+    private var statement: String {
+        var parts = [title]
+        if showsClientWord { parts.append(client.displayName) }
+        parts.append("host \(host), \(platform.label)")
+        if !location.isEmpty { parts.append((locationIsBranch ? "branch " : "worktree ") + location) }
+        if !lineage.isEmpty { parts.append("in " + lineage.joined(separator: ", ")) }
+        return parts.joined(separator: ", ")
+    }
+}
+
+extension ConsoleTitleBar where Accessory == EmptyView {
+    init(title: String, client: AgentClient, host: String, platform: HostPlatform, location: String = "",
+         locationIsBranch: Bool = true, lineage: [String] = [], density: Density = .tile) {
+        self.init(title: title, client: client, host: host, platform: platform, location: location,
+                  locationIsBranch: locationIsBranch, lineage: lineage, density: density) { EmptyView() }
     }
 }
 
 // MARK: - InputOwnership
 
-/// Names who holds terminal input for a worker. While observing it reads "Input · holder". When the
-/// developer holds input it reads "You have input" and offers a real Hand back button, shown only
-/// when a hand-back action exists. Keyboard focus is a separate cue on the trailing edge.
+/// Names who directs a worker. While observing it reads "Input · holder". When the developer
+/// controls the worker it reads "You have control" and offers a real Hand back button, shown only
+/// when a hand-back action exists. Control means the developer's follow-up messages go to the
+/// worker; it is not raw terminal input. Keyboard focus is a separate cue on the trailing edge.
 struct InputOwnership: View {
     let workerName: String
     let control: InputControl
     var isKeyFocused = false
     var handBack: (() -> Void)? = nil
+    /// Takes control of the worker for the developer. Offered while observing, where the action exists.
+    var takeControl: (() -> Void)? = nil
+    /// A control request for this worker is in flight; its buttons wait for the answer.
+    var isBusy = false
 
     private var held: Bool { control == .held }
 
     private var title: String {
         switch control {
         case .observing(let holder): "Input · \(holder)"
-        case .held: "You have input"
+        case .held: "You have control"
         }
     }
 
+    /// Text size, so the cue matches the status line it sits in.
+    var size: CGFloat = 11
+
     var body: some View {
-        HStack(spacing: 5) {
-            HStack(spacing: 5) {
-                Image(systemName: held ? "hand.raised" : "eye").font(.system(size: 10, weight: .medium))
-                Text(title).lineLimit(1)
+        // A quiet inline cue for a terminal status line: no chip, no fill.
+        HStack(spacing: 10) {
+            if isKeyFocused {
+                HStack(spacing: 4) {
+                    Image(systemName: "keyboard").font(.system(size: size - 1))
+                    Text("key focus")
+                }
+                .font(Term.font(size))
+                .foregroundStyle(Term.text)
+                .fixedSize()
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Keyboard focus")
             }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(held ? Palette.heldText : Palette.ownerText)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(held ? Palette.heldFill : Palette.ownerFill, in: RoundedRectangle(cornerRadius: Radius.chip))
-            .overlay { RoundedRectangle(cornerRadius: Radius.chip).strokeBorder(held ? Palette.heldEdge : Palette.ownerEdge) }
+            // The words are shown whole or not at all. In a narrow tile the symbol stands alone, with
+            // the full statement in its help tag and accessibility label.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 5) {
+                    Image(systemName: held ? "hand.raised" : "eye").font(.system(size: size - 1.5))
+                    Text(title.lowercased()).lineLimit(1).fixedSize()
+                }
+                Image(systemName: held ? "hand.raised" : "eye").font(.system(size: size - 1.5))
+            }
+            .font(Term.font(size))
+            .foregroundStyle(held ? AnyShapeStyle(Term.green) : AnyShapeStyle(.inkTermDim))
+            .help(accessibilityTitle)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityTitle)
 
             if held, let handBack {
-                Button("Hand back", action: handBack)
-                    .buttonStyle(HandbackButtonStyle())
-                    .accessibilityLabel("Hand back input for \(workerName)")
+                Button("hand back", action: handBack)
+                    .buttonStyle(TermButtonStyle(ink: Term.green, size: size))
+                    .disabled(isBusy)
+                    .accessibilityLabel("Hand back control of \(workerName)")
             }
-            Spacer(minLength: 4)
-            if isKeyFocused {
-                HStack(spacing: 3) {
-                    Image(systemName: "keyboard").font(.system(size: 11))
-                    Text("Key focus")
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: 0xD5D9E5))
-                .accessibilityLabel("Keyboard focus")
+            if !held, let takeControl {
+                Button("take control", action: takeControl)
+                    .buttonStyle(TermButtonStyle(size: size))
+                    .disabled(isBusy)
+                    .accessibilityLabel("Take control of \(workerName)")
             }
         }
     }
 
     private var accessibilityTitle: String {
         switch control {
-        case .observing(let holder): "Terminal input for \(workerName) is held by \(holder)"
-        case .held: "You hold terminal input for \(workerName)"
+        case .observing(let holder): "\(workerName) is directed by \(holder)"
+        case .held: "You control \(workerName). Your follow-up messages go to it."
         }
     }
 }
@@ -163,42 +343,42 @@ struct RequestReply: View {
         let blocked = !context.isOnline || isSending
         let isEmpty = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let isFocused = context.focus.wrappedValue == request.id
-        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
 
-        HStack(alignment: .center, spacing: 7) {
-            TextField("Reply to \(request.workerName)…", text: draft, axis: .vertical)
+        // A terminal prompt: an amber mark, a native multiline field in the terminal face, and an
+        // explicit send action. Black behind bright text, with an amber outline while it has focus.
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text("❯").font(Term.font(12, weight: .semibold))
+                .foregroundStyle(blocked ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.amber))
+                .accessibilityHidden(true)
+            TextField("Reply to \(request.workerName)", text: draft,
+                      prompt: Text("reply to \(request.workerName.lowercased())"), axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.foreground)
+                .font(Term.font(12))
+                .foregroundStyle(Term.bright)
                 .lineLimit(1...4)
                 .focused(context.focus, equals: request.id)
                 .disabled(blocked)
                 .onSubmit { if !blocked && !isEmpty { context.send(request) } }
                 .accessibilityLabel("Reply to request \(request.shortID) from \(request.workerName)")
             if isSending {
-                ProgressView().controlSize(.small).accessibilityLabel("Sending reply")
+                Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.amber)
+                    .accessibilityLabel("Sending reply")
             } else {
-                Button { context.send(request) } label: {
-                    Image(systemName: isEmpty ? "paperplane" : "paperplane.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(isEmpty || blocked ? Palette.secondary : Palette.working)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                // ⌘↩ belongs to the reply field that holds keyboard focus, and to no other instance.
-                // Several replies can be on screen at once (PiP beside a focused worker); an unfocused
-                // one must never receive the shortcut. A click still sends this button's own request.
-                .keyboardShortcut(isFocused ? KeyboardShortcut(.return, modifiers: [.command]) : nil)
-                .disabled(blocked || isEmpty)
-                .help(context.isOnline ? "Send reply to \(request.workerName) (⌘↩ while typing)" : "The local service is offline")
-                .accessibilityLabel("Send reply to \(request.workerName)")
+                Button(isFocused ? "send ↩" : "send") { context.send(request) }
+                    .buttonStyle(TermButtonStyle(ink: Term.amber))
+                    // ⌘↩ belongs to the reply field that holds keyboard focus, and to no other instance.
+                    // Several replies can be on screen at once (PiP beside a focused worker); an unfocused
+                    // one must never receive the shortcut. A click still sends this button's own request.
+                    .keyboardShortcut(isFocused ? KeyboardShortcut(.return, modifiers: [.command]) : nil)
+                    .disabled(blocked || isEmpty)
+                    .help(context.isOnline ? "Send reply to \(request.workerName) (↩ or ⌘↩ while typing)" : "The local service is offline")
+                    .accessibilityLabel("Send reply to \(request.workerName)")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Palette.field, in: shape)
-        .overlay { shape.strokeBorder(isFocused ? Palette.focus : Palette.fieldBorder, lineWidth: isFocused ? 1.5 : 1) }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(Term.background)
+        .overlay { Rectangle().strokeBorder(isFocused ? Term.amber : Term.promptEdge, lineWidth: 1) }
     }
 }
 
@@ -212,75 +392,94 @@ struct AssignmentBlock: View {
     var fontSize: CGFloat = 12
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if let time { Text(time).font(TypeRole.monoMeta) }
-                Text(label.uppercased()).font(TypeRole.kicker).tracking(1)
+        // The first entry of the scrollback: `❯ label  time`, then the instruction in the bright ink.
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("❯ ").foregroundStyle(.inkTermDim)
+                Text(label.lowercased()).fontWeight(.semibold).foregroundStyle(Term.text)
+                if let time { Text("  " + time).foregroundStyle(.inkTermDim) }
             }
-            .foregroundStyle(.inkSecondary)
+            .font(Term.font(fontSize))
+            .lineLimit(1)
             Text(text)
-                .font(.system(size: fontSize, design: .monospaced)).lineSpacing(fontSize * 0.5)
-                .foregroundStyle(Color(hex: 0xE1E4EE))
+                .font(Term.font(fontSize)).lineSpacing(fontSize * 0.4)
+                .foregroundStyle(Term.bright)
                 .lineLimit(lineLimit).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 11).padding(.vertical, 10)
-                .background(Palette.assignmentFill)
-                .overlay(alignment: .leading) { Rectangle().fill(Palette.assignmentRule).frame(width: 2) }
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .padding(.leading, fontSize * 1.2)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label)\(time.map { ", \($0)" } ?? ""). \(text)")
     }
 }
 
-/// Compose line addressed to one named agent: a worker's terminal while the developer holds its
-/// input, or the coordinator. It exists only where the matching action is available and emits the
-/// text for that one target.
+/// Compose line addressed to one named agent: a follow-up message to a worker the developer
+/// controls, or a message to the coordinator. It sends a message; it is not keystrokes into a
+/// terminal. It exists only where the matching action is available and emits the text for that
+/// one target, exactly as written: several lines are kept and nothing is trimmed. While a send is
+/// in flight the line is locked, so the same text cannot go twice, and the draft is cleared only
+/// once the send is accepted.
 struct TerminalComposer: View {
     let workerName: String
-    /// Field prompt. Defaults to typing into the worker's terminal.
+    /// Field prompt. Defaults to a follow-up for the worker.
     var prompt: String? = nil
-    /// The terminal line is outlined to mark held input; the coordinator line is a quiet footer.
+    /// The follow-up line is outlined to mark that the developer controls the worker; the
+    /// coordinator line is a quiet footer.
     var outlined = true
-    let send: (String) -> Void
+    /// Returns true when the message was accepted.
+    let send: (String) async -> Bool
     @State private var text = ""
+    @State private var isSending = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        HStack(spacing: 9) {
-            Image(systemName: "bubble.left").font(.system(size: 12)).foregroundStyle(.inkSecondary)
-            TextField(prompt ?? "Type in the \(workerName) terminal…", text: $text)
-                .textFieldStyle(.plain).font(.system(size: 12))
+        let title = prompt ?? "Follow up with \(workerName)"
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text("❯").font(Term.font(12, weight: .semibold))
+                .foregroundStyle(isSending ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.cyan))
+                .accessibilityHidden(true)
+            TextField(title, text: $text, prompt: Text(title.lowercased()), axis: .vertical)
+                .textFieldStyle(.plain).font(Term.font(12))
+                .foregroundStyle(Term.bright)
+                .lineLimit(1...5)
                 .focused($isFocused)
+                .disabled(isSending)
                 .onSubmit(submit)
-                .accessibilityLabel(prompt ?? "Terminal input for \(workerName)")
-            Button(action: submit) {
-                Image(systemName: "paperplane.fill").font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Palette.onAccent)
-                    .frame(width: 24, height: 24)
-                    .background(Palette.working, in: RoundedRectangle(cornerRadius: 5))
+                .accessibilityLabel(prompt ?? "Follow-up message for \(workerName)")
+            if isSending {
+                Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.cyan)
+                    .accessibilityLabel("Sending to \(workerName)")
+            } else {
+                Button(isFocused ? "send ↩" : "send", action: submit)
+                    .buttonStyle(TermButtonStyle(ink: Term.cyan))
+                    .disabled(isEmpty)
+                    .help("Send to \(workerName) (↩; ⌥↩ for a new line)")
+                    .accessibilityLabel("Send to \(workerName)")
             }
-            .buttonStyle(.plain)
-            .disabled(isEmpty)
-            .opacity(isEmpty ? 0.75 : 1)
-            .accessibilityLabel("Send to \(workerName)")
         }
-        .padding(.horizontal, 13)
-        .frame(minHeight: outlined ? 46 : 42)
-        .background(Palette.footer)
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .frame(minHeight: outlined ? 34 : 32)
+        .background(Term.background)
+        .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
         .overlay {
             if outlined || isFocused {
-                Rectangle().strokeBorder(isFocused ? Palette.focus : Color(hex: 0x92AFD3).opacity(0.7), lineWidth: 1)
+                Rectangle().strokeBorder(isFocused ? Term.cyan : Term.promptEdge, lineWidth: 1)
             }
         }
     }
 
     private func submit() {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        send(value)
-        text = ""
+        // Emptiness is judged without whitespace, but the text that goes out is the literal draft.
+        guard !isSending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let message = text
+        isSending = true
+        Task {
+            let accepted = await send(message)
+            isSending = false
+            // Cleared only on acceptance, and only if the developer has not edited it meanwhile.
+            if accepted, text == message { text = "" }
+        }
     }
 }
 
@@ -307,25 +506,254 @@ struct AttentionNotice: View {
     let open: () -> Void
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        // An amber line in the scrollback. The whole line is the button that opens the request.
         Button(action: open) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "bubble.left").font(.system(size: 12)).padding(.top, 1)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("\(request.workerName) needs input").font(.system(size: 11.5, weight: .semibold))
-                    Text(detail).font(.system(size: 11.5)).foregroundStyle(Color(hex: 0xBBAD91)).lineLimit(1)
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("? ").fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(request.workerName) needs input").fontWeight(.semibold).lineLimit(1)
+                    Text(detail).foregroundStyle(.inkTermDim).lineLimit(1)
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                Text("[ view ]")
             }
-            .foregroundStyle(Palette.attention)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(Palette.attentionFill, in: shape)
-            .overlay { shape.strokeBorder(Palette.attentionSoftEdge) }
-            .contentShape(shape)
+            .font(Term.font(11.5))
+            .foregroundStyle(Term.amber)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Term.amberWash)
+            .overlay(alignment: .leading) { Rectangle().fill(Term.amber).frame(width: 2) }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(request.workerName) needs input. Show request \(request.shortID).")
+    }
+}
+
+// MARK: - Terminal request prompt and status line
+
+/// A pending request inside a terminal scrollback: `? input needed <id>`, the exact question and
+/// the shared RequestReply as its prompt. The focused worker and the PiP both render this view; the
+/// density only changes type size.
+struct RequestPrompt: View {
+    enum Density { case focused, compact }
+
+    let request: RequestPresentation
+    let reply: ReplyContext
+    var density: Density = .focused
+    var inset: CGFloat = 12
+
+    private var size: CGFloat { density == .focused ? 13 : 11.5 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: density == .focused ? 6 : 5) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("? ").foregroundStyle(Term.amber)
+                    Text("input needed").fontWeight(.semibold).foregroundStyle(Term.amber)
+                    Text("  " + request.shortID).foregroundStyle(.inkTermDim).help("Request \(request.id)")
+                }
+                .font(Term.font(size - 1))
+                .lineLimit(1)
+                Text(request.question)
+                    .font(Term.font(size, weight: .semibold))
+                    .lineSpacing(size * 0.3)
+                    .foregroundStyle(Term.bright)
+                    .lineLimit(density == .focused ? 8 : 6).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, (size - 1) * 1.2)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Input needed, request \(request.shortID). \(request.question)")
+            RequestReply(request: request, context: reply)
+        }
+        .padding(.leading, inset).padding(.trailing, inset).padding(.vertical, density == .focused ? 9 : 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Term.amberWash)
+        .overlay(alignment: .leading) { Rectangle().fill(Term.amber).frame(width: 2) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Request \(request.shortID) from \(request.workerName)")
+    }
+}
+
+/// The slim footer of a terminal surface. Leading: the live status as a glyph and a word. Then an
+/// amber `[ view request ]` action, only while a request waits and a way to reach it exists.
+/// Trailing: whatever is useful in the current state (input ownership, a key hint). It never carries
+/// run or worker IDs or an attach command.
+struct TerminalStatusLine<Trailing: View>: View {
+    let state: TaskState
+    var size: CGFloat = 11.5
+    var inset: CGFloat = Metric.tileInset
+    var request: RequestPresentation? = nil
+    var openRequest: (() -> Void)? = nil
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            TerminalStatus(state: state, size: size)
+            if let request, let openRequest {
+                Button("view request", action: openRequest)
+                    .buttonStyle(TermButtonStyle(ink: Term.amber, size: size))
+                    .help("Show request \(request.shortID) from \(request.workerName)")
+                    .accessibilityLabel("View request \(request.shortID) from \(request.workerName)")
+            }
+            Spacer(minLength: 6)
+            // Offered the remaining width before the spacer, so a cue that can show its words does.
+            trailing.layoutPriority(1)
+        }
+        .padding(.horizontal, inset)
+        .frame(minHeight: (size * 2.3).rounded())
+        .background(Term.bar)
+        .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
+    }
+}
+
+extension TerminalStatusLine where Trailing == EmptyView {
+    init(state: TaskState, size: CGFloat = 11.5, inset: CGFloat = Metric.tileInset,
+         request: RequestPresentation? = nil, openRequest: (() -> Void)? = nil) {
+        self.init(state: state, size: size, inset: inset, request: request, openRequest: openRequest) { EmptyView() }
+    }
+}
+
+// MARK: - Structured transcript
+
+/// One tool call in a transcript: a disclosure row with the tool's name, its summary and its
+/// state, and the result beneath when open. The row is a real button, so Tab reaches it and Space
+/// opens it. A call with no result text yet has nothing to open and is not a button target.
+struct TranscriptToolRow: View {
+    let name: String
+    let detail: String?
+    /// Nil while the call is still running.
+    let result: String?
+    let isExpanded: Bool
+    var fontSize: CGFloat = TypeRole.wallTerminalSize
+    let toggle: () -> Void
+
+    private var canExpand: Bool { !(result ?? "").isEmpty }
+    private var stateWord: String { result == nil ? "running" : "done" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: fontSize * 0.25) {
+            Button(action: toggle) {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(canExpand ? (isExpanded ? "▾ " : "▸ ") : "· ").foregroundStyle(.inkTermDim)
+                    Text(name).fontWeight(.semibold).foregroundStyle(Term.violet)
+                    if let detail {
+                        Text(" " + detail)
+                            .foregroundStyle(detail.hasPrefix("$") ? Term.cyan : Term.text)
+                            .lineLimit(isExpanded ? 4 : 1).truncationMode(.tail)
+                    }
+                    Text(result == nil ? "  … running" : "  ✓ done")
+                        .foregroundStyle(result == nil ? Term.amber : Term.green)
+                        .lineLimit(1).fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .font(Term.font(fontSize))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canExpand)
+            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(stateWord)")
+            .accessibilityValue(canExpand ? (isExpanded ? "Expanded" : "Collapsed") : "")
+            .accessibilityHint(canExpand ? "Shows or hides the tool's result" : "")
+            if isExpanded, let result, canExpand {
+                Text(result)
+                    .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+                    .foregroundStyle(Term.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, fontSize * 0.9)
+                    .overlay(alignment: .leading) { Rectangle().fill(Term.dim).frame(width: 1) }
+                    .padding(.leading, fontSize * 0.3)
+                    .accessibilityLabel("Result of \(name): \(result)")
+            }
+        }
+    }
+}
+
+/// The structured transcript of one console, in the terminal face: agent and developer text with
+/// selectable content, and tool calls as disclosure rows. The coordinator, the wall tile, the
+/// focused worker and the PiP all render this view when the service sends structured messages;
+/// density is the font size and inset. Without structured messages the same surfaces show the
+/// TerminalWell. It follows new entries while the reader is at the end.
+struct TranscriptView: View {
+    let entries: [TranscriptEntry]
+    /// Name shown on the agent's speaker line.
+    let agentName: String
+    var fontSize: CGFloat = TypeRole.wallTerminalSize
+    var inset: CGFloat = Metric.tileInset
+    /// Open tool rows, by tool-call ID.
+    @State private var expanded = Set<String>()
+
+    var body: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: fontSize * 0.5) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    VStack(alignment: .leading, spacing: fontSize * 0.2) {
+                        if index == 0 || entries[index - 1].isFromUser != entry.isFromUser {
+                            speaker(fromUser: entry.isFromUser)
+                                .padding(.top, index == 0 ? 0 : fontSize * 0.35)
+                        }
+                        content(entry)
+                    }
+                }
+            }
+            .padding(.horizontal, inset).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .defaultScrollAnchor(.bottom)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Console transcript, \(agentName)")
+    }
+
+    private func speaker(fromUser: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(fromUser ? "❯ " : "● ").foregroundStyle(fromUser ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.cyan))
+            Text(fromUser ? "you" : agentName.lowercased())
+                .fontWeight(.semibold)
+                .foregroundStyle(fromUser ? Term.text : Term.cyan)
+        }
+        .font(Term.font(fontSize)).lineLimit(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(fromUser ? "You" : agentName)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    @ViewBuilder private func content(_ entry: TranscriptEntry) -> some View {
+        switch entry.kind {
+        case .prose(let text, let fromUser):
+            Text(Self.inline(text, base: fromUser ? Term.bright : Term.text))
+                .font(Term.font(fontSize)).lineSpacing(fontSize * 0.3)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .tool(let name, let detail, let result):
+            TranscriptToolRow(name: name, detail: detail, result: result,
+                              isExpanded: expanded.contains(entry.id), fontSize: fontSize) {
+                if expanded.contains(entry.id) { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
+            }
+        case .output(let text):
+            Text(text)
+                .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+                .foregroundStyle(.inkTermDim)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Text with `` `code` `` spans in the command ink, without the backticks. Everything else is
+    /// shown literally.
+    private static func inline(_ text: String, base: Color) -> AttributedString {
+        var result = AttributedString()
+        let pieces = text.components(separatedBy: "`")
+        // An odd number of backticks leaves the last one unpaired; it is then shown as written.
+        let paired = pieces.count % 2 == 1
+        for (index, piece) in pieces.enumerated() {
+            let isCode = paired && index % 2 == 1
+            var run = AttributedString(!paired && index > 0 ? "`" + piece : piece)
+            run.foregroundColor = isCode ? Term.cyan : base
+            result += run
+        }
+        return result
     }
 }
 
@@ -420,6 +848,36 @@ struct KeyHint: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .accessibilityLabel("\(title), \(keys)")
+    }
+}
+
+/// Chooses where pending requests appear in the cockpit: the side panel or the PiP stack. A
+/// native menu with the two presentations the cockpit renders.
+struct AttentionPresentationMenu: View {
+    @Binding var selection: AttentionPresentation
+
+    /// The presentations the cockpit can show, default first.
+    static let options: [AttentionPresentation] = [.drawer, .pip]
+
+    var body: some View {
+        Menu {
+            Picker("Show requests in", selection: $selection) {
+                ForEach(Self.options) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: selection == .pip ? "pip" : "sidebar.right")
+                .font(.system(size: 12)).frame(width: 23, height: 23)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.inkSecondary)
+        .help("Show requests in: \(selection.title)")
+        .accessibilityLabel("Show requests in")
+        .accessibilityValue(selection.title)
     }
 }
 
@@ -591,11 +1049,13 @@ struct StaticField: View {
 /// Small bordered tag for an allowed capability.
 struct CapabilityChip: View {
     let text: String
+    /// Tints the label for a state such as "Check delivery". Nil keeps the neutral tag.
+    var tone: Tone? = nil
 
     var body: some View {
         Text(text)
             .font(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(Color(hex: 0xD2D7E1))
+            .foregroundStyle(tone?.color ?? Color(hex: 0xD2D7E1))
             .padding(.horizontal, 9)
             .frame(height: 24)
             .background(Color(hex: 0x1D1E27), in: RoundedRectangle(cornerRadius: 5))

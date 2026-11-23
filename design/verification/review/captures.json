@@ -1,0 +1,254 @@
+[
+  {
+    "number": 1,
+    "slug": "coordinator-wall",
+    "filename": "captures/coordinator-wall.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 717890,
+    "sha256": "dccff80272de49fa6fa9afbf1806250ebf04822368af7027945f44d00d8f6c83"
+  },
+  {
+    "number": 2,
+    "slug": "focused-worker",
+    "filename": "captures/focused-worker.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 620140,
+    "sha256": "d6957c25b55594c02e0fbee105152688c5f312b5553c3385bfbbc5d79e35388d"
+  },
+  {
+    "number": 3,
+    "slug": "tile-controls",
+    "filename": "captures/tile-controls.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 734765,
+    "sha256": "35adc094a97fe0e294806f169e1f631c097b3777e2b7fd9c4be403216892f4d4"
+  },
+  {
+    "number": 4,
+    "slug": "attention-pip",
+    "filename": "captures/attention-pip.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 778297,
+    "sha256": "188587bd72efb87a113d18fed8df237da9e36575118ffe2b6f566919d553b3e1"
+  },
+  {
+    "number": 5,
+    "slug": "pip-arrival",
+    "filename": "captures/pip-arrival.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 778377,
+    "sha256": "bde32de334efdc7f0fb1fbd064d60c14c09ad8c9255115c14479f804290a0be7"
+  },
+  {
+    "number": 6,
+    "slug": "attention-queue",
+    "filename": "captures/attention-queue.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 463835,
+    "sha256": "0f0e4861946f005d4b9a73d8d62980041d0c3bf52041bd283e1eccc0d15afd69"
+  },
+  {
+    "number": 7,
+    "slug": "attention-panel",
+    "filename": "captures/attention-panel.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 719282,
+    "sha256": "88ca58b663fddd3a13ed677d8d0487114adde30194307d3572c7a5235ed8b1f0"
+  },
+  {
+    "number": 8,
+    "slug": "attention-switch",
+    "filename": "captures/attention-switch.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 569686,
+    "sha256": "cb91589264f0eeb9354663d973b4c59c6d8698218a9453e6507731a9dd4ea8fe"
+  },
+  {
+    "number": 9,
+    "slug": "all-agents",
+    "filename": "captures/all-agents.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 591513,
+    "sha256": "90866e8ab4b810befa7f43ef2aeee06fc660e6e5cd20f054c02a05411530b9a2"
+  },
+  {
+    "number": 10,
+    "slug": "project",
+    "filename": "captures/project.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 442011,
+    "sha256": "6e81b321101d7628c359f84cb1c8f945b4138d2e56ef2d3757f3bea452268268"
+  },
+  {
+    "number": 11,
+    "slug": "smart-view",
+    "filename": "captures/smart-view.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 468900,
+    "sha256": "47bbd21bbca45b52bf86b1b279968b9dc74c6d0c8d254ba12c0edc95486d3c1e"
+  },
+  {
+    "number": 12,
+    "slug": "link-checkout",
+    "filename": "captures/link-checkout.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 381754,
+    "sha256": "d6a4719944788fbd701cceb714d8c82e7e5c49963430212680651d9c7c953497"
+  },
+  {
+    "number": 13,
+    "slug": "start-run",
+    "filename": "captures/start-run.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 512259,
+    "sha256": "f589f7680d5ad252f723211e3df66848ecaea34180b0d0c871708f762fd66c2b"
+  },
+  {
+    "number": 14,
+    "slug": "delegate-worker",
+    "filename": "captures/delegate-worker.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 517434,
+    "sha256": "b72b48bd4e39e07750b39b5e485bb98b73431f092e909125b9b0f5647392733e"
+  },
+  {
+    "number": 15,
+    "slug": "integration",
+    "filename": "captures/integration.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 532364,
+    "sha256": "709581fd95ec0181411822cb577862716d9a589f01b10b514103b431aa87940d"
+  },
+  {
+    "number": 16,
+    "slug": "integration-blocked",
+    "filename": "captures/integration-blocked.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 533733,
+    "sha256": "4a6f1df8ebb12bbfb2d348c7d648b3627eca193648cb1c723a6289a75a740679"
+  },
+  {
+    "number": 17,
+    "slug": "history",
+    "filename": "captures/history.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 547819,
+    "sha256": "dc90e5b3b923873c527081defc0b6138b340d230e3987bea56e08f6a66be2ee0"
+  },
+  {
+    "number": 18,
+    "slug": "cross-run",
+    "filename": "captures/cross-run.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 484805,
+    "sha256": "d18f91482833d39e44058d22536ce8e7ce5427c460c2f6239078e4aad405c99e"
+  },
+  {
+    "number": 19,
+    "slug": "first-run",
+    "filename": "captures/first-run.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 418391,
+    "sha256": "bbee3a0b09651099da166b01bf4d99818e953c28085cb60db32f8103f048417d"
+  },
+  {
+    "number": 20,
+    "slug": "hosts",
+    "filename": "captures/hosts.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 448473,
+    "sha256": "5465b0e32632b8229e72c8a722b0dfc405070399c266b7bd7e204e50922744f3"
+  },
+  {
+    "number": 21,
+    "slug": "clients",
+    "filename": "captures/clients.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 478450,
+    "sha256": "c3f217092b4ced9d750c271a50df7f762dde82e1c464e3ac055bcdaaa15d8b8d"
+  },
+  {
+    "number": 22,
+    "slug": "adoption",
+    "filename": "captures/adoption.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 470763,
+    "sha256": "fb1dd2cf242c76874ba80f441408498295e56719b106dd0f6764d62674cdd5f5"
+  },
+  {
+    "number": 23,
+    "slug": "recovery",
+    "filename": "captures/recovery.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 506824,
+    "sha256": "f66af02093ba18bb5b7c99a55797eaac4978a44329ffb59ba7d76876bf4bc071"
+  },
+  {
+    "number": 24,
+    "slug": "operation-detail",
+    "filename": "captures/operation-detail.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 418867,
+    "sha256": "7453ed2763e22c2e318ed575f6bf4dc15a6bab3437ddd18427aba11f0eb4329d"
+  },
+  {
+    "number": 25,
+    "slug": "preferences",
+    "filename": "captures/preferences.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 435475,
+    "sha256": "b6ea64be72f95651f989a9ebfca3e35cd95bf435cf03334a67a3d087a41132eb"
+  },
+  {
+    "number": 26,
+    "slug": "reduced-transparency",
+    "filename": "captures/reduced-transparency.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 486323,
+    "sha256": "651807316d2c157c76f0bd1060c732c708b9258370727fe16125da46675be11a"
+  },
+  {
+    "number": 27,
+    "slug": "accessible-wall",
+    "filename": "captures/accessible-wall.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 807035,
+    "sha256": "0bcd0b66b3d20676d408fc9c51ba6e34f117c130c27f96c75d6510998f43a457"
+  },
+  {
+    "number": 28,
+    "slug": "accessible-worker",
+    "filename": "captures/accessible-worker.jpg",
+    "width": 3200,
+    "height": 1968,
+    "bytes": 634344,
+    "sha256": "122cef7d8d5e877f3c41a2ce2aa1aefea41450303b8868e9d14b737471ed0c14"
+  }
+]

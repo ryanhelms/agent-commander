@@ -30,7 +30,7 @@ struct PanelSurface: ViewModifier {
 struct GlassSurface: ViewModifier {
     enum Role { case navigation, floating }
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.usesOpaqueSurfaces) private var reduceTransparency
     let role: Role
     let radius: CGFloat
 
@@ -57,7 +57,7 @@ struct GlassSurface: ViewModifier {
 
 /// Exterior keyboard-focus ring. Separate from selection fill and from input ownership.
 struct FocusRing: ViewModifier {
-    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.usesStrongContrast) private var strongContrast
     let active: Bool
     let radius: CGFloat
 
@@ -65,7 +65,7 @@ struct FocusRing: ViewModifier {
         content.overlay {
             if active {
                 RoundedRectangle(cornerRadius: radius + 4, style: .continuous)
-                    .strokeBorder(Palette.focus, lineWidth: contrast == .increased ? 3 : 2)
+                    .strokeBorder(Palette.focus, lineWidth: strongContrast ? 3 : 2)
                     .padding(-5)
                     .allowsHitTesting(false)
             }
@@ -73,7 +73,77 @@ struct FocusRing: ViewModifier {
     }
 }
 
+/// The surface of an embedded terminal console: the coordinator, a wall tile, the focused worker
+/// and the terminal inside the PiP. It is square: the clip and the border are drawn from the same
+/// rectangle. It draws no keyboard-focus outline; a console with key focus says so in its status
+/// line. `raised` adds the panel fill and shadow for a console that stands alone in a pane; the
+/// PiP's inner terminal sits flat inside its glass container.
+struct ConsoleSurface: ViewModifier {
+    var edge: Color? = nil
+    var raised = true
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if raised {
+                    LinearGradient(colors: [Palette.panelTop, Palette.panelBottom],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                } else {
+                    Term.background
+                }
+            }
+            .clipShape(Rectangle())
+            .overlay {
+                if let edge {
+                    Rectangle().strokeBorder(edge, lineWidth: 1)
+                } else if raised {
+                    Rectangle().strokeBorder(.inkEdge, lineWidth: 1)
+                } else {
+                    Rectangle().strokeBorder(.inkHairline, lineWidth: 1)
+                }
+            }
+            .shadow(color: .black.opacity(raised ? 0.22 : 0), radius: 6, y: 3)
+    }
+}
+
+/// The mark of a surface that is waiting for the developer: an amber border with a soft glow
+/// whose opacity rises and falls slowly. With Reduce Motion on, the glow is steady. It sits over
+/// the surface's own edge and takes the same shape, square for a console (`radius` 0). It is
+/// decoration only: the waiting state is always also stated in text.
+struct AttentionGlow: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let active: Bool
+    var radius: CGFloat = 0
+    @State private var dimmed = false
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if active {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Palette.attention.opacity(0.9), lineWidth: 1)
+                    .shadow(color: Palette.attention.opacity(0.5), radius: 7)
+                    .shadow(color: Palette.attention.opacity(0.35), radius: 2)
+                    .opacity(reduceMotion ? 0.85 : (dimmed ? 0.5 : 1))
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.7).repeatForever(autoreverses: true),
+                               value: dimmed)
+                    .onAppear { dimmed = true }
+                    .onDisappear { dimmed = false }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+}
+
 extension View {
+    func attentionGlow(_ active: Bool, radius: CGFloat = 0) -> some View {
+        modifier(AttentionGlow(active: active, radius: radius))
+    }
+
+    func consoleSurface(edge: Color? = nil, raised: Bool = true) -> some View {
+        modifier(ConsoleSurface(edge: edge, raised: raised))
+    }
+
     func panelSurface(radius: CGFloat = Radius.tile, edge: Color? = nil) -> some View {
         modifier(PanelSurface(radius: radius, edge: edge))
     }
@@ -96,6 +166,81 @@ struct Hairline: View {
             .fill(.inkHairline)
             .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
             .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Terminal atoms
+
+/// Status inside a terminal surface: a glyph and the lowercase state in the state's ink.
+struct TerminalStatus: View {
+    let state: TaskState
+    var size: CGFloat = 11.5
+
+    var body: some View {
+        HStack(spacing: size * 0.5) {
+            Text(state.glyph)
+            Text(state.label.lowercased())
+        }
+        .font(Term.font(size))
+        .foregroundStyle(state.ink)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(state.label)
+    }
+}
+
+/// Terminal-styled action, drawn as `[ label ]`. It is a real button: Tab reaches it, Space
+/// activates it, and it inverts under the pointer and while pressed.
+struct TermButtonStyle: ButtonStyle {
+    var ink: Color = Term.bright
+    var size: CGFloat = 11.5
+
+    func makeBody(configuration: Configuration) -> some View {
+        Face(configuration: configuration, ink: ink, size: size)
+    }
+
+    private struct Face: View {
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+        let configuration: ButtonStyleConfiguration
+        let ink: Color
+        let size: CGFloat
+
+        var body: some View {
+            let inverted = isEnabled && (isHovered || configuration.isPressed)
+            HStack(spacing: 0) {
+                Text("[ ").accessibilityHidden(true)
+                configuration.label
+                Text(" ]").accessibilityHidden(true)
+            }
+            .font(Term.font(size))
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundStyle(inverted ? AnyShapeStyle(Term.background) : isEnabled ? AnyShapeStyle(ink) : AnyShapeStyle(.inkTermDim))
+            .background(inverted ? ink : .clear)
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+        }
+    }
+}
+
+/// A muted key hint in a terminal status line. Shown only for a key that acts in the current state.
+struct TermHint: View {
+    let keys: String
+    let action: String
+    var size: CGFloat = 11
+
+    var body: some View {
+        HStack(spacing: size * 0.55) {
+            Text(keys).foregroundStyle(Term.text)
+            Text(action).foregroundStyle(.inkTermDim)
+        }
+        .font(Term.font(size))
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(keys) \(action)")
     }
 }
 
@@ -152,35 +297,16 @@ struct AgentAvatar: View {
     let client: AgentClient
     var size: CGFloat = 30
 
-    private var ink: Color {
-        switch client {
-        case .claude: Palette.claudeInk
-        case .codex: Palette.codexInk
-        case .mcp: Palette.mcpInk
-        case .other: Palette.secondary
-        }
-    }
-
-    private var fill: Color {
-        switch client {
-        case .claude: Palette.claudeFill
-        case .codex: Palette.codexFill
-        case .mcp: Palette.mcpFill
-        case .other: Palette.chrome
-        }
-    }
-
-    private var edge: Color {
-        switch client {
-        case .claude: Palette.claudeEdge
-        case .codex: Palette.codexEdge
-        case .mcp: Palette.mcpEdge
-        case .other: Palette.border
-        }
-    }
+    @Environment(\.usesStrongContrast) private var usesStrongContrast
+    @Environment(\.usesOpaqueSurfaces) private var usesOpaqueSurfaces
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.avatar, style: .continuous)
+        let accent = HarnessAccentStore.shared.accent(for: client)
+        let ink = accent.ink(strong: usesStrongContrast)
+        let fill = accent.fill(opaque: usesOpaqueSurfaces)
+        let edge = accent.avatarEdge
+        // A small mark (console title bars) keeps a squared corner instead of rounding into a dot.
+        let shape = RoundedRectangle(cornerRadius: min(Radius.avatar, size * 0.28), style: .continuous)
         Group {
             switch client {
             case .claude: Image(systemName: "asterisk").font(.system(size: size * 0.58, weight: .bold))
@@ -193,6 +319,31 @@ struct AgentAvatar: View {
         .frame(width: size, height: size)
         .background(fill, in: shape)
         .overlay { shape.strokeBorder(edge) }
+        .accessibilityHidden(true)
+        .registersHarness(client)
+    }
+}
+
+/// Mark for the platform a terminal executes on: the Apple logo for macOS, the word `linux` for
+/// Linux, and a neutral host symbol when the platform is not reported. Decorative; the title bar
+/// that shows it carries the spoken platform name.
+struct PlatformMark: View {
+    let platform: HostPlatform
+    var size: CGFloat = 10
+
+    var body: some View {
+        Group {
+            switch platform {
+            case .localMac, .remoteMac:
+                Image(systemName: "apple.logo").font(.system(size: size))
+            case .remoteLinux:
+                Text("linux").font(Term.font(size - 0.5, weight: .semibold))
+            case .unknown:
+                Image(systemName: "desktopcomputer").font(.system(size: size - 1))
+            }
+        }
+        .foregroundStyle(Term.text)
+        .fixedSize()
         .accessibilityHidden(true)
     }
 }

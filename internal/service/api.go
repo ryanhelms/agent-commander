@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -46,8 +47,15 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	dirty := false
 	for _, run := range s.state.Runs {
 		for _, w := range run.Workers {
-			if run.Status == "running" && w.State != "unknown" && !ended(w.State) {
+			if run.Status == "running" && w.State != "unknown" && w.State != "stopping" && !ended(w.State) {
 				w.State, w.Error = "unknown", "Service restarted. Waiting for evidence from the original worker."
+				if w.Control != nil {
+					for i := range w.Control.Messages {
+						if w.Control.Messages[i].Status == "processing" {
+							w.Control.Messages[i].Status = "delivery_unknown"
+						}
+					}
+				}
 				dirty = true
 			}
 		}
@@ -78,10 +86,24 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 		}
 		interrupted = append(interrupted, item)
 	}
+	var individualStops []string
+	for _, run := range s.state.Runs {
+		if run.Status != "stopping" && run.Status != "stopped" {
+			for _, w := range run.Workers {
+				if w.Role == "worker" && w.State == "stopping" {
+					individualStops = append(individualStops, w.ID)
+				}
+			}
+		}
+	}
 	for _, item := range interrupted {
 		go s.stop(item.id, item.workers)
 	}
+	for _, id := range individualStops {
+		go s.stopOne(id)
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -92,7 +114,17 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 		"POST /v1/runs/{run}/stop": s.stopRun, "POST /v1/workers/{worker}/output": s.output,
 		"POST /v1/workers/{worker}/questions": s.ask, "GET /v1/workers/{worker}/questions/{qid}": s.getQuestion,
 		"POST /v1/requests/{qid}/reply": s.reply, "POST /v1/workers/{worker}/state": s.workerState,
-		"POST /v1/workers/{worker}/result": s.workerResult,
+		"POST /v1/workers/{worker}/result":                   s.workerResult,
+		"POST /v1/workers/{worker}/native-session":           s.bindNativeSession,
+		"GET /v1/workers/{worker}/control":                   s.workerControlStatus,
+		"POST /v1/workers/{worker}/control":                  s.setWorkerControl,
+		"POST /v1/workers/{worker}/control/ready":            s.workerControlReady,
+		"POST /v1/workers/{worker}/control/finish":           s.finishWorkerTurn,
+		"POST /v1/workers/{worker}/control/interrupt/claim":  s.claimWorkerInterrupt,
+		"POST /v1/workers/{worker}/messages":                 s.sendWorkerMessage,
+		"POST /v1/workers/{worker}/messages/{message}/claim": s.claimWorkerMessage,
+		"POST /v1/workers/{worker}/interrupt":                s.interruptWorker,
+		"POST /v1/workers/{worker}/stop":                     s.stopWorker,
 	} {
 		mux.HandleFunc(pattern, s.handle(op))
 	}
@@ -333,7 +365,7 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 		_, w := s.worker(target)
 		return read(w), nil
 	}
-	if r.Status != "running" || ended(p.State) {
+	if r.Status != "running" || p.State == "stopping" || ended(p.State) {
 		return outcome{}, conflict("run or assigning parent is no longer active")
 	}
 	if r.activeWorkers() >= r.WorkerLimit {
@@ -352,8 +384,8 @@ func (s *service) own(req *http.Request, actor string) (*Run, *Worker, error) {
 	if actor != w.ID {
 		return nil, nil, denied()
 	}
-	if r.Status == "stopping" || r.Status == "stopped" {
-		return nil, nil, conflict("run is stopping or stopped")
+	if r.Status == "stopping" || r.Status == "stopped" || w.State == "stopping" || w.State == "stopped" {
+		return nil, nil, conflict("run or worker is stopping or stopped")
 	}
 	return r, w, nil
 }
@@ -363,9 +395,20 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	if err != nil {
 		return outcome{}, err
 	}
-	var in struct{ Text string }
+	var in struct {
+		Text   string
+		Events []ConsoleEvent
+	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
+	}
+	if len(in.Events) > 24 {
+		return outcome{}, bad("too many console events")
+	}
+	for _, event := range in.Events {
+		if len(event.Text) > 17<<10 || len(event.ToolID) > 256 || len(event.Name) > 256 {
+			return outcome{}, bad("console event exceeds size limit")
+		}
 	}
 	const maxOutput = 64 << 10
 	if w.State == "unknown" && in.Text != "" {
@@ -379,6 +422,21 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 		}
 		w.Output = w.Output[i:]
 	}
+	if len(in.Events) > 0 {
+		sequence := 0
+		if count := len(w.Console); count > 0 {
+			sequence = w.Console[count-1].Sequence
+		}
+		for _, event := range in.Events {
+			sequence++
+			event.Sequence = sequence
+			w.Console = append(w.Console, event)
+		}
+		const eventWindow = 128
+		if len(w.Console) > eventWindow {
+			w.Console = append([]ConsoleEvent(nil), w.Console[len(w.Console)-eventWindow:]...)
+		}
+	}
 	return changed(map[string]string{"id": w.ID}), nil
 }
 func (s *service) ask(req *http.Request, actor string) (outcome, error) {
@@ -386,12 +444,18 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	if err != nil {
 		return outcome{}, err
 	}
-	var in struct{ Question string }
+	var in struct {
+		Question string
+		Choices  []QuestionChoice `json:",omitempty"`
+	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
 	if strings.TrimSpace(in.Question) == "" {
 		return outcome{}, bad("question is required")
+	}
+	if err := validateChoices(in.Choices); err != nil {
+		return outcome{}, err
 	}
 	key, intent, target, err := s.receipt(req, actor, in)
 	if err != nil {
@@ -404,7 +468,7 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	if ended(w.State) {
 		return outcome{}, conflict("worker has ended")
 	}
-	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: in.Question, Status: "pending"}
+	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: formatQuestion(in.Question, in.Choices), Status: "pending", Choices: in.Choices}
 	r.Requests = append(r.Requests, q)
 	s.remember(key, intent, q.ID)
 	return outcome{q, 201, true, nil}, nil
@@ -435,13 +499,19 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	if strings.TrimSpace(in.Answer) == "" {
 		return outcome{}, bad("answer is required")
 	}
+	if len(q.Choices) > 0 && !slices.ContainsFunc(q.Choices, func(choice QuestionChoice) bool { return choice.ID == in.Answer }) {
+		return outcome{}, bad("reply with the exact ID of an offered choice")
+	}
 	if q.Status == "answered" {
 		if q.Answer != in.Answer {
 			return outcome{}, conflict("request already answered")
 		}
 		return read(q), nil
 	}
-	if q.Status != "pending" || r.Status == "stopping" || r.Status == "stopped" || ended(w.State) {
+	if actor != "" && w.Control != nil && w.Control.Held {
+		return outcome{}, conflict("developer holds worker input")
+	}
+	if q.Status != "pending" || r.Status == "stopping" || r.Status == "stopped" || w.State == "stopping" || ended(w.State) {
 		return outcome{}, conflict("the requesting worker is no longer running")
 	}
 	q.Answer, q.Status = in.Answer, "answered"
@@ -506,6 +576,7 @@ func (s *service) stopRun(req *http.Request, actor string) (outcome, error) {
 		}
 		owned = append(owned, w.ID)
 		w.State = "stopping"
+		stopWorkerInbox(w)
 	}
 	return outcome{r, 200, true, func() { s.stop(r.ID, owned) }}, nil
 }

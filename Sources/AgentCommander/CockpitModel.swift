@@ -12,7 +12,11 @@ final class CockpitModel {
     var notice: String?
     var isStopping = false
     var sending: Set<String> = []
+    private(set) var workerActions: Set<String> = []
     private var replyAttempts: [String: (text: String, id: String)] = [:]
+    private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
+    private var receivedStreamState = false
+    private var usingLegacyService = false
 
     var selected: Run? { runs.first { $0.id == selectedID } }
 
@@ -35,9 +39,32 @@ final class CockpitModel {
     func follow() async {
         await refresh(allowStart: true)
         while !Task.isCancelled {
-            do { try await Task.sleep(for: .seconds(1.2)) } catch { break }
-            await refresh()
+            do {
+                for try await latest in await api.watchRuns() {
+                    guard !Task.isCancelled else { return }
+                    receivedStreamState = true
+                    usingLegacyService = false
+                    apply(latest)
+                }
+            } catch AGUIStreamError.unsupported {
+                usingLegacyService = true
+                await refresh()
+            } catch {
+                guard !Task.isCancelled else { return }
+                connection = .offline(error.localizedDescription)
+            }
+            do {
+                try await Task.sleep(for: usingLegacyService ? .seconds(2) : .seconds(1))
+            } catch {
+                break
+            }
         }
+    }
+
+    private func apply(_ latest: [Run]) {
+        connection = .online
+        if runs != latest { runs = latest }
+        if selected == nil { select(runs.last?.id) }
     }
 
     func refresh(allowStart: Bool = false) async {
@@ -49,9 +76,9 @@ final class CockpitModel {
                 try await api.startService()
                 latest = try await api.runs()
             }
-            connection = .online
-            if runs != latest { runs = latest }
-            if selected == nil { select(runs.last?.id) }
+            if !receivedStreamState || usingLegacyService {
+                apply(latest)
+            }
         } catch {
             connection = .offline(error.localizedDescription)
         }
@@ -59,10 +86,9 @@ final class CockpitModel {
 
     func create(path: String, task: String, title: String? = nil, operationID: String) async throws {
         let run = try await api.create(path: path, task: task, title: title, operationID: operationID)
-        runs.removeAll { $0.id == run.id }
-        runs.append(run)
+        if !runs.contains(where: { $0.id == run.id }) { runs.append(run) }
         select(run.id)
-        await refresh()
+        if usingLegacyService { await refresh() }
     }
 
     func reply(to item: PendingDecision, text: String) async -> Bool {
@@ -75,11 +101,11 @@ final class CockpitModel {
         do {
             try await api.reply(to: item.id, answer: text, operationID: key)
             replyAttempts.removeValue(forKey: item.id)
-            await refresh()
+            if usingLegacyService { await refresh() }
             return true
         } catch {
             notice = "Reply to \(item.worker.name): \(error.localizedDescription)"
-            await refresh()
+            if usingLegacyService { await refresh() }
             return false
         }
     }
@@ -89,6 +115,81 @@ final class CockpitModel {
         isStopping = true
         defer { isStopping = false }
         do { try await api.stop(runID: run.id) } catch { notice = error.localizedDescription }
-        await refresh()
+        if usingLegacyService { await refresh() }
+    }
+
+    private func workerTarget(_ id: String) -> (Run, Worker)? {
+        guard let run = runs.first(where: { $0.workers?.contains(where: { $0.id == id }) == true }),
+              id != run.coordinatorID, let worker = run.workers?.first(where: { $0.id == id })
+        else { return nil }
+        return (run, worker)
+    }
+
+    func canControlWorker(_ id: String) -> Bool {
+        guard let (run, worker) = workerTarget(id) else { return false }
+        return run.status == "running" && worker.control != nil &&
+            ["working", "waiting", "idle", "completed"].contains(worker.state)
+    }
+
+    func canInterruptWorker(_ id: String) -> Bool {
+        guard canControlWorker(id), let (_, worker) = workerTarget(id) else { return false }
+        return ["working", "waiting"].contains(worker.state) && worker.control?.interruptRequested != true
+    }
+
+    func canStopWorker(_ id: String) -> Bool {
+        guard let (run, worker) = workerTarget(id), run.status == "running" || run.status == "failed" else { return false }
+        return worker.state != "stopped" && (worker.state != "stopping" || worker.error != nil)
+    }
+
+    func takeControl(_ id: String) async { await setWorkerControl(id, held: true) }
+    func handBack(_ id: String) async { await setWorkerControl(id, held: false) }
+
+    private func setWorkerControl(_ id: String, held: Bool) async {
+        guard canControlWorker(id), let generation = workerTarget(id)?.1.control?.generation else { return }
+        _ = await performWorkerAction(id, label: held ? "Take control" : "Hand back input") {
+            try await api.setWorkerControl(id, held: held, generation: generation)
+        }
+    }
+
+    func sendFollowUp(to id: String, text: String) async -> Bool {
+        guard canControlWorker(id), let control = workerTarget(id)?.1.control, control.held,
+              !workerActions.contains(id) else { return false }
+        let prior = followUpAttempts[id]
+        let operationID = prior.flatMap { attempt in
+            attempt.text == text && attempt.generation == control.generation ? attempt.id : nil
+        } ?? UUID().uuidString
+        followUpAttempts[id] = (text, control.generation, operationID)
+        let accepted = await performWorkerAction(id, label: "Send follow-up") {
+            try await api.sendFollowUp(to: id, text: text, generation: control.generation, operationID: operationID)
+        }
+        if accepted { followUpAttempts[id] = nil }
+        return accepted
+    }
+
+    func interruptWorker(_ id: String) async {
+        guard canInterruptWorker(id) else { return }
+        _ = await performWorkerAction(id, label: "Interrupt worker") {
+            try await api.interruptWorker(id)
+        }
+    }
+
+    func stopWorker(_ id: String) async {
+        guard canStopWorker(id) else { return }
+        _ = await performWorkerAction(id, label: "Stop worker") {
+            try await api.stopWorker(id)
+        }
+    }
+
+    private func performWorkerAction(_ id: String, label: String, perform: () async throws -> Void) async -> Bool {
+        guard connection == .online, workerActions.insert(id).inserted else { return false }
+        defer { workerActions.remove(id) }
+        do {
+            try await perform()
+            if usingLegacyService { await refresh() }
+            return true
+        } catch {
+            notice = "\(label): \(error.localizedDescription)"
+            return false
+        }
     }
 }

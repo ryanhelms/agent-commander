@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Commander · Native UI review</title>
+<style>
+:root {
+  color-scheme: dark;
+  --ink: #f5f5f9;
+  --secondary: #bdc2d1;
+  --muted: #9ca4b7;
+  --line: #353945;
+  --panel: #171922;
+  --focus: #b5d6ff;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--ink);
+  background: #0c0d12;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select, textarea { font: inherit; }
+button, select {
+  color: inherit; background: #202431; border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 11px;
+}
+button { cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+a { color: var(--focus); text-underline-offset: 3px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.site-header, .toolbar, .review-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.site-header {
+  min-height: 58px; padding: 12px 22px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(115deg, #222533, #11131b 55%);
+}
+.site-header strong { font-size: 15px; }
+.summary { color: var(--secondary); }
+.site-header a { margin-left: auto; }
+.layout { display: grid; grid-template-columns: minmax(210px, 265px) minmax(0, 1fr); }
+nav {
+  position: sticky; top: 0; align-self: start; max-height: 100dvh; overflow: auto;
+  padding: 13px 10px 22px; border-right: 1px solid var(--line); background: #11131b;
+}
+.nav-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 5px 9px; }
+.nav-label { color: var(--secondary); padding: 0 8px; margin: 16px 0 4px; font-size: 12px; }
+.view-link {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) 16px; gap: 8px; align-items: start;
+  color: var(--ink); text-decoration: none; padding: 6px 8px; border-radius: 7px;
+}
+.view-link:hover { background: #1d2230; }
+.view-link[aria-current="page"] { background: #29354a; box-shadow: inset 0 0 0 1px #596b8c; }
+.number { color: var(--muted); font: 11px/1.8 ui-monospace, Menlo, monospace; }
+.mark.approved { color: #a8e0c0; }
+.mark.changes { color: #f1c587; }
+main { min-width: 0; padding: clamp(16px, 2.5vw, 34px); }
+.kicker, .image-caption, .hint { color: var(--secondary); }
+h1 { font-size: clamp(25px, 4vw, 40px); margin: 2px 0 8px; line-height: 1.12; letter-spacing: -.025em; }
+.kicker { margin: 0; }
+.toolbar { justify-content: space-between; margin: 14px 0; }
+.buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mode[aria-pressed="true"] { border-color: #7d99c3; background: #29354a; }
+.frames { display: grid; gap: 14px; }
+.compare { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+figure { min-width: 0; margin: 0; }
+.image-caption { display: flex; justify-content: space-between; gap: 6px; margin: 0 0 6px; }
+.image-shell {
+  display: block; position: relative; background: #14161d; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.native-image { display: block; width: 100%; height: auto; aspect-ratio: 3200/1968; }
+.concept-crop { aspect-ratio: 1600/1000; }
+.concept-crop img {
+  position: absolute; width: 108%; max-width: none; top: -6.2%; left: -4%; height: auto;
+}
+.hint { font-size: 12px; margin: 10px 0 22px; }
+.review-card { padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.review-card h2 { font-size: 16px; margin: 0; }
+.review-controls { justify-content: space-between; }
+.review-card textarea {
+  display: block; width: 100%; min-height: 65px; margin: 5px 0 0; resize: vertical;
+  color: var(--ink); background: #10121a; border: 1px solid var(--line); border-radius: 7px; padding: 8px;
+}
+.notes-label { display: block; margin-top: 12px; }
+#saved { min-height: 1.4em; margin: 5px 0 0; color: var(--secondary); font-size: 12px; }
+[hidden] { display: none !important; }
+@media (max-width: 950px) {
+  .layout { grid-template-columns: 185px minmax(0, 1fr); }
+  .compare { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 690px) {
+  .layout { display: block; }
+  nav { position: static; max-height: 195px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .site-header a { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <strong>Agent Commander</strong>
+  <span class="summary">Native UI review</span>
+  <a href="COMPONENTS.md">Component inventory</a>
+</header>
+<div class="layout">
+  <nav aria-label="Review views">
+    <div class="nav-actions">
+      <span class="summary" id="progress">0 of 28 approved</span>
+      <button id="export">Export review</button>
+    </div>
+    <div id="views"></div>
+  </nav>
+  <main>
+    <p class="kicker" id="location"></p>
+    <h1 id="title"></h1>
+    <div class="toolbar">
+      <div class="buttons" aria-label="Image display">
+        <button class="mode" data-mode="compare" aria-pressed="true">Compare</button>
+        <button class="mode" data-mode="native" aria-pressed="false">Native capture</button>
+        <button class="mode" data-mode="concept" aria-pressed="false">Concept</button>
+      </div>
+      <div class="buttons" aria-label="Browse views">
+        <button id="previous">← Previous</button>
+        <button id="next">Next →</button>
+      </div>
+    </div>
+    <div class="frames compare" id="frames">
+      <figure id="nativeFrame">
+        <figcaption class="image-caption"><span>Native capture</span><a id="nativeFull" target="_blank" rel="noopener">Full size</a></figcaption>
+        <a class="image-shell" id="nativeLink" target="_blank" rel="noopener"><img class="native-image" id="nativeImage" width="3200" height="1968"></a>
+      </figure>
+      <figure id="conceptFrame">
+        <figcaption class="image-caption"><span>Original concept</span><a id="conceptFull" target="_blank" rel="noopener">Full size</a></figcaption>
+        <a class="image-shell concept-crop" id="conceptLink" target="_blank" rel="noopener"><img id="conceptImage" width="1728" height="1117"></a>
+      </figure>
+    </div>
+    <p class="hint">The native window is 1600 × 984 points. The original concept window is 1600 × 1000 and its desktop surround is cropped here. Full size opens the original image.</p>
+    <section class="review-card" aria-labelledby="review-heading">
+      <div class="review-controls">
+        <h2 id="review-heading">Review this view</h2>
+        <label for="decision">Decision
+          <select id="decision">
+            <option value="pending">Pending review</option>
+            <option value="approved">Approved</option>
+            <option value="changes">Changes requested</option>
+          </select>
+        </label>
+      </div>
+      <label for="notes" class="notes-label">Notes</label>
+      <textarea id="notes" maxlength="4000"></textarea>
+      <p id="saved" role="status">Review decisions stay in this browser. Export the review to share them.</p>
+    </section>
+  </main>
+</div>
+<script>
+const views = [
+  [
+    "coordinator-wall",
+    "Coordinator wall",
+    "Cockpit"
+  ],
+  [
+    "focused-worker",
+    "Focused worker",
+    "Cockpit"
+  ],
+  [
+    "tile-controls",
+    "Worker actions",
+    "Cockpit"
+  ],
+  [
+    "attention-pip",
+    "Picture-in-picture reply",
+    "Cockpit"
+  ],
+  [
+    "pip-arrival",
+    "An incoming request",
+    "Cockpit"
+  ],
+  [
+    "attention-queue",
+    "Attention queue",
+    "Cockpit"
+  ],
+  [
+    "attention-panel",
+    "Attention side panel",
+    "Cockpit"
+  ],
+  [
+    "attention-switch",
+    "Switch to a blocked run",
+    "Cockpit"
+  ],
+  [
+    "all-agents",
+    "All agents",
+    "Workspace"
+  ],
+  [
+    "project",
+    "Project overview",
+    "Workspace"
+  ],
+  [
+    "smart-view",
+    "Saved smart view",
+    "Workspace"
+  ],
+  [
+    "link-checkout",
+    "Link a checkout",
+    "Workspace"
+  ],
+  [
+    "start-run",
+    "Start a coordinator",
+    "Delegation"
+  ],
+  [
+    "delegate-worker",
+    "Delegate a worker",
+    "Delegation"
+  ],
+  [
+    "integration",
+    "Integrate worker changes",
+    "Delegation"
+  ],
+  [
+    "integration-blocked",
+    "A blocked integration",
+    "Delegation"
+  ],
+  [
+    "history",
+    "Search run history",
+    "Delegation"
+  ],
+  [
+    "cross-run",
+    "Cross-run access",
+    "Delegation"
+  ],
+  [
+    "first-run",
+    "Connect a workspace",
+    "Setup & recovery"
+  ],
+  [
+    "hosts",
+    "Hosts and capabilities",
+    "Setup & recovery"
+  ],
+  [
+    "clients",
+    "Clients and MCP",
+    "Setup & recovery"
+  ],
+  [
+    "adoption",
+    "Adopt an existing session",
+    "Setup & recovery"
+  ],
+  [
+    "recovery",
+    "Recover a connection",
+    "Setup & recovery"
+  ],
+  [
+    "operation-detail",
+    "Provider sign-in",
+    "Setup & recovery"
+  ],
+  [
+    "preferences",
+    "Workspace preferences",
+    "Setup & recovery"
+  ],
+  [
+    "reduced-transparency",
+    "Reduced transparency",
+    "Setup & recovery"
+  ],
+  [
+    "accessible-wall",
+    "Reduced transparency · PiP",
+    "Setup & recovery"
+  ],
+  [
+    "accessible-worker",
+    "Reduced transparency · worker",
+    "Setup & recovery"
+  ]
+];
+const byId = id => document.getElementById(id);
+const storeKey = "agent-commander-native-ui-review-2026-11-22";
+const decisions = { pending: "Pending review", approved: "Approved", changes: "Changes requested" };
+let notesByView = {};
+try { notesByView = JSON.parse(localStorage.getItem(storeKey) || "{}") || {}; } catch {}
+let index = 0;
+const links = new Map();
+
+function reviewFor(slug) {
+  const entry = notesByView[slug];
+  return entry && Object.hasOwn(decisions, entry.status) ? entry : {status: "pending", note: ""};
+}
+
+function renderReviewStatus() {
+  let approved = 0;
+  for (const [slug, link] of links) {
+    const status = reviewFor(slug).status;
+    const mark = link.querySelector(".mark");
+    mark.className = "mark " + status;
+    mark.textContent = status === "approved" ? "✓" : status === "changes" ? "!" : "";
+    mark.title = decisions[status];
+    if (status === "approved") approved++;
+  }
+  byId("progress").textContent = approved + " of " + views.length + " approved";
+}
+
+function setMode(mode) {
+  byId("frames").classList.toggle("compare", mode === "compare");
+  byId("nativeFrame").hidden = mode === "concept";
+  byId("conceptFrame").hidden = mode === "native";
+  for (const button of document.querySelectorAll(".mode")) {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+  }
+}
+
+function showCurrent() {
+  const selected = views.findIndex(view => "#" + view[0] === location.hash);
+  index = selected < 0 ? 0 : selected;
+  const [slug, title, group] = views[index];
+  byId("location").textContent = group + " / " + (index + 1) + " of " + views.length;
+  byId("title").textContent = title;
+  document.title = title + " · Agent Commander review";
+
+  const nativePath = "captures/" + slug + ".jpg";
+  const conceptPath = "../../concepts/" + slug + ".png";
+  byId("nativeImage").src = nativePath;
+  byId("nativeImage").alt = "Native Agent Commander capture for " + title;
+  byId("conceptImage").src = conceptPath;
+  byId("conceptImage").alt = "Original Agent Commander concept for " + title;
+  byId("nativeLink").href = byId("nativeFull").href = nativePath;
+  byId("conceptLink").href = byId("conceptFull").href = conceptPath;
+
+  for (const [key, link] of links) {
+    if (key === slug) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+  byId("previous").disabled = index === 0;
+  byId("next").disabled = index === views.length - 1;
+  const entry = reviewFor(slug);
+  byId("decision").value = entry.status;
+  byId("notes").value = entry.note || "";
+  byId("saved").textContent = "Review decisions stay in this browser. Export the review to share them.";
+  renderReviewStatus();
+}
+
+function step(offset) {
+  const target = views[index + offset];
+  if (target) location.hash = target[0];
+}
+
+function saveReview() {
+  const slug = views[index][0];
+  notesByView[slug] = {status: byId("decision").value, note: byId("notes").value};
+  try {
+    localStorage.setItem(storeKey, JSON.stringify(notesByView));
+    byId("saved").textContent = "Saved in this browser.";
+  } catch {
+    byId("saved").textContent = "Saved for this window. Export before closing.";
+  }
+  renderReviewStatus();
+}
+
+let activeGroup = "";
+for (const [position, [slug, title, group]] of views.entries()) {
+  if (group !== activeGroup) {
+    const heading = document.createElement("h2");
+    heading.className = "nav-label";
+    heading.textContent = group;
+    byId("views").append(heading);
+    activeGroup = group;
+  }
+  const link = document.createElement("a");
+  link.className = "view-link";
+  link.href = "#" + slug;
+  const number = document.createElement("span");
+  number.className = "number";
+  number.textContent = String(position + 1).padStart(2, "0");
+  const label = document.createElement("span");
+  label.textContent = title;
+  const mark = document.createElement("span");
+  mark.className = "mark";
+  link.append(number, label, mark);
+  byId("views").append(link);
+  links.set(slug, link);
+}
+
+byId("previous").addEventListener("click", () => step(-1));
+byId("next").addEventListener("click", () => step(1));
+byId("decision").addEventListener("change", saveReview);
+byId("notes").addEventListener("input", saveReview);
+byId("export").addEventListener("click", () => {
+  const lines = ["# Agent Commander UI review", ""];
+  for (const [position, [slug, title]] of views.entries()) {
+    const {status, note} = reviewFor(slug);
+    lines.push("## " + (position + 1) + " · " + title, "", decisions[status], "");
+    if (note.trim()) lines.push(note.trim(), "");
+  }
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([lines.join("\n")], {type: "text/markdown;charset=utf-8"}));
+  link.download = "agent-commander-ui-review.md";
+  link.click();
+});
+
+for (const button of document.querySelectorAll(".mode")) {
+  button.addEventListener("click", () => setMode(button.dataset.mode));
+}
+window.addEventListener("hashchange", showCurrent);
+document.addEventListener("keydown", event => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (event.target.closest("input, textarea, select, button, a, [contenteditable]")) return;
+  if (event.key === "ArrowLeft") step(-1);
+  if (event.key === "ArrowRight") step(1);
+});
+showCurrent();
+</script>
+</body>
+</html>

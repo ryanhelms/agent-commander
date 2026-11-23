@@ -15,7 +15,7 @@ import SwiftUI
 /// Window-level frame. Navigation floats on the window material; the canvas is a darker sheet with
 /// a rounded top-leading corner. Terminal wells and cards inside the canvas stay opaque.
 struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.usesOpaqueSurfaces) private var reduceTransparency
     @ViewBuilder let navigation: Navigation
     @ViewBuilder let banners: Banners
     @ViewBuilder let canvas: Canvas
@@ -67,7 +67,7 @@ struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
 /// Native visual-effect material behind the whole window, including the 52 pt toolbar band.
 /// Reduce Transparency replaces it with the opaque chrome role.
 struct WindowGlass: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.usesOpaqueSurfaces) private var reduceTransparency
 
     func body(content: Content) -> some View {
         if reduceTransparency {
@@ -170,11 +170,100 @@ struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: V
     }
 }
 
+// MARK: - WorkspacePage
+
+/// A workspace page: heading above free-flowing content, scrolling as one column.
+struct WorkspacePage<Header: View, Content: View>: View {
+    @ViewBuilder let header: Header
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                content
+            }
+            .padding(.top, 30)
+            .padding(.horizontal, Metric.sheetInset)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
+// MARK: - CollectionInspector
+
+/// A collection beside the inspector for its selection. The collection keeps a stable width and
+/// the inspector takes the remaining room.
+struct CollectionInspector<Collection: View, Inspector: View>: View {
+    var collectionWidth: CGFloat = 380
+    var spacing: CGFloat = 20
+    /// When set, the inspector keeps this width at the trailing edge and the collection is flexible.
+    var inspectorWidth: CGFloat? = nil
+    @ViewBuilder let collection: Collection
+    @ViewBuilder let inspector: Inspector
+
+    var body: some View {
+        HStack(alignment: .top, spacing: spacing) {
+            if let inspectorWidth {
+                collection.frame(maxWidth: .infinity, alignment: .topLeading)
+                inspector.frame(width: inspectorWidth, alignment: .topLeading)
+            } else {
+                collection.frame(width: collectionWidth, alignment: .topLeading)
+                inspector.frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+}
+
+// MARK: - WeightedRow
+
+/// Lays its children out in columns whose widths follow fixed weights, so a table's header and
+/// rows line up without measuring content.
+struct WeightedRow: Layout {
+    let weights: [CGFloat]
+    var spacing: CGFloat = 14
+
+    private func widths(for total: CGFloat, count: Int) -> [CGFloat] {
+        guard count > 0 else { return [] }
+        let used = (0..<count).map { $0 < weights.count ? max(0.01, weights[$0]) : 1 }
+        let sum = used.reduce(0, +)
+        let available = max(0, total - spacing * CGFloat(count - 1))
+        return used.map { available * $0 / sum }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let proposed = proposal.width ?? 640
+        let total = proposed.isFinite ? proposed : 640
+        let columns = widths(for: total, count: subviews.count)
+        var height: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(ProposedViewSize(width: columns[index], height: nil))
+            height = max(height, size.height)
+        }
+        return CGSize(width: total, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let columns = widths(for: bounds.width, count: subviews.count)
+        var x = bounds.minX
+        for (index, subview) in subviews.enumerated() {
+            let cell = ProposedViewSize(width: columns[index], height: nil)
+            let size = subview.sizeThatFits(cell)
+            subview.place(at: CGPoint(x: x, y: bounds.midY - size.height / 2), anchor: .topLeading, proposal: cell)
+            x += columns[index] + spacing
+        }
+    }
+}
+
 // MARK: - TaskSheet
 
 /// A task page: heading, a form beside an aside, and a footer that stays pinned. The aside drops
 /// below the form when the canvas is narrow.
 struct TaskSheet<Header: View, FormContent: View, Aside: View, Footer: View>: View {
+    /// When set, the leading column keeps this width and the aside takes the remaining room
+    /// (a result list beside a wide inspector). Otherwise the aside has the fixed sheet width.
+    var formWidth: CGFloat? = nil
     @ViewBuilder let header: Header
     @ViewBuilder let form: FormContent
     @ViewBuilder let aside: Aside
@@ -187,7 +276,12 @@ struct TaskSheet<Header: View, FormContent: View, Aside: View, Footer: View>: Vi
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: 27) {
                         header
-                        if wide {
+                        if wide, let formWidth {
+                            HStack(alignment: .top, spacing: 30) {
+                                form.frame(width: formWidth, alignment: .topLeading)
+                                aside.frame(maxWidth: .infinity, alignment: .topLeading)
+                            }
+                        } else if wide {
                             HStack(alignment: .top, spacing: 30) {
                                 form.frame(maxWidth: .infinity, alignment: .topLeading)
                                 aside.frame(width: Metric.sheetAsideWidth)

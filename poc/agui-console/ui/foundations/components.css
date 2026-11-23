@@ -1,0 +1,382 @@
+/* Styles for each Atomic Design level. Class prefixes: a- atom, m- molecule, o- organism, t- template.
+   A compact monospaced terminal screen with a subdued status bar. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font: 400 var(--term-size) / var(--term-line) var(--term-font);
+  font-variant-ligatures: none;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  cursor: default;
+}
+
+::selection {
+  background: var(--ac-selection);
+  color: var(--term-bright);
+}
+
+:focus-visible {
+  outline: 1px solid var(--ac-focus);
+  outline-offset: 0;
+}
+
+@media (prefers-contrast: more) {
+  :focus-visible {
+    outline-width: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- Atoms ---------- */
+
+[data-ink="bright"] {
+  color: var(--term-bright);
+}
+[data-ink="dim"] {
+  color: var(--term-dim);
+}
+[data-ink="cyan"] {
+  color: var(--term-cyan);
+}
+[data-ink="violet"] {
+  color: var(--term-violet);
+}
+[data-ink="amber"] {
+  color: var(--term-amber);
+}
+[data-ink="green"] {
+  color: var(--term-green);
+}
+[data-ink="red"] {
+  color: var(--term-red);
+}
+
+.a-ink[data-bold="true"] {
+  font-weight: 700;
+}
+
+.a-glyph {
+  display: inline-block;
+  width: var(--term-gutter);
+  flex: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.a-glyph[data-pulse="true"] {
+  animation: a-blink 1.4s steps(2, jump-none) infinite;
+}
+
+@keyframes a-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.a-button {
+  appearance: none;
+  margin: 0;
+  padding: 0 0.5ch;
+  border: 0;
+  background: none;
+  font: inherit;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.a-button:not([data-ink]) {
+  color: var(--term-fg);
+}
+
+.a-button:hover:not(:disabled),
+.a-button:focus-visible {
+  background: currentColor;
+}
+
+.a-button:hover:not(:disabled) > *,
+.a-button:focus-visible > * {
+  color: var(--term-bg);
+}
+
+.a-button:disabled {
+  color: var(--term-dim);
+}
+
+.a-hint {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1ch;
+  color: var(--term-dim);
+  white-space: nowrap;
+}
+
+.a-hint kbd {
+  color: var(--term-fg);
+  font: inherit;
+}
+
+.a-pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.a-prompt-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--term-bright);
+  caret-color: var(--term-amber);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.a-prompt-input::placeholder {
+  color: var(--term-dim);
+}
+
+.a-prompt-input:disabled {
+  color: var(--term-dim);
+}
+
+/* ---------- Molecules ---------- */
+
+/* A scrollback entry: a glyph in the gutter, content beside it. */
+.m-line {
+  display: grid;
+  grid-template-columns: var(--term-gutter) minmax(0, 1fr);
+}
+
+.m-output {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.m-output-line {
+  min-height: calc(var(--term-line) * 1em);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.m-output-line[data-heading="true"],
+.m-output b {
+  color: var(--term-bright);
+  font-weight: 700;
+}
+
+.m-output code {
+  font: inherit;
+  color: var(--term-cyan);
+}
+
+.m-code {
+  margin: 0;
+  padding-left: 1.5ch;
+  border-left: 1px solid var(--term-rule);
+  font: inherit;
+  color: var(--term-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.m-tool-row {
+  appearance: none;
+  display: grid;
+  grid-template-columns: var(--term-gutter) auto minmax(0, 1fr) auto;
+  column-gap: 1ch;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.m-tool-row:hover {
+  background: var(--term-hover);
+}
+
+.m-tool-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-tool-row > .a-glyph {
+  width: auto;
+}
+
+.m-tool-detail {
+  margin-left: calc(var(--term-gutter) / 2);
+  padding-left: calc(var(--term-gutter) / 2 + 1ch);
+  border-left: 1px solid var(--term-rule);
+}
+
+/* Glyph and word in the status ink: no pill, no border. */
+.m-status {
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.m-prompt-row {
+  display: grid;
+  grid-template-columns: var(--term-gutter) minmax(0, 1fr);
+}
+
+.m-prompt-row:focus-within {
+  outline: 1px solid var(--term-amber);
+  outline-offset: 1px;
+}
+
+.m-prompt-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 2ch;
+  padding-left: var(--term-gutter);
+}
+
+/* ---------- Organisms ---------- */
+
+.o-scrollback {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.o-scrollback > li + li {
+  margin-top: calc(var(--term-line) * 0.5em);
+}
+
+.o-scrollback > li[data-kind="activity"] + li[data-kind="activity"] {
+  margin-top: 0;
+}
+
+.o-prompt {
+  margin: 0 calc(-1 * var(--term-inset));
+  padding: 2px var(--term-inset) 2px calc(var(--term-inset) - 2px);
+  border-left: 2px solid var(--term-amber);
+  background: var(--term-amber-wash);
+}
+
+.o-prompt[data-resolved="true"] {
+  border-left-color: var(--term-green);
+  background: none;
+}
+
+.o-prompt h2 {
+  margin: 0;
+  font: inherit;
+  font-weight: 700;
+  color: var(--term-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.o-prompt[data-resolved="true"] h2 {
+  font-weight: 400;
+  color: var(--term-fg);
+}
+
+.o-status,
+.o-hints {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 2ch;
+}
+
+.o-hints {
+  gap: 0 3ch;
+  margin-left: auto;
+}
+
+/* The tool hint appears only while keyboard focus is on a tool row. */
+.o-hints [data-when="tool-focus"] {
+  display: none;
+}
+
+.t-screen:has(.m-tool-row:focus-visible) .o-hints [data-when="tool-focus"] {
+  display: inline-flex;
+}
+
+/* ---------- Templates ---------- */
+
+.t-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.t-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 3ch;
+  min-width: 0;
+  padding: 4px var(--term-inset) 5px;
+  background: var(--term-bar);
+  border-top: 1px solid var(--term-rule);
+  font-size: 12px;
+}
+
+.t-bar:empty {
+  display: none;
+}
+
+.t-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px var(--term-inset) calc(var(--term-line) * 1em);
+}
+
+.t-scroll:focus-visible {
+  outline-offset: -1px;
+}

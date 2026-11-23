@@ -86,17 +86,6 @@ enum Palette {
     static let handbackFill = Color(hex: 0x384346)
     static let handbackEdge = Color(hex: 0x788486)
 
-    // Client identity marks.
-    static let claudeInk = Color(hex: 0xE4AA8A)
-    static let claudeFill = Color(hex: 0x352A23)
-    static let claudeEdge = Color(hex: 0x4A3A30)
-    static let codexInk = Color(hex: 0xB4E6C8)
-    static let codexFill = Color(hex: 0x22302C)
-    static let codexEdge = Color(hex: 0x45564E)
-    static let mcpInk = Color(hex: 0xC4B7DB)
-    static let mcpFill = Color(hex: 0x2D2833)
-    static let mcpEdge = Color(hex: 0x453D4F)
-
     // Selected navigation row and primary action.
     static let navActiveTop = Color(hex: 0xCCD7ED, opacity: 0.22)
     static let navActiveBottom = Color(hex: 0x7389B6, opacity: 0.15)
@@ -106,24 +95,103 @@ enum Palette {
     static let accentBottom = Color(hex: 0x96B8EA)
 }
 
+/// Terminal inks: the restrained ANSI-like set used inside every terminal surface (coordinator,
+/// worker tiles, focused worker, PiP). Black glass stays outside the terminals. Each ink has one
+/// meaning and is always paired with a glyph or a word, so color never carries state alone.
+enum Term {
+    /// sRGB values, shared by the SwiftUI colors below and the AppKit text renderer.
+    enum Hex {
+        static let background: UInt32 = 0x090A0D
+        static let bar: UInt32 = 0x0E1014
+        static let rule: UInt32 = 0x23262D
+        static let text: UInt32 = 0xD9DCE3
+        static let bright: UInt32 = 0xF5F5F9
+        static let dim: UInt32 = 0x808794       // metadata
+        static let cyan: UInt32 = 0x7FD4E6      // commands, paths, agent labels
+        static let violet: UInt32 = 0xB9A2F2    // tool names
+        static let amber: UInt32 = 0xF1C587     // pending input
+        static let green: UInt32 = 0xA8E0C0     // success, answered
+        static let red: UInt32 = 0xEC9B92       // failure
+    }
+
+    static let background = Color(hex: Hex.background)
+    static let bar = Color(hex: Hex.bar)
+    static let rule = Color(hex: Hex.rule)
+    static let text = Color(hex: Hex.text)
+    static let bright = Color(hex: Hex.bright)
+    static let dim = Color(hex: Hex.dim)
+    static let cyan = Color(hex: Hex.cyan)
+    static let violet = Color(hex: Hex.violet)
+    static let amber = Color(hex: Hex.amber)
+    static let green = Color(hex: Hex.green)
+    static let red = Color(hex: Hex.red)
+    static let amberWash = Color(hex: Hex.amber, opacity: 0.08)
+    static let promptEdge = Color(hex: 0x4A4E5A)
+
+    static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+}
+
+/// Terminal metadata ink. Increase Contrast swaps in `strongSecondary`.
+struct TermDimInk: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        environment.usesStrongContrast ? Palette.strongSecondary : Term.dim
+    }
+}
+
+extension ShapeStyle where Self == TermDimInk {
+    static var inkTermDim: TermDimInk { TermDimInk() }
+}
+
+// Appearance resolution. The system settings are read-only in SwiftUI, so a page that must show the
+// reduced-transparency or increased-contrast roles regardless of the system (the accessibility
+// design previews) sets these overrides. Styles read the combined `uses…` values only.
+
+private struct ReduceTransparencyOverrideKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct IncreaseContrastOverrideKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var reduceTransparencyOverride: Bool {
+        get { self[ReduceTransparencyOverrideKey.self] }
+        set { self[ReduceTransparencyOverrideKey.self] = newValue }
+    }
+
+    var increaseContrastOverride: Bool {
+        get { self[IncreaseContrastOverrideKey.self] }
+        set { self[IncreaseContrastOverrideKey.self] = newValue }
+    }
+
+    /// True when glass must be replaced by the opaque surface roles.
+    var usesOpaqueSurfaces: Bool { accessibilityReduceTransparency || reduceTransparencyOverride }
+
+    /// True when the stronger border and secondary-text roles apply.
+    var usesStrongContrast: Bool { colorSchemeContrast == .increased || increaseContrastOverride }
+}
+
 /// Secondary text. Increase Contrast swaps in `strongSecondary` (tokens.json appearanceOverrides).
 struct SecondaryInk: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color {
-        environment.colorSchemeContrast == .increased ? Palette.strongSecondary : Palette.secondary
+        environment.usesStrongContrast ? Palette.strongSecondary : Palette.secondary
     }
 }
 
 /// Card outline. Increase Contrast swaps in `strongBorder`.
 struct EdgeInk: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color {
-        environment.colorSchemeContrast == .increased ? Palette.strongBorder : Palette.edge
+        environment.usesStrongContrast ? Palette.strongBorder : Palette.edge
     }
 }
 
 /// Interior separator. Increase Contrast swaps in `strongBorder`.
 struct HairlineInk: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color {
-        environment.colorSchemeContrast == .increased ? Palette.strongBorder : Palette.hairline
+        environment.usesStrongContrast ? Palette.strongBorder : Palette.hairline
     }
 }
 
@@ -194,6 +262,7 @@ enum Metric {
     static let pipTrailing: CGFloat = 20
     static let pipBottom: CGFloat = 42
     static let pipReservedWidth: CGFloat = 367             // concept: nested row is 100% - 367
+    static let attentionDrawerWidth: CGFloat = 304
 
     static let sheetInset: CGFloat = 36
     static let sheetAsideWidth: CGFloat = 460

@@ -6,9 +6,23 @@ Agent Commander is a macOS desktop app for supervising coding agents running in 
 
 The coordinator wall and picture-in-picture direction are approved. Build one real local workflow end to end. Open a directory, give a coordinator a planning task, and let it launch two managed workers through MCP. Show their live tmux consoles beside the coordinator. Have one worker ask a question, answer it in PiP, and see the answer in that worker’s conversation while the other keeps running. Expose the same run through a thin CLI command that calls the API. Use this build on a real task as soon as that works.
 
-Start with one installed provider and live data. Let the first task drive the component inventory and API surface. Implement the shared terminal well and request reply where they first appear. Add the first SSH host and the second provider in subsequent increments. The planned views and the cases below guide iteration. They can arrive individually. Source builds can be used throughout development, ahead of broad compatibility testing and signed distribution.
+The local Claude Code workflow and native design gallery are implemented. Introduce the Go package from the shared harness SDK during the local ACP and native-history migration. Exercise Claude and Codex through the same caller before extending it to SSH. Use the [approved screen concepts](design/concepts/index.html) and the existing black-glass components.
 
 Start with managed Claude Code workers on the developer’s Mac. Try a worker question that blocks its current task, then reply with multiline text containing shell punctuation. Watch that same worker resume and use the answer in its next action. A service receipt alone leaves the worker’s progress unverified. Keep the provider choice behind the existing adapter so this exercise transfers to Codex. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
+
+## Native preview pass
+
+Build the screens in SwiftUI, using the same Atomic Design components and layouts as the live cockpit. Use changing sample data to show representative work across hosts, workers and runs. Keep sample interactions inside the preview, including filters, selections, dialogs, and navigation across screens. The five existing design previews are the starting point. Provide a way to browse all the states inside one preview window and preserve direct launch by scenario.
+
+| Workflow | Remaining views and states |
+| --- | --- |
+| Supervise work | Worker actions, attention queue, attention side panel, and switching to another run with a pending request. |
+| Navigate the workspace | All agents, project overview, smart views, and linking checkouts. |
+| Delegate and review | Worker delegation, successful and blocked integrations, searchable run history, and cross-run questions. |
+| Set up and recover | First run, hosts and capabilities, clients and MCP, session adoption, reconnect, provider sign-in, and preferences. |
+| Use accessibility settings | Reduced-transparency preferences, worker wall with PiP, and focused-worker control. |
+
+Claude Fable 5.2 owns the Swift implementation. Codex checks the native previews through Computer Use and compares them with the corresponding concept frames. Review the UI in the running app, then connect each workflow to the shared API in the delivery order below.
 
 ## First-run experience
 
@@ -52,11 +66,27 @@ Prefer Commander’s MCP delegation tool when a client also offers internal suba
 
 Track acceptance by Commander, delivery evidence from the worker or provider, and completion separately. Deduplicate retries by request ID. After an ambiguous disconnect, reconcile against the worker’s inbox or the provider’s pending request. If the outcome is still unknown, surface that uncertainty and retain the original message. Automatic replay is appropriate only when duplicate effects can be ruled out.
 
-Use the first managed worker to prove structured delivery. As adoption and additional clients land, try a live busy session, an idle handoff, an outstanding approval and a generic MCP client. The tmux control protocol supplies pane output. Claude’s Agent SDK exposes questions and approvals, and eligible Claude sessions support peer messaging. These features give the prototype concrete interfaces to test. The relationship between a discovered pane and the correct live conversation still needs end-to-end proof. [tmux control mode](https://github.com/tmux/tmux/wiki/Control-Mode) · [Claude approvals and questions](https://code.claude.com/docs/en/agent-sdk/user-input) · [Claude cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+Use ACP as the default provider connection. Prefer a harness’s native ACP endpoint when available and evaluate the upstream Claude and Codex adapters against stable ACP v1. Keep the API for Commands and AG-UI for the desktop and terminal clients’ view of the conversation. Use tmux to host or attach to the managed conversation and discover existing panes. Use capability checks for prompt, cancellation, approvals, history replay and reconnect. An unavailable structured operation uses the standard exception path. Prove live delivery and history reload on local Claude and Codex before expanding to SSH. For adoption, verify provider session identity and preservation of pending work before transferring control. [ACP session setup](https://agentclientprotocol.com/protocol/v1/session-setup) · [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp) · [Codex adapter](https://github.com/agentclientprotocol/codex-acp)
+
+### Common harness SDK
+
+Build `agent-acp` in its own repository. Generate the Go, TypeScript and Python session clients from a single versioned Protobuf schema. Each language has its own package and uses the same conformance fixtures. Agent Commander consumes the Go package, `agentacp`. The SDK exposes portable session handles, events and capabilities. Commander selects the harness and execution host under its run policy and maps its worker IDs to SDK sessions. Other consumers can use their own identities and authorization policies.
+
+| Caller intent | SDK contract |
+| --- | --- |
+| Work with a live session | Open or resume a conversation, send a literal message, observe typed events, answer an outstanding request by ID, and interrupt the current turn. Surface message, tool activity, input request and turn outcome consistently. |
+| Inspect history | List conversations in scope and read their history in pages with opaque cursors. The adapter uses ACP replay when it can do so passively, or the provider’s native reader. Opening history must preserve active input ownership. Historical approvals are display-only. |
+| Handle differences | Report capabilities in user terms, such as interrupting a turn or answering an approval. Provide the same typed outcomes for an unsupported operation or uncertain delivery across providers. |
+
+ACP method names, wire events, native pagination and CLI invocation stay inside SDK adapters. The service authorizes each action and translates the SDK’s events to AG-UI for the cockpit. MCP, CLI and desktop callers continue to use the same service API. tmux remains responsible for hosting and attaching to a process. The SDK reads conversation history from the harness and keeps only the bounded in-memory projection needed by its callers.
+
+Develop Commander and the SDK’s Go module under `sdks/go` side by side using a local Go workspace. Exercise one SDK example against both Claude and Codex, including a prompt, a request and reply, a targeted interrupt, and a history read after reconnect. Release the language packages from the SDK repository. Each consumer pins the package version it uses.
 
 ## API and runtime
 
 The macOS app, terminal UI, and CLI call one versioned API. An agent calls MCP, and the MCP server calls that same API for every domain operation. The API owns validation, permissions, operation status, provider selection, state changes, and event subscriptions. Local connections and SSH tunnels serve one user in the MVP. Each coordinator receives a scoped run identity. CI credentials and separate team identities are later milestones.
+
+For the first production harness release, a developer can also grant a hosted CopilotKit app scoped access through direct HTTPS or an outbound relay. Commander enforces the same worker ownership and request semantics through either route. The integration plan defines the embeddable client, relay editions, verified adapter catalogs and release gates. [Harness integration plan](design/HARNESS-INTEGRATION-PLAN.md)
 
 | API area | Operations shared by the applicable interfaces |
 | --- | --- |
@@ -96,7 +126,7 @@ Record the base revision, snapshot identity, included paths, and destination wit
 
 Each handoff contains findings, changed revision or diff, and test commands and outcomes. The integration operation gathers the selected worker changes on the coordinator’s host, records the base revision, builds a candidate in a disposable worktree, and runs the project’s combined tests there. Before advancing the target branch, verify that its expected revision and checkout state still permit the update. Conflicts, test failures, missing tests, and concurrent changes get explicit outcomes. The coordinator can resolve or retry within its limits. Retain worker branches and evidence of failed attempts. A successful result names the tested revision and the target branch that received it.
 
-Keep the task tree, conversation, approvals, results, and searchable timestamped terminal transcripts. Associate matches with a run, worker, host, and position in the transcript. Start recording from enrollment or from verifiable available history. Mark gaps explicitly. Configurable retention must expire both stored output and corresponding search-index entries. Provide project-level recording controls, keep local data user-private, and avoid capturing hidden input or recording raw input keystrokes. Output a program prints can include sensitive information.
+Use harness-owned transcripts as the source of conversation history. Persist Commander’s task tree, provider session references, approval outcomes, assignment results and delivery receipts. Use ACP replay where supported, then provider-native read APIs for history that requires separate lookup or pagination. Search on demand within the selected project and date range, and associate results with their run, worker, host and native transcript position. Keep live projections in bounded memory. The harness controls transcript retention. Commander can configure retention for its own run metadata and show when a source session has expired, a host is offline, or part of the live console was never retained by the harness.
 
 ## Patterns with specific jobs
 
@@ -110,7 +140,7 @@ Keep the task tree, conversation, approvals, results, and searchable timestamped
 | EIP Publish-Subscribe Channel | The wall, PiP, CLI, and coordinator can observe a shared stream of run events. Use separate terminal-output subscriptions so a noisy pane cannot delay an approval. [Publish-Subscribe Channel](https://www.enterpriseintegrationpatterns.com/patterns/messaging/PublishSubscribeChannel.html) |
 | EIP Process Manager | Use checkpoints for a fixed handoff. Use a Process Manager when Git integration or adoption must wait on other participants, branch on their responses, and resume after interruption. [Process Manager](https://www.enterpriseintegrationpatterns.com/patterns/messaging/ProcessManager.html) |
 
-The selected implementation uses SwiftUI and AppKit in Swift for a macOS 26+ cockpit, and Go for the API service, CLI, MCP adapter and host helper. Build from source first, then distribute a signed, notarized download. Exercise Linux and remote macOS hosts. Keep provider contracts versioned and publish a small conformance suite. Prototype the renderer, provider adoption, SQLite full-text search and SSH data path. See the [technology decision](design/TECHNOLOGY.md).
+The selected implementation uses SwiftUI and AppKit in Swift for a macOS 26+ cockpit, and Go for the API service, CLI, MCP adapter and host helper. Build from source first, then distribute a signed, notarized download. Exercise Linux and remote macOS hosts. Keep provider contracts versioned and publish a small conformance suite. Prototype the renderer, provider adoption, search over harness-owned transcripts and SSH data path. See the [technology decision](design/TECHNOLOGY.md).
 
 Before coding a slice, consult the [existing pattern analysis](design/PATTERN-DECISIONS.md). Reuse its decision when it fits. A new or changed boundary only needs a short note on the choice and the problem it solves. Choose the simplest implementation that preserves the behavior.
 

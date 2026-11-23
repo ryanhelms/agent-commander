@@ -25,15 +25,6 @@ enum Tone: Equatable {
 enum AgentClient: Equatable {
     case claude, codex, mcp, other(String)
 
-    init(_ raw: String?) {
-        let value = (raw ?? "").trimmingCharacters(in: .whitespaces)
-        let key = value.lowercased()
-        if key.contains("claude") { self = .claude }
-        else if key.contains("codex") { self = .codex }
-        else if key.contains("mcp") { self = .mcp }
-        else { self = .other(value) }
-    }
-
     var displayName: String {
         switch self {
         case .claude: "Claude Code"
@@ -90,6 +81,31 @@ enum TaskState: Equatable {
         }
     }
 
+    /// One-cell mark shown beside the lowercase label in terminal status lines.
+    var glyph: String {
+        switch self {
+        case .running, .working: "●"
+        case .idle: "○"
+        case .needsInput: "?"
+        case .starting, .stopping: "…"
+        case .completed: "✓"
+        case .failed: "✗"
+        case .stopped: "■"
+        case .unknown: "·"
+        }
+    }
+
+    /// Terminal ink for the state. Always shown with `glyph` and the label.
+    var ink: Color {
+        switch tone {
+        case .working: Term.green
+        case .attention: Term.amber
+        case .failure: Term.red
+        case .focus: Term.cyan
+        case .neutral: Term.dim
+        }
+    }
+
     /// Distinct symbol used when Differentiate Without Color is on.
     var symbol: String {
         switch self {
@@ -112,6 +128,56 @@ enum InputControl: Equatable {
     case held
 }
 
+/// The platform a terminal executes on. It comes only from explicit platform metadata for the
+/// execution host. It is never derived from a host name, a branch or the transport, so a host
+/// without that metadata is `.unknown` and renders neutrally.
+enum HostPlatform: Equatable {
+    /// This Mac: the terminal runs on the machine Commander runs on.
+    case localMac
+    /// Another Mac, reached over SSH.
+    case remoteMac
+    /// A Linux host, reached over SSH.
+    case remoteLinux
+    /// No platform metadata for this host.
+    case unknown
+
+    var isRemote: Bool { self == .remoteMac || self == .remoteLinux }
+
+    /// Spoken and tooltip name of the platform.
+    var label: String {
+        switch self {
+        case .localMac: "macOS, this Mac"
+        case .remoteMac: "macOS over SSH"
+        case .remoteLinux: "Linux over SSH"
+        case .unknown: "platform not reported"
+        }
+    }
+}
+
+/// One entry of a console's structured transcript, built from the service's AG-UI messages. A
+/// tool call and its result are one entry, so showing a window of entries never leaves a result
+/// without its call. IDs are the service's message and tool-call IDs and stay stable as the
+/// transcript grows.
+struct TranscriptEntry: Identifiable, Equatable {
+    enum Kind: Equatable {
+        /// Text written by the agent, or by the developer when `fromUser` is set.
+        case prose(String, fromUser: Bool)
+        /// A tool call. `detail` is the call's own summary when it has one. `result` is nil while
+        /// the call is still running.
+        case tool(name: String, detail: String?, result: String?)
+        /// A tool result whose call the service did not send.
+        case output(String)
+    }
+
+    let id: String
+    let kind: Kind
+
+    var isFromUser: Bool {
+        if case .prose(_, let fromUser) = kind { return fromUser }
+        return false
+    }
+}
+
 // MARK: - Presentation values
 
 struct RequestPresentation: Identifiable, Equatable {
@@ -126,8 +192,12 @@ struct RequestPresentation: Identifiable, Equatable {
     let runTitle: String
     let project: String
     let host: String
+    let platform: HostPlatform
     let inputHolder: String
     let contextTail: [String]
+    /// The worker's most recent structured transcript entries, when the service sends structured
+    /// messages. Empty otherwise, and the surface shows `contextTail`.
+    var contextEntries: [TranscriptEntry] = []
 }
 
 struct WorkerPresentation: Identifiable, Equatable {
@@ -136,6 +206,7 @@ struct WorkerPresentation: Identifiable, Equatable {
     let name: String
     let client: AgentClient
     let host: String
+    let platform: HostPlatform
     /// Branch when the service reports one, otherwise the worktree directory name.
     let location: String
     let locationIsBranch: Bool
@@ -150,6 +221,13 @@ struct WorkerPresentation: Identifiable, Equatable {
     let request: RequestPresentation?
     /// Local clock time the worker started, when the service recorded it.
     let startedAt: String?
+    /// Structured transcript, when the service sends structured messages for this worker. Empty
+    /// otherwise, and the surface shows `output` in the terminal well.
+    var transcript: [TranscriptEntry] = []
+    /// Follow-ups the service has accepted for this worker and not yet delivered to it.
+    var queuedFollowUps = 0
+    /// The service has been asked to interrupt this worker's current turn and has not done so yet.
+    var interruptRequested = false
 }
 
 struct WorkerGroup: Identifiable, Equatable {
@@ -209,16 +287,68 @@ struct CockpitActions {
     var reconnect: @MainActor () -> Void
     var dismissNotice: @MainActor () -> Void
     var createRun: @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void
-    /// Returns terminal input to its owner. Nil until the service exposes an input lease.
+    /// Hands a worker the developer controls back to its owner.
     var handBack: (@MainActor (_ workerID: String) -> Void)? = nil
-    /// Types into a worker's terminal while the developer holds input. Nil until the service
-    /// exposes terminal input, so the live app shows no terminal compose line.
-    var sendTerminalInput: (@MainActor (_ workerID: String, _ text: String) -> Void)? = nil
+    /// Sends a follow-up message to one worker the developer controls. The text is passed exactly
+    /// as written. Returns true once the service accepts it; false leaves the draft in place.
+    var sendFollowUp: (@MainActor (_ workerID: String, _ text: String) async -> Bool)? = nil
     // Feature capabilities drawn in the concepts. Each control appears only when its action exists,
     // so the live app offers none of them until the service supports the operation.
     var messageCoordinator: (@MainActor (_ runID: String, _ text: String) -> Void)? = nil
     var searchWorkspace: (@MainActor () -> Void)? = nil
     var chooseWallGrouping: (@MainActor () -> Void)? = nil
+    /// Worker-level operations from the tile's action list. Nil until the service exposes each one.
+    var takeControl: (@MainActor (_ workerID: String) -> Void)? = nil
+    var interruptWorker: (@MainActor (_ workerID: String) -> Void)? = nil
+    var stopWorker: (@MainActor (_ workerID: String) -> Void)? = nil
+    /// Whether each operation applies to a given worker right now. Nil means it applies wherever
+    /// the action exists, which is what the design fixtures use.
+    var canControlWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
+    var canInterruptWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
+    var canStopWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
+    /// True while a control, interrupt or stop request for the worker is still in flight.
+    var workerIsBusy: (@MainActor (_ workerID: String) -> Bool)? = nil
+
+    /// True when a worker's action list carries more than zoom, reply and copy.
+    var offersWorkerOperations: Bool { takeControl != nil || interruptWorker != nil || stopWorker != nil }
+}
+
+/// How pending decisions are presented. The live cockpit defaults to the side panel and offers
+/// the PiP stack as the alternative; the other modes are presentation preferences in the plan.
+enum AttentionPresentation: String, CaseIterable, Identifiable {
+    case pip, queue, drawer, switchRun
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pip: "Picture-in-picture"
+        case .queue: "Global queue"
+        case .drawer: "Side panel"
+        case .switchRun: "Switch to run"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .pip: "Float live prompts in a window that stays above other apps."
+        case .queue: "Collect requests from every run in one list."
+        case .drawer: "Open pending decisions beside the current run."
+        case .switchRun: "Focus the run that owns the blocked worker."
+        }
+    }
+}
+
+/// Where the developer was before following a request into another run.
+struct ReturnTarget: Equatable {
+    let runID: String
+    let runTitle: String
+    let workerID: String?
+    let workerName: String?
+    /// The request that caused the switch, e.g. "Field ownership · Q-021".
+    let requestLabel: String
+
+    var title: String { workerName.map { "\(runTitle) / \($0)" } ?? runTitle }
 }
 
 // MARK: - Formatting helpers
@@ -265,12 +395,22 @@ extension NSColor {
 // MARK: - TerminalWell (atom, AppKit leaf)
 
 /// One opaque, selectable terminal projection. Every surface that shows a worker's output (wall tile,
-/// focused worker, coordinator console) uses this view. It is passive: it never resizes the pane and
-/// accepts no terminal input. Line tint is lexical only (prompt, check mark, cross, question) so plain
-/// captured output stays readable; it adds no content.
+/// focused worker, coordinator console, PiP context) uses this view; density is its font size and
+/// inset. It is passive: it never resizes the pane and accepts no terminal input.
+///
+/// Coloring is lexical and works on plain captured text, which stays the supported pipeline:
+///   `14:14:03 CODEX`        speaker line, drawn as `● codex` in cyan with a dim time
+///   `$ command`             cyan
+///   `✓` / `✗` / `? `        green / red / amber result lines
+///   `▸ name …` / `▾ name …` tool row: violet tool name, a `$ command` in cyan, and a trailing
+///                           `✓ done`, `… running` or `✗ failed`
+///   `│ …`                   detail of the tool row above, behind a dim rule
+///   `` `code` ``            inline code in cyan, without the backticks
+/// Tool rows here are styled text and do not open or close. A worker with structured messages is
+/// shown by TranscriptView instead, where tool calls are real disclosure rows.
 struct TerminalWell: NSViewRepresentable {
-    /// `tail` is the dense wall projection. `transcript` is the expanded reading view: it sets turn
-    /// labels apart and insets each command with its results. Both render the same text.
+    /// `tail` is the dense wall projection. `transcript` is the expanded reading view with a little
+    /// more line height. Both render the same text with the same grammar.
     enum Style { case tail, transcript }
 
     let output: String
@@ -353,104 +493,167 @@ struct TerminalWell: NSViewRepresentable {
     }
 
     private static func styled(_ output: String, fontSize: CGFloat, style: Style) -> NSAttributedString {
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let regular = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let bold = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .semibold)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = (fontSize * 1.62).rounded()
+        paragraph.minimumLineHeight = (fontSize * (style == .transcript ? 1.56 : 1.5)).rounded()
         paragraph.lineBreakMode = .byWordWrapping
-        let plain: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
 
-        var pieces: [NSAttributedString] = []
-        var codeParagraph: NSParagraphStyle?
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if style == .transcript {
-                // A command and its result lines, up to the next blank line, form one inset block.
-                if codeParagraph != nil, trimmed.isEmpty {
-                    codeParagraph = nil
-                    continue
-                }
-                if codeParagraph == nil, trimmed.hasPrefix("$ ") {
-                    codeParagraph = commandBlockParagraph(basedOn: paragraph)
-                }
-                if let codeParagraph {
-                    pieces.append(NSAttributedString(string: line, attributes: [
-                        .font: NSFont.monospacedSystemFont(ofSize: 12.7, weight: .regular),
-                        .foregroundColor: tint(for: line),
-                        .paragraphStyle: codeParagraph
-                    ]))
-                    continue
-                }
-                if let label = turnLabel(trimmed, basedOn: paragraph) {
-                    pieces.append(label)
-                    continue
-                }
-            }
-            pieces.append(NSAttributedString(string: line, attributes: [
-                .font: font, .foregroundColor: tint(for: line), .paragraphStyle: paragraph
+        let result = NSMutableAttributedString()
+        func run(_ text: String, _ hex: UInt32, bold isBold: Bool = false) {
+            guard !text.isEmpty else { return }
+            result.append(NSAttributedString(string: text, attributes: [
+                .font: isBold ? bold : regular, .foregroundColor: NSColor(hex: hex), .paragraphStyle: paragraph
             ]))
         }
 
-        let result = NSMutableAttributedString()
-        for (index, piece) in pieces.enumerated() {
-            result.append(piece)
-            guard index < pieces.count - 1 else { break }
-            let attributes = piece.length > 0 ? piece.attributes(at: piece.length - 1, effectiveRange: nil) : plain
-            result.append(NSAttributedString(string: "\n", attributes: attributes))
+        /// Plain text with `inline code` drawn in cyan.
+        func prose(_ text: String, _ hex: UInt32) {
+            let parts = text.components(separatedBy: "`")
+            guard parts.count >= 3, parts.count % 2 == 1 else { run(text, hex); return }
+            for (index, part) in parts.enumerated() { run(part, index % 2 == 1 ? Term.Hex.cyan : hex) }
+        }
+
+        /// A result or command line, by its first mark.
+        func body(_ text: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("$ ") { run(text, Term.Hex.cyan) }
+            else if trimmed.hasPrefix("✓") || trimmed.hasPrefix("✔") { run(text, Term.Hex.green) }
+            else if trimmed.hasPrefix("✗") || trimmed.hasPrefix("✘") { run(text, Term.Hex.red) }
+            else if trimmed.hasPrefix("? ") { run(text, Term.Hex.amber) }
+            else { prose(text, Term.Hex.text) }
+        }
+
+        var afterToolRow = false
+        let lines = output.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let indent = String(line.prefix(while: { $0 == " " || $0 == "\t" }))
+
+            if let turn = turnLabel(trimmed) {
+                let isDeveloper = turn.speaker == "YOU"
+                run(isDeveloper ? "❯ " : "● ", isDeveloper ? Term.Hex.dim : Term.Hex.cyan)
+                run(turn.speaker.lowercased(), isDeveloper ? Term.Hex.text : Term.Hex.cyan, bold: true)
+                run("  " + turn.time, Term.Hex.dim)
+                afterToolRow = false
+            } else if trimmed.hasPrefix("▸ ") || trimmed.hasPrefix("▾ ") {
+                toolRow(trimmed, indent: indent, run: run)
+                afterToolRow = true
+            } else if trimmed.hasPrefix("│") {
+                run(indent + "│", Term.Hex.dim)
+                body(String(trimmed.dropFirst()))
+            } else if afterToolRow, indent.count >= 2, !trimmed.isEmpty {
+                // An indented line directly under a tool row is that row's detail.
+                run(line, Term.Hex.dim)
+            } else {
+                body(line)
+                afterToolRow = false
+            }
+            if index < lines.count - 1 { run("\n", Term.Hex.text) }
         }
         return result
     }
 
-    /// Paragraph style that draws its lines inside one bordered, inset block (concept `.ck-codeblock`).
-    private static func commandBlockParagraph(basedOn base: NSParagraphStyle) -> NSParagraphStyle {
-        let block = NSTextBlock()
-        block.backgroundColor = NSColor(hex: 0x0B0C10)
-        block.setBorderColor(NSColor(white: 1, alpha: 0.13))
-        block.setWidth(1, type: .absoluteValueType, for: .border)
-        block.setWidth(10, type: .absoluteValueType, for: .padding)
-        block.setWidth(13, type: .absoluteValueType, for: .padding, edge: .minX)
-        block.setWidth(13, type: .absoluteValueType, for: .padding, edge: .maxX)
-        block.setWidth(9, type: .absoluteValueType, for: .margin, edge: .minY)
-        block.setWidth(15, type: .absoluteValueType, for: .margin, edge: .maxY)
-        let style = (base.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        style.minimumLineHeight = (12.7 * 1.7).rounded()
-        style.textBlocks = [block]
-        return style
+    /// `▸ name rest   ✓ done`: dim disclosure mark, violet tool name, the rest, then the state.
+    private static func toolRow(_ trimmed: String, indent: String,
+                                run: (_ text: String, _ hex: UInt32, _ bold: Bool) -> Void) {
+        run(indent + String(trimmed.prefix(2)), Term.Hex.dim, false)
+        var rest = String(trimmed.dropFirst(2))
+        var state: (text: String, hex: UInt32)?
+        for (mark, hex) in [("✓", Term.Hex.green), ("…", Term.Hex.amber), ("✗", Term.Hex.red)] {
+            if let range = rest.range(of: "  \(mark) ", options: .backwards) {
+                state = (String(rest[range.lowerBound...]), hex)
+                rest = String(rest[..<range.lowerBound])
+                break
+            }
+        }
+        let name = String(rest.prefix(while: { $0 != " " }))
+        let detail = String(rest.dropFirst(name.count))
+        run(name, Term.Hex.violet, true)
+        let parts = detail.components(separatedBy: "`")
+        if detail.trimmingCharacters(in: .whitespaces).hasPrefix("$ ") {
+            run(detail, Term.Hex.cyan, false)
+        } else if parts.count >= 3, parts.count % 2 == 1 {
+            // A path or name written as `inline code`.
+            for (index, part) in parts.enumerated() { run(part, index % 2 == 1 ? Term.Hex.cyan : Term.Hex.text, false) }
+        } else {
+            run(detail, Term.Hex.text, false)
+        }
+        if let state { run(state.text, state.hex, false) }
     }
 
     /// A line of the form "14:14:03 CODEX" is a turn label: a time and an upper-case speaker.
-    private static func turnLabel(_ line: String, basedOn base: NSParagraphStyle) -> NSAttributedString? {
+    private static func turnLabel(_ line: String) -> (time: String, speaker: String)? {
         let characters = Array(line)
         guard characters.count > 9, characters[2] == ":", characters[5] == ":", characters[8] == " " else { return nil }
         let time = String(characters[0..<8])
         let speaker = String(characters[9...])
         guard time.allSatisfy({ $0.isNumber || $0 == ":" }),
               speaker == speaker.uppercased(), speaker.contains(where: \.isLetter) else { return nil }
-        let style = (base.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-        style.paragraphSpacingBefore = 4
-        style.paragraphSpacing = 3
-        let color = NSColor(hex: 0xB6BDC9)
-        let label = NSMutableAttributedString(string: time, attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 10.75, weight: .regular),
-            .foregroundColor: color, .paragraphStyle: style
-        ])
-        label.append(NSAttributedString(string: "  " + speaker, attributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-            .foregroundColor: color, .kern: 1, .paragraphStyle: style
-        ]))
-        return label
-    }
-
-    private static func tint(for line: String) -> NSColor {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("$ ") { return NSColor(hex: 0xF5F5F9) }
-        if trimmed.hasPrefix("✓") || trimmed.hasPrefix("✔") { return NSColor(hex: 0xA5D7B6) }
-        if trimmed.hasPrefix("✗") || trimmed.hasPrefix("✘") { return NSColor(hex: 0xEC9B92) }
-        if trimmed.hasPrefix("? ") { return NSColor(hex: 0xF1C88E) }
-        return NSColor(hex: 0xD3D7E1)
+        return (time, speaker)
     }
 }
 
 // MARK: - Mapping from the service model (feature layer)
+
+extension HostPlatform {
+    /// The marker the local service writes on every worker its local provider launches
+    /// (`newWorker` in internal/service/store.go). It is a contract value, compared exactly.
+    static let serviceLocalMarker = "localhost"
+
+    /// Platform of a live worker. The service reaches this app over its local socket and marks
+    /// workers it launched on this machine with `serviceLocalMarker`; this app runs on macOS, so
+    /// that exact marker means this Mac. The API carries no platform field for any other host, so
+    /// every other value is `.unknown`. No name matching, DNS lookup or transport check is done.
+    init(serviceHost: String) {
+        self = serviceHost == Self.serviceLocalMarker ? .localMac : .unknown
+    }
+}
+
+extension TranscriptEntry {
+    /// How many recent entries a request surface (the PiP) shows as context.
+    static let recentWindow = 4
+
+    /// Builds transcript entries from AG-UI messages. Each tool call is paired with the `tool`
+    /// message that answers it by tool-call ID. Roles other than `user` and `tool` read as the agent.
+    static func entries(from messages: [AGUIMessage]) -> [TranscriptEntry] {
+        var results: [String: String] = [:]
+        var callIDs = Set<String>()
+        for message in messages {
+            if message.role == "tool", let callID = message.toolCallID { results[callID] = message.content ?? "" }
+            for call in message.toolCalls ?? [] { callIDs.insert(call.id) }
+        }
+        var entries: [TranscriptEntry] = []
+        for message in messages {
+            if message.role == "tool" {
+                // A result with a known call is shown inside that call's entry.
+                if let callID = message.toolCallID, callIDs.contains(callID) { continue }
+                if let text = message.content, !text.isEmpty {
+                    entries.append(TranscriptEntry(id: message.id, kind: .output(text)))
+                }
+                continue
+            }
+            let text = (message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                entries.append(TranscriptEntry(id: message.id, kind: .prose(text, fromUser: message.role == "user")))
+            }
+            for call in message.toolCalls ?? [] {
+                entries.append(TranscriptEntry(
+                    id: call.id,
+                    kind: .tool(name: call.function.name, detail: detail(of: call.function.arguments),
+                                result: results[call.id])))
+            }
+        }
+        return entries
+    }
+
+    /// The `detail` string of a tool call's JSON arguments, when the object carries one.
+    private static func detail(of arguments: String) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: Any],
+              let detail = object["detail"] as? String, !detail.isEmpty else { return nil }
+        return detail
+    }
+}
 
 extension RunSummary {
     init(run: Run) {
@@ -484,28 +687,37 @@ extension RunContent {
             let isCoordinator = worker.id == coordinatorID
             let ancestors = parents(of: worker)
             let holder = ancestors.last ?? runTitle
-            let client = AgentClient(worker.client ?? runClient)
+            let client = AgentClient(worker.client, fallback: runClient)
             let branch = worker.branch?.trimmingCharacters(in: .whitespaces) ?? ""
+            let platform = HostPlatform(serviceHost: worker.host)
+            let transcript = TranscriptEntry.entries(from: worker.messages ?? [])
             let request = requestByWorker[worker.id].map { question in
                 RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
                     workerID: worker.id, workerName: worker.name, workerIsCoordinator: isCoordinator,
                     client: client, runID: run.id, runTitle: runTitle, project: run.project, host: worker.host,
-                    inputHolder: isCoordinator ? worker.name : holder,
-                    contextTail: Self.tail(of: worker.output))
+                    platform: platform, inputHolder: isCoordinator ? worker.name : holder,
+                    contextTail: Self.tail(of: worker.output),
+                    contextEntries: Array(transcript.suffix(TranscriptEntry.recentWindow)))
             }
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
-                host: worker.host,
+                host: worker.host, platform: platform,
                 location: branch.isEmpty ? URL(filePath: worker.worktree).lastPathComponent : branch,
                 locationIsBranch: !branch.isEmpty,
                 task: worker.task, output: worker.output, error: worker.error,
                 state: TaskState(api: worker.state, hasPendingRequest: request != nil),
                 isCoordinator: isCoordinator,
                 lineage: isCoordinator ? [runTitle] : [runTitle] + ancestors + [worker.name],
-                control: .observing(holder: isCoordinator ? worker.name : holder),
+                // The service's control record is the authority on who directs a worker. The
+                // coordinator is never taken over.
+                control: !isCoordinator && worker.control?.held == true
+                    ? .held : .observing(holder: isCoordinator ? worker.name : holder),
                 request: request,
-                startedAt: Timestamp.clock(worker.createdAt, seconds: true))
+                startedAt: Timestamp.clock(worker.createdAt, seconds: true),
+                transcript: transcript,
+                queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
+                interruptRequested: worker.control?.interruptRequested == true)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

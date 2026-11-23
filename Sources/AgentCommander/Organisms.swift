@@ -5,12 +5,13 @@ import SwiftUI
 // Distinct regions of the cockpit, each composed from molecules, atoms and the shared TerminalWell.
 // Organisms receive presentation values and emit targeted actions. They hold no API access.
 //
-//   WorkerTile          = WorkerIdentity + WorkerLocation + TerminalWell + StatusLabel + NeedsInputFlag
-//                         + InputOwnership (+ RequestReply in the focused variant)
+//   WorkerTile          = ConsoleTitleBar + TerminalWell + TerminalStatusLine + InputOwnership
+//                         (+ RequestPrompt in the focused variant)
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
-//   CoordinatorConsole  = WorkerIdentity + StatusLabel + TerminalWell + AttentionNotice
-//   AttentionStack      = WorkerIdentity + question well + RequestReply (the PiP)
+//   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
+//   AttentionStack      = request controls + ConsoleTitleBar + TerminalWell + RequestPrompt
+//                         + TerminalStatusLine (the PiP)
 //   RunHeader           = Breadcrumb + StatusLabel + run actions
 //   NavigationRail      = BrandMark + NavigationRow
 
@@ -21,8 +22,17 @@ struct WorkerTileActions {
     var openRequest: (() -> Void)? = nil
     var copyID: () -> Void = {}
     var handBack: (() -> Void)? = nil
-    /// Terminal input for this worker. Present only where the service supports it.
-    var sendInput: ((String) -> Void)? = nil
+    /// Sends a follow-up message to this worker and reports whether it was accepted. Present
+    /// only where the service supports it.
+    var sendInput: ((String) async -> Bool)? = nil
+    /// A control, interrupt or stop request for this worker is in flight. Its controls wait.
+    var isBusy = false
+    // Worker operations from the action list. Each row appears only when its action exists.
+    var viewAssignment: (() -> Void)? = nil
+    var followUp: (() -> Void)? = nil
+    var takeControl: (() -> Void)? = nil
+    var interrupt: (() -> Void)? = nil
+    var stop: (() -> Void)? = nil
 }
 
 /// One worker. The wall and the focused (zoomed) view are variants of this single type, so identity,
@@ -36,6 +46,9 @@ struct WorkerTile: View {
     /// Present in the focused variant when this worker's request is answered inline.
     var reply: ReplyContext? = nil
     var actions = WorkerTileActions()
+    /// When present, the tile's actions open as an anchored list (WorkerActionMenu) whose
+    /// presentation the page controls. Without it the tile uses the native menu.
+    var menuPresented: Binding<Bool>? = nil
 
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -46,90 +59,64 @@ struct WorkerTile: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Hairline()
             if isFocusedVariant { conversation } else { well }
             if let error = worker.error, !error.isEmpty {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.caption).foregroundStyle(Palette.failure)
-                    .lineLimit(4).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8).background(Palette.well)
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text("✗ ").accessibilityHidden(true)
+                    Text(error).lineLimit(4).textSelection(.enabled)
+                }
+                .font(Term.font(11.5)).foregroundStyle(Term.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
+                .background(Term.background)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Error: \(error)")
             }
-            if !isFocusedVariant {
-                Hairline()
-                footer
-            }
-            Hairline()
-            InputOwnership(workerName: worker.name, control: worker.control,
-                           isKeyFocused: isKeyFocused, handBack: actions.handBack)
-                .padding(.horizontal, isFocusedVariant ? 13 : 7)
-                .frame(minHeight: isFocusedVariant ? 44 : Metric.ownershipRowHeight)
-                .background(Palette.footer)
+            footer
             if isFocusedVariant, worker.control == .held, let sendInput = actions.sendInput {
                 TerminalComposer(workerName: worker.name, send: sendInput)
             }
         }
-        .panelSurface(edge: isPending ? Palette.attentionEdge : nil)
-        .focusRing(isKeyFocused)
+        .harnessConsoleSurface(worker.client, attention: isPending)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(summary)
     }
 
-    @ViewBuilder private var header: some View {
-        if isFocusedVariant {
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    WorkerIdentity(name: worker.name, client: worker.client, details: focusedDetails, density: .focused)
-                    Spacer(minLength: 8)
-                    StatusLabel(worker.state, size: 12)
-                    actionMenu
-                }
-                .padding(.top, 17).padding(.horizontal, 20).padding(.bottom, 14)
-                Hairline()
-                HStack(spacing: 8) {
-                    LineagePath(names: worker.lineage)
-                    Spacer(minLength: 8)
-                    Text("#\(worker.shortID)").font(TypeRole.monoID).foregroundStyle(.inkSecondary)
-                        .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
-                }
-                .padding(.horizontal, 19).padding(.vertical, 9)
+    /// One console title bar for both variants. The focused worker adds its lineage before the
+    /// title and its short ID beside the actions; the wall's group header already shows nesting.
+    private var header: some View {
+        ConsoleTitleBar(title: worker.name, client: worker.client, host: worker.host, platform: worker.platform,
+                        location: worker.location, locationIsBranch: worker.locationIsBranch,
+                        lineage: isFocusedVariant ? Array(worker.lineage.dropLast()) : [],
+                        density: isFocusedVariant ? .focused : .tile) {
+            if isFocusedVariant {
+                Text("#\(worker.shortID)").font(Term.font(11)).foregroundStyle(Term.text)
+                    .lineLimit(1).fixedSize()
+                    .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
             }
-            .background(Palette.chrome)
-        } else {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    WorkerIdentity(name: worker.name, client: worker.client,
-                                   details: [.init(text: worker.client.displayName)], density: .tile)
-                    Spacer(minLength: 2)
-                    actionMenu
-                }
-                .padding(.top, 12).padding(.horizontal, Metric.tileInset).padding(.bottom, 9)
-                WorkerLocation(host: worker.host, location: worker.location, isBranch: worker.locationIsBranch)
-                    .padding(.horizontal, Metric.tileInset).padding(.bottom, 9)
-            }
-            .background(Palette.chrome)
+            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client)
+            actionMenu
         }
-    }
-
-    private var focusedDetails: [WorkerIdentity.Detail] {
-        var details: [WorkerIdentity.Detail] = [.init(text: worker.client.displayName), .init(text: worker.host)]
-        if !worker.location.isEmpty {
-            details.append(.init(symbol: worker.locationIsBranch ? "arrow.triangle.branch" : "folder", text: worker.location))
-        }
-        return details
     }
 
     /// Wall density: the terminal tail fills the tile.
     private var well: some View {
         ZStack(alignment: .topLeading) {
-            Palette.well
-            TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
-                         fontSize: TypeRole.wallTerminalSize, inset: NSSize(width: 11, height: 12))
-            if worker.output.isEmpty {
+            Term.background
+            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact) {
+                if !worker.transcript.isEmpty {
+                    TranscriptView(entries: worker.transcript, agentName: worker.name,
+                                   fontSize: TypeRole.wallTerminalSize, inset: 11)
+                } else {
+                    TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
+                                 fontSize: TypeRole.wallTerminalSize, inset: NSSize(width: 11, height: 9))
+                }
+            }
+            if worker.transcript.isEmpty && worker.output.isEmpty {
                 Text(worker.task)
-                    .font(.system(size: 12.7, design: .monospaced))
-                    .foregroundStyle(.inkSecondary)
-                    .padding(.horizontal, 11).padding(.vertical, 12)
+                    .font(Term.font(TypeRole.wallTerminalSize))
+                    .foregroundStyle(.inkTermDim)
+                    .padding(.horizontal, 11).padding(.vertical, 9)
                     .allowsHitTesting(false)
                     .accessibilityLabel("No output yet. Task: \(worker.task)")
             }
@@ -142,33 +129,42 @@ struct WorkerTile: View {
     /// concept. A long transcript scrolls inside the well and the request stays visible below it.
     private var conversation: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Concept spacing (.ck-focusbody): 19 top, assignment with an 18 pt bottom margin, turn
-            // labels and an inset command block in the transcript, then the request in normal flow.
+            // One full-width scrollback: the assignment, the transcript, then the request as an
+            // inline prompt directly after it.
             if !worker.task.isEmpty {
                 AssignmentBlock(label: assignmentLabel, time: worker.startedAt, text: worker.task, fontSize: 13)
-                    .padding(.horizontal, 21).padding(.top, 19).padding(.bottom, 10)
+                    .padding(.horizontal, 21).padding(.top, 12).padding(.bottom, 8)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if worker.output.isEmpty {
-                Text("Waiting for this worker's first output.")
-                    .font(TypeRole.terminal).foregroundStyle(.inkSecondary)
-                    .padding(.horizontal, 21).padding(.vertical, 14)
-            } else {
-                TerminalWell(output: worker.output, workerID: worker.id, style: .transcript, workerName: worker.name,
-                             fontSize: TypeRole.focusTerminalSize, inset: NSSize(width: 21, height: 8),
-                             onContentHeight: { transcriptHeight = $0 })
-                    .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
-                    .layoutPriority(1)
+            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .regular, horizontalInset: 21) {
+                if !worker.transcript.isEmpty {
+                    // Structured messages: the transcript takes the room above the request.
+                    TranscriptView(entries: worker.transcript, agentName: worker.name,
+                                   fontSize: TypeRole.focusTerminalSize, inset: 21)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(1)
+                } else if worker.output.isEmpty {
+                    Text("… waiting for this worker's first output")
+                        .font(Term.font(13)).foregroundStyle(.inkTermDim)
+                        .padding(.horizontal, 21).padding(.vertical, 8)
+                } else {
+                    TerminalWell(output: worker.output, workerID: worker.id, style: .transcript, workerName: worker.name,
+                                 fontSize: TypeRole.focusTerminalSize, inset: NSSize(width: 21, height: 4),
+                                 onContentHeight: { transcriptHeight = $0 })
+                        .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
+                        .layoutPriority(1)
+                }
             }
             if let request = worker.request, let reply {
-                requestBlock(request, reply: reply)
+                RequestPrompt(request: request, reply: reply, density: .focused, inset: 21)
+                    .padding(.top, 8)
                     .fixedSize(horizontal: false, vertical: true)
             }
             // Takes only the room left over. It never sets the transcript's or the request's size.
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Palette.well)
+        .background(Term.background)
     }
 
     private var assignmentLabel: String {
@@ -176,60 +172,56 @@ struct WorkerTile: View {
         return parent.map { "Assignment · \($0)" } ?? "Assignment"
     }
 
+    /// One slim status line for both variants: live status, then `[ view request ]` on a wall tile
+    /// whose request is answered elsewhere, then input ownership. In the focused variant the
+    /// request is the inline prompt above, so the line shows the send key instead.
     private var footer: some View {
-        HStack(spacing: 7) {
-            StatusLabel(worker.state, size: 10.5)
-            if let request = worker.request { NeedsInputFlag(request: request) }
-            Spacer(minLength: 4)
-            if let started = worker.startedAt {
-                Text(started).font(TypeRole.timestamp).foregroundStyle(.inkSecondary)
-                    .help("Started at \(started)").accessibilityLabel("Started at \(started)")
+        let size: CGFloat = isFocusedVariant ? 12 : 11
+        return TerminalStatusLine(state: worker.state, size: size,
+                                  inset: isFocusedVariant ? 21 : Metric.tileInset,
+                                  request: worker.request,
+                                  openRequest: isFocusedVariant ? nil : actions.openRequest) {
+            if isFocusedVariant, worker.request != nil, reply != nil {
+                TermHint(keys: "↩", action: "send", size: size - 1)
             }
+            // What the service reports about the developer's own requests to this worker.
+            if isFocusedVariant, worker.interruptRequested {
+                Text("interrupt requested").font(Term.font(size - 1)).foregroundStyle(Term.amber)
+                    .lineLimit(1).fixedSize()
+                    .accessibilityLabel("Interrupt requested for \(worker.name)")
+            }
+            if isFocusedVariant, worker.queuedFollowUps > 0 {
+                Text(worker.queuedFollowUps == 1 ? "1 follow-up queued" : "\(worker.queuedFollowUps) follow-ups queued")
+                    .font(Term.font(size - 1)).foregroundStyle(Term.cyan)
+                    .lineLimit(1).fixedSize()
+            }
+            InputOwnership(workerName: worker.name, control: worker.control,
+                           isKeyFocused: isKeyFocused, handBack: actions.handBack,
+                           takeControl: isFocusedVariant ? actions.takeControl : nil,
+                           isBusy: actions.isBusy, size: size - 0.5)
         }
-        .padding(.horizontal, Metric.tileInset).padding(.vertical, 9)
-        .background(isPending ? Palette.attentionFooter : Palette.footer)
     }
 
-    private func requestBlock(_ request: RequestPresentation, reply: ReplyContext) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Image(systemName: "bubble.left")
-                Text("Needs input")
-                Spacer(minLength: 8)
-                Text(request.shortID).font(TypeRole.monoMeta).help("Request \(request.id)")
+    @ViewBuilder private var actionMenu: some View {
+        if let menuPresented {
+            Button { menuPresented.wrappedValue.toggle() } label: {
+                Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
+                    .frame(width: 23, height: 23).contentShape(Rectangle())
             }
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Palette.attention)
-            Text(request.question)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(Color(hex: 0xEFE9D9))
-                .lineLimit(8).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            RequestReply(request: request, context: reply)
+            .buttonStyle(.plain)
+            .foregroundStyle(menuPresented.wrappedValue ? Palette.focus : Palette.secondary)
+            .popover(isPresented: menuPresented, arrowEdge: .bottom) {
+                WorkerActionMenu(worker: worker, isFocused: isFocusedVariant, actions: actions,
+                                 dismiss: { menuPresented.wrappedValue = false })
+            }
+            .help("Actions for \(worker.name)")
+            .accessibilityLabel("Actions for \(worker.name)")
+        } else {
+            nativeActionMenu
         }
-        .padding(.leading, 17).padding(.trailing, 14).padding(.vertical, 12)
-        .background(Palette.attentionFill, in: shape)
-        .overlay(alignment: .leading) { Rectangle().fill(Color(hex: 0xDFB476)).frame(width: 3) }
-        .clipShape(shape)
-        .overlay { shape.strokeBorder(Palette.attentionSoftEdge) }
-        .padding(.top, 8)
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .topLeading) {
-            // Turn label for the request, in the same role as the transcript's turn labels.
-            Text("REQUEST \(request.shortID)").font(TypeRole.kicker).tracking(1)
-                .foregroundStyle(.inkSecondary)
-                .offset(y: -14)
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, 21).padding(.top, 22).padding(.bottom, 12)
-        .frame(maxWidth: .infinity)
-        .background(Palette.well)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Request \(request.shortID) from \(request.workerName)")
     }
 
-    private var actionMenu: some View {
+    private var nativeActionMenu: some View {
         Menu {
             if let toggleZoom = actions.toggleZoom {
                 Button(isFocusedVariant ? "Return to wall" : "Zoom worker", action: toggleZoom)
@@ -251,13 +243,95 @@ struct WorkerTile: View {
     }
 
     private var summary: String {
-        var parts = [worker.name, worker.client.displayName, "host \(worker.host)", worker.state.label]
+        var parts = [worker.name, worker.client.displayName, "host \(worker.host), \(worker.platform.label)",
+                     worker.state.label]
         switch worker.control {
-        case .observing(let holder): parts.append("input held by \(holder)")
-        case .held: parts.append("you hold input")
+        case .observing(let holder): parts.append("directed by \(holder)")
+        case .held: parts.append("you have control")
         }
+        if worker.interruptRequested { parts.append("interrupt requested") }
+        if worker.queuedFollowUps > 0 { parts.append("\(worker.queuedFollowUps) follow-ups queued") }
         if let request = worker.request { parts.append("request \(request.shortID) waiting") }
         return parts.joined(separator: ", ")
+    }
+}
+
+// MARK: - WorkerActionMenu
+
+/// The action list for one identified worker. Its heading names the worker and assignment the
+/// actions apply to; interrupt and stop are set apart and say which worker they affect.
+struct WorkerActionMenu: View {
+    let worker: WorkerPresentation
+    let isFocused: Bool
+    let actions: WorkerTileActions
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(worker.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.foreground)
+                Spacer(minLength: 12)
+                Text(worker.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
+            }
+            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 7)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            if let view = actions.viewAssignment { row("doc.text", "View assignment", action: view) }
+            if let followUp = actions.followUp { row("bubble.left", "Send follow-up…", action: followUp) }
+            if let zoom = actions.toggleZoom {
+                row("arrow.up.left.and.arrow.down.right", isFocused ? "Return to wall" : "Zoom worker",
+                    key: isFocused ? "⌘[" : "⌘]", action: zoom)
+            }
+            if let reply = actions.openRequest { row("bell", "Reply to request", action: reply) }
+            if worker.control != .held, let take = actions.takeControl {
+                row("hand.raised", "Take control", label: "Take control of \(worker.name)",
+                    isEnabled: !actions.isBusy, action: take)
+            }
+            if worker.control == .held, let handBack = actions.handBack {
+                row("arrow.uturn.backward", "Hand back control", label: "Hand back control of \(worker.name)",
+                    isEnabled: !actions.isBusy, action: handBack)
+            }
+            row("doc.on.doc", "Copy worker ID", action: actions.copyID)
+            if actions.interrupt != nil || actions.stop != nil {
+                Hairline().padding(.vertical, 5)
+                if let interrupt = actions.interrupt {
+                    row("waveform.path.ecg", worker.interruptRequested ? "Interrupt requested" : "Interrupt turn",
+                        label: "Interrupt the current turn of \(worker.name)",
+                        isEnabled: !actions.isBusy && !worker.interruptRequested, action: interrupt)
+                }
+                if let stop = actions.stop {
+                    row("stop.circle", "Stop worker…", tone: .failure, label: "Stop \(worker.name)",
+                        isEnabled: !actions.isBusy, action: stop)
+                }
+            }
+        }
+        .padding(8)
+        .frame(width: 232, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Actions for \(worker.name)")
+    }
+
+    private func row(_ symbol: String, _ title: String, key: String? = nil, tone: Tone? = nil,
+                     label: String? = nil, isEnabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button {
+            dismiss()
+            action()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).font(.system(size: 12)).frame(width: 16)
+                Text(title).font(.system(size: 13))
+                Spacer(minLength: 10)
+                if let key { KeyCap(keys: key) }
+            }
+            .foregroundStyle(tone?.color ?? Color(hex: 0xE3E5EE))
+            .padding(.horizontal, 10)
+            .frame(minHeight: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityLabel(label ?? title)
     }
 }
 
@@ -341,6 +415,8 @@ struct WorkerWall<Tile: View>: View {
                         }
                     }
                 }
+                // The clipped region tiles measure themselves against to report whether they are in view.
+                .coordinateSpace(.named(ConsoleVisibility.viewport))
             }
         }
     }
@@ -429,65 +505,72 @@ struct CoordinatorConsole: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 11) {
-                WorkerIdentity(name: coordinator.name, client: coordinator.client, details: details, density: .console)
-                Spacer(minLength: 8)
-                StatusLabel(coordinator.state, size: 10.5)
+            // Status lives in the terminal's status line, once.
+            ConsoleTitleBar(title: coordinator.name, client: coordinator.client, host: coordinator.host,
+                            platform: coordinator.platform, location: coordinator.location,
+                            locationIsBranch: coordinator.locationIsBranch, density: .console) {
+                ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name, client: coordinator.client)
             }
-            .padding(.horizontal, 17).padding(.vertical, 16)
-            .background(Palette.chrome)
-            Hairline()
-            // Assignment, transcript, then any waiting request directly after the transcript. A long
-            // transcript scrolls inside its well while the notices stay visible beneath it.
+            // One scrollback: the assignment, the transcript, then any waiting request directly
+            // after it. A long transcript scrolls in place while the notices stay visible beneath it.
             VStack(alignment: .leading, spacing: 0) {
-                AssignmentBlock(label: "You", time: startedAt, text: assignment)
-                    .padding(.bottom, 12)
+                AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
+                    .padding(.bottom, 9)
                     .fixedSize(horizontal: false, vertical: true)
-                if coordinator.output.isEmpty {
-                    Text("Waiting for the coordinator's first output.")
-                        .font(TypeRole.terminalSmall).foregroundStyle(.inkSecondary)
-                } else {
-                    TerminalWell(output: coordinator.output, workerID: coordinator.id, workerName: coordinator.name,
-                                 fontSize: 12.5, inset: NSSize(width: 0, height: 2),
-                                 onContentHeight: { transcriptHeight = $0 })
-                        .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
-                        .layoutPriority(1)
+                ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript, rawOutput: coordinator.output, density: .regular, horizontalInset: 0) {
+                    if !coordinator.transcript.isEmpty {
+                        TranscriptView(entries: coordinator.transcript, agentName: coordinator.name,
+                                       fontSize: 12.5, inset: 0)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .layoutPriority(1)
+                    } else if coordinator.output.isEmpty {
+                        Text("… waiting for the coordinator's first output")
+                            .font(Term.font(12.5)).foregroundStyle(.inkTermDim)
+                    } else {
+                        TerminalWell(output: coordinator.output, workerID: coordinator.id, workerName: coordinator.name,
+                                     fontSize: 12.5, inset: NSSize(width: 0, height: 2),
+                                     onContentHeight: { transcriptHeight = $0 })
+                            .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
+                            .layoutPriority(1)
+                    }
                 }
                 if let error = coordinator.error, !error.isEmpty {
-                    Label(error, systemImage: "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(Palette.failure).lineLimit(4).textSelection(.enabled)
-                        .padding(.top, 8)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Text("✗ ").accessibilityHidden(true)
+                        Text(error).lineLimit(4).textSelection(.enabled)
+                    }
+                    .font(Term.font(11.5)).foregroundStyle(Term.red)
+                    .padding(.top, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Error: \(error)")
                 }
                 ForEach(awaiting) { request in
                     AttentionNotice(request: request, detail: detail(for: request)) { openRequest(request) }
-                        .padding(.top, 10)
+                        .padding(.top, 8)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.top, 18).padding(.horizontal, 17).padding(.bottom, 14)
+            .padding(.top, 12).padding(.horizontal, 17).padding(.bottom, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Palette.well)
+            .background(Term.background)
+            TerminalStatusLine(state: coordinator.state, size: 11.5, inset: 17) {
+                if isKeyFocused {
+                    InputOwnership(workerName: coordinator.name, control: coordinator.control, isKeyFocused: true)
+                }
+            }
             if let sendMessage {
-                Hairline()
-                TerminalComposer(workerName: coordinator.name, prompt: "Message coordinator…",
-                                 outlined: false, send: sendMessage)
+                TerminalComposer(workerName: coordinator.name, prompt: "Message coordinator",
+                                 outlined: false, send: { text in
+                                     sendMessage(text)
+                                     return true
+                                 })
             }
         }
-        .panelSurface()
-        .focusRing(isKeyFocused)
+        .harnessConsoleSurface(coordinator.client, attention: coordinator.request != nil)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Coordinator \(coordinator.name), \(coordinator.state.label)")
-    }
-
-    private var details: [WorkerIdentity.Detail] {
-        var details: [WorkerIdentity.Detail] = [.init(text: coordinator.host)]
-        if !coordinator.location.isEmpty {
-            details.append(.init(symbol: coordinator.locationIsBranch ? "arrow.triangle.branch" : "folder",
-                                 text: coordinator.location))
-        }
-        return details
     }
 
     private func detail(for request: RequestPresentation) -> String {
@@ -508,6 +591,11 @@ struct AttentionStack: View {
     let showNext: () -> Void
     let expand: () -> Void
     let close: () -> Void
+    /// Laid over the header's title area when the stack is the content of its own window, so that
+    /// area moves the window. The in-window PiP has none.
+    var dragHandle: AnyView? = nil
+    /// Laid-out height of the context tail, reported by the terminal well.
+    @State private var tailHeight: CGFloat = 44
 
     var body: some View {
         // Layered stack: the opaque back card sits behind and above the front card, with its own lit
@@ -549,9 +637,16 @@ struct AttentionStack: View {
     private var front: some View {
         VStack(spacing: 0) {
             HStack(spacing: 5) {
-                Image(systemName: "bell").font(.system(size: 11))
-                Text("Needs attention").font(.system(size: 12, weight: .semibold))
-                Spacer(minLength: 8)
+                // The title area: everything in the header that is not a control. In its own
+                // window this whole area, including the empty space up to the controls, is the
+                // drag handle.
+                HStack(spacing: 5) {
+                    Image(systemName: "bell").font(.system(size: 11))
+                    Text("Needs attention").font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.leading, 13)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .overlay { if let dragHandle { dragHandle } }
                 if count > 1 {
                     Button(action: showNext) {
                         Text("\(position) of \(count)").font(TypeRole.monoMeta)
@@ -565,45 +660,207 @@ struct AttentionStack: View {
                 SymbolButton(symbol: "xmark", label: "Hide this request", size: 10, action: close)
             }
             .foregroundStyle(Palette.attention)
-            .padding(.leading, 13).padding(.trailing, 8).padding(.vertical, 2)
+            .padding(.trailing, 8).padding(.vertical, 2)
             Hairline()
-            // Spacing and insets are 14 pt tighter in total than the first pass, per the measured capture.
-            VStack(alignment: .leading, spacing: 8) {
-                WorkerIdentity(name: current.workerName, client: current.client,
-                               details: [.init(text: current.runTitle), .init(text: current.host), .init(text: current.shortID)],
-                               density: .pip)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(Array(current.contextTail.enumerated()), id: \.offset) { _, line in
-                            Text(line).font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.inkSecondary).lineLimit(1)
-                        }
-                        Text(current.question)
-                            .font(TypeRole.terminalSmall).lineSpacing(3)
-                            .foregroundStyle(Color(hex: 0xDAE0E6))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                // The same terminal pane as the wall and the focused worker, at PiP density: the
+                // shared title bar naming the source run, worker and host, the worker's recent
+                // output, the request as an inline prompt, and the slim status line.
+                VStack(spacing: 0) {
+                    ConsoleTitleBar(title: current.workerName, client: current.client, host: current.host,
+                                    platform: current.platform, lineage: [current.runTitle], density: .pip) {
+                        ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName, client: current.client)
                     }
-                    .padding(.horizontal, 10).padding(.vertical, 9)
+                    if !current.contextEntries.isEmpty || !current.contextTail.isEmpty {
+                        ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
+                                          rawOutput: current.contextTail.joined(separator: "\n"), density: .pip, horizontalInset: 8) {
+                            if !current.contextEntries.isEmpty {
+                                // A recent window of whole entries: a tool result always sits with its call.
+                                TranscriptView(entries: current.contextEntries, agentName: current.workerName,
+                                               fontSize: 10.75, inset: 11)
+                                    .frame(height: 92)
+                            } else if !current.contextTail.isEmpty {
+                                TerminalWell(output: current.contextTail.joined(separator: "\n"),
+                                             workerID: "pip-\(current.id)", workerName: current.workerName,
+                                             fontSize: 10.75, inset: NSSize(width: 11, height: 7),
+                                             onContentHeight: { tailHeight = $0 })
+                                    .frame(height: min(tailHeight, 86))
+                            }
+                        }
+                        .frame(maxHeight: 92)
+                    }
+                    RequestPrompt(request: current, reply: reply, density: .compact, inset: 11)
+                    TerminalStatusLine(state: .needsInput, size: 10.75, inset: 11) {
+                        // The shared ownership cue: its words whole, or the symbol alone with the
+                        // full statement in its help tag and accessibility label.
+                        InputOwnership(workerName: current.workerName,
+                                       control: .observing(holder: current.inputHolder), size: 10.5)
+                    }
                 }
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxHeight: 132)
-                .background(Palette.well, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.inkHairline) }
-                HStack(spacing: 6) {
-                    Image(systemName: "bubble.left").font(.system(size: 10))
-                    Text("Reply to \(current.shortID)")
-                    Spacer(minLength: 8)
-                    Text("Input · \(current.inputHolder)").lineLimit(1)
-                        .accessibilityLabel("Terminal input is held by \(current.inputHolder)")
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: 0xD5D9E5))
-                RequestReply(request: current, context: reply)
+                .harnessConsoleSurface(current.client, raised: false)
             }
-            .padding(.horizontal, 13).padding(.top, 11).padding(.bottom, 12)
+            .padding(.horizontal, 11).padding(.top, 10).padding(.bottom, 11)
         }
         .glassSurface(.floating, radius: Radius.overlay)
+        .attentionGlow(true, radius: Radius.overlay)
+    }
+}
+
+// MARK: - AttentionDrawer
+
+/// The side-panel presentation of pending decisions: the same request the PiP would show, beside
+/// the coordinator and wall. It carries the shared RequestReply, so a draft follows its request.
+struct AttentionDrawer: View {
+    let current: RequestPresentation
+    let others: [RequestPresentation]
+    let reply: ReplyContext
+    var takeControl: (() -> Void)? = nil
+    /// Pinned: the panel has its own width beside the content. Unpinned: it lies over the content.
+    var isPinned = true
+    /// Switches between pinned and unpinned. The toggle is shown only where this exists.
+    var togglePin: (() -> Void)? = nil
+    let show: (RequestPresentation) -> Void
+    let openWorker: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 2) {
+                Text("Needs attention").font(TypeRole.section).tracking(-0.4).foregroundStyle(Palette.foreground)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                if let togglePin {
+                    SymbolButton(symbol: isPinned ? "pin.fill" : "pin",
+                                 label: isPinned ? "Unpin panel so it overlays the content"
+                                                 : "Pin panel beside the content",
+                                 action: togglePin)
+                        .foregroundStyle(isPinned ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary))
+                        .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
+                }
+                SymbolButton(symbol: "xmark", label: "Close attention panel", action: close)
+                    .foregroundStyle(.inkSecondary)
+            }
+            .padding(.bottom, 10)
+            Hairline()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        StatusLabel(.needsInput, size: 11.5)
+                        Spacer(minLength: 8)
+                        Text(current.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
+                            .help("Request \(current.id)")
+                    }
+                    .padding(.top, 14).padding(.bottom, 12)
+                    WorkerIdentity(name: current.workerName, client: current.client,
+                                   details: [.init(text: current.runTitle), .init(text: current.host)], density: .pip)
+                        .padding(.bottom, 16)
+                    section("Question") {
+                        Text(current.question).font(.system(size: 13)).lineSpacing(4)
+                            .foregroundStyle(Color(hex: 0xE6E8F0)).textSelection(.enabled)
+                    }
+                    if !current.contextTail.isEmpty {
+                        section("Worker context") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(Array(current.contextTail.enumerated()), id: \.offset) { _, line in
+                                    Text(line).font(.system(size: 11.5, design: .monospaced))
+                                        .foregroundStyle(.inkSecondary).lineLimit(2)
+                                }
+                            }
+                        }
+                    }
+                    section("Input owner") {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(current.inputHolder, systemImage: "arrow.triangle.branch")
+                                .font(.system(size: 14)).foregroundStyle(Palette.foreground)
+                            Text("\(current.project) · \(current.runTitle) · \(current.runID)")
+                                .font(TypeRole.meta).foregroundStyle(.inkSecondary)
+                        }
+                    }
+                    if !others.isEmpty {
+                        section("Also pending") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(others) { request in
+                                    Button { show(request) } label: {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack(spacing: 7) {
+                                                Image(systemName: "bubble.left").font(.system(size: 12))
+                                                Text(request.workerName).font(.system(size: 14))
+                                                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                                            }
+                                            .foregroundStyle(Palette.foreground)
+                                            Text("\(request.runTitle) · \(request.host) · \(request.shortID)")
+                                                .font(TypeRole.meta).foregroundStyle(.inkSecondary)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Show request \(request.shortID) from \(request.workerName)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            VStack(spacing: 8) {
+                RequestReply(request: current, context: reply)
+                if let takeControl {
+                    Button(action: takeControl) {
+                        Label("Take control", systemImage: "hand.raised").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(CapsuleButtonStyle())
+                }
+                Button(action: openWorker) {
+                    Label("Open worker", systemImage: "arrow.up.left.and.arrow.down.right").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(CapsuleButtonStyle())
+            }
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 15).padding(.top, 16).padding(.bottom, 14)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .glassSurface(.floating, radius: Radius.overlay)
+        .attentionGlow(true, radius: Radius.overlay)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Needs attention: \(current.workerName) in \(current.runTitle)")
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Hairline()
+            Kicker(text: title).padding(.top, 5)
+            content()
+        }
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Banner shown after following a request into another run, with the way back.
+struct ReturnStrip: View {
+    let target: ReturnTarget
+    let goBack: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell").font(.system(size: 12)).foregroundStyle(Palette.attention)
+            Text("Switched to pending request").font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Palette.foreground)
+            Text(target.requestLabel).font(.system(size: 12)).foregroundStyle(.inkSecondary).lineLimit(1)
+            Spacer(minLength: 12)
+            Button(action: goBack) {
+                Label("Return to \(target.title)", systemImage: "chevron.left")
+            }
+            .buttonStyle(CapsuleButtonStyle(height: 29))
+            SymbolButton(symbol: "xmark", label: "Stay in this run", size: 10, action: dismiss)
+                .foregroundStyle(.inkSecondary)
+        }
+        .padding(.horizontal, Metric.runHeaderInset)
+        .frame(minHeight: 44)
+        .background(Palette.attentionFill.opacity(0.7))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Switched to pending request \(target.requestLabel)")
     }
 }
 

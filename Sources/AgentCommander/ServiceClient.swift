@@ -1,5 +1,21 @@
 import Foundation
 
+struct WorkerFollowUp: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let status: String
+}
+
+struct WorkerControl: Decodable, Equatable, Sendable {
+    let held: Bool
+    let generation: Int
+    let interruptRequested: Bool?
+    let messages: [WorkerFollowUp]?
+
+    private enum CodingKeys: String, CodingKey {
+        case held, generation, interruptRequested = "interrupt_requested", messages
+    }
+}
+
 struct Worker: Decodable, Identifiable, Equatable, Sendable {
     let id, name, role, parentID, runID, state, host, worktree, task, output: String
     let error: String?
@@ -7,10 +23,12 @@ struct Worker: Decodable, Identifiable, Equatable, Sendable {
     var client: String? = nil
     var branch: String? = nil
     var createdAt: String? = nil
+    var messages: [AGUIMessage]? = nil
+    var control: WorkerControl? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, parentID = "parent_id", runID = "run_id", state, host, worktree, task, output, error
-        case client, branch, createdAt = "created_at"
+        case client, branch, createdAt = "created_at", messages, control
     }
 }
 
@@ -87,6 +105,10 @@ actor ServiceClient {
         try JSONDecoder().decode(RunList.self, from: request("/v1/runs")).runs ?? []
     }
 
+    func watchRuns() -> AsyncThrowingStream<[Run], Error> {
+        AGUIStream.follow(socket: socket)
+    }
+
     func create(path: String, task: String, title: String? = nil, operationID: String) throws -> Run {
         var fields = ["project": URL(filePath: path).lastPathComponent, "path": path, "task": task, "client": "claude"]
         if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { fields["title"] = title }
@@ -98,7 +120,26 @@ actor ServiceClient {
     }
 
     func stop(runID: String) throws {
-        _ = try request("/v1/runs/\(runID)/stop", fields: [:])
+        _ = try request("/v1/runs/\(runID)/stop", fields: [String: String]())
+    }
+
+    func setWorkerControl(_ workerID: String, held: Bool, generation: Int) throws {
+        struct Change: Encodable { let held: Bool; let generation: Int }
+        _ = try request("/v1/workers/\(workerID)/control", fields: Change(held: held, generation: generation))
+    }
+
+    func sendFollowUp(to workerID: String, text: String, generation: Int, operationID: String) throws {
+        struct FollowUp: Encodable { let text: String; let generation: Int }
+        _ = try request("/v1/workers/\(workerID)/messages",
+                        fields: FollowUp(text: text, generation: generation), operationID: operationID)
+    }
+
+    func interruptWorker(_ workerID: String) throws {
+        _ = try request("/v1/workers/\(workerID)/interrupt", fields: [String: String]())
+    }
+
+    func stopWorker(_ workerID: String) throws {
+        _ = try request("/v1/workers/\(workerID)/stop", fields: [String: String]())
     }
 
     func startService() throws {
@@ -119,7 +160,7 @@ actor ServiceClient {
         }
     }
 
-    private func request(_ path: String, fields: [String: String]? = nil, operationID: String? = nil) throws -> Data {
+    private func request(_ path: String, fields: (any Encodable)? = nil, operationID: String? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/curl")
         var args = ["--disable", "--silent", "--show-error", "--max-time", "6", "--noproxy", "*",

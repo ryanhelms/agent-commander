@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,11 @@ const usage = `Agent Commander
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
   agentctl reply REQUEST ANSWER          Answer a pending question
   agentctl stop RUN                      Stop this run's managed workers
+  agentctl take WORKER GENERATION        Acquire worker input for the developer
+  agentctl hand-back WORKER GENERATION   Return worker input to its coordinator
+  agentctl follow-up WORKER GEN TEXT     Send a follow-up while holding worker input
+  agentctl interrupt WORKER              Interrupt a single worker's active turn
+  agentctl stop-worker WORKER            Stop one managed worker
   agentctl api METHOD /v1/PATH           Call the API with an optional JSON body on stdin
   agentctl mcp                           Serve MCP for a managed actor over stdio
 
@@ -143,6 +149,37 @@ func operation(args []string) (method, path string, input any, err error) {
 			}
 			return "POST", "/v1/runs/" + id + "/workers", map[string]string{"parent_id": args[2], "name": args[3], "task": strings.Join(args[4:], " ")}, nil
 		}
+	case "take", "hand-back", "follow-up", "interrupt", "stop-worker":
+		if len(args) < 2 {
+			return invalid()
+		}
+		id, err := localapi.Segment(args[1])
+		if err != nil {
+			return "", "", nil, err
+		}
+		path := "/v1/workers/" + id
+		switch args[0] {
+		case "interrupt", "stop-worker":
+			if len(args) != 2 {
+				return invalid()
+			}
+			action := strings.TrimSuffix(args[0], "-worker")
+			return "POST", path + "/" + action, struct{}{}, nil
+		}
+		if len(args) < 3 {
+			return invalid()
+		}
+		generation, err := strconv.Atoi(args[2])
+		if err != nil || generation < 1 {
+			return "", "", nil, errors.New("generation must be a positive integer from the worker's control state")
+		}
+		if args[0] == "follow-up" && len(args) >= 4 {
+			return "POST", path + "/messages", map[string]any{"generation": generation, "text": strings.Join(args[3:], " ")}, nil
+		}
+		if args[0] != "follow-up" && len(args) == 3 {
+			return "POST", path + "/control", map[string]any{"generation": generation, "held": args[0] == "take"}, nil
+		}
+		return invalid()
 	case "api":
 		if len(args) != 3 {
 			return invalid()
