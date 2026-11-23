@@ -29,6 +29,12 @@ Choose **New run**, select a project directory and enter a planning task. For a 
 
 The coordinator launches its workers through Commander’s MCP tools. Select a worker to inspect its output. A pending question identifies its originating worker and run. Type the answer into that card and select **Send reply**. The worker receives it through its original request. Prompts and answers travel as data, including whitespace, quotes and dollar signs. Each managed console prints its own tmux attach command. **Stop run** closes delegation for that run and requests cancellation of its managed sessions.
 
+## Open Devflow from a coordinator
+
+Ask **“Open the Devflow provider editor for this repo”** or **“Open the task management provider in Devflow.”** An interactive coordinator connects to Devflow’s UI-only MCP companion at startup and asks it to open or reuse the console for its checkout. Your request takes you to the specified screen. The coordinator can open the console, and you review and apply changes there. Planning workers keep their existing tool access.
+
+Commander checks for the UI launcher when a coordinator starts. It looks for Devflow in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. Set `AGENT_COMMANDER_DEVFLOW` to an absolute executable path in the service environment for another installation. Start a new run after upgrading Devflow. Planning still works when the companion is unavailable.
+
 ## Use the CLI
 
 ```sh

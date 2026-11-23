@@ -23,6 +23,7 @@ type Local struct {
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
+	DevflowUI                         string `json:",omitempty"`
 }
 
 func New(stateDir, socketPath, executable string) (*Local, error) {
@@ -91,7 +92,10 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	}
 	jobPath := filepath.Join(dir, "launch.json")
 	// The prompt and scoped credential stay in a private file, outside shell argv.
-	contents, err := json.Marshal(job{w, l.socket, l.executable, claude, l.label})
+	contents, err := json.Marshal(job{
+		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
+		DevflowUI: coordinatorDevflow(ctx, w),
+	})
 	if err != nil {
 		return err
 	}
