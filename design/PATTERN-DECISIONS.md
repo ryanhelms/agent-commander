@@ -52,7 +52,7 @@ The 15 flow decisions below already provide the pattern analysis. Before writing
 
 ## Optional coordinator companions
 
-The local provider adapter discovers the Devflow UI companion through a bounded MCP tool listing in the run’s checkout. It registers the companion for a coordinator only when the restricted server advertises exactly `devflow_ui_open`. Only the coordinator’s live connection requests an automatic browser open. The discovery probe has no browser side effects. A missing executable, an older release, or a broader tool surface leaves the planning run available with its usual permissions. The service owns executable selection and passes the verified path through the private launch file.
+The local provider adapter discovers the Devflow UI companion through a bounded MCP tool listing in the run’s checkout. It registers the companion for a coordinator only when the restricted server advertises exactly `devflow_ui_open`. Only the coordinator’s live connection requests an automatic browser open. The discovery probe has no browser side effects. A missing executable, an older release, or a broader tool surface leaves the planning run available with its usual permissions. The service owns executable selection and passes the verified path through the private launch file. The live companion receives the socket, actor ID, scoped token and coordinator role from that job. The discovery process receives no actor binding. Commander enforces the token’s permissions on each Handoff request.
 
 ## Incremental follow-ups
 

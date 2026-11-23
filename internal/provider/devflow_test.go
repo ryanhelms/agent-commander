@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,11 @@ func TestDevflowCompanionFixture(t *testing.T) {
 	mode := os.Getenv("COMMANDER_TEST_DEVFLOW_MODE")
 	if mode == "" {
 		return
+	}
+	for _, key := range []string{"AGENT_COMMANDER_SOCKET", "AGENT_COMMANDER_TOKEN", "AGENT_COMMANDER_WORKER_ID", "AGENT_COMMANDER_RUN_ID", "AGENT_COMMANDER_ROLE"} {
+		if _, present := os.LookupEnv(key); present {
+			os.Exit(1)
+		}
 	}
 	if mode == "hang" {
 		time.Sleep(time.Minute)
@@ -67,6 +73,8 @@ exec "$COMMANDER_TEST_MCP_HELPER" -test.run='^TestDevflowCompanionFixture$'
 func TestCoordinatorProbesOnlyNarrowCompanions(t *testing.T) {
 	worker := service.LaunchSpec{Role: "coordinator", Path: t.TempDir()}
 	t.Setenv("AGENT_COMMANDER_FOCUSED_PROOF", "")
+	t.Setenv("AGENT_COMMANDER_TOKEN", "ambient-test-value")
+	t.Setenv("AGENT_COMMANDER_WORKER_ID", "ambient-test-worker")
 	path := devflowFixture(t, worker.Path, "one")
 	if got := coordinatorDevflow(t.Context(), worker); got != path {
 		t.Fatalf("compatible companion: got %q, want %q", got, path)
@@ -113,8 +121,8 @@ func TestCoordinatorAllowlistAndPrivateBinding(t *testing.T) {
 		{"worker", "/trusted/devflow", false},
 	} {
 		dir := t.TempDir()
-		worker := service.LaunchSpec{Role: tc.role, Path: dir, Token: "worker-only"}
-		cmd, err := agentCommand(t.Context(), job{Worker: worker, DevflowUI: tc.path, Executable: "/agentctl", Claude: "/claude"}, dir)
+		worker := service.LaunchSpec{Role: tc.role, Path: dir, ID: "test-actor", RunID: "test-run", Token: "worker-only"}
+		cmd, err := agentCommand(t.Context(), job{Worker: worker, Socket: "/private/service.sock", DevflowUI: tc.path, Executable: "/agentctl", Claude: "/claude"}, dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +138,11 @@ func TestCoordinatorAllowlistAndPrivateBinding(t *testing.T) {
 		if configured != tc.active || (tc.active && len(conf.Servers) != 2) || (!tc.active && len(conf.Servers) != 1) || cmd.Dir != dir {
 			t.Fatalf("%s: unexpected servers or target checkout", tc.role)
 		}
-		if configured && (companion.Command != tc.path || !slices.Equal(companion.Args, []string{"mcp", "--ui-only", "--client", "agent-commander", "--auto-open"}) || len(companion.Env) != 0) {
+		wantEnv := map[string]string{
+			"AGENT_COMMANDER_SOCKET": "/private/service.sock", "AGENT_COMMANDER_TOKEN": worker.Token,
+			"AGENT_COMMANDER_WORKER_ID": worker.ID, "AGENT_COMMANDER_ROLE": worker.Role,
+		}
+		if configured && (companion.Command != tc.path || !slices.Equal(companion.Args, []string{"mcp", "--ui-only", "--client", "agent-commander", "--auto-open"}) || !maps.Equal(companion.Env, wantEnv)) {
 			t.Fatal("unexpected companion configuration or credentials")
 		}
 		if conf.Servers["commander"].Env["AGENT_COMMANDER_TOKEN"] != worker.Token {

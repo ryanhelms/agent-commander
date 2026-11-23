@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"agentcommander/internal/service"
@@ -52,6 +54,14 @@ func coordinatorDevflow(ctx context.Context, worker service.LaunchSpec) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, devflowArgs()...)
 	cmd.Dir = worker.Path
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
+		switch key {
+		case "AGENT_COMMANDER_TOKEN", "AGENT_COMMANDER_SOCKET", "AGENT_COMMANDER_WORKER_ID", "AGENT_COMMANDER_RUN_ID", "AGENT_COMMANDER_ROLE":
+			return true
+		}
+		return false
+	})
 	client := mcp.NewClient(&mcp.Implementation{Name: "agent-commander-discovery", Version: "1"}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd, TerminateDuration: 150 * time.Millisecond}, nil)
 	if err != nil {
