@@ -31,7 +31,7 @@ The coordinator launches its workers through Commander’s MCP tools. Select a w
 
 ## Open Devflow from a coordinator
 
-Ask **“Open the Devflow provider editor for this repo”** or **“Open the task management provider in Devflow.”** An interactive coordinator connects to Devflow’s UI-only MCP companion at startup and asks it to open or reuse the console for its checkout. Your request takes you to the specified screen. The coordinator opens the console with its own Commander identity. The Handoff screen uses that identity to show permitted requests for the checkout. You review and apply configuration changes in the browser. Planning workers keep their existing tool access.
+Ask **“Open the Devflow provider editor for this repo”** or **“Open the task management provider in Devflow.”** An interactive coordinator connects to Devflow’s UI-only MCP companion at startup and asks it to open or reuse the console for its checkout. Your request takes you to the specified screen. The coordinator opens the console with its own Commander identity. Choose **Check activity** on Overview to see worker requests available to that identity for the checkout. You review and apply configuration changes in the browser. Planning workers keep their existing tool access.
 
 Commander checks for the UI launcher when a coordinator starts. It looks for Devflow in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. Set `AGENT_COMMANDER_DEVFLOW` to an absolute executable path in the service environment for another installation. Start a new run after upgrading Devflow. Planning still works when the companion is unavailable.
 
