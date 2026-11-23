@@ -19,11 +19,16 @@ import (
 
 type LaunchSpec struct {
 	ID, RunID, ParentID, Name, Task, Role, Path, Token, Client string
+	Host, Worktree                                             string
 }
 
 type Launcher interface {
 	Launch(context.Context, LaunchSpec) error
 	Stop(context.Context, string) error
+}
+
+type hostPlacement interface {
+	WorkerCheckout(host, localCheckout, client string) (string, error)
 }
 
 // ConsoleEvent preserves a provider event for structured conversation views.
@@ -311,16 +316,19 @@ func (r *Run) refreshOutcome() {
 	}
 }
 
-func (s *service) newWorker(r *Run, name, task, parent, role string) (*Worker, LaunchSpec) {
+func (s *service) newWorker(r *Run, name, task, parent, role, client, host, checkout string) (*Worker, LaunchSpec) {
 	w := &Worker{
 		ID: randomID("w-"), RunID: r.ID, Name: name, Task: task, ParentID: parent,
-		Role: role, State: "starting", Host: "localhost", Worktree: r.Path,
-		Branch: r.Branch, Client: r.Client, CreatedAt: timestamp(),
+		Role: role, State: "starting", Host: host, Worktree: checkout,
+		Client: client, CreatedAt: timestamp(),
+	}
+	if host == "localhost" {
+		w.Branch = r.Branch
 	}
 	token := randomID("") + randomID("")
 	s.state.Tokens[digest(token)] = w.ID
 	r.Workers = append(r.Workers, w)
-	return w, LaunchSpec{ID: w.ID, RunID: r.ID, ParentID: parent, Name: name, Task: task, Role: role, Path: r.Path, Token: token, Client: r.Client}
+	return w, LaunchSpec{ID: w.ID, RunID: r.ID, ParentID: parent, Name: name, Task: task, Role: role, Path: r.Path, Token: token, Client: client, Host: host, Worktree: checkout}
 }
 
 // A persisted reservation may have reached tmux even if the service exits before it

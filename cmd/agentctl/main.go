@@ -64,11 +64,21 @@ func run(args []string) error {
 	token := os.Getenv("AGENT_COMMANDER_TOKEN")
 	api := localapi.New(paths.Socket, token)
 	switch args[0] {
+	case "app-server":
+		if len(args) != 1 {
+			return errors.New("unexpected managed Codex startup arguments")
+		}
+		return provider.RunCodexBridge(ctx, os.Stdin, os.Stdout)
 	case "runner":
 		if len(args) != 2 {
 			return errors.New("runner needs a job file")
 		}
 		return provider.Runner(args[1])
+	case "runner-history":
+		if len(args) != 1 {
+			return errors.New("runner-history takes its request on stdin")
+		}
+		return provider.RunSSHHistory(ctx, os.Stdin, os.Stdout)
 	case "serve":
 		return serve(ctx, paths)
 	case "start":

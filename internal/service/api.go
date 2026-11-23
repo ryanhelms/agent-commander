@@ -104,6 +104,7 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
+	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -316,6 +317,11 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	if in.Client == "" {
 		in.Client = "claude"
 	}
+	if launcher, ok := s.launcher.(interface{ CheckClient(string) error }); ok {
+		if err := launcher.CheckClient(in.Client); err != nil {
+			return outcome{}, conflict(err.Error())
+		}
+	}
 	title := displayTitle(in.Title)
 	if title == "" {
 		title = displayTitle(in.Task)
@@ -325,7 +331,7 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 		Title: title, CreatedAt: timestamp(), Branch: checkoutBranch(req.Context(), in.Path),
 		Status: "running", WorkerLimit: in.WorkerLimit, Requests: []*Question{},
 	}
-	w, spec := s.newWorker(r, "Coordinator", in.Task, "", "coordinator")
+	w, spec := s.newWorker(r, "Coordinator", in.Task, "", "coordinator", r.Client, "localhost", r.Path)
 	r.CoordinatorID = w.ID
 	s.state.Runs = append(s.state.Runs, r)
 	s.remember(key, intent, r.ID)
@@ -340,6 +346,8 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 	var in struct {
 		Name, Task string
 		ParentID   string `json:"parent_id"`
+		Client     string `json:"client,omitempty"`
+		Host       string `json:"host,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -371,7 +379,32 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 	if r.activeWorkers() >= r.WorkerLimit {
 		return outcome{}, conflict(fmt.Sprintf("run has reached its %d-worker limit", r.WorkerLimit))
 	}
-	w, spec := s.newWorker(r, in.Name, in.Task, p.ID, "worker")
+	client := strings.TrimSpace(in.Client)
+	if client == "" {
+		client = r.Client
+	}
+	host, checkout := strings.TrimSpace(in.Host), r.Path
+	if host == "" {
+		host = "localhost"
+	}
+	if host == "localhost" {
+		if launcher, ok := s.launcher.(interface{ CheckClient(string) error }); ok {
+			if err := launcher.CheckClient(client); err != nil {
+				return outcome{}, conflict(err.Error())
+			}
+		}
+	} else {
+		placement, ok := s.launcher.(hostPlacement)
+		if !ok {
+			return outcome{}, conflict("SSH hosts are unavailable")
+		}
+		var err error
+		checkout, err = placement.WorkerCheckout(host, r.Path, client)
+		if err != nil {
+			return outcome{}, conflict(err.Error())
+		}
+	}
+	w, spec := s.newWorker(r, in.Name, in.Task, p.ID, "worker", client, host, checkout)
 	s.remember(key, intent, w.ID)
 	return outcome{w, 201, true, func() { s.launch(spec) }}, nil
 }

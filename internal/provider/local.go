@@ -23,9 +23,11 @@ type Local struct {
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
-	Adapter, Harness, NodePath        string `json:",omitempty"`
-	FocusedProof                      bool   `json:",omitempty"`
-	DevflowUI                         string `json:",omitempty"`
+	Adapter, Harness, NodePath        string        `json:",omitempty"`
+	FocusedProof                      bool          `json:",omitempty"`
+	DevflowUI                         string        `json:",omitempty"`
+	SSH                               *sshProfile   `json:",omitempty"`
+	Codex                             *managedCodex `json:",omitempty"`
 }
 
 func New(stateDir, socketPath, executable string) (*Local, error) {
@@ -45,7 +47,7 @@ func New(stateDir, socketPath, executable string) (*Local, error) {
 		return nil, err
 	}
 	sum := sha256.Sum256([]byte(dir))
-	return &Local{dir, socket, binary, fmt.Sprintf("ac-%x", sum[:6])}, nil
+	return &Local{stateDir: dir, socket: socket, executable: binary, label: fmt.Sprintf("ac-%x", sum[:6])}, nil
 }
 
 // A Finder-launched process may lack the PATH entries used by a login shell.
@@ -73,52 +75,100 @@ func executablePath(name, override string) (string, error) {
 
 var validID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,100}$`)
 
+func localClientExecutable(client string, useACP bool) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(client)) {
+	case "", "claude", "claude code":
+		if useACP {
+			return executablePath("claude-agent-acp", "AGENT_COMMANDER_CLAUDE_ACP")
+		}
+		return executablePath("claude", "AGENT_COMMANDER_CLAUDE")
+	case "codex":
+		if useACP {
+			if _, err := configuredManagedCodex(); err != nil {
+				return "", err
+			}
+			return executablePath("codex-acp", "AGENT_COMMANDER_CODEX_ACP")
+		}
+	}
+	return "", fmt.Errorf("managed provider unavailable: %s", client)
+}
+
+func (l *Local) CheckClient(client string) error {
+	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") != "1"
+	_, err := localClientExecutable(client, useACP)
+	if err == nil && useACP && strings.EqualFold(strings.TrimSpace(client), "codex") {
+		profile, profileErr := configuredManagedCodex()
+		if profileErr != nil {
+			return profileErr
+		}
+		return profile.checkLogin()
+	}
+	return err
+}
+
 func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if !validID.MatchString(w.ID) {
 		return errors.New("invalid worker ID")
 	}
 	focused := os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
 	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && !focused
-	client := strings.ToLower(strings.TrimSpace(w.Client))
-	switch client {
-	case "", "claude", "claude code":
-		client = "claude"
-	case "codex":
-		if useACP {
-			return errors.New("managed Codex planning is unavailable: the installed ACP profile cannot isolate workspace MCP servers and permission escalation; the SDK supports standalone Codex sessions")
+	var remote *sshProfile
+	var executable string
+	if w.Host != "" && w.Host != "localhost" {
+		checkout, checkErr := l.WorkerCheckout(w.Host, w.Path, w.Client)
+		if checkErr != nil {
+			return checkErr
 		}
-		fallthrough
-	default:
-		return fmt.Errorf("managed provider unavailable: %s", w.Client)
+		if checkout != w.Worktree {
+			return errors.New("SSH checkout changed after worker reservation")
+		}
+		profile, profileErr := configuredSSHProfile()
+		if profileErr != nil {
+			return profileErr
+		}
+		remote = &profile
+		useACP, focused = true, false
+		executable = "/usr/bin/ssh"
+	} else {
+		var err error
+		executable, err = localClientExecutable(w.Client, useACP)
+		if err != nil {
+			return err
+		}
 	}
 	tmux, err := executablePath("tmux", "AGENT_COMMANDER_TMUX")
 	if err != nil {
 		return err
 	}
 	var claude, adapter, harness, nodePath string
+	var codex *managedCodex
 	if useACP {
-		adapter, err = executablePath("claude-agent-acp", "AGENT_COMMANDER_CLAUDE_ACP")
-		harness = client
+		adapter, harness = executable, "claude"
+		if remote == nil && strings.EqualFold(strings.TrimSpace(w.Client), "codex") {
+			managed, err := configuredManagedCodex()
+			if err != nil {
+				return err
+			}
+			harness, codex = "codex", &managed
+		}
 		// tmux may retain an older server PATH after the service is restarted.
 		if node, e := executablePath("node", "AGENT_COMMANDER_NODE"); e == nil {
 			nodePath = filepath.Dir(node)
 		}
 	} else {
-		claude, err = executablePath("claude", "AGENT_COMMANDER_CLAUDE")
-	}
-	if err != nil {
-		return err
+		claude = executable
 	}
 	dir := filepath.Join(l.stateDir, "jobs", w.ID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	jobPath := filepath.Join(dir, "launch.json")
+	devflow := coordinatorDevflow(ctx, w)
 	// The prompt and scoped credential stay in a private file, outside shell argv.
 	contents, err := json.Marshal(job{
 		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
 		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath,
-		DevflowUI: coordinatorDevflow(ctx, w),
+		DevflowUI: devflow, SSH: remote, Codex: codex,
 	})
 	if err != nil {
 		return err

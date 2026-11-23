@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -16,6 +18,63 @@ type NativeSession struct {
 
 type nativeHistoryReader interface {
 	ReadConsoleHistory(context.Context, NativeSession, string) ([]ConsoleEvent, error)
+}
+
+type nativeHistoryPager interface {
+	ReadNativeHistoryPage(context.Context, NativeSession, string, string, uint32) (json.RawMessage, error)
+}
+
+func (s *service) serveNativeHistoryPage(w http.ResponseWriter, req *http.Request) {
+	if _, supplied := req.Header["Authorization"]; supplied {
+		respondError(w, denied())
+		return
+	}
+	query := req.URL.Query()
+	cursor := query.Get("cursor")
+	limit := uint64(32)
+	if query.Has("limit") {
+		parsed, err := strconv.ParseUint(query.Get("limit"), 10, 32)
+		if err != nil || parsed == 0 || parsed > 128 {
+			respondError(w, bad("history limit must be between 1 and 128"))
+			return
+		}
+		limit = parsed
+	}
+	if len(cursor) > 8192 {
+		respondError(w, bad("history cursor exceeds size limit"))
+		return
+	}
+	s.mu.Lock()
+	_, worker := s.worker(req.PathValue("worker"))
+	if worker == nil {
+		s.mu.Unlock()
+		respondError(w, missing("worker"))
+		return
+	}
+	if worker.NativeSession == nil {
+		s.mu.Unlock()
+		respondError(w, &apiError{http.StatusNotImplemented, "worker has no native history binding"})
+		return
+	}
+	ref, cwd := *worker.NativeSession, worker.Worktree
+	s.mu.Unlock()
+
+	reader, ok := s.launcher.(nativeHistoryPager)
+	if !ok {
+		respondError(w, &apiError{http.StatusNotImplemented, "native history paging is unavailable"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Second)
+	defer cancel()
+	page, err := reader.ReadNativeHistoryPage(ctx, ref, cwd, cursor, uint32(limit))
+	if err != nil {
+		// Provider diagnostics may contain session paths or subprocess output.
+		respondError(w, &apiError{http.StatusServiceUnavailable, "native history page is unavailable"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(page)
 }
 
 type QuestionChoice struct {
@@ -168,7 +227,10 @@ func (s *service) restoreNativeHistories(ctx context.Context) {
 		s.mu.Lock()
 		delete(s.readingHistory, t.id)
 		_, w := s.worker(t.id)
-		if ctx.Err() == nil && w != nil && w.NativeSession != nil && *w.NativeSession == t.ref && w.State == t.state && lastSequence(w) == t.sequence {
+		// A stop can finish while reopening the transcript. That changes the
+		// assignment's state, but leaves its native conversation and console intact.
+		if ctx.Err() == nil && w != nil && w.NativeSession != nil && *w.NativeSession == t.ref &&
+			(w.State == t.state || !turnActive(w.State) && !turnActive(t.state)) && lastSequence(w) == t.sequence {
 			if err == nil && len(events) > 0 {
 				w.Console = events
 				var out strings.Builder

@@ -17,9 +17,11 @@ type statusInput struct {
 	Seconds int `json:"wait_seconds,omitempty" jsonschema:"wait up to 30 seconds for a meaningful run change; zero returns immediately"`
 }
 type delegate struct {
-	Name string `json:"name"`
-	Task string `json:"task"`
-	Key  string `json:"idempotency_key,omitempty" jsonschema:"reuse this key when retrying the same delegation"`
+	Name   string `json:"name"`
+	Task   string `json:"task"`
+	Client string `json:"client,omitempty" jsonschema:"choose an available client for this worker; omit to inherit the run's client"`
+	Host   string `json:"host,omitempty" jsonschema:"configured SSH host alias; omit for this Mac"`
+	Key    string `json:"idempotency_key,omitempty" jsonschema:"reuse this key when retrying the same delegation"`
 }
 type ask struct {
 	Question string `json:"question"`
@@ -70,7 +72,7 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	workerPath := "/v1/workers/" + actor
 	s := mcp.NewServer(&mcp.Implementation{Name: "agent-commander", Version: "0.1.0"}, nil)
 	register(s, "commander_delegate", "Launch a managed worker under your assignment in this run.", func(ctx context.Context, in delegate) (json.RawMessage, error) {
-		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "idempotency_key": in.Key})
+		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "client": in.Client, "host": in.Host, "idempotency_key": in.Key})
 	})
 	register(s, "commander_ask", "Escalate a question and obtain its request ID. Use commander_wait for the answer.", func(ctx context.Context, in ask) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/questions", in)

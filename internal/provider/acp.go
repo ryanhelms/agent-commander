@@ -19,9 +19,32 @@ import (
 // The runner owns the session, scopes MCP to this job and passes only the
 // native session identity to Commander. Output is a live projection.
 func runACP(ctx context.Context, j job, a *api, s *screen) error {
-	config, err := planningConfig(j)
+	policyJob := j
+	cwd := j.Worker.Path
+	var args []string
+	if j.SSH != nil {
+		socket, closeForward, err := startWorkerForward(j.Socket, j.Worker.Token)
+		if err != nil {
+			return fmt.Errorf("start worker API forward: %w", err)
+		}
+		defer closeForward()
+		args, policyJob.Socket = j.SSH.sessionArgs(j.Worker, socket)
+		policyJob.Executable = j.SSH.Agentctl
+		cwd = j.SSH.Checkout
+	}
+	config, err := planningConfig(policyJob)
 	if err != nil {
 		return err
+	}
+	if j.SSH != nil {
+		config.HarnessInstance = j.SSH.harnessInstance()
+		config.Args = args
+	}
+	if _, supplied := config.Env["PATH"]; j.NodePath != "" && !supplied {
+		if config.Env == nil {
+			config.Env = make(map[string]string)
+		}
+		config.Env["PATH"] = j.NodePath + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	rt, err := runtime.New(config)
 	if err != nil {
@@ -29,7 +52,9 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	defer rt.Close()
 	client := agentacp.New(rt)
-	opened, err := client.Open(ctx, &model.OpenRequest{HarnessInstance: config.HarnessInstance, WorkingDirectory: j.Worker.Path})
+	openCtx, cancelOpen := context.WithTimeout(ctx, 30*time.Second)
+	opened, err := client.Open(openCtx, &model.OpenRequest{HarnessInstance: config.HarnessInstance, WorkingDirectory: cwd})
+	cancelOpen()
 	if err != nil {
 		return fmt.Errorf("open %s session: %w", j.Harness, err)
 	}
@@ -83,6 +108,9 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 }
 
 func planningConfig(j job) (runtime.Config, error) {
+	if j.Codex != nil {
+		return j.Codex.config(j)
+	}
 	if j.Harness != "claude" {
 		return runtime.Config{}, fmt.Errorf("unsupported managed planning profile %q", j.Harness)
 	}
