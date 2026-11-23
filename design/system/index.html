@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Agent Commander · Design system</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --window: #090a0d;
+      --terminal: #0b0c10;
+      --panel: #14151a;
+      --primary: #f5f5f9;
+      --secondary: #b7bac6;
+      --focus: #b5d6ff;
+      --working: #a8e0c0;
+      --attention: #f1c587;
+      --fault: #ec9b92;
+      --border: #383b44;
+      --selection: #283344;
+      --on-accent: #101825;
+      --opaque-chrome: #15161a;
+      --opaque-overlay: #1a1d24;
+      --strong-border: #a6a8b2;
+      --strong-secondary: #e3e5ec;
+      --rim: #b3b7c966;
+      --glass: linear-gradient(140deg, #797e9863, #181922d9 36%, #151620e6 72%, #4f5267a6);
+      --edge: inset 0 1px 0 #ffffff47, inset 1px 0 0 #ffffff12, 0 8px 28px #0006;
+      --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--window); color: var(--primary); font: 14px/1.5 var(--sans); }
+    h1,h2,h3,h4,p,figure,pre { margin: 0; }
+    a { color: var(--focus); text-underline-offset: 3px; }
+    button,input { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; opacity: .6; }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .skip { position: absolute; top: -10em; left: 1rem; z-index: 5; background: var(--terminal); padding: .5rem 1rem; }
+    .skip:focus { top: 1rem; }
+    .mast { display: flex; align-items: center; gap: 13px; padding: 12px max(20px,calc((100vw - 1232px)/2)); border-bottom: 1px solid var(--border); background: #121318; }
+    .mark { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(140deg,#f6f7fc,#9ca4b7); color: #15161b; }
+    .mark svg { width: 22px; height: 22px; }
+    .mast strong { font-size: 14px; letter-spacing: -.25px; }
+    .mast .section-name { border-left: 1px solid var(--border); padding-left: 13px; color: var(--secondary); font-size: 13px; }
+    .mast a { margin-left: auto; text-decoration: none; font-size: 13px; }
+    main { width: min(1232px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 44px; }
+    h1 { font-size: 32px; line-height: 1.1; font-weight: 600; letter-spacing: -.052em; }
+    .intro { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; margin-bottom:22px; }
+    .intro p, .section-intro { color: var(--secondary); margin-top: 7px; }
+    .links { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:12px; font-size:13px; }
+    .links a { white-space:nowrap; }
+    .specimen { border: 1px solid var(--border); border-radius: 19px; overflow: hidden; }
+    .specimen-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; background:var(--panel); }
+    .specimen-bar strong { font-size:15px; }
+    .switches { display:flex; flex-wrap:wrap; gap:8px 16px; }
+    .switches label { cursor:pointer; display:flex; align-items:center; gap:6px; font-size:13px; }
+    .switches input { margin:0; width:16px; height:16px; accent-color:var(--focus); }
+    .backdrop { padding: clamp(16px,3vw,42px); background:linear-gradient(#04040833,#04040822),url("../concepts/assets/obsidian.png") center/cover; }
+    .spec-window { overflow:hidden; border:1px solid var(--rim); border-radius:18px; box-shadow:var(--edge),0 16px 52px #0009; }
+    .titlebar { display:flex; gap:12px; justify-content:space-between; align-items:center; min-height:52px; padding:10px 16px; background:linear-gradient(145deg,#262833cb,#11121bd9); backdrop-filter:blur(19px); border-bottom:1px solid #ffffff21; }
+    .titlebar .path { display:flex; gap:8px; align-items:center; font-size:12px; color:var(--primary); }
+    .path .sep { opacity:.7; }
+    .run-id { font:11px var(--mono); color:var(--secondary); }
+    .spec-content { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,350px); align-items:end; gap:12px; padding:24px; background:var(--window); }
+    .tile { min-width:0; background:var(--terminal); border:1px solid var(--border); border-radius:13px; overflow:hidden; }
+    .tile:focus { outline:2px solid var(--focus); outline-offset:3px; }
+    .tile-head,.pip-head { padding:12px 14px; display:flex; align-items:center; gap:10px; }
+    .tile-head { background:var(--panel); border-bottom:1px solid var(--border); }
+    .provider { width:31px; height:31px; display:grid; place-items:center; border:1px solid #54665b; border-radius:8px; background:#24342c; color:var(--working); font:650 15px var(--mono); }
+    .tile-head h2,.pip h2 { font-size:18px; letter-spacing:-.3px; line-height:1.3; font-weight:600; }
+    .meta,.tiny { font-size:11px; color:var(--secondary); }
+    .tile-head .live { margin-left:auto; }
+    .live,.state { white-space:nowrap; font-size:12px; font-weight:550; display:inline-flex; align-items:center; gap:6px; }
+    .live { color:var(--working); }
+    .tile-body { padding:16px; min-height:175px; }
+    .tile-body p { font:13px/1.65 var(--mono); color:var(--primary); overflow-wrap:anywhere; }
+    .tile-body .output { color:var(--working); }
+    .tile-body .quiet { color:var(--secondary); }
+    .tile-foot { min-height:51px; display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:8px 12px; background:var(--panel); border-top:1px solid var(--border); }
+    .owner { display:inline-flex; align-items:center; gap:5px; background:var(--selection); border:1px solid var(--border); padding:3px 7px; border-radius:6px; color:var(--primary); font-size:12px; font-weight:600; }
+    .owner[data-human="true"] { background:#1d3024; color:var(--working); border-color:#45644d; }
+    .focus-label { margin-left:auto; font-size:12px; color:var(--focus); font-weight:600; }
+    .focus-label[hidden] { display:none; }
+    .pill { display:inline-flex; align-items:center; justify-content:center; border:1px solid #6c6e7c; background:#343640; color:var(--primary); border-radius:8px; padding:4px 9px; min-height:28px; font-size:13px; font-weight:500; }
+    .pill:hover,.btn:hover { border-color:var(--focus); }
+    .pip { min-width:0; border:1px solid var(--rim); border-radius:17px; box-shadow:var(--edge); background:var(--glass); backdrop-filter:blur(22px); overflow:hidden; }
+    .pip-head { justify-content:space-between; color:var(--attention); border-bottom:1px solid #ffffff23; min-height:38px; padding-block:8px; }
+    .pip-head strong { font-size:13px; }
+    .pip-body { padding:14px; }
+    .request { margin:12px 0; padding:10px 12px; border:1px solid var(--border); background:var(--terminal); border-radius:8px; }
+    .request small { display:block; color:var(--secondary); font:11px var(--mono); margin-bottom:5px; }
+    .request p { font:13px/1.55 var(--mono); }
+    .reply-label { display:flex; flex-wrap:wrap; justify-content:space-between; gap:5px; font-size:12px; }
+    .reply-label span { color:var(--secondary); }
+    .composer { display:flex; gap:6px; margin-top:7px; }
+    .composer input { flex:1; min-width:0; color:var(--primary); background:#111218; border:1px solid #646773; border-radius:8px; padding:7px 9px; font-size:13px; }
+    .composer input::placeholder { color:var(--secondary); }
+    .btn { border:1px solid #7f9bbd; color:var(--on-accent); background:var(--focus); border-radius:8px; font-size:13px; font-weight:600; padding:6px 11px; }
+    .resolution { font-size:13px; color:var(--working); font-weight:550; }
+    .sample-foot { display:flex; align-items:center; justify-content:space-between; gap:18px; color:var(--secondary); background:var(--opaque-chrome); border-top:1px solid var(--border); padding:10px 16px; font-size:12px; }
+    .sample-tools { display:flex; flex-wrap:wrap; gap:6px; }
+    .reference { display:grid; grid-template-columns: minmax(0,1.2fr) minmax(0,.8fr); gap:26px; margin-top:30px; }
+    .reference h2 { margin-bottom:12px; font-size:18px; font-weight:600; letter-spacing:-.04em; }
+    .surface-table,.measure { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:5px 15px; }
+    .surface-table { margin:0; }
+    .surface-row { display:grid; grid-template-columns:minmax(120px,.86fr) 1.5fr; align-items:center; gap:14px; padding:10px 0; }
+    .surface-row+.surface-row,.measure-row+.measure-row { border-top:1px solid var(--border); }
+    dd { margin:0; color:var(--secondary); font-size:13px; }
+    .dot { display:inline-grid; place-items:center; width:15px; font-size:14px; }
+    .working { color:var(--working); }.attention { color:var(--attention); }.fault { color:var(--fault); }.muted { color:var(--secondary); }.focus { color:var(--focus); }
+    .measure-row { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:12px 0; }
+    .measure-row span:last-child { color:var(--secondary); font:12px var(--mono); white-space:nowrap; }
+    .sample-title { font-size:18px; line-height:1.25; font-weight:600; letter-spacing:-.045em; }
+    .sample-mono { font:13px/1.55 var(--mono); }
+    .spacing { display:flex; flex-wrap:wrap; align-items:flex-end; gap:15px; padding:9px 0; }
+    .space { display:flex; flex-direction:column; align-items:center; gap:7px; font:11px var(--mono); color:var(--secondary); }
+    .space b { background:var(--focus); width:var(--size); height:6px; border-radius:5px; }
+    .tokens { margin-top:24px; }.tokens h2 { font-size:18px; font-weight:600; margin-bottom:10px; }
+    .swatches { display:grid; grid-template-columns:repeat(auto-fit,minmax(117px,1fr)); gap:8px; }
+    .swatch { border:1px solid var(--border); border-radius:8px; background:var(--panel); overflow:hidden; }
+    .color { height:18px; background:var(--swatch); border-bottom:1px solid var(--border); }.swatch div:last-child { padding:7px 8px; }
+    .swatch strong,.swatch code { display:block; font-size:12px; }.swatch code { color:var(--secondary); font:11px var(--mono); }
+    footer { margin-top:22px; padding-top:16px; display:flex; gap:12px 20px; flex-wrap:wrap; border-top:1px solid var(--border); font-size:13px; }
+    .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    [data-opaque="true"] .spec-window,[data-opaque="true"] .titlebar { background:var(--opaque-chrome); backdrop-filter:none; box-shadow:none; }
+    [data-opaque="true"] .pip { background:var(--opaque-overlay); backdrop-filter:none; box-shadow:none; }
+    [data-contrast="true"] { --secondary:var(--strong-secondary); --border:var(--strong-border); --rim:var(--strong-border); }
+    [data-contrast="true"] :is(.tile,.pip,.pip-head,.titlebar,.spec-window,.owner,.pill,.btn,.composer input) { border-color:var(--strong-border); }
+    [data-contrast="true"] :focus-visible,[data-contrast="true"] .tile:focus { outline:4px double var(--focus); }
+    @media (max-width:850px){ .spec-content{gap:12px;padding:15px}.backdrop{padding:16px}.specimen-bar{align-items:flex-start}.specimen-bar,.intro{flex-direction:column;align-items:flex-start}.links{justify-content:flex-start} }
+    @media (max-width:650px){main{width:calc(100% - 24px);padding-top:22px}.spec-content,.reference{grid-template-columns:1fr}.titlebar .run-id,.section-name{display:none}.sample-foot{align-items:flex-start;flex-direction:column;gap:8px}.backdrop{padding:8px}.spec-content{padding:9px}.tile-body{min-height:auto}.specimen-bar{padding:10px}.reference{gap:20px}.mast{padding:9px 13px}.surface-row{grid-template-columns:105px 1fr}.measure-row{flex-wrap:wrap} }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to design system</a>
+  <header class="mast">
+    <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 17 6-12h4l-6 12zm8 0 5-10 3 6-2 4zM4 19h16v2H4z" fill="currentColor"/></svg></span>
+    <strong>Agent Commander</strong><span class="section-name">Design system</span>
+    <a href="../concepts/index.html">Concept gallery ↗</a>
+  </header>
+  <main id="main">
+    <div class="intro">
+      <div><h1>Black glass</h1><p>The macOS cockpit’s materials, controls, and terminal surfaces.</p></div>
+      <nav class="links" aria-label="Reference sections"><a href="#preview">Components</a><a href="#states">States</a><a href="#palette">Palette</a></nav>
+    </div>
+    <section class="specimen" id="preview" aria-labelledby="specimen-title">
+      <div class="specimen-bar">
+        <strong id="specimen-title">Worker and incoming request</strong>
+        <div class="switches">
+          <label><input type="checkbox" id="opaque"> Reduce transparency</label>
+          <label><input type="checkbox" id="contrast"> Increase contrast</label>
+        </div>
+      </div>
+      <div class="backdrop">
+        <div class="spec-window">
+          <div class="titlebar"><span class="path" id="run-context"><b>Relay</b><span aria-hidden="true" class="sep">›</span>Retry policy</span><span class="run-id">Run R-042</span></div>
+          <div class="spec-content">
+            <article class="tile" id="worker" tabindex="0" aria-labelledby="worker-name" aria-describedby="run-context worker-meta task-state connection-state attention-state owner">
+              <div class="tile-head"><span class="provider" aria-hidden="true">›_</span><div><h2 id="worker-name">Backoff strategy</h2><div class="meta" id="worker-meta">Codex · Mac Studio · feat/backoff</div></div><span class="live" id="connection-state"><span aria-hidden="true">●</span> Live</span></div>
+              <div class="tile-body"><p>$ pnpm test backoff</p><p class="output">✓ jitter stays within cap</p><p class="output">✓ budget resets per request</p><p class="quiet">2 tests passed</p><p class="quiet" id="task-state">Reviewing test results</p><span id="attention-state" class="sr">No pending requests for Backoff strategy.</span></div>
+              <div class="tile-foot"><span class="owner" id="owner" data-human="true">You have input</span><button class="pill" type="button" id="ownership">Hand back</button><span class="focus-label" id="key-focus" hidden>⌨ Key focus</span></div>
+            </article>
+            <aside class="pip" id="request-pip" aria-labelledby="request-name" aria-describedby="request-context">
+              <div class="pip-head"><strong id="request-state"><span aria-hidden="true">◇</span> Needs attention</strong><span class="tiny">Q-021</span></div>
+              <div class="pip-body">
+                <h2 id="request-name">Field ownership</h2><div class="meta" id="request-context">Relay · Event schema · Mac Studio</div>
+                <div class="request"><small>Claude Code</small><p>Should the server or client own the emitted field names?</p></div>
+                <form id="reply-form">
+                  <div class="reply-label"><label for="reply"><strong>Reply to Q-021</strong></label><span>Terminal input · Event schema</span></div>
+                  <div class="composer"><input id="reply" required maxlength="240" placeholder="Your decision" autocomplete="off"><button class="btn" type="submit">Reply</button></div>
+                </form>
+                <div id="resolution" hidden><p class="resolution">✓ Answered Q-021</p><p class="tiny" id="answer"></p></div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <div class="sample-foot"><span>This offline example simulates instant confirmation of input ownership.</span><div class="sample-tools"><button class="pill" id="focus-worker" type="button">Focus worker</button><button class="pill" type="button" id="reset">Reset example</button></div></div>
+    </section>
+    <div role="status" class="sr" id="announcement"></div>
+    <div class="reference">
+      <section id="states"><h2>State and control</h2>
+        <dl class="surface-table">
+          <div class="surface-row"><dt class="state working"><span class="dot" aria-hidden="true">●</span>Working</dt><dd>The assignment is in progress.</dd></div>
+          <div class="surface-row"><dt class="state attention"><span class="dot" aria-hidden="true">◇</span>Needs input</dt><dd>A specific decision is waiting for a reply.</dd></div>
+          <div class="surface-row"><dt class="state muted"><span class="dot" aria-hidden="true">○</span>Disconnected</dt><dd>Only the last received output is available.</dd></div>
+          <div class="surface-row"><dt class="state fault"><span class="dot" aria-hidden="true">×</span>Failed</dt><dd>The operation returned a failure with evidence.</dd></div>
+          <div class="surface-row"><dt class="state focus"><span class="dot" aria-hidden="true">⌨</span>Key focus</dt><dd>The keyboard currently targets this control.</dd></div>
+          <div class="surface-row"><dt><span class="owner">Acquiring control</span></dt><dd>Retry policy holds input while Commander checks your request.</dd></div>
+          <div class="surface-row"><dt><span class="owner">Control denied</span></dt><dd>Retry policy keeps input. Your access to this run is read-only.</dd></div>
+          <div class="surface-row"><dt><span class="owner">You have input</span></dt><dd>Commander holds automated terminal input until handback.</dd></div>
+        </dl>
+      </section>
+      <section><h2>Type and spacing</h2>
+        <div class="measure">
+          <div class="measure-row"><strong class="sample-title">Retry policy</strong><span>System · section title</span></div>
+          <div class="measure-row"><strong class="sample-title">Backoff strategy</strong><span>System · worker name</span></div>
+          <div class="measure-row"><span class="sample-mono">$ pnpm test backoff</span><span>Mono · terminal</span></div>
+          <div class="measure-row"><span class="tiny">Codex · Mac Studio</span><span>System · metadata</span></div>
+          <div class="measure-row"><div class="spacing" aria-label="Spacing examples in points">
+            <div class="space" style="--size:4px"><b></b>4</div><div class="space" style="--size:8px"><b></b>8</div><div class="space" style="--size:12px"><b></b>12</div><div class="space" style="--size:16px"><b></b>16</div><div class="space" style="--size:24px"><b></b>24</div><div class="space" style="--size:32px"><b></b>32</div>
+          </div><span>Spacing · pt</span></div>
+        </div>
+      </section>
+    </div>
+    <section class="tokens" id="palette"><h2>Reference palette</h2><div class="swatches" id="swatches"></div></section>
+    <footer><a href="../concepts/coordinator-wall.png">Coordinator wall</a><a href="../concepts/pip-arrival.png">Incoming PiP</a><a href="../concepts/accessible-wall.png">Opaque cockpit</a><a href="../concepts/index.html">All 28 concepts</a></footer>
+  </main>
+  <script>
+    const find = id => document.getElementById(id);
+    const worker = find('worker');
+    const owner = find('owner');
+    const ownButton = find('ownership');
+    const announce = text => { find('announcement').textContent = text; };
+    const pip = find('request-pip');
+    let previousFocus = worker;
+    pip.addEventListener('focusin', event => {
+      const source = event.relatedTarget;
+      if (!pip.contains(source)) {
+        previousFocus = source instanceof HTMLElement && source !== document.body ? source : worker;
+      }
+    });
+    function setOwnership(human) {
+      owner.dataset.human = String(human);
+      owner.textContent = human ? 'You have input' : 'Input · Retry policy';
+      ownButton.textContent = human ? 'Hand back' : 'Take control';
+    }
+    ownButton.addEventListener('click', () => {
+      const human = owner.dataset.human !== 'true';
+      setOwnership(human);
+      announce(human ? 'You control Backoff strategy.' : 'Retry policy controls Backoff strategy.');
+    });
+    find('focus-worker').addEventListener('click', () => worker.focus());
+    function syncFocus() { find('key-focus').hidden = document.activeElement !== worker; }
+    document.addEventListener('focusin', syncFocus);
+    worker.addEventListener('blur', () => { find('key-focus').hidden = true; });
+    find('reply-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const input = find('reply'), value = input.value.trim();
+      if (!value) { input.setCustomValidity('Enter a decision.'); input.reportValidity(); return; }
+      find('answer').textContent = value;
+      find('reply-form').hidden = true;
+      find('resolution').hidden = false;
+      find('request-state').textContent = 'Answered';
+      const canRestore = previousFocus.isConnected && !previousFocus.closest('[hidden], [inert], :disabled');
+      (canRestore ? previousFocus : worker).focus();
+      const controller = owner.dataset.human === 'true' ? 'You control' : 'Retry policy controls';
+      announce('Question Q-021 answered. ' + controller + ' Backoff strategy.');
+    });
+    find('reply').addEventListener('input', event => event.target.setCustomValidity(''));
+    find('reset').addEventListener('click', () => {
+      setOwnership(true);
+      find('reply').value = '';
+      find('reply').setCustomValidity('');
+      find('resolution').hidden = true;
+      find('reply-form').hidden = false;
+      find('answer').textContent = '';
+      find('request-state').textContent = '◇ Needs attention';
+      announce('Example reset. You control Backoff strategy. Q-021 is waiting.');
+    });
+    for (const [id, query] of [['opaque','(prefers-reduced-transparency: reduce)'],['contrast','(prefers-contrast: more)']]) {
+      const input = find(id), preference = matchMedia(query);
+      const apply = value => { input.checked = value; document.documentElement.dataset[id] = String(value); };
+      apply(preference.matches);
+      preference.addEventListener('change', event => apply(event.matches));
+      input.addEventListener('change', () => apply(input.checked));
+    }
+    const colors = [
+      ['Window','#090A0D'],['Terminal','#0B0C10'],['Panel','#14151A'],['Primary text','#F5F5F9'],['Secondary text','#B7BAC6'],
+      ['Focus','#B5D6FF'],['Working','#A8E0C0'],['Attention','#F1C587'],['Fault','#EC9B92']
+    ];
+    for (const [name, hex] of colors) {
+      const swatch = document.createElement('div'), color = document.createElement('div'), label = document.createElement('div');
+      const title = document.createElement('strong'), code = document.createElement('code');
+      swatch.className = 'swatch'; color.className = 'color'; color.style.setProperty('--swatch',hex);
+      title.textContent = name; code.textContent = hex; label.append(title,code); swatch.append(color,label); find('swatches').append(swatch);
+    }
+  </script>
+</body>
+</html>

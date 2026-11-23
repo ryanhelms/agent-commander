@@ -1,0 +1,105 @@
+# Atomic Design for Agent Commander
+
+A worker can appear on the wall, in a focused terminal, and in a picture-in-picture (PiP) request at once. All three must agree on which worker is running, who can type, and whether an answer was delivered. That is the practical reason to atomize this cockpit. The implementation should allow a developer to track a control in any of its 28 concept frames back to a shared component or a standard macOS control, its data contract, and the behavior it promises.
+
+This is an implementation design for the macOS 26+ MVP. The gallery and tokens are review artifacts. Keep Commander’s token definitions, component source, fixtures and previews in the Agent Commander repository so a single checkout can build and review the interface. The component names below are proposed names for the native implementation. [MVP plan](../../MVP-PLAN.md) · [Concept gallery](../concepts/index.html) · [Design-system specimen](index.html) · [Token definitions](tokens.json)
+
+## What the method contributes
+
+Brad Frost describes five complementary ways to look at an interface. An **atom** is a basic usable element, such as a button. A **molecule** combines elements to do one job, such as an input with a label and a submit button. An **organism** forms a distinct region of an interface using smaller components. A **template** defines how regions and content fit together. A **page** populates a template with specific content, allowing the team to judge how the design behaves under realistic conditions. Teams work across the five stages in both directions. A long worker name on a finished page can reveal a flaw in a small component. [Brad Frost, *Atomic Design Methodology*](https://atomicdesign.bradfrost.com/chapter-2/)
+
+Frost’s pattern library gives designers and developers a common reference for components in use. His workflow starts from concrete interfaces and his maintenance approach keeps the library connected to the product as it evolves. For this project the existing gallery provides the inventory, SwiftUI previews can become the living library, and a full page provides the test of whether a component change still serves the workflow. [Tools of the Trade](https://atomicdesign.bradfrost.com/chapter-3/) · [The Atomic Workflow](https://atomicdesign.bradfrost.com/chapter-4/) · [Maintaining Design Systems](https://atomicdesign.bradfrost.com/chapter-5/)
+
+Atomic Design addresses UI composition. GoF Command and Adapter address how Commander executes operations and integrates providers. EIP correlation identifiers associate replies with pending requests. Atomicity of a database update and “atoms” in state-management libraries describe still other concepts. A visual atom can use ordinary native state, and an organism can emit one domain command. These are independent design choices. [Pattern assignments in the MVP plan](../../MVP-PLAN.md#patterns-with-specific-jobs)
+
+## The component vocabulary
+
+| Level | Commander examples | Implementation responsibility |
+| --- | --- | --- |
+| Foundations | Foreground, focus and attention colors, system and monospaced type roles, spacing, the navigation material, the terminal fill | Tokens describe values and semantic roles. Styles resolve these against system settings. They do not own a view, a subscriber or an action. |
+| Atoms | Native button, symbol button, disclosure indicator, status label with a symbol, text field, text selection, divider handle | Use the native element directly where it already supplies the behavior. Give icon-only actions an accessible name. Expose a keyboard path for resizing. |
+| Molecules | Worker identity with host and worktree, connection indicator with last-seen time, filter clause, host capability row, labeled field with validation, input ownership and handback control, request reply | Combine the pieces required for one understandable interaction. Preserve the target, instruction, disabled reason and accessible value as the rendering changes. |
+| Organisms | Worker tile, nested worker group, coordinator console, worker wall, attention stack, queue, settings form, checkout comparison, integration attempt inspector, transcript results, host and provider lists | Present a coherent activity. Compose smaller elements and terminal surfaces. Own local presentation state such as expansion or scroll position. |
+| Templates | Coordinator split, collection with inspector, task sheet, settings split, recovery detail | Give regions stable positions, resizing priorities, focus routes and overlay anchors. Multiple templates can appear together, such as a task sheet above the coordinator split. |
+| Pages | A specific coordinator with five workers, a new PiP over the currently controlled worker, a failed combined test, a reconnect with an uncertain reply | Exercise the same production compositions using identified, representative data. Pages carry sample actors, hosts, events and outcomes in previews. |
+
+A named Swift type earns its place through a shared behavior, a meaningful platform boundary, or a layout with its own invariant. A single native label, a spacer, a decorative stroke, a terminal cell and an arbitrary horizontal stack rarely need Commander wrappers. A genuinely unique integration form can remain composed in its feature until a second use or a concrete maintenance problem justifies extraction.
+
+## Native composition and ownership
+
+**SwiftUI owns the cockpit.** Use native navigation, split views, menu actions, controls and keyboard commands. Apply the dark glass material to navigation and floating controls. Keep terminal wells and long-reading surfaces opaque so an ANSI error or a selection stays readable over changing content. Resolve the reduced-transparency, increased-contrast and reduced-motion settings independently. A material belongs to its region or container, so assembling a row of buttons does not multiply glass layers. Native system materials respond to their surroundings. The HTML specimen approximates those materials for review. [Apple Human Interface Guidelines, Materials](https://developer.apple.com/design/human-interface-guidelines/materials) · [Commander materials and accessibility roles](tokens.json)
+
+**AppKit owns the interactive terminal surface where needed.** Host the chosen terminal renderer with `NSViewRepresentable`. Treat `TerminalWell` as one composable leaf from SwiftUI’s perspective. Internally it may have a parser, cell grid, scrollback and native input client. Let the renderer handle IME composition, selection, paste, control sequences, alternate screens, and first-responder changes. The renderer must also expose readable terminal content or an accessible transcript alternative. Prototype a full-screen TUI and large scrollback before choosing the library. [Apple, NSViewRepresentable](https://developer.apple.com/documentation/swiftui/nsviewrepresentable)
+
+Attach each projection to the same terminal identity and output stream through the API. Identify the pane by host, tmux server instance and pane ID, and retain the assignment ID across retries and handoff. The tile, PiP and focused view may each display that pane. The active interactive viewport controls terminal geometry. Passive previews render snapshots or clipped output and cannot resize the underlying pane. Share the pane adapter and screen model across distinct projection views. A native input router accepts terminal input from at most one view per pane. It checks that view’s pane binding and AppKit first responder against the confirmed lease and stamps each input intent with its control generation. The executing host validates that generation before delivery. [tmux control mode](https://github.com/tmux/tmux/wiki/Control-Mode)
+
+| Boundary | Owns | Example |
+| --- | --- | --- |
+| Native elements and styles | Drawing, accessibility semantics, native activation | A handback button exposes the same action to pointer, keyboard and VoiceOver. |
+| Reusable components | A small presentation model and targeted intents | `RequestReply` receives a named request and permitted response types. It emits the request ID and answer. |
+| Feature model | Subscriptions, data mapping, drafts and presentation state keyed by stable IDs | A wall restores the worker selection, group disclosures and scroll anchor after zoom. A draft in PiP belongs to its request. |
+| Go service and providers | Conversation and worker identity, capabilities, live terminal data, owner, policy, command acceptance and outcomes | Only the owning coordinator can direct a worker. A peer may read the transcript and ask its owner a question. The service revalidates execution-time permissions. |
+
+Lower-level components receive values and emit intents. They do not discover tmux sessions, run SSH commands, select a provider or read a global “current worker” at send time. Keep access to the versioned API in the feature/service layer. MCP, CLI and desktop use the same operation and event contracts. The terminal’s interactive input path uses the API as well. Remote Linux and Mac hosts need the service/helper or supported SSH path. SwiftUI, glass materials and AppKit belong to the local Mac shell.
+
+## Variants and state
+
+`WorkerTile` composes worker identity, status, `TerminalWell`, available actions and `InputOwnership`. Use explicit presentation variants for wall density, a focused worker, and a passive preview. Availability comes from advertised capabilities and actor permissions. A provider name supplies attribution and diagnostics. It should not select the tile implementation. An unrecognized client with MCP can still have a named assignment, results and a tile. The tile explains any unavailable approval or input path.
+
+Keep task progress, connection, attention, input owner, message delivery and keyboard focus as independent dimensions. For input ownership, distinguish the identified actor holding the lease from an in-flight attempt to take or return control. Selection and scroll position belong to the presentation. A worker may be working, disconnected, awaiting an answer and still assigned to the developer. Show the last known timestamp, the pending question and the held control separately. A checkmark for acceptance says the service received an answer. Worker delivery and resolution require their own evidence. [State vocabulary](tokens.json)
+
+**Worked interaction.** The developer controls worker A in the coordinator split. Worker B from another run asks a question.
+
+1. A request event creates one PiP entry keyed to B’s request. Its heading names the project, run and worker. It arrives at the bottom right of the worker region. Focus and input ownership stay on A. A quiet accessibility announcement identifies the waiting question.
+2. Activating the PiP reply field moves keyboard focus into that field. Its `RequestReply` binds the draft to B’s request and sends one structured answer through the API. It needs no terminal input lease. The same component can appear in the queue, side panel or focused view. A resolved request displays the existing resolution, even if another surface submitted it.
+3. Expanding B shows its terminal alongside the coordinator. To type into B’s live terminal, the developer explicitly takes control. `InputOwnership` shows acquisition in progress and enables terminal input when confirmed. A coordinator command queued earlier must pass the ownership check again at execution. External clients attaching directly to tmux remain outside Commander’s control guarantee.
+4. Closing the PiP restores the previous focus when that target still exists. A retained terminal lease on B persists across zoom, closing the PiP and reconnect. Explicit handback releases it. An ambiguous response after SSH loss displays its operation ID and delivery uncertainty. An automatic retry needs verified duplicate protection.
+
+## Where every concept fits
+
+These are 28 page fixtures. Several are deliberately different states of one template. Each link opens that frame in the gallery.
+
+| Page | Composition and behavior under review |
+| --- | --- |
+| [01 Coordinator wall](../concepts/index.html#coordinator-wall) | Coordinator split with a draggable one-third pane, multirow wall and collapsible nested worker groups. |
+| [02 Focused worker](../concepts/index.html#focused-worker) | Same split, one expanded tile, visible owner, handback and return to the previous wall position. |
+| [03 Worker actions](../concepts/index.html#tile-controls) | Tile action menu targets the identified assignment. Interrupt and stop communicate the affected worker. |
+| [04 Picture-in-picture reply](../concepts/index.html#attention-pip) | Attention stack, source identity, request reply and expand action over the wall. |
+| [05 Incoming request](../concepts/index.html#pip-arrival) | Same stack receiving a new item while another terminal keeps focus and control. |
+| [06 Attention queue](../concepts/index.html#attention-queue) | Collection with inspector, request selection, terminal context and shared reply control. |
+| [07 Attention side panel](../concepts/index.html#attention-panel) | Queue inspector in a drawer, with coordinator and workers visible. |
+| [08 Switch to a blocked run](../concepts/index.html#attention-switch) | Coordinator split with the selected request and return navigation to the prior run and worker. |
+| [09 All agents](../concepts/index.html#all-agents) | Wall with project filters. A disconnected terminal displays its last output and timestamp. |
+| [10 Project overview](../concepts/index.html#project) | Coordinator collection with repo identity, linked checkout, host and lineage. |
+| [11 Saved smart view](../concepts/index.html#smart-view) | Filter clauses determine collection membership. A different grouping preserves worker identity and parentage. |
+| [12 Link a checkout](../concepts/index.html#link-checkout) | Checkout comparison shows origin evidence and offers an explicit action for ambiguous matches. |
+| [13 Start a coordinator](../concepts/index.html#start-run) | Task sheet contains assignment and resource limits plus host-supported disconnect behavior. |
+| [14 Delegate a worker](../concepts/index.html#delegate-worker) | Task sheet adds worker role, destination, worktree and included changes from a dirty checkout. |
+| [15 Integrate changes](../concepts/index.html#integration) | Handoff list and attempt inspector show candidate revision, worker changes and combined tests. |
+| [16 Blocked integration](../concepts/index.html#integration-blocked) | Same inspector with failed test evidence, target-branch status and recovery action. |
+| [17 Search history](../concepts/index.html#history) | Results and transcript inspector bind each match to its worker, timestamp and recorded line. |
+| [18 Cross-run access](../concepts/index.html#cross-run) | Shared transcript, ownership context and a question addressed to the owning coordinator. |
+| [19 Connect a workspace](../concepts/index.html#first-run) | Setup form combines project selector, host selection, connection checks and outcomes. |
+| [20 Hosts and capabilities](../concepts/index.html#hosts) | Host list and inspector distinguish local, persistent-helper and SSH-only operations. |
+| [21 Clients and MCP](../concepts/index.html#clients) | Client list and form expose capabilities, registration and a configurable executable and argument list. |
+| [22 Adopt a session](../concepts/index.html#adoption) | Recovery detail ties pane, provider conversation, history and pending-work verification to an adoption operation. |
+| [23 Recover a connection](../concepts/index.html#recovery) | Same detail exposes transcript gaps, current ownership and uncertain delivery after reconnect. |
+| [24 Provider sign-in](../concepts/index.html#operation-detail) | Operation detail shows the human step, status and a continuation on the same operation. |
+| [25 Preferences](../concepts/index.html#preferences) | Settings form contains attention presentation, recording and retention. |
+| [26 Reduced transparency](../concepts/index.html#reduced-transparency) | Same settings form using opaque surface roles and stronger contrast. |
+| [27 Accessible wall and PiP](../concepts/index.html#accessible-wall) | Wall and arriving request under system appearance overrides. Focus, control and urgency stay distinguishable. |
+| [28 Accessible focused worker](../concepts/index.html#accessible-worker) | Focused terminal with stronger contrast, the exact pending request and explicit handback. |
+
+## Verification and evolution
+
+Implement the components for the first live coordinator, worker wall and PiP reply as those features land. The full inventory maps the concept direction into reusable pieces. Expand previews and cover the scenarios below incrementally as the corresponding views become usable.
+
+- **Component previews.** Exercise long host aliases, identical worker names in separate runs, nested assignments, a non-Git project, an unavailable capability, an empty queue, a closed worker and a missed-history interval. Give a truncated identifier an accessible full value. Test narrow and wide windows, independent text scaling and all three system appearance preferences individually and in combination.
+- **Native interactions.** Test keyboard-only traversal, resizable split and scrollable wall, return focus after zoom, VoiceOver reading order, button names and field errors, and text and symbol cues alongside color. VoiceOver should hear an escalation once. Provide explicit access to the transcript without announcing every streaming line. Verify the opaque fallback, actual native material and ANSI readability on the Mac in addition to reviewing concept screenshots.
+- **Target and state correctness.** Exercise two replies from different surfaces, a lease change while an action is queued, a PiP arriving during IME composition, a recycled tile, and reconnect after reply acceptance. Verify the intended recipient, duplicate handling and preserved ownership against the real API. Verify structured conversation submission with dollar signs, quotes, code fences and multi-line text.
+- **Scale and fidelity.** Exercise three coordinators with ten workers each. Send high-volume output from one pane while responding to another. Check that the same pane remains legible in multiple projections, the active terminal survives a layout change, a hidden preview cannot resize it, and a burst of output cannot delay the approval interaction. Exercise both Linux and Mac SSH hosts, persistent-helper and SSH-only modes.
+- **Library stewardship.** Implement the first vertical slice through wall → PiP → answer → return. Give a shared component a named owner and production-backed preview when its behavior changes. Review the affected page fixtures and an accessibility variant before publishing a breaking change to the component’s interface. Retain unique screen-level compositions while their content or workflows are still changing.
+
+The payoff is one fix for reply routing, ownership cues or focus restoration across several views. The costs are extra interfaces, catalog upkeep and the risk of hiding platform behavior behind wrappers. A useful review question is whether editing the shared component would improve every consumer. If a new mode changes authority, semantics or target routing, model that behavior explicitly. If it only changes the position of an existing interaction, reuse the component and change the template.
+
+A future web or cross-platform cockpit can reuse semantic token names, request and ownership contracts, fixture data, page scenarios and accessibility expectations. Its renderer and platform controls can implement those contracts independently. For the first source-built Mac release and later signed download, the review target is the behavior of the native Mac application.
