@@ -133,9 +133,13 @@ struct ConsoleTitleBar<Accessory: View>: View {
         title.caseInsensitiveCompare(client.displayName) != .orderedSame
     }
 
+    @Environment(\.usesStrongContrast) private var usesStrongContrast
+
     var body: some View {
+        let accent = HarnessAccentStore.shared.accent(for: client)
         HStack(spacing: 7) {
-            AgentAvatar(client: client, size: density == .tile || density == .pip ? 16 : 18)
+            AgentAvatar(client: client, size: density == .tile || density == .pip ? 16 : 18,
+                        onHarnessHeader: true)
             // One horizontal line in every density, most complete first.
             ViewThatFits(in: .horizontal) {
                 row(lineage: true, client: true, host: .full, branch: true)
@@ -159,7 +163,10 @@ struct ConsoleTitleBar<Accessory: View>: View {
         .padding(.trailing, max(6, inset - 5))
         .frame(height: height)
         .harnessHeaderFill(client)
-        .overlay(alignment: .bottom) { Rectangle().fill(Term.rule).frame(height: 1) }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(accent.headerRule(strongContrast: usesStrongContrast)).frame(height: 1)
+                .allowsHitTesting(false)
+        }
     }
 
     private func row(lineage showLineage: Bool, client showClient: Bool, host form: HostForm,
@@ -197,7 +204,7 @@ struct ConsoleTitleBar<Accessory: View>: View {
     /// When `truncates` is set the host name may shorten at the tail; the platform mark does not.
     private func hostCluster(_ form: HostForm, truncates: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
-            PlatformMark(platform: platform, size: metaSize)
+            PlatformMark(platform: platform, size: metaSize, tint: Palette.foreground)
             if form == .full, platform.isRemote { Text("ssh").foregroundStyle(Term.cyan).fixedSize() }
             Text(host).foregroundStyle(Term.text)
                 .truncationMode(.tail)
@@ -210,7 +217,7 @@ struct ConsoleTitleBar<Accessory: View>: View {
         if !location.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Image(systemName: locationIsBranch ? "arrow.triangle.branch" : "folder")
-                    .font(.system(size: metaSize - 1))
+                    .font(.system(size: metaSize - 1, weight: .semibold))
                 Text(location)
             }
             .font(Term.font(metaSize)).foregroundStyle(Term.text)

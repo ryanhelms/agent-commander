@@ -301,7 +301,8 @@ enum PreviewSample {
 
     static let panes: [DiscoveredPane] = [
         DiscoveredPane(
-            id: "p1", name: "Claude Code", symbol: "terminal", place: "Mac Studio · relay:0.1", identity: .verified,
+            id: "p1", name: "Claude Code", provider: .claude, place: "Mac Studio · relay:0.1",
+            identity: .verified,
             pane: "relay:0.1 · %12", conversation: "claude · …3d8a", hostDirectory: "Mac Studio · ~/Developer/relay",
             taskState: "Working · 1 open approval", joinMethod: "Live provider connection",
             checks: [
@@ -311,7 +312,8 @@ enum PreviewSample {
                 PreservationCheck(id: "In-flight work", detail: "Active turn remains attached")
             ]),
         DiscoveredPane(
-            id: "p2", name: "Codex", symbol: "chevron.left.forwardslash.chevron.right", place: "build-01 · relay:1.0",
+            id: "p2", name: "Codex", provider: .codex,
+            place: "build-01 · relay:1.0",
             identity: .needsVerification,
             pane: "relay:1.0 · %31", conversation: "codex · 2 candidates", hostDirectory: "build-01 · ~/src/relay",
             taskState: "Idle · no open approval", joinMethod: "Live provider connection after verification",
@@ -326,7 +328,7 @@ enum PreviewSample {
             warningTitle: "Codex needs identity verification",
             warningDetail: "Two conversations match its directory. Messages and approvals are unavailable until you verify the session in its live pane."),
         DiscoveredPane(
-            id: "p3", name: "Shell", symbol: "terminal", place: "Mac Studio · tests:0.0", identity: .consoleOnly,
+            id: "p3", name: "Shell", place: "Mac Studio · tests:0.0", identity: .consoleOnly,
             note: "Conversation controls unsupported",
             pane: "tests:0.0 · %4", conversation: nil, hostDirectory: "Mac Studio · ~/Developer/relay",
             taskState: "Shell prompt", joinMethod: "Console view only", checks: [])

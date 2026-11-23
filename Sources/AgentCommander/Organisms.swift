@@ -206,10 +206,11 @@ struct WorkerTile: View {
         if let menuPresented {
             Button { menuPresented.wrappedValue.toggle() } label: {
                 Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.consoleHeaderControlInk(active: menuPresented.wrappedValue ? Palette.focus : nil))
                     .frame(width: 23, height: 23).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(menuPresented.wrappedValue ? Palette.focus : Palette.secondary)
+            .foregroundStyle(.consoleHeaderControlInk(active: menuPresented.wrappedValue ? Palette.focus : nil))
             .popover(isPresented: menuPresented, arrowEdge: .bottom) {
                 WorkerActionMenu(worker: worker, isFocused: isFocusedVariant, actions: actions,
                                  dismiss: { menuPresented.wrappedValue = false })
@@ -232,12 +233,17 @@ struct WorkerTile: View {
             Divider()
             Button("Copy worker ID", action: actions.copyID)
         } label: {
-            Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).frame(width: 23, height: 23)
+            // Coloured inside the label and drawn as a plain button: the borderless menu style on
+            // macOS paints the glyph in its own dim control tint and ignores the style set outside.
+            Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.consoleHeaderControlInk())
+                .frame(width: 23, height: 23).contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(.inkSecondary)
+        .foregroundStyle(.consoleHeaderControlInk())
         .help("Actions for \(worker.name)")
         .accessibilityLabel("Actions for \(worker.name)")
     }

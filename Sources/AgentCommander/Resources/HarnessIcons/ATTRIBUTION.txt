@@ -1,0 +1,21 @@
+The following monochrome product marks are distributed with Lobe Icons.
+Copyright (c) 2023 LobeHub. The MIT license accompanies the artwork in LICENSE.txt.
+
+The bundled files use 24-unit SVG dimensions and explicit arc-flag spacing for macOS rendering. The path geometry comes from the original icons.
+
+Lobe Icons revision 05260484d9f4de68f90cc87a634ae68fa4043efd
+
+Claude Code
+https://raw.githubusercontent.com/lobehub/lobe-icons/05260484d9f4de68f90cc87a634ae68fa4043efd/packages/static-svg/icons/claudecode.svg
+
+Codex
+https://raw.githubusercontent.com/lobehub/lobe-icons/05260484d9f4de68f90cc87a634ae68fa4043efd/packages/static-svg/icons/codex.svg
+
+Google Antigravity
+https://raw.githubusercontent.com/lobehub/lobe-icons/05260484d9f4de68f90cc87a634ae68fa4043efd/packages/static-svg/icons/antigravity.svg
+
+Gemini CLI
+https://raw.githubusercontent.com/lobehub/lobe-icons/05260484d9f4de68f90cc87a634ae68fa4043efd/packages/static-svg/icons/geminicli.svg
+
+Upstream license
+https://raw.githubusercontent.com/lobehub/lobe-icons/05260484d9f4de68f90cc87a634ae68fa4043efd/LICENSE

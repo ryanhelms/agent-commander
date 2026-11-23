@@ -89,8 +89,11 @@ struct AgentConsoleCard: View {
                         Spacer(minLength: 8)
                         Text(agent.runID).font(TypeRole.monoMeta).foregroundStyle(Term.text)
                     }
-                    Text(agent.title).font(.system(size: 18, weight: .semibold)).tracking(-0.4)
-                        .foregroundStyle(Palette.foreground).lineLimit(1)
+                    HStack(spacing: 8) {
+                        AgentAvatar(client: agent.client, size: 18, onHarnessHeader: true)
+                        Text(agent.title).font(.system(size: 18, weight: .semibold)).tracking(-0.4)
+                            .foregroundStyle(Palette.foreground).lineLimit(1)
+                    }
                     Text("\(agent.project)  /  \(agent.client.displayName)  ·  \(agent.host)")
                         .font(.system(size: 12)).foregroundStyle(Term.text).lineLimit(1)
                 }
@@ -329,6 +332,7 @@ struct RequestInspector: View {
             question.padding(.top, 16)
             if let worker, !worker.output.isEmpty || !worker.transcript.isEmpty {
                 HStack {
+                    AgentAvatar(client: worker.client, size: 16, onHarnessHeader: true)
                     Kicker(text: "Recent output")
                     Spacer()
                     ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client)

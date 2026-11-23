@@ -10,6 +10,11 @@ enum HarnessAccentTokens {
     /// Reserve the attention glow color when spacing harness colors.
     static let attentionReference: UInt32 = 0xF1C587  // color.attention
     static let avatarBase: UInt32 = 0x1C1D24          // Palette.chrome
+    // material.harnessConsole
+    static let headerBase: UInt32 = 0x101116
+    static let minimumAccentLuminance = 0.18
+    static let outlineWidth: CGFloat = 1.5
+    static let increasedContrastOutlineWidth: CGFloat = 2
     static let minSeparation = 0.06                   // OKLab distance between any two active accents
     static let attentionInset: CGFloat = 2            // amber cue sits inside the brand edge
     static let minimumChoices = 8
@@ -66,20 +71,62 @@ struct HarnessAccent: Hashable, Sendable {
     let hex: UInt32
     init(_ hex: UInt32) { self.hex = hex & 0xFFFFFF }
 
-    var color: Color { mixed(with: hex, 0) }
-    func edge(strong: Bool = false) -> Color { strong ? mixed(with: 0xFFFFFF, 0.25) : color }
-    func ink(strong: Bool = false) -> Color { edge(strong: strong) }
+    var color: Color { Color(hex: hex) }
+    /// Keep the outline visible even with a dark custom accent.
+    func edge(strong: Bool = false) -> Color {
+        let shown = display
+        return strong ? shown.mixed(with: 0xFFFFFF, 0.25) : shown.color
+    }
+    func ink(strong: Bool = false) -> Color { strong ? mixed(with: 0xFFFFFF, 0.25) : color }
     func fill(opaque: Bool = false) -> Color {
         opaque ? HarnessAccent(HarnessAccentTokens.avatarBase).mixed(with: hex, 0.18) : color.opacity(0.16)
     }
     var avatarEdge: Color { color.opacity(0.42) }
 
-    /// sRGB blend; `share` is the amount of `other`.
-    func mixed(with other: UInt32, _ share: Double) -> Color {
-        func channel(_ shift: UInt32) -> Double {
-            (Double((hex >> shift) & 0xFF) * (1 - share) + Double((other >> shift) & 0xFF) * share) / 255
+    /// WCAG relative luminance of the accent, 0...1.
+    var luminance: Double {
+        let c = [hex >> 16, hex >> 8, hex].map { v -> Double in
+            let s = Double(v & 0xFF) / 255
+            return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
         }
-        return Color(.sRGB, red: channel(16), green: channel(8), blue: channel(0), opacity: 1)
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+
+    /// The accent as drawn on dark chrome. An accent at or above 0.18 luminance is returned
+    /// unchanged: from there the outline holds at least 3:1 against its own tinted title bar, the
+    /// lightest surface it borders, and more against the black terminal. A darker one is lifted
+    /// toward white in small steps until it reaches that floor, which keeps as much of its hue as
+    /// the contrast allows. The defaults and named swatches all sit above the floor.
+    var display: HarnessAccent {
+        var shown = self
+        var share = 0.0
+        while shown.luminance < HarnessAccentTokens.minimumAccentLuminance, share < 1 {
+            share = min(1, share + 0.06)
+            shown = HarnessAccent(Self.blend(hex, 0xFFFFFF, share))
+        }
+        return shown
+    }
+
+    /// sRGB blend of two hex colours; `share` is the amount of `other`.
+    static func blend(_ base: UInt32, _ other: UInt32, _ share: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let value = Double((base >> shift) & 0xFF) * (1 - share) + Double((other >> shift) & 0xFF) * share
+            return UInt32(max(0, min(255, value.rounded()))) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
+    }
+
+    // Avatar drawn on a harness title bar: a dark well, a full-strength edge and a brightened
+    // glyph, so the mark reads as a small copy of the console it labels.
+    func headerWell(opaque: Bool = false) -> Color {
+        opaque ? display.mixed(with: 0x08090C, 0.90) : Color.black.opacity(0.36)
+    }
+    func headerGlyph(strong: Bool = false) -> Color { display.mixed(with: 0xFFFFFF, strong ? 0.50 : 0.28) }
+    func headerAvatarEdge(strong: Bool = false) -> Color { edge(strong: strong).opacity(strong ? 1 : 0.8) }
+
+    /// `blend` of this accent with `other`, as a colour; `share` is the amount of `other`.
+    func mixed(with other: UInt32, _ share: Double) -> Color {
+        Color(hex: Self.blend(hex, other, share))
     }
 }
 
@@ -287,16 +334,18 @@ final class HarnessAccentStore {
 // MARK: - Surfaces
 
 extension HarnessAccent {
-    /// Opaque title-bar fill: accent mixed into chrome #1C1D24.
+    /// Opaque title-bar fill: the accent mixed into a base darker than chrome #1C1D24, so the bar
+    /// sits about two tonal steps under the outline and keeps more of the hue than a grey mix would.
     /// Accent share is capped by the accent's luminance, so bright hues stay dark enough for text.
     func headerFill(strongContrast: Bool = false) -> Color {
-        let c = [hex >> 16, hex >> 8, hex].map { v -> Double in
-            let s = Double(v & 0xFF) / 255
-            return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
-        }
-        let luminance = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
-        let t = strongContrast ? min(0.22, 0.08 / luminance) : min(0.30, 0.12 / luminance)
-        return mixed(with: HarnessAccentTokens.avatarBase, 1 - t)
+        let shown = display
+        let t = strongContrast ? min(0.18, 0.05 / shown.luminance) : min(0.24, 0.085 / shown.luminance)
+        return shown.mixed(with: HarnessAccentTokens.headerBase, 1 - t)
+    }
+
+    /// Rule closing the title bar: the outline's hue, quieter than the outline itself.
+    func headerRule(strongContrast: Bool = false) -> Color {
+        edge(strong: strongContrast).opacity(strongContrast ? 0.75 : 0.5)
     }
 }
 
@@ -305,13 +354,28 @@ struct HarnessHeaderFill: ViewModifier {
     @Environment(\.usesStrongContrast) private var strong
 
     func body(content: Content) -> some View {
+        // Flat fill: a top sheen lifted the bar toward the outline's weight.
         content.background {
-            ZStack {
-                HarnessAccentStore.shared.accent(for: client).headerFill(strongContrast: strong)
-                LinearGradient(colors: [Color.white.opacity(0.045), .clear],
-                               startPoint: .top, endPoint: .bottom)
-            }
+            HarnessAccentStore.shared.accent(for: client).headerFill(strongContrast: strong)
         }
+    }
+}
+
+/// Ink for the mode and action glyphs on a harness title bar. At rest it is terminal ink, one step
+/// under the title, and the full foreground with Increase Contrast, read from the environment the
+/// glyph is drawn in. `active` (an override, an open menu) replaces it. Apply it inside the button
+/// or menu label, where the style of the button around it cannot replace the colour.
+struct ConsoleHeaderControlInk: ShapeStyle {
+    var active: Color? = nil
+
+    func resolve(in environment: EnvironmentValues) -> Color {
+        active ?? (environment.usesStrongContrast ? Palette.foreground : Term.text)
+    }
+}
+
+extension ShapeStyle where Self == ConsoleHeaderControlInk {
+    static func consoleHeaderControlInk(active: Color? = nil) -> ConsoleHeaderControlInk {
+        ConsoleHeaderControlInk(active: active)
     }
 }
 
@@ -335,17 +399,23 @@ private struct HarnessConsoleSurface: ViewModifier {
     var attention = false
     var raised = true
     @Environment(\.usesStrongContrast) private var usesStrongContrast
+    @Environment(\.displayScale) private var displayScale
 
     func body(content: Content) -> some View {
         let edge = HarnessAccentStore.shared.accent(for: client).edge(strong: usesStrongContrast)
+        // 1.5pt outline (2pt with Increase Contrast), snapped to whole pixels so it stays sharp.
+        let scale = max(1, displayScale)
+        let width = usesStrongContrast ? HarnessAccentTokens.increasedContrastOutlineWidth : HarnessAccentTokens.outlineWidth
+        let edgeWidth = (width * scale).rounded() / scale
         content
-            .consoleSurface(edge: edge, raised: raised)
+            .consoleSurface(edge: edge, raised: raised, edgeWidth: edgeWidth)
             .attentionGlow(attention)                       // keeps the animated exterior glow
             .overlay {
                 if attention {
                     Group {
-                        Rectangle().strokeBorder(edge, lineWidth: 1)   // brand edge back on top of the glow's amber stroke
-                        Rectangle().inset(by: HarnessAccentTokens.attentionInset)
+                        Rectangle().strokeBorder(edge, lineWidth: edgeWidth)   // brand edge back on top of the glow's amber stroke
+                        // The amber ring stays clear of the wider brand edge.
+                        Rectangle().inset(by: max(HarnessAccentTokens.attentionInset, edgeWidth))
                             .strokeBorder(Palette.attentionEdge, lineWidth: 1)
                     }
                     .allowsHitTesting(false)

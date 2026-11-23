@@ -81,6 +81,8 @@ struct FocusRing: ViewModifier {
 struct ConsoleSurface: ViewModifier {
     var edge: Color? = nil
     var raised = true
+    /// Width of a supplied `edge`. Harness consoles pass a heavier line; other surfaces keep 1.
+    var edgeWidth: CGFloat = 1
 
     func body(content: Content) -> some View {
         content
@@ -95,7 +97,7 @@ struct ConsoleSurface: ViewModifier {
             .clipShape(Rectangle())
             .overlay {
                 if let edge {
-                    Rectangle().strokeBorder(edge, lineWidth: 1)
+                    Rectangle().strokeBorder(edge, lineWidth: edgeWidth)
                 } else if raised {
                     Rectangle().strokeBorder(.inkEdge, lineWidth: 1)
                 } else {
@@ -140,8 +142,8 @@ extension View {
         modifier(AttentionGlow(active: active, radius: radius))
     }
 
-    func consoleSurface(edge: Color? = nil, raised: Bool = true) -> some View {
-        modifier(ConsoleSurface(edge: edge, raised: raised))
+    func consoleSurface(edge: Color? = nil, raised: Bool = true, edgeWidth: CGFloat = 1) -> some View {
+        modifier(ConsoleSurface(edge: edge, raised: raised, edgeWidth: edgeWidth))
     }
 
     func panelSurface(radius: CGFloat = Radius.tile, edge: Color? = nil) -> some View {
@@ -296,23 +298,38 @@ struct StatusLabel: View {
 struct AgentAvatar: View {
     let client: AgentClient
     var size: CGFloat = 30
+    /// Set by console title bars, where the mark sits on the harness-coloured header: a dark well,
+    /// a stronger edge and a brightened, heavier glyph replace the tint-on-tint treatment.
+    var onHarnessHeader = false
 
     @Environment(\.usesStrongContrast) private var usesStrongContrast
     @Environment(\.usesOpaqueSurfaces) private var usesOpaqueSurfaces
 
     var body: some View {
         let accent = HarnessAccentStore.shared.accent(for: client)
-        let ink = accent.ink(strong: usesStrongContrast)
-        let fill = accent.fill(opaque: usesOpaqueSurfaces)
-        let edge = accent.avatarEdge
+        let ink = onHarnessHeader ? accent.headerGlyph(strong: usesStrongContrast)
+                                  : accent.ink(strong: usesStrongContrast)
+        let fill = onHarnessHeader ? accent.headerWell(opaque: usesOpaqueSurfaces)
+                                   : accent.fill(opaque: usesOpaqueSurfaces)
+        let edge = onHarnessHeader ? accent.headerAvatarEdge(strong: usesStrongContrast) : accent.avatarEdge
         // A small mark (console title bars) keeps a squared corner instead of rounding into a dot.
         let shape = RoundedRectangle(cornerRadius: min(Radius.avatar, size * 0.28), style: .continuous)
+        let symbolWeight: Font.Weight = onHarnessHeader ? .bold : .semibold
+        // 16/18 pt badges give the mark more of the well so its counters stay open; larger tiles keep air.
+        let isBadge = size <= 20
+        let markSide = (size * (isBadge ? 0.72 : 0.6)).rounded()
         Group {
-            switch client {
-            case .claude: Image(systemName: "asterisk").font(.system(size: size * 0.58, weight: .bold))
-            case .codex: Text(">_").font(.system(size: size * 0.5, weight: .bold, design: .monospaced)).tracking(-1.5)
-            case .mcp: Image(systemName: "command").font(.system(size: size * 0.5, weight: .semibold))
-            case .other: Image(systemName: "terminal").font(.system(size: size * 0.46, weight: .semibold))
+            if let mark = HarnessMarkLibrary.image(for: client) {
+                Image(nsImage: mark)
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: markSide, height: markSide)
+            } else {
+                // MCP is a protocol, not a product: it shares the native terminal with shells and custom names.
+                Image(systemName: "terminal")
+                    .font(.system(size: size * (isBadge ? 0.54 : 0.46), weight: symbolWeight))
             }
         }
         .foregroundStyle(ink)
@@ -324,12 +341,71 @@ struct AgentAvatar: View {
     }
 }
 
+/// Which bundled product mark, if any, stands for a client. Typed identity only — never a session title.
+enum HarnessMark {
+    /// File stem inside `HarnessIcons`, or nil for the native terminal symbol (MCP, shells, custom, unknown).
+    nonisolated static func assetName(for client: AgentClient) -> String? {
+        switch client {
+        case .claude: return "claudecode"
+        case .codex: return "codex"
+        case .mcp: return nil
+        case .other(let name):
+            // Exact normalized product-profile aliases; presentation only, routing stays `.other`.
+            switch HarnessName.normalize(name) {
+            case "agy", "antigravity", "antigravity cli", "antigravity-cli": return "antigravity"
+            case "gemini", "gemini cli", "gemini-cli": return "geminicli"
+            default: return nil
+            }
+        }
+    }
+}
+
+/// Loads the local 24×24 single-ink template SVGs once. No network, no files outside the app's own resources.
+@MainActor
+enum HarnessMarkLibrary {
+    private static let bundleName = "AgentCommander_AgentCommander.bundle"
+    private static let directory = "HarnessIcons"
+    private static var cache: [String: NSImage?] = [:]
+
+    /// Nil means "draw the fallback symbol": unmapped client, missing bundle, or missing/unreadable asset.
+    static func image(for client: AgentClient) -> NSImage? {
+        guard let name = HarnessMark.assetName(for: client) else { return nil }
+        if let cached = cache[name] { return cached }
+        let image = load(name)
+        cache[name] = image
+        return image
+    }
+
+    private static let resources: Bundle? = {
+        // Shipped .app: nested in Contents/Resources. SwiftPM launch: sibling of the executable.
+        // `Bundle(url:)` is optional, so an absent or invalid bundle falls through to the terminal
+        // symbol; `Bundle.module` is avoided because it traps when its bundle is missing.
+        for root in [Bundle.main.resourceURL, Bundle.main.bundleURL] {
+            if let url = root?.appendingPathComponent(bundleName, isDirectory: true),
+               let bundle = Bundle(url: url) {
+                return bundle
+            }
+        }
+        return nil
+    }()
+
+    private static func load(_ name: String) -> NSImage? {
+        guard let url = resources?.url(forResource: name, withExtension: "svg", subdirectory: directory),
+              let image = NSImage(contentsOf: url), image.isValid
+        else { return nil }
+        image.isTemplate = true
+        return image
+    }
+}
+
 /// Mark for the platform a terminal executes on: the Apple logo for macOS, the word `linux` for
 /// Linux, and a neutral host symbol when the platform is not reported. Decorative; the title bar
 /// that shows it carries the spoken platform name.
 struct PlatformMark: View {
     let platform: HostPlatform
     var size: CGFloat = 10
+    /// Console title bars pass a brighter ink; other uses keep the terminal text colour.
+    var tint: Color = Term.text
 
     var body: some View {
         Group {
@@ -339,10 +415,10 @@ struct PlatformMark: View {
             case .remoteLinux:
                 Text("linux").font(Term.font(size - 0.5, weight: .semibold))
             case .unknown:
-                Image(systemName: "desktopcomputer").font(.system(size: size - 1))
+                Image(systemName: "desktopcomputer").font(.system(size: size - 1, weight: .medium))
             }
         }
-        .foregroundStyle(Term.text)
+        .foregroundStyle(tint)
         .fixedSize()
         .accessibilityHidden(true)
     }

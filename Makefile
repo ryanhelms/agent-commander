@@ -1,13 +1,17 @@
 APP = dist/Agent Commander.app
 MACOS = $(APP)/Contents/MacOS
+RESOURCES = $(APP)/Contents/Resources
+SWIFT_RESOURCES = AgentCommander_AgentCommander.bundle
 CONFIG ?= debug
 
 .PHONY: app cli test smoke run
 
 app: cli
 	swift build -c $(CONFIG) --product AgentCommander
-	mkdir -p "$(MACOS)"
-	cp "$$(swift build -c $(CONFIG) --show-bin-path)/AgentCommander" "$(MACOS)/AgentCommander"
+	mkdir -p "$(MACOS)" "$(RESOURCES)"
+	bin_path="$$(swift build -c $(CONFIG) --show-bin-path)" && \
+		cp "$$bin_path/AgentCommander" "$(MACOS)/AgentCommander" && \
+		ditto "$$bin_path/$(SWIFT_RESOURCES)" "$(RESOURCES)/$(SWIFT_RESOURCES)"
 	cp dist/agentctl "$(MACOS)/agentctl"
 	cp packaging/Info.plist "$(APP)/Contents/Info.plist"
 	codesign --force --sign - "$(MACOS)/agentctl"

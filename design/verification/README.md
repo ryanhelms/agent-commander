@@ -14,6 +14,16 @@ The [component inventory](review/COMPONENTS.md) maps all 123 named display decla
 
 ## Live workflow
 
+### Harness icons
+
+The packaged app rendered the local Claude Code, Codex, Antigravity and Gemini CLI marks in a sample run. A shell, a generic MCP client, an unattributed pane and an unrecognized profile each showed the native terminal symbol. Claude Fable compared the wall, focused worker and PiP against the original layouts. The identity mark sits in the existing accent-colored badge, while the separate control at the right of the header still selects Console or Pretty. [Five title bars at native resolution](harness-icons/title-bars.png) · [Wall and PiP](harness-icons/wall-and-pip.jpg) · [Artwork sources](../../Sources/AgentCommander/Resources/HarnessIcons/ATTRIBUTION.txt)
+
+### Console header contrast
+
+Fable photographed the native wall, focused worker and PiP with sample activity paused. Compared with the approved compositions, the updated consoles keep the compact title rows, black scrollback and amber request cue. The full-width header now uses a darker shade of its harness color, with a brighter perimeter and a dark plate behind the provider mark. [Before and after at actual size](console-styling/before-and-after.png) · [Wall and PiP](console-styling/wall-and-pip.jpg) · [Focused worker](console-styling/focused.jpg)
+
+On matching wall captures, sampled glyph-to-plate contrast rose from roughly 2.6 to 7.7 for Claude, 2.0 to 4.6 for Codex, and 2.5 to 7.7 for MCP. These measurements include the effect of rendering the small glyphs. The rebuilt preview also showed a visible border for a dark violet override with Increase Contrast and Reduce Transparency enabled. Selecting Pretty from Backoff strategy’s title-bar menu left Retry telemetry in Console. Reopening the menu showed Pretty checked, and selecting Console restored the initial state.
+
 ### Harness accents
 
 Computer Use compared the native wall, focused console and PiP with the approved layouts. The header now carries a dark tint across its full width, with a matching provider glyph and brighter perimeter. Waiting workers have an additional amber inset. The title bar heights and scrollback positions match the existing console shell. [Wall and PiP](harness-accents/default-wall.jpg) · [Original wall](../concepts/coordinator-wall.png) · [Original PiP](../concepts/attention-pip.png)

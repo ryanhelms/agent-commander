@@ -709,23 +709,36 @@ struct ConsoleModeTitlebarControl: View {
         let mode = modes?.mode(for: consoleID) ?? .console
         let overridden = modes?.hasOverride(for: consoleID) ?? false
         let scope = overridden ? "this console only" : "following all consoles"
+        // Title-bar control ink at rest; the focus colour while this console overrides the mode.
+        let ink = ConsoleHeaderControlInk(active: overridden ? Palette.focus : nil)
+        // Semibold, the weight of the action glyph beside it: the regular symbol was too thin to find.
+        let glyph = Image(systemName: mode.symbol).fontWeight(.semibold)
 
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
             Divider()
             HarnessAccentMenu(client: client)
         } label: {
-            if showsTitle {
-                Label(mode.title, systemImage: mode.symbol)
-                    .labelStyle(.titleAndIcon)
-            } else {
-                Image(systemName: mode.symbol)
+            // Colour is set inside the label: a menu's button style on macOS replaces a foreground
+            // style applied from outside with its own control tint.
+            Group {
+                if showsTitle {
+                    Label { Text(mode.title) } icon: { glyph }
+                        .labelStyle(.titleAndIcon)
+                } else {
+                    glyph
+                }
             }
+            .symbolVariant(overridden ? .fill : .none)
+            .foregroundStyle(ink)
+            // The plain style would shrink the target to the glyph; keep the 23pt square the
+            // action menu uses. A titled label is wider and only gains the height.
+            .frame(minWidth: 23, minHeight: 23).contentShape(Rectangle())
         }
         .symbolVariant(overridden ? .fill : .none)
-        .foregroundStyle(overridden ? Palette.focus : Palette.secondary)
+        .foregroundStyle(ink)
         .menuStyle(.button)
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(modes == nil)

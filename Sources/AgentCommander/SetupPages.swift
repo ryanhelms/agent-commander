@@ -784,7 +784,9 @@ struct DiscoveredPane: Identifiable, Equatable {
 
     let id: String
     let name: String
-    let symbol: String
+    /// Typed provider reported by discovery. Nil for plain shells and unidentified sessions; never
+    /// derived from `name`.
+    var provider: AgentClient? = nil
     let place: String
     let identity: Identity
     var note: String? = nil
@@ -879,7 +881,11 @@ struct AdoptionPage: View {
                 Button { selection = item.id } label: {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            IconTile(symbol: item.symbol, tone: state.1, size: 31)
+                            if let provider = item.provider {
+                                AgentAvatar(client: provider, size: 31)
+                            } else {
+                                IconTile(symbol: "terminal", tone: state.1, size: 31)
+                            }
                             Spacer(minLength: 8)
                             StatusLabel(text: adopted.contains(item.id) ? "Adopted" : state.0, tone: state.1,
                                         symbol: state.2, size: 11.5)

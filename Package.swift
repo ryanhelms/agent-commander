@@ -5,5 +5,10 @@ let package = Package(
     name: "AgentCommander",
     platforms: [.macOS(.v26)],
     products: [.executable(name: "AgentCommander", targets: ["AgentCommander"])],
-    targets: [.executableTarget(name: "AgentCommander")]
+    targets: [
+        .executableTarget(
+            name: "AgentCommander",
+            resources: [.copy("Resources/HarnessIcons")]
+        )
+    ]
 )
