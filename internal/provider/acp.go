@@ -16,6 +16,8 @@ import (
 	"agentcommander/internal/service"
 )
 
+var errACPDisconnected = errors.New("live provider connection disconnected")
+
 // The runner owns the session, scopes MCP to this job and passes only the
 // native session identity to Commander. Output is a live projection.
 func runACP(ctx context.Context, j job, a *api, s *screen) error {
@@ -85,6 +87,13 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		}
 		if !managed {
 			return turnErr
+		}
+		if j.SSH != nil && errors.Is(turnErr, errACPDisconnected) {
+			s.line("SSH disconnected. The original request and conversation are available for reconciliation.")
+			s.flush()
+			return publishTurnOutcome(ctx, a, path+"/control/finish", map[string]string{
+				"state": "disconnected", "message_id": messageID,
+			})
 		}
 		outcome := map[string]string{"state": state, "message_id": messageID}
 		if turnErr != nil {
@@ -191,7 +200,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, ref *model.Sessi
 				return "failed", update.err
 			}
 			if !ok {
-				return "failed", errors.New("live provider stream closed before the turn ended")
+				return "failed", errACPDisconnected
 			}
 			e := update.event
 			*cursor = e.Cursor
@@ -247,6 +256,8 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, ref *model.Sessi
 				case "cancelled":
 					s.line("Turn interrupted.")
 					return "idle", nil
+				case "adapter disconnected":
+					return "failed", errACPDisconnected
 				default:
 					return "failed", fmt.Errorf("provider stopped the turn: %s", reason)
 				}
@@ -275,6 +286,9 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, ref *model.Sessi
 					return "failed", errors.New("reply does not match an offered provider choice")
 				}
 				answer, err := client.Answer(ctx, &model.AnswerRequest{Session: ref, OperationId: "answer-" + id, RequestId: request.RequestId, Answer: &model.AnswerRequest_OptionId{OptionId: q.Answer}})
+				if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
+					return "failed", errACPDisconnected
+				}
 				if err = accepted(answer.GetReceipt(), err); err != nil {
 					return "failed", err
 				}

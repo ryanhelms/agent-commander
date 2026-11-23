@@ -235,6 +235,9 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
+	if in.State == "disconnected" {
+		return disconnectSSHWorker(r, w, in.MessageID)
+	}
 	if in.State != "completed" && in.State != "failed" && in.State != "idle" {
 		return outcome{}, bad("invalid turn outcome")
 	}
@@ -271,6 +274,34 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		stopWorkerInbox(w)
 	}
 	r.refreshOutcome()
+	return changed(w), nil
+}
+
+func disconnectSSHWorker(r *Run, w *Worker, messageID string) (outcome, error) {
+	if w.Host == "" || w.Host == "localhost" || w.NativeSession == nil || w.Control == nil {
+		return outcome{}, conflict("worker has no managed SSH session")
+	}
+	if w.State == "disconnected" {
+		return read(w), nil
+	}
+	if !turnActive(w.State) && w.State != "unknown" {
+		return outcome{}, conflict("there is no active SSH turn")
+	}
+	if messageID != "" {
+		message := w.Control.message(messageID)
+		if message == nil || (message.Status != "processing" && message.Status != "delivery_unknown") {
+			return outcome{}, conflict("follow-up is not active")
+		}
+		message.Status = "delivery_unknown"
+	}
+	w.Control.InterruptRequested, w.Control.InterruptClaimed = false, false
+	w.State = "disconnected"
+	w.Error = "SSH disconnected. Commander could not confirm delivery to the original session."
+	for _, q := range r.Requests {
+		if q.WorkerID == w.ID && q.Delivery == "unconfirmed" {
+			q.Delivery = "unknown"
+		}
+	}
 	return changed(w), nil
 }
 

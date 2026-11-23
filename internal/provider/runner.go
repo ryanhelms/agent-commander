@@ -186,6 +186,7 @@ func writeMCPConfig(dir string, servers map[string]mcpServer) (string, error) {
 var coordinatorTools = []string{
 	"mcp__commander__commander_delegate", "mcp__commander__commander_reply", "mcp__commander__commander_send",
 	"mcp__commander__commander_interrupt", "mcp__commander__commander_stop_worker",
+	"mcp__commander__commander_reconcile_reply",
 }
 
 func agentPolicy(j job) (map[string]mcpServer, string, string) {

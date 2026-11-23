@@ -35,6 +35,9 @@ type reply struct {
 	Request string `json:"request_id"`
 	Answer  string `json:"answer"`
 }
+type reconcile struct {
+	Request string `json:"request_id"`
+}
 type finding struct {
 	Result string `json:"result"`
 }
@@ -123,6 +126,13 @@ func Run(ctx context.Context, c *localapi.Client) error {
 		}
 		return c.Do(ctx, "POST", "/v1/requests/"+id+"/reply", map[string]string{"answer": in.Answer})
 	})
+	register(s, "commander_reconcile_reply", "Check the original native history for an ambiguous SSH reply. Does not resend the answer.", func(ctx context.Context, in reconcile) (json.RawMessage, error) {
+		id, err := localapi.Segment(in.Request)
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(ctx, "POST", "/v1/requests/"+id+"/reconcile", struct{}{})
+	})
 	register(s, "commander_result", "Report findings and test results to your coordinator.", func(ctx context.Context, in finding) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/result", in)
 	})
@@ -180,6 +190,7 @@ func projectStatus(full json.RawMessage) (json.RawMessage, error) {
 			Question string `json:"question"`
 			Status   string `json:"status"`
 			Answer   string `json:"answer,omitempty"`
+			Delivery string `json:"delivery,omitempty"`
 		} `json:"requests"`
 	}
 	if err := json.Unmarshal(full, &status); err != nil {

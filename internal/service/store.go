@@ -67,6 +67,7 @@ type Question struct {
 	Question string           `json:"question"`
 	Status   string           `json:"status"`
 	Answer   string           `json:"answer"`
+	Delivery string           `json:"delivery,omitempty"`
 	Choices  []QuestionChoice `json:"choices,omitempty"`
 }
 

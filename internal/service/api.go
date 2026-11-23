@@ -47,7 +47,7 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	dirty := false
 	for _, run := range s.state.Runs {
 		for _, w := range run.Workers {
-			if run.Status == "running" && w.State != "unknown" && w.State != "stopping" && !ended(w.State) {
+			if run.Status == "running" && w.State != "unknown" && w.State != "disconnected" && w.State != "stopping" && !ended(w.State) {
 				w.State, w.Error = "unknown", "Service restarted. Waiting for evidence from the original worker."
 				if w.Control != nil {
 					for i := range w.Control.Messages {
@@ -105,6 +105,7 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
 	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
+	mux.HandleFunc("POST /v1/requests/{qid}/reconcile", s.reconcileSSHReply)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -501,6 +502,9 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	if ended(w.State) {
 		return outcome{}, conflict("worker has ended")
 	}
+	if w.State == "disconnected" {
+		return outcome{}, conflict("SSH worker disconnected; reconcile the original session first")
+	}
 	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: formatQuestion(in.Question, in.Choices), Status: "pending", Choices: in.Choices}
 	r.Requests = append(r.Requests, q)
 	s.remember(key, intent, q.ID)
@@ -513,6 +517,12 @@ func (s *service) getQuestion(req *http.Request, actor string) (outcome, error) 
 	}
 	if !s.canRead(actor, r) {
 		return outcome{}, denied()
+	}
+	if actor == q.WorkerID && q.Status == "answered" {
+		_, worker := s.worker(q.WorkerID)
+		if q.Delivery == "unknown" || worker.State == "disconnected" {
+			return outcome{}, conflict("reply cannot be delivered to the disconnected SSH session")
+		}
 	}
 	return read(q), nil
 }
@@ -541,6 +551,9 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 		}
 		return read(q), nil
 	}
+	if w.State == "disconnected" {
+		return outcome{}, conflict("SSH worker disconnected; the original request is retained")
+	}
 	if actor != "" && w.Control != nil && w.Control.Held {
 		return outcome{}, conflict("developer holds worker input")
 	}
@@ -548,6 +561,9 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, conflict("the requesting worker is no longer running")
 	}
 	q.Answer, q.Status = in.Answer, "answered"
+	if w.Host != "" && w.Host != "localhost" {
+		q.Delivery = "unconfirmed"
+	}
 	return changed(q), nil
 }
 func (s *service) workerState(req *http.Request, actor string) (outcome, error) {
@@ -563,6 +579,9 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	case "working", "waiting", "idle", "completed", "failed":
 	default:
 		return outcome{}, bad("invalid worker state")
+	}
+	if w.State == "disconnected" {
+		return outcome{}, conflict("SSH worker disconnected; reconcile the original session first")
 	}
 	if ended(w.State) && w.State != in.State {
 		return outcome{}, conflict("worker has already ended")

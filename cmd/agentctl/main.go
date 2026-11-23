@@ -31,6 +31,7 @@ const usage = `Agent Commander
   agentctl show RUN                      Inspect a run and its consoles
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
   agentctl reply REQUEST ANSWER          Answer a pending question
+  agentctl reconcile REQUEST             Check original SSH history for reply delivery
   agentctl stop RUN                      Stop this run's managed workers
   agentctl take WORKER GENERATION        Acquire worker input for the developer
   agentctl hand-back WORKER GENERATION   Return worker input to its coordinator
@@ -129,7 +130,7 @@ func operation(args []string) (method, path string, input any, err error) {
 			return "", "", nil, errors.New("project must be a directory")
 		}
 		return "POST", "/v1/runs", map[string]string{"project": filepath.Base(dir), "path": dir, "task": strings.Join(args[2:], " "), "client": "claude"}, nil
-	case "show", "stop", "reply", "delegate":
+	case "show", "stop", "reply", "reconcile", "delegate":
 		if len(args) < 2 {
 			return invalid()
 		}
@@ -153,6 +154,11 @@ func operation(args []string) (method, path string, input any, err error) {
 				return invalid()
 			}
 			return "POST", "/v1/requests/" + id + "/reply", map[string]string{"answer": strings.Join(args[2:], " ")}, nil
+		case "reconcile":
+			if len(args) != 2 {
+				return invalid()
+			}
+			return "POST", "/v1/requests/" + id + "/reconcile", struct{}{}, nil
 		case "delegate":
 			if len(args) < 5 {
 				return invalid()
