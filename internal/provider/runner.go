@@ -187,6 +187,7 @@ var coordinatorTools = []string{
 	"mcp__commander__commander_delegate", "mcp__commander__commander_reply", "mcp__commander__commander_send",
 	"mcp__commander__commander_interrupt", "mcp__commander__commander_stop_worker",
 	"mcp__commander__commander_reconcile_reply",
+	"mcp__commander__commander_integrate",
 }
 
 func agentPolicy(j job) (map[string]mcpServer, string, string) {
@@ -197,6 +198,10 @@ func agentPolicy(j job) (map[string]mcpServer, string, string) {
 		base += " You coordinate this run. Split the assignment into two modest, distinct research assignments and launch both through commander_delegate(name, task). Do not delegate to yourself. Read both workers' results using commander_status. While they are working, call commander_status with wait_seconds set to 30 so it returns when something changes. Answer their routine questions with commander_reply when the original task gives you the answer. Escalate genuine ambiguity to the developer. Finish by synthesizing the results."
 	}
 	allowed := "Read,Grep,Glob,mcp__commander__commander_status,mcp__commander__commander_ask,mcp__commander__commander_wait,mcp__commander__commander_result"
+	if j.Worker.CodingSource != nil {
+		base = "You are an Agent Commander coding worker. Make only the assigned changes inside your dedicated Git worktree. Coordinate only through Commander MCP. Use commander_commit with the explicit changed paths and submit the returned revision, findings, and any test outcomes through commander_result. Report tests you could not run explicitly. Do not integrate the changes yourself."
+		allowed += ",mcp__commander__commander_commit"
+	}
 	if j.Worker.Role == "coordinator" && !j.FocusedProof {
 		allowed += "," + strings.Join(coordinatorTools, ",")
 		if j.DevflowUI != "" {

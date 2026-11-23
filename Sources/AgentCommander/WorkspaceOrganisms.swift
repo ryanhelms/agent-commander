@@ -251,6 +251,9 @@ struct RequestList: View {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
                             StatusLabel(request.workerState, size: 11.5)
+                            if request.hostIsReconnecting {
+                                HostLinkStatus(host: request.host, style: .label, size: 11.5)
+                            }
                             Spacer(minLength: 8)
                             Text(request.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
                         }

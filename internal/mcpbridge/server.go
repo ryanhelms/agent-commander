@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"time"
 
@@ -21,6 +22,7 @@ type delegate struct {
 	Task   string `json:"task"`
 	Client string `json:"client,omitempty" jsonschema:"choose an available client for this worker; omit to inherit the run's client"`
 	Host   string `json:"host,omitempty" jsonschema:"configured SSH host alias; omit for this Mac"`
+	Kind   string `json:"kind,omitempty" jsonschema:"research, review, or coding; coding uses an isolated Git worktree"`
 	Key    string `json:"idempotency_key,omitempty" jsonschema:"reuse this key when retrying the same delegation"`
 }
 type ask struct {
@@ -39,7 +41,22 @@ type reconcile struct {
 	Request string `json:"request_id"`
 }
 type finding struct {
-	Result string `json:"result"`
+	Result   string `json:"result"`
+	Revision string `json:"revision,omitempty" jsonschema:"committed revision from the assigned coding worktree"`
+	Tests    []struct {
+		Command string `json:"command"`
+		Outcome string `json:"outcome"`
+	} `json:"tests,omitempty"`
+}
+
+type codingCommit struct {
+	Files   []string `json:"files"`
+	Message string   `json:"message"`
+}
+
+type integrate struct {
+	Workers []string `json:"worker_ids"`
+	Key     string   `json:"idempotency_key"`
 }
 
 type workerTarget struct {
@@ -75,7 +92,7 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	workerPath := "/v1/workers/" + actor
 	s := mcp.NewServer(&mcp.Implementation{Name: "agent-commander", Version: "0.1.0"}, nil)
 	register(s, "commander_delegate", "Launch a managed worker under your assignment in this run.", func(ctx context.Context, in delegate) (json.RawMessage, error) {
-		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "client": in.Client, "host": in.Host, "idempotency_key": in.Key})
+		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "client": in.Client, "host": in.Host, "kind": in.Kind, "idempotency_key": in.Key})
 	})
 	register(s, "commander_ask", "Escalate a question and obtain its request ID. Use commander_wait for the answer.", func(ctx context.Context, in ask) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/questions", in)
@@ -96,25 +113,35 @@ func Run(ctx context.Context, c *localapi.Client) error {
 		defer deadline.Stop()
 		ticker := time.NewTicker(450 * time.Millisecond)
 		defer ticker.Stop()
+		persistent := os.Getenv("AGENT_COMMANDER_PERSISTENT_SSH_WAIT") == "1"
+		var last json.RawMessage
 		for {
 			b, err := c.Do(ctx, "GET", workerPath+"/questions/"+id, nil)
 			if err != nil {
-				return nil, err
-			}
-			var q struct {
-				Status string `json:"status"`
-			}
-			if err = json.Unmarshal(b, &q); err != nil {
-				return nil, err
-			}
-			if q.Status != "pending" {
-				return b, nil
+				var transport *url.Error
+				if !persistent || !errors.As(err, &transport) {
+					return nil, err
+				}
+			} else {
+				last = b
+				var q struct {
+					Status string `json:"status"`
+				}
+				if decodeErr := json.Unmarshal(b, &q); decodeErr != nil {
+					return nil, decodeErr
+				}
+				if q.Status != "pending" {
+					return b, nil
+				}
 			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-deadline.C:
-				return b, nil
+				if last != nil {
+					return last, nil
+				}
+				return nil, err
 			case <-ticker.C:
 			}
 		}
@@ -135,6 +162,12 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	})
 	register(s, "commander_result", "Report findings and test results to your coordinator.", func(ctx context.Context, in finding) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/result", in)
+	})
+	register(s, "commander_commit", "Commit selected changed files in your assigned coding worktree.", func(ctx context.Context, in codingCommit) (json.RawMessage, error) {
+		return c.Do(ctx, "POST", workerPath+"/coding/commit", in)
+	})
+	register(s, "commander_integrate", "Prepare selected coding handoffs, run the configured combined tests, and advance the coordinator branch when safe.", func(ctx context.Context, in integrate) (json.RawMessage, error) {
+		return c.Do(ctx, "POST", runPath+"/integrations", in)
 	})
 	register(s, "commander_send", "Queue a follow-up for a managed worker you control. It runs when the worker is ready for a new turn.", func(ctx context.Context, in followUp) (json.RawMessage, error) {
 		id, err := localapi.Segment(in.Worker)
@@ -165,24 +198,27 @@ func workerCommand(c *localapi.Client, action string) func(context.Context, work
 // subscriptions continue to use the full API response.
 func projectStatus(full json.RawMessage) (json.RawMessage, error) {
 	var status struct {
-		ID            string `json:"id"`
-		Project       string `json:"project"`
-		Path          string `json:"path"`
-		Task          string `json:"task"`
-		Client        string `json:"client"`
-		CoordinatorID string `json:"coordinator_id"`
-		Status        string `json:"status"`
+		ID            string            `json:"id"`
+		Project       string            `json:"project"`
+		Path          string            `json:"path"`
+		Task          string            `json:"task"`
+		Client        string            `json:"client"`
+		CoordinatorID string            `json:"coordinator_id"`
+		Status        string            `json:"status"`
+		Integrations  []json.RawMessage `json:"integrations,omitempty"`
 		Workers       []struct {
-			ID       string `json:"id"`
-			ParentID string `json:"parent_id,omitempty"`
-			Role     string `json:"role"`
-			Name     string `json:"name"`
-			Task     string `json:"task"`
-			State    string `json:"state"`
-			Host     string `json:"host,omitempty"`
-			Worktree string `json:"worktree,omitempty"`
-			Result   string `json:"result,omitempty"`
-			Error    string `json:"error,omitempty"`
+			ID         string          `json:"id"`
+			ParentID   string          `json:"parent_id,omitempty"`
+			Role       string          `json:"role"`
+			Name       string          `json:"name"`
+			Task       string          `json:"task"`
+			State      string          `json:"state"`
+			Host       string          `json:"host,omitempty"`
+			Connection string          `json:"connection,omitempty"`
+			Worktree   string          `json:"worktree,omitempty"`
+			Result     string          `json:"result,omitempty"`
+			Error      string          `json:"error,omitempty"`
+			Handoff    json.RawMessage `json:"handoff,omitempty"`
 		} `json:"workers"`
 		Requests []struct {
 			ID       string `json:"id"`

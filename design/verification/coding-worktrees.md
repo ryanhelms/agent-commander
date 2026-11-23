@@ -1,0 +1,9 @@
+# Coding worktrees and integration
+
+The owner creates a run through `POST /v1/runs` and can supply the combined test command as an argument list in `test_command`. For example, a Go project can set `["go","test","./..."]`. The coordinator delegates with `kind: "coding"` through MCP or the workers API. Use `agentctl delegate-coding` for the equivalent CLI operation. The first managed coding workflow runs local Claude ACP. Research and review keep their existing checkout behavior.
+
+The service records the coordinator commit and assigns a branch under `commander/<worker-id>`. The launcher creates a linked worktree under `~/.worktrees/<repository>/<worker-id>`. The worker uses `commander_commit` for explicitly selected files and reports the commit, findings and test outcomes through `commander_result`. The coordinator reads them in `commander_status`.
+
+The coordinator uses `commander_integrate` or `agentctl integrate RUN KEY WORKER...` to prepare the selected handoffs. Commander creates a detached candidate, runs the owner-configured tests there, and checks the target again before a fast-forward. A repeat with the same key and worker selection returns the original operation. Changed inputs under that key are rejected. Failed tests and conflicts retain the candidate for inspection.
+
+Two native Claude workers made separate committed changes in a disposable repository. Both reported their file read-back checks. The coordinator gathered both handoffs through MCP, requested integration, and reported the combined tests passed. Git verified that each worker branch pointed at its handoff commit and that the destination branch pointed at the tested revision. A CLI retry reused its operation ID and left the destination at that same revision. Regression tests exercised a merge conflict, a failed combined test, a dirty checkout, and a branch advanced while integration was preparing.

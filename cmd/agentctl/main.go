@@ -30,6 +30,9 @@ const usage = `Agent Commander
   agentctl list                          List runs
   agentctl show RUN                      Inspect a run and its consoles
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
+  agentctl delegate-coding RUN PARENT NAME TASK
+                                         Create an isolated coding worker
+  agentctl integrate RUN KEY WORKER...   Test and integrate selected coding handoffs
   agentctl reply REQUEST ANSWER          Answer a pending question
   agentctl reconcile REQUEST             Check original SSH history for reply delivery
   agentctl stop RUN                      Stop this run's managed workers
@@ -80,6 +83,8 @@ func run(args []string) error {
 			return errors.New("runner-history takes its request on stdin")
 		}
 		return provider.RunSSHHistory(ctx, os.Stdin, os.Stdout)
+	case "persistent-acp":
+		return provider.RunPersistentACP(ctx, args[1:], os.Stdin, os.Stdout)
 	case "serve":
 		return serve(ctx, paths)
 	case "start":
@@ -130,7 +135,7 @@ func operation(args []string) (method, path string, input any, err error) {
 			return "", "", nil, errors.New("project must be a directory")
 		}
 		return "POST", "/v1/runs", map[string]string{"project": filepath.Base(dir), "path": dir, "task": strings.Join(args[2:], " "), "client": "claude"}, nil
-	case "show", "stop", "reply", "reconcile", "delegate":
+	case "show", "stop", "reply", "reconcile", "delegate", "delegate-coding", "integrate":
 		if len(args) < 2 {
 			return invalid()
 		}
@@ -159,11 +164,20 @@ func operation(args []string) (method, path string, input any, err error) {
 				return invalid()
 			}
 			return "POST", "/v1/requests/" + id + "/reconcile", struct{}{}, nil
-		case "delegate":
+		case "integrate":
+			if len(args) < 4 {
+				return invalid()
+			}
+			return "POST", "/v1/runs/" + id + "/integrations", map[string]any{"worker_ids": args[3:], "idempotency_key": args[2]}, nil
+		case "delegate", "delegate-coding":
 			if len(args) < 5 {
 				return invalid()
 			}
-			return "POST", "/v1/runs/" + id + "/workers", map[string]string{"parent_id": args[2], "name": args[3], "task": strings.Join(args[4:], " ")}, nil
+			input := map[string]string{"parent_id": args[2], "name": args[3], "task": strings.Join(args[4:], " ")}
+			if args[0] == "delegate-coding" {
+				input["kind"] = "coding"
+			}
+			return "POST", "/v1/runs/" + id + "/workers", input, nil
 		}
 	case "take", "hand-back", "follow-up", "interrupt", "stop-worker":
 		if len(args) < 2 {

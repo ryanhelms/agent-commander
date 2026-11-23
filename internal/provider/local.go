@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"agentcommander/internal/service"
+	"agentcommander/internal/worktrees"
 )
 
 type Local struct {
@@ -110,6 +111,23 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if !validID.MatchString(w.ID) {
 		return errors.New("invalid worker ID")
 	}
+	if w.CodingSource != nil {
+		if err := l.CheckCodingClient(w.Client); err != nil {
+			return err
+		}
+		git, err := worktrees.New()
+		if err != nil {
+			return err
+		}
+		assigned, err := git.Create(ctx, *w.CodingSource, w.ID)
+		if err != nil {
+			return err
+		}
+		if assigned.Path != w.Worktree {
+			return errors.New("coding worktree changed after worker reservation")
+		}
+		w.Path = assigned.Path
+	}
 	focused := os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
 	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && !focused
 	var remote *sshProfile
@@ -176,6 +194,15 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if err := os.WriteFile(jobPath, contents, 0600); err != nil {
 		return err
 	}
+	if remote != nil && remote.Persistent {
+		profile, err := json.Marshal(remote)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "persistent-ssh.json"), profile, 0600); err != nil {
+			return err
+		}
+	}
 	// tmux executes multi-argument commands directly. None of its arguments are prompt text.
 	args := []string{"-L", l.label, "-f", "/dev/null", "new-session", "-d", "-s", w.ID, "-x", "120", "-y", "38", "-c", w.Path, "--", l.executable, "runner", jobPath, ";", "set-option", "-w", "-t", "=" + w.ID + ":", "remain-on-exit", "on"}
 	out, err := exec.CommandContext(ctx, tmux, args...).CombinedOutput()
@@ -185,9 +212,30 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	return nil
 }
 
+func (l *Local) CheckCodingClient(client string) error {
+	client = strings.ToLower(strings.TrimSpace(client))
+	if (client != "claude" && client != "claude code") || os.Getenv("AGENT_COMMANDER_RUNTIME") != "acp" || os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1" {
+		return errors.New("coding assignments currently require the managed Claude ACP profile")
+	}
+	return nil
+}
+
 func (l *Local) Stop(ctx context.Context, id string) error {
 	if !validID.MatchString(id) {
 		return errors.New("invalid worker ID")
+	}
+	profilePath := filepath.Join(l.stateDir, "jobs", id, "persistent-ssh.json")
+	if data, err := os.ReadFile(profilePath); err == nil {
+		var profile sshProfile
+		if err := json.Unmarshal(data, &profile); err != nil {
+			return err
+		}
+		proxy := persistentProxy{Profile: profile, Worker: id}
+		if err := proxy.stop(); err != nil {
+			return fmt.Errorf("stop original persistent SSH worker: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	tmux, err := executablePath("tmux", "AGENT_COMMANDER_TMUX")
 	if err != nil {

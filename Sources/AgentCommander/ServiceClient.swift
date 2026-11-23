@@ -25,10 +25,16 @@ struct Worker: Decodable, Identifiable, Equatable, Sendable {
     var createdAt: String? = nil
     var messages: [AGUIMessage]? = nil
     var control: WorkerControl? = nil
+    /// Link to the execution host. Sent only for workers in persistent SSH mode, as `connected`
+    /// or `reconnecting`. While it reconnects, `state` keeps the worker's own turn state.
+    var connection: String? = nil
+
+    /// The service's value for a persistent link that is being re-established. A contract value.
+    static let connectionReconnecting = "reconnecting"
 
     enum CodingKeys: String, CodingKey {
         case id, name, role, parentID = "parent_id", runID = "run_id", state, host, worktree, task, output, error
-        case client, branch, createdAt = "created_at", messages, control
+        case client, branch, createdAt = "created_at", messages, control, connection
     }
 }
 

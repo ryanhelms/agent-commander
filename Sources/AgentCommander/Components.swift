@@ -215,6 +215,19 @@ struct RequestPresentation: Identifiable, Equatable {
 
     var isWorkerDisconnected: Bool { disconnectReason != nil }
 
+    /// The persistent SSH link to the worker's host is reconnecting. The worker is still running
+    /// on that host and the request can be answered: Commander keeps one answer and the worker
+    /// reads it when the link comes back. Never set together with `disconnectReason`.
+    var hostIsReconnecting = false
+
+    /// What happens to a reply sent while the host reconnects, in full. Nil otherwise.
+    var replyHeldStatement: String? {
+        guard hostIsReconnecting, !isWorkerDisconnected else { return nil }
+        return "The SSH link to \(host) is reconnecting. \(workerName) is still running there. "
+            + "You can reply to request \(shortID) now: Commander keeps one answer and "
+            + "\(workerName) reads it when the link comes back."
+    }
+
     /// Status of the asking worker as a request surface states it.
     var workerState: TaskState { isWorkerDisconnected ? .disconnected : .needsInput }
 
@@ -257,6 +270,9 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// Short ID of this worker's most recent answered request whose delivery the service could not
     /// confirm. The answer was accepted; whether the worker received it is unknown.
     var unconfirmedReply: String? = nil
+    /// The persistent SSH link to this worker's host is reconnecting. `state` is still the
+    /// worker's own turn state, and a pending request can still be answered.
+    var hostIsReconnecting = false
 
     var isDisconnected: Bool { state == .disconnected }
 }
@@ -730,6 +746,9 @@ extension RunContent {
             let explanation = worker.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let disconnectReason: String? = state == .disconnected
                 ? (explanation.isEmpty ? "The connection to \(worker.host) was lost." : explanation) : nil
+            // A persistent link that is reconnecting. A disconnected worker is reported as that alone.
+            let reconnecting = state != .disconnected
+                && worker.connection?.lowercased() == Worker.connectionReconnecting
             let request = requestByWorker[worker.id].map { question in
                 RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
@@ -738,7 +757,8 @@ extension RunContent {
                     platform: platform, inputHolder: isCoordinator ? worker.name : holder,
                     contextTail: Self.tail(of: worker.output),
                     contextEntries: Array(transcript.suffix(TranscriptEntry.recentWindow)),
-                    disconnectReason: disconnectReason)
+                    disconnectReason: disconnectReason,
+                    hostIsReconnecting: reconnecting)
             }
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
@@ -758,7 +778,8 @@ extension RunContent {
                 transcript: transcript,
                 queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
                 interruptRequested: worker.control?.interruptRequested == true,
-                unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) })
+                unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) },
+                hostIsReconnecting: reconnecting)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

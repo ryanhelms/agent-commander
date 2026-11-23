@@ -15,11 +15,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agentcommander/internal/worktrees"
 )
 
 type LaunchSpec struct {
 	ID, RunID, ParentID, Name, Task, Role, Path, Token, Client string
 	Host, Worktree                                             string
+	CodingSource                                               *worktrees.Checkout
 }
 
 type Launcher interface {
@@ -41,24 +44,27 @@ type ConsoleEvent struct {
 }
 
 type Worker struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Role          string         `json:"role"`
-	ParentID      string         `json:"parent_id"`
-	RunID         string         `json:"run_id"`
-	State         string         `json:"state"`
-	Host          string         `json:"host"`
-	Worktree      string         `json:"worktree"`
-	Branch        string         `json:"branch,omitempty"`
-	Client        string         `json:"client,omitempty"`
-	CreatedAt     string         `json:"created_at,omitempty"`
-	Task          string         `json:"task"`
-	Output        string         `json:"output"`
-	Error         string         `json:"error,omitempty"`
-	Result        string         `json:"result,omitempty"`
-	Console       []ConsoleEvent `json:"console,omitempty"`
-	Control       *WorkerControl `json:"control,omitempty"`
-	NativeSession *NativeSession `json:"native_session,omitempty"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Role          string              `json:"role"`
+	ParentID      string              `json:"parent_id"`
+	RunID         string              `json:"run_id"`
+	State         string              `json:"state"`
+	Host          string              `json:"host"`
+	Worktree      string              `json:"worktree"`
+	Branch        string              `json:"branch,omitempty"`
+	Client        string              `json:"client,omitempty"`
+	CreatedAt     string              `json:"created_at,omitempty"`
+	Task          string              `json:"task"`
+	Output        string              `json:"output"`
+	Error         string              `json:"error,omitempty"`
+	Result        string              `json:"result,omitempty"`
+	Console       []ConsoleEvent      `json:"console,omitempty"`
+	Control       *WorkerControl      `json:"control,omitempty"`
+	NativeSession *NativeSession      `json:"native_session,omitempty"`
+	Connection    string              `json:"connection,omitempty"`
+	Coding        *worktrees.Checkout `json:"coding,omitempty"`
+	Handoff       *CodingHandoff      `json:"handoff,omitempty"`
 }
 
 type Question struct {
@@ -72,19 +78,21 @@ type Question struct {
 }
 
 type Run struct {
-	ID            string      `json:"id"`
-	Project       string      `json:"project"`
-	Path          string      `json:"path"`
-	Task          string      `json:"task"`
-	Title         string      `json:"title,omitempty"`
-	Branch        string      `json:"branch,omitempty"`
-	CreatedAt     string      `json:"created_at,omitempty"`
-	Client        string      `json:"client"`
-	CoordinatorID string      `json:"coordinator_id"`
-	Workers       []*Worker   `json:"workers"`
-	Requests      []*Question `json:"requests"`
-	Status        string      `json:"status"`
-	WorkerLimit   int         `json:"worker_limit"`
+	ID            string         `json:"id"`
+	Project       string         `json:"project"`
+	Path          string         `json:"path"`
+	Task          string         `json:"task"`
+	Title         string         `json:"title,omitempty"`
+	Branch        string         `json:"branch,omitempty"`
+	CreatedAt     string         `json:"created_at,omitempty"`
+	Client        string         `json:"client"`
+	CoordinatorID string         `json:"coordinator_id"`
+	Workers       []*Worker      `json:"workers"`
+	Requests      []*Question    `json:"requests"`
+	Status        string         `json:"status"`
+	WorkerLimit   int            `json:"worker_limit"`
+	TestCommand   []string       `json:"test_command,omitempty"`
+	Integrations  []*Integration `json:"integrations,omitempty"`
 }
 
 type retryReceipt struct {
@@ -101,6 +109,7 @@ type database struct {
 type service struct {
 	mu               sync.Mutex
 	process          sync.Mutex // order launches and stops across their external effects
+	integrateBranch  sync.Mutex // serialize checked-out branch updates
 	path             string
 	state            database
 	launcher         Launcher
@@ -317,9 +326,9 @@ func (r *Run) refreshOutcome() {
 	}
 }
 
-func (s *service) newWorker(r *Run, name, task, parent, role, client, host, checkout string) (*Worker, LaunchSpec) {
+func (s *service) newWorker(r *Run, id, name, task, parent, role, client, host, checkout string) (*Worker, LaunchSpec) {
 	w := &Worker{
-		ID: randomID("w-"), RunID: r.ID, Name: name, Task: task, ParentID: parent,
+		ID: id, RunID: r.ID, Name: name, Task: task, ParentID: parent,
 		Role: role, State: "starting", Host: host, Worktree: checkout,
 		Client: client, CreatedAt: timestamp(),
 	}

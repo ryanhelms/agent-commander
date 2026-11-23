@@ -22,6 +22,11 @@ import SwiftUI
 //   AGENT_COMMANDER_PREVIEW_DISCONNECT=<worker ID>        show that sample worker as disconnected,
 //                                           with its pending request kept and its reply closed
 //                                           (W-047 Timeout cases on build-01 carries Q-018)
+//   AGENT_COMMANDER_PREVIEW_RECONNECT=<worker ID>         show that sample worker with its persistent
+//                                           SSH link reconnecting: its own status is kept and its
+//                                           reply stays open (W-047 carries Q-018; W-044 Retry
+//                                           telemetry on build-01 is working with no request).
+//                                           PREVIEW_DISCONNECT wins for the same worker
 //   AGENT_COMMANDER_PREVIEW_DELIVERY_UNKNOWN=<worker ID>  show that sample worker with an accepted
 //                                           answer whose delivery is unknown
 //
@@ -613,6 +618,12 @@ enum DesignFixture {
     /// The sample worker shown as disconnected, when a capture asks for one. Its pending request
     /// stays in place with the reply closed, on the wall, in the focused worker and in the PiP.
     static let disconnectedWorkerID = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_DISCONNECT"]
+    /// The sample worker whose persistent SSH link is shown reconnecting, when a capture asks for
+    /// one. It keeps its own status, and a pending request can still be answered.
+    static let reconnectingWorkerID: String? = {
+        let id = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_RECONNECT"]
+        return id == disconnectedWorkerID ? nil : id
+    }()
     /// The sample worker shown with an accepted answer whose delivery is unknown.
     static let unconfirmedWorkerID = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_DELIVERY_UNKNOWN"]
 
@@ -621,8 +632,9 @@ enum DesignFixture {
     }
 
     private static func withSampleConnection(_ request: RequestPresentation) -> RequestPresentation {
-        guard request.workerID == disconnectedWorkerID else { return request }
         var request = request
+        if request.workerID == reconnectingWorkerID { request.hostIsReconnecting = true }
+        guard request.workerID == disconnectedWorkerID else { return request }
         request.disconnectReason = disconnectReason(host: request.host)
         return request
     }
@@ -851,7 +863,9 @@ enum DesignFixture {
             location: branch, locationIsBranch: true, task: task, output: output, error: error,
             state: state, isCoordinator: false, lineage: [run] + parents + [name],
             control: control, request: pending, startedAt: started,
-            unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil)
+            unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil,
+            // Only the link changed: status, output and the pending request are as they were.
+            hostIsReconnecting: id == reconnectingWorkerID && state != .stopped)
     }
 
     private static func coordinator(_ store: PreviewStore, runID: String, id: String, name: String,

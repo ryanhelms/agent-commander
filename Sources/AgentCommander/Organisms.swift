@@ -175,7 +175,8 @@ struct WorkerTile: View {
         return TerminalStatusLine(state: worker.state, size: size,
                                   inset: isFocusedVariant ? 21 : Metric.tileInset,
                                   request: worker.request,
-                                  openRequest: isFocusedVariant ? nil : actions.openRequest) {
+                                  openRequest: isFocusedVariant ? nil : actions.openRequest,
+                                  reconnectingHost: worker.hostIsReconnecting ? worker.host : nil) {
             if isFocusedVariant, let request = worker.request, !request.isWorkerDisconnected, reply != nil {
                 TermHint(keys: "↩", action: "send", size: size - 1)
             }
@@ -253,6 +254,7 @@ struct WorkerTile: View {
     private var summary: String {
         var parts = [worker.name, worker.client.displayName, "host \(worker.host), \(worker.platform.label)",
                      worker.state.label]
+        if worker.hostIsReconnecting { parts.append("host reconnecting") }
         switch worker.control {
         case .observing(let holder): parts.append("directed by \(holder)")
         case .held: parts.append("you have control")
@@ -262,6 +264,8 @@ struct WorkerTile: View {
         if let request = worker.request {
             parts.append(request.isWorkerDisconnected
                 ? "request \(request.shortID) waiting, reply unavailable until reconnected"
+                : request.hostIsReconnecting
+                ? "request \(request.shortID) waiting, a reply is held until the host reconnects"
                 : "request \(request.shortID) waiting")
         }
         if let unconfirmed = worker.unconfirmedReply { parts.append("reply to request \(unconfirmed) delivery unknown") }
@@ -360,6 +364,9 @@ struct NestedWorkerGroup<Content: View>: View {
     var hasRequest = false
     /// A worker in the group is disconnected. Shown on the collapsed header, where its tile is hidden.
     var hasDisconnected = false
+    /// Hosts of the group's workers whose persistent SSH link is reconnecting, named together.
+    /// Shown on the collapsed header, where the tiles are hidden.
+    var reconnectingHost: String? = nil
     let toggle: () -> Void
     @ViewBuilder let content: Content
 
@@ -376,6 +383,9 @@ struct NestedWorkerGroup<Content: View>: View {
                         .font(.system(size: 10.5))
                     Spacer(minLength: 8)
                     if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
+                    if collapsed, let reconnectingHost {
+                        HostLinkStatus(host: reconnectingHost, style: .label, size: 10.5)
+                    }
                     if collapsed && hasRequest {
                         StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
                     }
@@ -385,7 +395,8 @@ struct NestedWorkerGroup<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(name), \(nestedCount) nested" + (hasDisconnected ? ", a worker is disconnected" : ""))
+            .accessibilityLabel("\(name), \(nestedCount) nested" + (hasDisconnected ? ", a worker is disconnected" : "")
+                                + (reconnectingHost.map { ", host \($0) reconnecting" } ?? ""))
             .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
             .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
@@ -474,9 +485,11 @@ struct WorkerWall<Tile: View>: View {
     @ViewBuilder private func rowView(_ row: Row, columns: Int, height: CGFloat) -> some View {
         if let group = row.group {
             let isClosed = collapsed.contains(group.id)
+            let reconnecting = Set(group.all.filter(\.hostIsReconnecting).map(\.host)).sorted()
             NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
                               hasRequest: group.all.contains { $0.request != nil },
                               hasDisconnected: group.all.contains(where: \.isDisconnected),
+                              reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
                               toggle: { toggleGroup(group.id) }) {
                 VStack(spacing: 9) {
                     ForEach(Array(group.all.chunked(into: columns).enumerated()), id: \.offset) { _, chunk in
@@ -568,7 +581,8 @@ struct CoordinatorConsole: View {
             .padding(.top, 12).padding(.horizontal, 17).padding(.bottom, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Term.background)
-            TerminalStatusLine(state: coordinator.state, size: 11.5, inset: 17) {
+            TerminalStatusLine(state: coordinator.state, size: 11.5, inset: 17,
+                               reconnectingHost: coordinator.hostIsReconnecting ? coordinator.host : nil) {
                 if isKeyFocused {
                     InputOwnership(workerName: coordinator.name, control: coordinator.control, isKeyFocused: true)
                 }
@@ -583,7 +597,8 @@ struct CoordinatorConsole: View {
         }
         .harnessConsoleSurface(coordinator.client, attention: coordinator.request != nil)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Coordinator \(coordinator.name), \(coordinator.state.label)")
+        .accessibilityLabel("Coordinator \(coordinator.name), \(coordinator.state.label)"
+                            + (coordinator.hostIsReconnecting ? ", host reconnecting" : ""))
     }
 
     private func detail(for request: RequestPresentation) -> String {
@@ -645,7 +660,8 @@ struct AttentionStack: View {
         .shadow(color: .black.opacity(0.62), radius: 22, y: 13)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Request from \(current.workerName) in \(current.runTitle)"
-                            + (current.isWorkerDisconnected ? ". \(current.workerName) is disconnected." : ""))
+                            + (current.isWorkerDisconnected ? ". \(current.workerName) is disconnected." : "")
+                            + (current.replyHeldStatement.map { ". \($0)" } ?? ""))
     }
 
     private var front: some View {
@@ -705,7 +721,8 @@ struct AttentionStack: View {
                     }
                     RequestPrompt(request: current, reply: reply, density: .compact, inset: 11)
                     // The asking worker's status: disconnected ahead of needs input, as on its tile.
-                    TerminalStatusLine(state: current.workerState, size: 10.75, inset: 11) {
+                    TerminalStatusLine(state: current.workerState, size: 10.75, inset: 11,
+                                       reconnectingHost: current.hostIsReconnecting ? current.host : nil) {
                         // The shared ownership cue: its words whole, or the symbol alone with the
                         // full statement in its help tag and accessibility label.
                         InputOwnership(workerName: current.workerName,
@@ -761,6 +778,9 @@ struct AttentionDrawer: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         StatusLabel(current.workerState, size: 11.5)
+                        if current.hostIsReconnecting {
+                            HostLinkStatus(host: current.host, style: .label, size: 11.5)
+                        }
                         Spacer(minLength: 8)
                         Text(current.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
                             .help("Request \(current.id)")

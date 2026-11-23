@@ -293,6 +293,11 @@ struct CockpitScreen: View {
         content.pending.filter(\.isWorkerDisconnected).map(\.id)
     }
 
+    /// Pending requests whose host link is reconnecting, across every run. Their reply stays open.
+    private var heldReplyRequestIDs: [String] {
+        content.pending.filter { $0.replyHeldStatement != nil }.map(\.id)
+    }
+
     private var stopWorkerTitle: String {
         ui.stopWorkerCandidate.map { "Stop \($0.name)?" } ?? "Stop worker?"
     }
@@ -309,6 +314,7 @@ struct CockpitScreen: View {
             }
             .onChange(of: content.pending.map(\.id)) { old, new in pendingChanged(from: old, to: new) }
             .onChange(of: disconnectedRequestIDs) { old, new in disconnectedRequestsChanged(from: old, to: new) }
+            .onChange(of: heldReplyRequestIDs) { old, new in heldReplyRequestsChanged(from: old, to: new) }
             .onAppear { seedFocus() }
     }
 
@@ -886,6 +892,17 @@ struct CockpitScreen: View {
             if replyFocus == request.id {
                 replyFocus = nil
                 restorePaneFocus(ui.returnFocusWorkerID ?? run?.coordinator?.id)
+            }
+        }
+    }
+
+    /// A host that starts reconnecting with a request waiting is announced once. The reply stays
+    /// open, so focus and the draft are left where they are.
+    private func heldReplyRequestsChanged(from old: [String], to new: [String]) {
+        let known = Set(old)
+        for request in content.pending where !known.contains(request.id) {
+            if let statement = request.replyHeldStatement {
+                AccessibilityNotification.Announcement(statement).post()
             }
         }
     }

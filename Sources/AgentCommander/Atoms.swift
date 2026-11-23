@@ -192,6 +192,55 @@ struct TerminalStatus: View {
     }
 }
 
+/// The link to a worker's execution host while a persistent SSH connection is being
+/// re-established. It sits beside the worker's own status, which it does not replace: the worker
+/// keeps running on the host. Nothing is drawn for a connected host. The terminal style is for
+/// status lines and gives up its word in a narrow tile, keeping the mark. The label style is for
+/// panels and headers. Both carry the host in the help tag and the accessibility label.
+struct HostLinkStatus: View {
+    enum Style { case terminal, label }
+
+    let host: String
+    var style: Style = .terminal
+    var size: CGFloat = 11.5
+
+    private var statement: String {
+        "The SSH link to \(host) is reconnecting. Work on \(host) keeps running."
+    }
+
+    var body: some View {
+        Group {
+            switch style {
+            case .terminal:
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: size * 0.5) {
+                        Text("↻")
+                        Text("reconnecting")
+                    }
+                    .fixedSize()
+                    Text("↻").fixedSize()
+                }
+                .font(Term.font(size))
+                .foregroundStyle(Term.amber)
+            case .label:
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: size - 1.5, weight: .semibold))
+                    Text("Reconnecting")
+                }
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(Palette.attention)
+                .fixedSize()
+            }
+        }
+        .lineLimit(1)
+        .help(statement)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Host \(host) reconnecting")
+        .accessibilityValue(statement)
+    }
+}
+
 /// Terminal-styled action, drawn as `[ label ]`. It is a real button: Tab reaches it, Space
 /// activates it, and it inverts under the pointer and while pressed.
 struct TermButtonStyle: ButtonStyle {

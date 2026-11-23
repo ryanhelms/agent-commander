@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"agentcommander/internal/worktrees"
 )
 
 type apiError struct {
@@ -46,6 +48,7 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	// creates a second tmux session. Fresh authenticated worker events restore state.
 	dirty := false
 	for _, run := range s.state.Runs {
+		dirty = recoverIntegrations(run) || dirty
 		for _, w := range run.Workers {
 			if run.Status == "running" && w.State != "unknown" && w.State != "disconnected" && w.State != "stopping" && !ended(w.State) {
 				w.State, w.Error = "unknown", "Service restarted. Waiting for evidence from the original worker."
@@ -106,6 +109,9 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
 	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
 	mux.HandleFunc("POST /v1/requests/{qid}/reconcile", s.reconcileSSHReply)
+	mux.HandleFunc("POST /v1/workers/{worker}/ssh-link", s.handle(s.workerSSHLink))
+	mux.HandleFunc("POST /v1/runs/{run}/integrations", s.handle(s.beginIntegration))
+	mux.HandleFunc("POST /v1/workers/{worker}/coding/commit", s.handle(s.codingCommit))
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -285,8 +291,9 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	}
 	var in struct {
 		Project, Path, Task, Client string
-		WorkerLimit                 int    `json:"worker_limit"`
-		Title                       string `json:"title,omitempty"`
+		WorkerLimit                 int      `json:"worker_limit"`
+		Title                       string   `json:"title,omitempty"`
+		TestCommand                 []string `json:"test_command,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -299,6 +306,9 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	}
 	if in.WorkerLimit < 1 || in.WorkerLimit > defaultWorkerLimit {
 		return outcome{}, bad("worker_limit must be between 1 and 10")
+	}
+	if len(in.TestCommand) > 0 && strings.TrimSpace(in.TestCommand[0]) == "" {
+		return outcome{}, bad("test_command requires an executable as its first argument")
 	}
 	in.Path = filepath.Clean(in.Path)
 	key, intent, target, err := s.receipt(req, actor, in)
@@ -330,9 +340,9 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	r := &Run{
 		ID: randomID("r-"), Project: in.Project, Path: in.Path, Task: in.Task, Client: in.Client,
 		Title: title, CreatedAt: timestamp(), Branch: checkoutBranch(req.Context(), in.Path),
-		Status: "running", WorkerLimit: in.WorkerLimit, Requests: []*Question{},
+		Status: "running", WorkerLimit: in.WorkerLimit, Requests: []*Question{}, TestCommand: in.TestCommand,
 	}
-	w, spec := s.newWorker(r, "Coordinator", in.Task, "", "coordinator", r.Client, "localhost", r.Path)
+	w, spec := s.newWorker(r, randomID("w-"), "Coordinator", in.Task, "", "coordinator", r.Client, "localhost", r.Path)
 	r.CoordinatorID = w.ID
 	s.state.Runs = append(s.state.Runs, r)
 	s.remember(key, intent, r.ID)
@@ -349,12 +359,16 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 		ParentID   string `json:"parent_id"`
 		Client     string `json:"client,omitempty"`
 		Host       string `json:"host,omitempty"`
+		Kind       string `json:"kind,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
 	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Task) == "" {
 		return outcome{}, bad("worker name and task are required")
+	}
+	if in.Kind != "" && in.Kind != "research" && in.Kind != "review" && in.Kind != "coding" {
+		return outcome{}, bad("worker kind must be research, review, or coding")
 	}
 	if in.ParentID == "" {
 		in.ParentID = actor
@@ -405,7 +419,35 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 			return outcome{}, conflict(err.Error())
 		}
 	}
-	w, spec := s.newWorker(r, in.Name, in.Task, p.ID, "worker", client, host, checkout)
+	id := randomID("w-")
+	var source, isolated *worktrees.Checkout
+	if in.Kind == "coding" {
+		if host != "localhost" {
+			return outcome{}, conflict("coding worktree placement currently requires the coordinator's host")
+		}
+		if checker, ok := s.launcher.(interface{ CheckCodingClient(string) error }); ok {
+			if err := checker.CheckCodingClient(client); err != nil {
+				return outcome{}, conflict(err.Error())
+			}
+		}
+		base, err := worktrees.Source(req.Context(), r.Path)
+		if err != nil {
+			return outcome{}, conflict(err.Error())
+		}
+		git, err := worktrees.New()
+		if err != nil {
+			return outcome{}, err
+		}
+		placement, err := git.Plan(req.Context(), base, id)
+		if err != nil {
+			return outcome{}, conflict(err.Error())
+		}
+		source, isolated, checkout = &base, &placement, placement.Path
+	}
+	w, spec := s.newWorker(r, id, in.Name, in.Task, p.ID, "worker", client, host, checkout)
+	if isolated != nil {
+		w.Branch, w.Coding, spec.CodingSource = isolated.Branch, isolated, source
+	}
 	s.remember(key, intent, w.ID)
 	return outcome{w, 201, true, func() { s.launch(spec) }}, nil
 }
@@ -598,12 +640,25 @@ func (s *service) workerResult(req *http.Request, actor string) (outcome, error)
 	if err != nil {
 		return outcome{}, err
 	}
-	var in struct{ Result string }
+	var in struct {
+		Result   string
+		Revision string       `json:"revision,omitempty"`
+		Tests    []CodingTest `json:"tests,omitempty"`
+	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
 	if strings.TrimSpace(in.Result) == "" {
 		return outcome{}, bad("result is required")
+	}
+	if in.Revision != "" {
+		if w.Coding == nil {
+			return outcome{}, conflict("worker has no assigned coding worktree")
+		}
+		if err := worktrees.VerifyRevision(req.Context(), *w.Coding, in.Revision); err != nil {
+			return outcome{}, conflict(err.Error())
+		}
+		w.Handoff = &CodingHandoff{Revision: in.Revision, Findings: in.Result, Tests: in.Tests}
 	}
 	w.Result = in.Result
 	return changed(map[string]string{"id": w.ID, "result": w.Result}), nil

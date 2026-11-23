@@ -22,6 +22,7 @@ import (
 
 type sshProfile struct {
 	Host, LocalCheckout, Checkout, Adapter, Agentctl, ConfigFile string
+	Persistent                                                   bool
 }
 
 var sshAlias = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
@@ -34,6 +35,10 @@ func configuredSSHProfile() (sshProfile, error) {
 		Adapter:       os.Getenv("AGENT_COMMANDER_SSH_ADAPTER"),
 		Agentctl:      os.Getenv("AGENT_COMMANDER_SSH_AGENTCTL"),
 		ConfigFile:    os.Getenv("AGENT_COMMANDER_SSH_CONFIG"),
+		Persistent:    os.Getenv("AGENT_COMMANDER_SSH_MODE") == "persistent",
+	}
+	if mode := os.Getenv("AGENT_COMMANDER_SSH_MODE"); mode != "" && mode != "ssh-only" && mode != "persistent" {
+		return sshProfile{}, errors.New("SSH mode must be ssh-only or persistent")
 	}
 	if !sshAlias.MatchString(p.Host) || strings.EqualFold(p.Host, "localhost") {
 		return sshProfile{}, errors.New("configure a distinct SSH host alias")

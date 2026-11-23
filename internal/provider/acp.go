@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,13 +25,23 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	policyJob := j
 	cwd := j.Worker.Path
 	var args []string
+	var persistent *persistentProxy
 	if j.SSH != nil {
 		socket, closeForward, err := startWorkerForward(j.Socket, j.Worker.Token)
 		if err != nil {
 			return fmt.Errorf("start worker API forward: %w", err)
 		}
 		defer closeForward()
-		args, policyJob.Socket = j.SSH.sessionArgs(j.Worker, socket)
+		if j.SSH.Persistent {
+			persistent = &persistentProxy{Profile: *j.SSH, Worker: j.Worker.ID, LocalSocket: socket, OwnerSocket: j.Socket}
+			if err := persistent.start(ctx); err != nil {
+				return err
+			}
+			defer persistent.stop()
+			policyJob.Socket = persistentAPI(j.Worker.ID)
+		} else {
+			args, policyJob.Socket = j.SSH.sessionArgs(j.Worker, socket)
+		}
 		policyJob.Executable = j.SSH.Agentctl
 		cwd = j.SSH.Checkout
 	}
@@ -41,6 +52,20 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	if j.SSH != nil {
 		config.HarnessInstance = j.SSH.harnessInstance()
 		config.Args = args
+	}
+	if persistent != nil {
+		data, err := json.Marshal(persistent)
+		if err != nil {
+			return err
+		}
+		config.Command, config.Args = j.Executable, []string{"persistent-acp", "proxy"}
+		if config.Env == nil {
+			config.Env = make(map[string]string)
+		}
+		config.Env[persistentACPConfig] = string(data)
+		for i := range config.MCPServers {
+			config.MCPServers[i].Env["AGENT_COMMANDER_PERSISTENT_SSH_WAIT"] = "1"
+		}
 	}
 	if _, supplied := config.Env["PATH"]; j.NodePath != "" && !supplied {
 		if config.Env == nil {
@@ -125,6 +150,9 @@ func planningConfig(j job) (runtime.Config, error) {
 	}
 	servers, instructions, allowed := agentPolicy(j)
 	builtins := []string{"Read", "Grep", "Glob"}
+	if j.Worker.CodingSource != nil {
+		builtins = append(builtins, "Edit", "Write")
+	}
 	allowedTools := strings.Split(allowed, ",")
 	// --allowedTools controls automatic approval in Claude. Also remove each
 	// coordinator-only MCP operation from a worker's visible tool surface.
