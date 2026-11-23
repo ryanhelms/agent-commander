@@ -250,7 +250,7 @@ struct RequestList: View {
                 Button { select(request) } label: {
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
-                            StatusLabel(.needsInput, size: 11.5)
+                            StatusLabel(request.workerState, size: 11.5)
                             Spacer(minLength: 8)
                             Text(request.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
                         }

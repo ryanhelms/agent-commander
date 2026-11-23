@@ -249,6 +249,9 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, ref *model.Sessi
 				s.line(q.ID + " · " + q.Question)
 			case e.GetTurnEnded() != nil:
 				reason := e.GetTurnEnded().Reason
+				if acpDisconnected(reason) {
+					return "failed", errACPDisconnected
+				}
 				switch reason {
 				case "end_turn":
 					s.line("")
@@ -256,8 +259,6 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, ref *model.Sessi
 				case "cancelled":
 					s.line("Turn interrupted.")
 					return "idle", nil
-				case "adapter disconnected":
-					return "failed", errACPDisconnected
 				default:
 					return "failed", fmt.Errorf("provider stopped the turn: %s", reason)
 				}
@@ -308,4 +309,22 @@ func accepted(receipt *model.Receipt, err error) error {
 	default:
 		return fmt.Errorf("provider delivery %s: %s", receipt.GetStatus(), receipt.GetDetail())
 	}
+}
+
+func acpDisconnected(reason string) bool {
+	if reason == "adapter disconnected" {
+		return true
+	}
+	// A shutdown can surface as the prompt RPC error before the SDK observes
+	// the adapter exit. Match the transport detail, not every internal error.
+	raw, ok := strings.CutPrefix(reason, "session/prompt: ")
+	if !ok {
+		return false
+	}
+	var failure struct {
+		Code int
+		Data struct{ Error string }
+	}
+	return json.Unmarshal([]byte(raw), &failure) == nil && failure.Code == -32603 &&
+		failure.Data.Error == "peer disconnected before response"
 }

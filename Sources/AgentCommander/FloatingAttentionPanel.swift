@@ -373,7 +373,8 @@ struct FloatingAttentionRoot: View {
     /// Answers exactly this request by ID with its own draft.
     private func send(_ request: RequestPresentation) {
         let text = ui.drafts[request.id] ?? ""
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !request.isWorkerDisconnected,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         Task {
             if await actions.reply(request.id, text) {
                 ui.drafts[request.id] = nil
