@@ -21,7 +21,10 @@ import (
 //go:embed schema.sql
 var schema string
 
-type Principal struct{ User, Device string }
+type Principal struct {
+	User, Device string
+	AccessHash   []byte // Set for authenticated requests. Offline recipient checks leave it nil.
+}
 type Authenticate func(*http.Request) (Principal, error)
 type CheckDevice func(context.Context, pgx.Tx, Principal) (bool, error)
 
@@ -74,6 +77,16 @@ func RevokeDevice(ctx context.Context, tx pgx.Tx, device string) error {
 	}
 	_, err := tx.Exec(ctx, `UPDATE mp_children SET status=CASE WHEN status='pending' THEN 'revoked' ELSE 'uncertain' END
 		WHERE (status='pending' AND (sender_device=$1 OR device=$1)) OR (status='processing' AND device=$1)`, device)
+	return err
+}
+
+// CloseDeviceSession retires a signed-out device's lease in the same transaction
+// as its credentials. Pending deliveries can wait for a later enrollment.
+func CloseDeviceSession(ctx context.Context, tx pgx.Tx, device string) error {
+	if _, err := tx.Exec(ctx, `UPDATE mp_leases SET ready=false,expires_at=clock_timestamp() WHERE device=$1`, device); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE mp_children SET status='uncertain' WHERE device=$1 AND status='processing'`, device)
 	return err
 }
 

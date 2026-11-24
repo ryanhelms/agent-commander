@@ -281,7 +281,10 @@ func (a *Agent) signout(ctx context.Context) error {
 		}
 		if remoteErr == nil {
 			if l.Session != "" {
-				_ = a.remote(attempt, s, "DELETE", "/v1/session", proof(l), nil)
+				// Older edges expect this request. Leave time for credential sign-out.
+				closeAttempt, closeCancel := context.WithTimeout(attempt, time.Second)
+				_ = a.remote(closeAttempt, s, "DELETE", "/v1/session", proof(l), nil)
+				closeCancel()
 			}
 			remoteErr = a.identity.SignOut(attempt, s.AccessToken)
 		}

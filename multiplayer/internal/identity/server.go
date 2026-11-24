@@ -42,6 +42,7 @@ type Server struct {
 	allowedHashes []string
 	verifier      *oidc.IDTokenVerifier
 	CanLookup     func(context.Context, string, string) (bool, error)
+	CloseSession  func(context.Context, pgx.Tx, string) error
 	revokeWork    func(context.Context, pgx.Tx, string) error
 }
 type Session struct {
@@ -254,11 +255,12 @@ func (s *Server) Authenticate(r *http.Request) (control.Principal, error) {
 		return control.Principal{}, denied
 	}
 	var user string
-	err = s.pool.QueryRow(r.Context(), `SELECT user_id FROM mp_auth_devices WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3))`, id, digest(t), s.allowedHashes).Scan(&user)
+	hash := digest(t)
+	err = s.pool.QueryRow(r.Context(), `SELECT user_id FROM mp_auth_devices WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3))`, id, hash, s.allowedHashes).Scan(&user)
 	if err != nil {
 		return control.Principal{}, denied
 	}
-	return control.Principal{User: user, Device: id}, nil
+	return control.Principal{User: user, Device: id, AccessHash: hash}, nil
 }
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/challenge", s.begin)
@@ -458,13 +460,26 @@ func (s *Server) signout(w http.ResponseWriter, r *http.Request) {
 		failure(w, 401)
 		return
 	}
-	tag, err := s.pool.Exec(r.Context(), `UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked`, id, digest(t))
-	if err != nil {
-		failure(w, 503)
+	ctx := r.Context()
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked`, id, digest(t))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return pgx.ErrNoRows
+		}
+		if s.CloseSession != nil {
+			return s.CloseSession(ctx, tx, id)
+		}
+		return nil
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		failure(w, 401)
 		return
 	}
-	if tag.RowsAffected() != 1 {
-		failure(w, 401)
+	if err != nil {
+		failure(w, 503)
 		return
 	}
 	reply(w, 200, struct{}{})
@@ -504,12 +519,13 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, json.RawMessage(raw))
 }
 
-// DeviceActive locks the enrollment against concurrent revocation until the
-// caller's admission or lease transaction completes.
+// DeviceActive locks the enrollment through admission or lease creation. An
+// authenticated request must still have its session when it acquires the lock.
 func (s *Server) DeviceActive(ctx context.Context, tx pgx.Tx, p control.Principal) (bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `SELECT true FROM mp_auth_devices WHERE device=$1 AND user_id=$2
-		AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3)) FOR SHARE`, p.Device, p.User, s.allowedHashes).Scan(&active)
+		AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3))
+		AND ($4::bytea IS NULL OR (access_hash=$4 AND access_expires>now())) FOR SHARE`, p.Device, p.User, s.allowedHashes, p.AccessHash).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

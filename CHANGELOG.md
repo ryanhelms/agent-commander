@@ -7,6 +7,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 ### Fixed
 
 - Google pilot sign-in uses operator-provisioned Desktop OAuth credentials for the PKCE exchange on the Mac.
+- Relay sign-out clears a device's presence lease with its credentials, while pending work waits for its next sign-in.
 
 ## [0.1.0-pilot.1] - 2026-11-24
 

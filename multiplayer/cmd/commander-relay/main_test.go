@@ -229,4 +229,19 @@ func TestTwoEdgeNetwork(t *testing.T) {
 			t.Fatal("discovery retained a revoked executor")
 		}
 	}
+	share(b2, "resumable", 1)
+	if online := call(a, 1, "GET", "/v1/users/bob", nil, 200)["online"]; online != true {
+		t.Fatal("the remaining Bob device was not online before sign-out")
+	}
+	// Sign out through the identity endpoint alone. The relay must retire the
+	// lease even when the device could not close it first.
+	call(b2, 1, "POST", "/v1/auth/signout", nil, 200)
+	if online := call(a, 0, "GET", "/v1/users/bob", nil, 200)["online"]; online != false {
+		t.Fatal("sign-out did not take the last device offline on the other edge")
+	}
+	call(b2, 0, "POST", "/v1/session", nil, 401)
+	queue(a, b2, "queued-offline", "resumable-child", "resumable")
+	if childStatus("queued-offline") != "pending" {
+		t.Fatal("ordinary sign-out did not preserve offline delivery")
+	}
 }

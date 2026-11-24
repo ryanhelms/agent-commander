@@ -61,6 +61,8 @@ On macOS 26.7.3, the existing ZIP matched its recorded checksum, the app passed 
 
 The designated [private GitHub repository](https://github.com/nscaledev/agent-commander) has direct Write access for the second participant and inherits the approved Nscale organization access. The release setup covers the pilot downloads. The two-Mac acceptance run still needs a disposable issue and a repository-scoped credential. [Release workflow](../../../.github/workflows/build.yml) · [Release instructions](../../../RELEASING.md)
 
+A follow-up two-edge test signed the last device out through the identity endpoint while its lease was ready. The other edge immediately reported that user offline, rejected the signed-out device's session request, and kept a new offline delivery pending. [Two-edge test](../../../multiplayer/cmd/commander-relay/main_test.go)
+
 ## Connections
 
 Each simulated participant has a separate container, private network, device keys, coordinator socket and checkout. Inside those networks, DNS resolves the intended pilot hostname to the lab ingress. A device opens outbound HTTPS with its own certificate. The two Go edges authenticate the device. PostgreSQL stores authorization and durable encrypted deliveries. The three NATS servers use JetStream to replicate dispatch notifications.

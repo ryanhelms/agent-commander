@@ -66,7 +66,7 @@ func TestDurableControlPilot(t *testing.T) {
 	}
 	defer pool.Close()
 	auth := func(r *http.Request) (Principal, error) {
-		return Principal{r.Header.Get("Test-User"), r.Header.Get("Test-Device")}, nil
+		return Principal{User: r.Header.Get("Test-User"), Device: r.Header.Get("Test-Device")}, nil
 	}
 	left, err := New(ctx, pool, "left", auth, nil)
 	if err != nil {

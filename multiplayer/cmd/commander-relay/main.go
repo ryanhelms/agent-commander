@@ -212,6 +212,7 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 		return fmt.Errorf("initialize control plane: %w", err)
 	}
 	auth.CanLookup = store.CanLookup
+	auth.CloseSession = control.CloseDeviceSession
 	if err = auth.SetRevocationHandler(startup, control.RevokeDevice); err != nil {
 		return fmt.Errorf("reconcile revoked devices: %w", err)
 	}
