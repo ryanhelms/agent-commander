@@ -4,6 +4,13 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+## [0.1.0-pilot.2] - 2026-11-24
+
+
+### Added
+
+- Added workspace-scoped Linear issue tools for authorized MCP actors through the connector registry.
+
 ### Fixed
 
 - Google pilot sign-in uses operator-provisioned Desktop OAuth credentials for the PKCE exchange on the Mac.
