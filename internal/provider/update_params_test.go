@@ -147,7 +147,7 @@ func TestEnrichedCommanderWorkerLifecycle(t *testing.T) {
 			}
 			wait("idle-before")
 			req := &model.SendRequest{Session: ref, OperationId: "one", Text: "go"}
-			state, err := runACPTurn(ctx, c, req, p, nil, scr, "", false, opened.Session.Capabilities, updates)
+			state, _, err := runACPTurn(ctx, c, req, p, nil, scr, "", false, opened.Session.Capabilities, updates)
 			if state != "completed" || err != nil {
 				t.Fatal(state, err)
 			}

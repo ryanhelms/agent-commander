@@ -1,8 +1,20 @@
 import Foundation
 
+/// One follow-up the service accepted for a worker, from `control.messages`. The service keeps
+/// the whole list in acceptance order, terminal entries included. The message text is not read:
+/// a receipt is identified by its ID. See `FollowUpReceipt` for the status vocabulary.
 struct WorkerFollowUp: Decodable, Identifiable, Equatable, Sendable {
     let id: String
+    /// The status exactly as sent, so a value this version does not know is still shown.
     let status: String
+    /// The control generation the follow-up was accepted under. Nil from an older service.
+    let generation: Int?
+
+    init(id: String, status: String, generation: Int? = nil) {
+        self.id = id
+        self.status = status
+        self.generation = generation
+    }
 }
 
 /// What the worker's session can do, as the service reports it under `control`.
@@ -24,22 +36,31 @@ struct WorkerControl: Decodable, Equatable, Sendable {
     let messages: [WorkerFollowUp]?
     /// Nil from an older service or a legacy runner, which leaves every action as it was.
     let sessionCapabilities: WorkerSessionCapabilities?
+    /// The ACP turn the service expects the worker to be in now. Sent for a bound managed local
+    /// Claude worker; nil from an older service or another provider.
+    let activeTurnID: String?
+    /// The receipt of the latest interrupt, kept after its outcome. Nil from an older service.
+    let interrupt: WorkerInterruptReceipt?
 
     /// False only when the service says this session cannot be interrupted.
     var sessionCanInterrupt: Bool { sessionCapabilities?.canInterrupt != false }
 
     init(held: Bool, generation: Int, interruptRequested: Bool?, messages: [WorkerFollowUp]?,
-         sessionCapabilities: WorkerSessionCapabilities? = nil) {
+         sessionCapabilities: WorkerSessionCapabilities? = nil, activeTurnID: String? = nil,
+         interrupt: WorkerInterruptReceipt? = nil) {
         self.held = held
         self.generation = generation
         self.interruptRequested = interruptRequested
         self.messages = messages
         self.sessionCapabilities = sessionCapabilities
+        self.activeTurnID = activeTurnID
+        self.interrupt = interrupt
     }
 
     private enum CodingKeys: String, CodingKey {
         case held, generation, interruptRequested = "interrupt_requested", messages
         case sessionCapabilities = "session_capabilities"
+        case activeTurnID = "active_turn_id", interrupt
     }
 }
 
@@ -55,7 +76,8 @@ extension WorkerSessionCapabilities {
 extension WorkerFollowUp {
     init(projection value: AGUIValue) throws {
         guard case .object(let fields) = value else { throw AGUIValueError("A follow-up is not an object") }
-        self.init(id: try fields.string("id"), status: try fields.string("status"))
+        self.init(id: try fields.string("id"), status: try fields.string("status"),
+                  generation: try fields.optionalInt("generation"))
     }
 }
 
@@ -70,6 +92,10 @@ extension WorkerControl {
                   messages: try fields.optionalList("messages", make: WorkerFollowUp.init(projection:)),
                   sessionCapabilities: try fields["session_capabilities"].flatMap {
                       $0.isNull ? nil : try WorkerSessionCapabilities(projection: $0)
+                  },
+                  activeTurnID: try fields.optionalString("active_turn_id"),
+                  interrupt: try fields["interrupt"].flatMap {
+                      $0.isNull ? nil : try WorkerInterruptReceipt(projection: $0)
                   })
     }
 }
@@ -587,8 +613,17 @@ actor ServiceClient {
                         fields: FollowUp(text: text, generation: generation), operationID: operationID)
     }
 
-    func interruptWorker(_ workerID: String) throws {
-        _ = try request("/v1/workers/\(workerID)/interrupt", fields: [String: String]())
+    /// Interrupts the worker's current turn. With a `target`, the request names the observed turn
+    /// and control generation, so a retry returns the same receipt and a stale one is rejected.
+    /// Without one the body is the original empty object.
+    func interruptWorker(_ workerID: String, target: WorkerInterruptTarget? = nil) throws {
+        _ = try request("/v1/workers/\(workerID)/interrupt", fields: Self.interruptFields(target))
+    }
+
+    /// The interrupt request's JSON body.
+    nonisolated static func interruptFields(_ target: WorkerInterruptTarget?) -> any Encodable {
+        if let target { return target }
+        return [String: String]()
     }
 
     func stopWorker(_ workerID: String) throws {

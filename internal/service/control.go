@@ -18,6 +18,7 @@ type WorkerControl struct {
 	Messages            []WorkerFollowUp     `json:"messages,omitempty"`
 	PromptCapabilities  *PromptCapabilities  `json:"prompt_capabilities,omitempty"`
 	SessionCapabilities *SessionCapabilities `json:"session_capabilities,omitempty"`
+	Interrupt           *WorkerInterrupt     `json:"interrupt,omitempty"`
 	ActiveTurnID        string               `json:"active_turn_id,omitempty"`
 }
 
@@ -136,6 +137,7 @@ func (s *service) setWorkerControl(req *http.Request, actor string) (outcome, er
 	c.Held = *input.Held
 	c.Generation++
 	if !c.InterruptClaimed {
+		c.closeInterrupt()
 		c.InterruptRequested = false
 	}
 	for i := range c.Messages {
@@ -227,6 +229,7 @@ type workerControlFeed struct {
 	Live                 bool   `json:"live"`
 	NextMessageID        string `json:"next_message_id,omitempty"`
 	InterruptRequested   bool   `json:"interrupt_requested,omitempty"`
+	InterruptID          string `json:"interrupt_id,omitempty"`
 	Generation           int    `json:"generation,omitempty"`
 	State                string `json:"state,omitempty"`
 	ProviderAvailability string `json:"provider_availability,omitempty"`
@@ -244,6 +247,9 @@ func (s *service) workerControlStatus(req *http.Request, actor string) (outcome,
 		w.ProviderAvailability != providerExited && w.State != "stopping" && w.State != "stopped" && w.State != "failed"}
 	if feed.Live {
 		feed.InterruptRequested = w.Control.InterruptRequested
+		if feed.InterruptRequested && w.Control.Interrupt != nil {
+			feed.InterruptID = w.Control.Interrupt.ID
+		}
 		feed.Generation = w.Control.Generation
 		if w.State == "idle" || w.State == "completed" {
 			if m := w.Control.next(); m != nil {
@@ -286,6 +292,7 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 			(w.Control.SessionCapabilities == nil || *caps != *w.Control.SessionCapabilities) {
 			w.Control.SessionCapabilities = caps
 			if !caps.CanInterrupt && !w.Control.InterruptClaimed {
+				w.Control.closeInterrupt()
 				w.Control.InterruptRequested = false
 			}
 			updated = true
@@ -341,9 +348,10 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		return outcome{}, err
 	}
 	var in struct {
-		State     string
-		Error     string
-		MessageID string `json:"message_id"`
+		State           string
+		Error           string
+		MessageID       string `json:"message_id"`
+		ObservedTurnEnd bool   `json:"observed_turn_end"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -383,6 +391,13 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		}
 		if w.Control.ActiveTurnID != turnID {
 			return outcome{}, conflict("turn outcome does not match the original Claude turn")
+		}
+		if receipt := w.Control.Interrupt; receipt != nil && receipt.TurnID == turnID && receipt.Outcome == "" {
+			if in.ObservedTurnEnd {
+				receipt.Outcome = finalStatus
+			} else {
+				w.Control.closeInterrupt()
+			}
 		}
 		w.Control.ActiveTurnID = ""
 	}
@@ -443,20 +458,40 @@ func (s *service) interruptWorker(req *http.Request, actor string) (outcome, err
 	if err != nil {
 		return outcome{}, err
 	}
+	c := w.Control
+	if c == nil {
+		return outcome{}, conflict("there is no active managed turn to interrupt")
+	}
+	if actor != "" && c.Held {
+		return outcome{}, conflict("developer holds worker input")
+	}
+	var target interruptTarget
+	if body, _ := req.Context().Value(bodyKey{}).([]byte); len(body) != 0 {
+		if err := decode(req, &target); err != nil {
+			return outcome{}, err
+		}
+	}
+	if target.TurnID != "" && c.Interrupt != nil && c.Interrupt.TurnID == target.TurnID &&
+		c.Interrupt.Generation == target.Generation {
+		return read(c), nil
+	}
 	if !canFollowUp(r, w) || !turnActive(w.State) {
 		return outcome{}, conflict("there is no active managed turn to interrupt")
 	}
-	if actor != "" && w.Control.Held {
-		return outcome{}, conflict("developer holds worker input")
+	if target.TurnID != "" && (target.TurnID != c.ActiveTurnID || c.Generation != target.Generation) {
+		return outcome{}, conflict("worker turn or input control changed before interrupt")
 	}
-	if caps := w.Control.SessionCapabilities; caps != nil && !caps.CanInterrupt {
+	if caps := c.SessionCapabilities; caps != nil && !caps.CanInterrupt {
 		return outcome{}, &apiError{http.StatusNotImplemented, "the worker does not support interrupting a turn"}
 	}
-	if w.Control.InterruptRequested {
-		return read(w.Control), nil
+	if c.InterruptRequested {
+		return read(c), nil
 	}
-	w.Control.InterruptRequested = true
-	return outcome{w.Control, 202, true, nil}, nil
+	c.InterruptRequested = true
+	if c.ActiveTurnID != "" {
+		c.Interrupt = &WorkerInterrupt{ID: randomID("i-"), TurnID: c.ActiveTurnID, Generation: c.Generation, Phase: "accepted"}
+	}
+	return outcome{c, 202, true, nil}, nil
 }
 
 func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome, error) {
@@ -464,13 +499,16 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 	if err != nil {
 		return outcome{}, err
 	}
-	var input struct{ Generation int }
+	var input interruptTarget
 	if err := decode(req, &input); err != nil {
 		return outcome{}, err
 	}
 	c := w.Control
 	if c == nil || w.providerBlocksControl() || !c.InterruptRequested || (!turnActive(w.State) && w.State != "unknown") {
 		return outcome{}, conflict("there is no active interrupt")
+	}
+	if c.Interrupt != nil && !c.Interrupt.matches(input) {
+		return outcome{}, conflict("interrupt claim does not match the original request")
 	}
 	if c.InterruptClaimed {
 		return read(c), nil
@@ -479,6 +517,9 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 		return outcome{}, conflict("worker control changed before interrupt")
 	}
 	c.InterruptClaimed = true
+	if c.Interrupt != nil {
+		c.Interrupt.Phase = "claimed"
+	}
 	return changed(c), nil
 }
 
@@ -498,6 +539,7 @@ func (s *service) stopWorkerInbox(run *Run, w *Worker) {
 		}
 		s.markOperationEnd(run, w, m)
 	}
+	w.Control.closeInterrupt()
 	w.Control.InterruptRequested = false
 	w.Control.InterruptClaimed = false
 	w.Control.Held = false

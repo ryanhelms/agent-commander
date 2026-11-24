@@ -166,8 +166,10 @@ final class CockpitModel {
     /// with no reported capabilities is treated as before.
     func canInterruptWorker(_ id: String) -> Bool {
         guard canControlWorker(id), let (_, worker) = workerTarget(id), let control = worker.control else { return false }
+        // An unresolved receipt for the turn the worker is in now waits like `interrupt_requested`:
+        // asking again would only return the same receipt.
         return ["working", "waiting"].contains(worker.state) && control.interruptRequested != true &&
-            control.sessionCanInterrupt
+            !control.interruptPendsOnActiveTurn && control.sessionCanInterrupt
     }
 
     func canStopWorker(_ id: String) -> Bool {
@@ -203,9 +205,18 @@ final class CockpitModel {
 
     func interruptWorker(_ id: String) async {
         guard canInterruptWorker(id) else { return }
+        // Addressed to the turn and generation of the same control record the gate just read. An
+        // older service or another provider reports no active turn and keeps the original request.
+        let target = interruptTarget(id)
         _ = await performWorkerAction(id, label: "Interrupt worker") {
-            try await api.interruptWorker(id)
+            try await api.interruptWorker(id, target: target)
         }
+    }
+
+    /// The turn and generation an interrupt of this worker is addressed to, read from its current
+    /// control record. Nil when the service reports no active turn.
+    func interruptTarget(_ id: String) -> WorkerInterruptTarget? {
+        WorkerInterruptTarget(control: workerTarget(id)?.1.control)
     }
 
     func stopWorker(_ id: String) async {

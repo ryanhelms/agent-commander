@@ -384,9 +384,10 @@ struct PrettyEmptyConversation: View {
 /// reply context as `RequestReply`: the same draft, focus target, send action, and the same closed
 /// and held states while the worker or its host is away.
 ///
-/// A request with explicit choices shows one native button per choice. A click puts that choice's
-/// exact ID in the request's draft and sends it through the same reply action, because the service
-/// accepts only an offered ID. The free-form field is shown only for a request without choices.
+/// A request with explicit choices shows the shared `RequestChoiceButtons`: one native button per
+/// choice, whose click sends that choice's exact ID through the request's own draft and reply
+/// action, because the service accepts only an offered ID. The free-form field is shown only for a
+/// request without choices.
 /// The choice list the service appends to the question text is left out when it matches `choices`.
 struct PrettyRequestForm: View {
     let request: RequestPresentation
@@ -424,7 +425,7 @@ struct PrettyRequestForm: View {
                     .help(note).accessibilityValue(note)
             }
             if !request.choices.isEmpty {
-                choiceButtons(draft: draft, blocked: blocked, isSending: isSending, unavailable: unavailable)
+                RequestChoiceButtons(request: request, context: context)
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     TextField("Reply to \(request.workerName)", text: draft, axis: .vertical)
@@ -460,39 +461,5 @@ struct PrettyRequestForm: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Request \(request.shortID) from \(request.workerName)")
-    }
-
-    /// One row when the choices fit the form's width; otherwise one per line.
-    private func choiceButtons(draft: Binding<String>, blocked: Bool, isSending: Bool,
-                               unavailable: String?) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { choices(draft: draft, blocked: blocked, isSending: isSending, unavailable: unavailable) }
-            VStack(alignment: .leading, spacing: 6) {
-                choices(draft: draft, blocked: blocked, isSending: isSending, unavailable: unavailable)
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Choices for request \(request.shortID)")
-    }
-
-    @ViewBuilder
-    private func choices(draft: Binding<String>, blocked: Bool, isSending: Bool, unavailable: String?) -> some View {
-        ForEach(request.choices) { choice in
-            Button {
-                // The exact ID, through the request's own draft and reply action.
-                draft.wrappedValue = choice.id
-                context.send(request)
-            } label: {
-                Text(verbatim: choice.label).lineLimit(2)
-            }
-            .buttonStyle(.bordered)
-            .disabled(blocked)
-            .help(unavailable ?? "Reply with \(choice.id)")
-            .accessibilityLabel(choice.label)
-            .accessibilityHint("Replies to request \(request.shortID) with \(choice.id)")
-        }
-        if isSending {
-            ProgressView().controlSize(.small).accessibilityLabel("Sending reply")
-        }
     }
 }

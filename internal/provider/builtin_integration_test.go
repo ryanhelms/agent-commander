@@ -69,7 +69,7 @@ func TestUnsupportedSDKAnswerDoesNotOpenACommanderRequest(t *testing.T) {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	updates, done, _ := workerObservations(watchCtx, client, request.Session, source, &screen{})
 	defer func() { stopWatch(); <-done }()
-	state, err := runACPTurn(ctx, client, request, source, nil, &screen{}, "", false, &pb.Capabilities{}, updates)
+	state, _, err := runACPTurn(ctx, client, request, source, nil, &screen{}, "", false, &pb.Capabilities{}, updates)
 	if state != "failed" || err == nil || !strings.Contains(err.Error(), "without advertising support for answers") {
 		t.Fatalf("unsupported provider input returned %s, %v", state, err)
 	}
