@@ -41,6 +41,10 @@ struct PrettyRunStatus: Equatable {
         case runningTool(String)
         /// The worker is active and no call is open: the assistant is responding.
         case responding
+        /// A tracked local Claude worker that is active or in an explicit Unknown state, whose
+        /// phase is reported in its progress row: the service's own state as recorded, with
+        /// nothing inferred from the transcript.
+        case active(TaskState)
         case waiting
         case idle
         case disconnected
@@ -64,7 +68,12 @@ struct PrettyRunStatus: Equatable {
         return openToolIDs.first
     }
 
-    init(state: TaskState, entries: [TranscriptEntry]) {
+    /// `reportsProgress` is set for a worker whose service reports its phase (a tracked local
+    /// Claude worker). Its active phase is then the service's state alone: no Responding or
+    /// Running tool is inferred from the transcript, so the status never contradicts the reported
+    /// phase or claims work without evidence, and an explicit Unknown state is kept, not read as
+    /// Idle. A waiting worker and its approvals are unchanged.
+    init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false) {
         var prompts = 0, tools = 0, failed = 0
         var openTool: String?
         var openToolIDs: [String] = []
@@ -90,9 +99,10 @@ struct PrettyRunStatus: Equatable {
         self.openToolIDs = openToolIDs
         switch state {
         case .running, .working, .starting:
-            phase = openTool.map(Phase.runningTool) ?? .responding
+            phase = reportsProgress ? .active(state) : openTool.map(Phase.runningTool) ?? .responding
         case .needsInput: phase = .waiting
-        case .unknown: phase = .idle
+        // A tracked worker keeps an explicit Unknown as recorded rather than reading it as Idle.
+        case .unknown: phase = reportsProgress ? .active(state) : .idle
         case .idle: phase = .idle
         case .disconnected: phase = .disconnected
         case .completed, .failed, .stopped, .stopping: phase = .ended(state)
@@ -110,6 +120,7 @@ struct PrettyRunStatus: Equatable {
         switch phase {
         case .runningTool: "Running tool"
         case .responding: "Responding"
+        case .active(let state): state.label
         case .waiting: "Waiting for you"
         case .idle: "Idle"
         case .disconnected: "Disconnected"
@@ -120,6 +131,7 @@ struct PrettyRunStatus: Equatable {
     var ink: Color {
         switch phase {
         case .runningTool, .responding: Palette.working
+        case .active(let state): state.tone.color
         case .waiting, .disconnected: Palette.attention
         case .ended(.failed): Palette.failure
         case .ended(.completed): Palette.working
@@ -176,6 +188,9 @@ struct PrettyACPConsole: View {
     /// The worker's pending request offers ACP choices. Set on every surface, with or without the
     /// form, so the open call reads the same everywhere.
     var choiceRequestPending = false
+    /// The service reports this worker's phase, shown in its footer (a tracked local Claude
+    /// worker). The status then infers no Responding or Running tool and draws no spinner.
+    var reportsProgress = false
     /// Where the call awaiting approval comes from. A surface holding the whole transcript
     /// derives it; the PiP, which holds a window, takes the one its request resolved.
     var awaitingApproval: AwaitingApproval = .derived
@@ -189,7 +204,7 @@ struct PrettyACPConsole: View {
 
     var body: some View {
         let metrics = PrettyACPMetrics(density, inset: inset)
-        let status = PrettyRunStatus(state: state, entries: entries)
+        let status = PrettyRunStatus(state: state, entries: entries, reportsProgress: reportsProgress)
         VStack(alignment: .leading, spacing: 0) {
             PrettyRunStatusBar(status: status, session: session, client: client, metrics: metrics)
             conversation(status: status, metrics: metrics)
@@ -240,7 +255,8 @@ extension PrettyACPConsole {
         self.init(consoleID: worker.id, name: worker.name, client: worker.client, state: worker.state,
                   entries: worker.transcript, session: session,
                   request: reply == nil ? nil : worker.request, reply: reply, density: density, inset: inset,
-                  choiceRequestPending: !(worker.request?.choices.isEmpty ?? true))
+                  choiceRequestPending: !(worker.request?.choices.isEmpty ?? true),
+                  reportsProgress: worker.claudeProgress != nil)
     }
 
     /// The asking worker's console in the PiP: its recent window and the request it answers.

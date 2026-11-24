@@ -7,6 +7,9 @@ import SwiftUI
 //
 //   WorkerTile          = ConsoleTitleBar + TerminalWell + TerminalStatusLine + InputOwnership
 //                         (+ RequestPrompt in the focused variant)
+//                         (+ ProviderAvailabilityNotice row while a bound Claude adapter has exited or
+//                            is being checked after a restart)
+//                         (+ ClaudeProgressStatus row above the status line of a tracked local Claude worker)
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
@@ -61,6 +64,8 @@ struct WorkerTile: View {
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+    /// The standalone read-only terminal window, the same route as the display menu's item.
+    @Environment(\.openWindow) private var openWindow
 
     /// The provider session when this console shows `PrettyACPConsole`: Pretty mode on an
     /// ACP-bound worker, in either variant. Nil otherwise.
@@ -77,15 +82,21 @@ struct WorkerTile: View {
         VStack(spacing: 0) {
             header
             if isFocusedVariant { conversation } else { well }
-            if let error = worker.error, !error.isEmpty {
+            // While the service checks the session, the availability strip shows its explanation
+            // as the restart reason, so it is not repeated here.
+            if let error = worker.error, !error.isEmpty, worker.availabilityStatement?.suppressesConsoleNotice != true {
                 ConsoleNotice(text: error, state: worker.state)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
                     .background(Term.background)
             }
+            availabilityRow
+            progressRow
             footer
-            // A follow-up cannot reach a disconnected worker, so its compose line waits with it.
-            if isFocusedVariant, worker.control == .held, !worker.isDisconnected, let sendInput = actions.sendInput {
+            // A follow-up cannot reach a disconnected worker, or a Claude adapter that has exited or
+            // is being checked, so its compose line waits with it.
+            if isFocusedVariant, worker.control == .held, !worker.isDisconnected,
+               ProviderAvailability.allowsControl(worker.providerAvailability), let sendInput = actions.sendInput {
                 TerminalComposer(workerName: worker.name, send: sendInput)
             }
         }
@@ -211,6 +222,41 @@ struct WorkerTile: View {
         return parent.map { "Assignment · \($0)" } ?? "Assignment"
     }
 
+    /// A tracked local Claude worker's last reported phase, its time and advancing age, in every
+    /// display mode, in its own row above the status line so the footer keeps its actions and
+    /// telemetry. While progress is unknown it offers this worker's read-only source inspector.
+    /// Absent, with no strip, while the molecule draws nothing (a known worker with no report).
+    /// Whether the bound Claude adapter exited or is being checked after a service restart, in its
+    /// own row above the progress row, in every display mode. Offers the existing passive routes:
+    /// the read-only terminal window while checking, and the read-only source inspector. The task
+    /// status line below keeps the worker's own state. Absent for a normal worker.
+    @ViewBuilder private var availabilityRow: some View {
+        if let statement = worker.availabilityStatement {
+            let target = NativeTerminalTarget(worker: worker)
+            ProviderAvailabilityNotice(statement: statement, size: isFocusedVariant ? 11 : 10,
+                                       watchTerminal: { openWindow(id: NativeTerminalScene.id, value: target) },
+                                       inspectSource: source?.open)
+                .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Term.bar)
+                .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
+        }
+    }
+
+    @ViewBuilder private var progressRow: some View {
+        if let track = worker.claudeProgress,
+           ClaudeProgressDisplay(track: track, state: worker.state, now: Date()).isVisible {
+            // The availability strip above already offers the source, so it is offered once.
+            ClaudeProgressStatus(track: track, state: worker.state, workerName: worker.name,
+                                 size: isFocusedVariant ? 11 : 10,
+                                 inspectSource: worker.providerAvailability == nil ? source?.open : nil)
+                .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Term.bar)
+                .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
+        }
+    }
+
     /// One slim status line for both variants: live status, then `[ view request ]` on a wall tile
     /// whose request is answered elsewhere, then input ownership. In the focused variant the
     /// request is the inline prompt above, so the line shows the send key instead.
@@ -245,10 +291,20 @@ struct WorkerTile: View {
             if let telemetry = worker.telemetry {
                 ProviderUsageStatus(telemetry: telemetry, size: size - 1)
             }
-            InputOwnership(workerName: worker.name, control: worker.control,
-                           isKeyFocused: isKeyFocused, handBack: actions.handBack,
-                           takeControl: isFocusedVariant ? actions.takeControl : nil,
-                           isBusy: actions.isBusy, size: size - 0.5)
+            // A normal worker keeps the ownership cue. While exited or checking there is no usable
+            // input path: a held lease while checking reads as reserved; otherwise no owner is named.
+            if let availability = worker.availabilityStatement {
+                if availability.showsReservedInput(control: worker.control) {
+                    ReservedInputCue(workerName: worker.name, isKeyFocused: isKeyFocused, size: size - 0.5)
+                } else if isKeyFocused {
+                    KeyFocusCue(size: size - 0.5)
+                }
+            } else {
+                InputOwnership(workerName: worker.name, control: worker.control,
+                               isKeyFocused: isKeyFocused, handBack: actions.handBack,
+                               takeControl: isFocusedVariant ? actions.takeControl : nil,
+                               isBusy: actions.isBusy, size: size - 0.5)
+            }
         }
     }
 
@@ -304,9 +360,19 @@ struct WorkerTile: View {
         var parts = [worker.name, worker.client.displayName, "host \(worker.host), \(worker.platform.label)",
                      worker.state.label]
         if worker.hostIsReconnecting { parts.append("host reconnecting") }
-        switch worker.control {
-        case .observing(let holder): parts.append("directed by \(holder)")
-        case .held: parts.append("you have control")
+        if let availability = worker.availabilityStatement { parts.append(availability.summary) }
+        // The phase only: the advancing age and freshness are read from the footer cue itself.
+        if let evidence = worker.claudeProgress?.evidence {
+            parts.append("Claude last reported \(evidence.phase.label.lowercased())")
+        }
+        if let availability = worker.availabilityStatement {
+            // Exited or checking: never a live, usable control claim.
+            if let control = availability.controlSummary(control: worker.control) { parts.append(control) }
+        } else {
+            switch worker.control {
+            case .observing(let holder): parts.append("directed by \(holder)")
+            case .held: parts.append("you have control")
+            }
         }
         if worker.interruptRequested { parts.append("interrupt requested") }
         if worker.queuedFollowUps > 0 { parts.append("\(worker.queuedFollowUps) follow-ups queued") }

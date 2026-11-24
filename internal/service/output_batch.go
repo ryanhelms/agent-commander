@@ -7,11 +7,12 @@ import (
 )
 
 type workerOutput struct {
-	Stream   string         `json:"stream_id"`
-	Replaces string         `json:"replaces_stream_id,omitempty"`
-	Batch    uint64         `json:"batch"`
-	Text     string         `json:"text"`
-	Events   []ConsoleEvent `json:"events"`
+	Stream         string          `json:"stream_id"`
+	Replaces       string          `json:"replaces_stream_id,omitempty"`
+	Batch          uint64          `json:"batch"`
+	Text           string          `json:"text"`
+	Events         []ConsoleEvent  `json:"events"`
+	ClaudeProgress *ClaudeProgress `json:"claude_progress,omitempty"`
 }
 
 type outputReceipt struct {

@@ -48,29 +48,31 @@ type ConsoleEvent struct {
 }
 
 type Worker struct {
-	ID            string              `json:"id"`
-	Name          string              `json:"name"`
-	Role          string              `json:"role"`
-	ParentID      string              `json:"parent_id"`
-	RunID         string              `json:"run_id"`
-	State         string              `json:"state"`
-	Host          string              `json:"host"`
-	Worktree      string              `json:"worktree"`
-	Branch        string              `json:"branch,omitempty"`
-	Client        string              `json:"client,omitempty"`
-	CreatedAt     string              `json:"created_at,omitempty"`
-	Task          string              `json:"task"`
-	Output        string              `json:"output"`
-	Error         string              `json:"error,omitempty"`
-	Result        string              `json:"result,omitempty"`
-	Console       []ConsoleEvent      `json:"console,omitempty"`
-	Control       *WorkerControl      `json:"control,omitempty"`
-	NativeSession *NativeSession      `json:"native_session,omitempty"`
-	Connection    string              `json:"connection,omitempty"`
-	Coding        *worktrees.Checkout `json:"coding,omitempty"`
-	Handoff       *CodingHandoff      `json:"handoff,omitempty"`
-	FrontendTools bool                `json:"frontend_tools,omitempty"`
-	Telemetry     *WorkerTelemetry    `json:"telemetry,omitempty"`
+	ID                   string              `json:"id"`
+	Name                 string              `json:"name"`
+	Role                 string              `json:"role"`
+	ParentID             string              `json:"parent_id"`
+	RunID                string              `json:"run_id"`
+	State                string              `json:"state"`
+	Host                 string              `json:"host"`
+	Worktree             string              `json:"worktree"`
+	Branch               string              `json:"branch,omitempty"`
+	Client               string              `json:"client,omitempty"`
+	CreatedAt            string              `json:"created_at,omitempty"`
+	Task                 string              `json:"task"`
+	Output               string              `json:"output"`
+	Error                string              `json:"error,omitempty"`
+	Result               string              `json:"result,omitempty"`
+	Console              []ConsoleEvent      `json:"console,omitempty"`
+	Control              *WorkerControl      `json:"control,omitempty"`
+	NativeSession        *NativeSession      `json:"native_session,omitempty"`
+	Connection           string              `json:"connection,omitempty"`
+	Coding               *worktrees.Checkout `json:"coding,omitempty"`
+	Handoff              *CodingHandoff      `json:"handoff,omitempty"`
+	FrontendTools        bool                `json:"frontend_tools,omitempty"`
+	Telemetry            *WorkerTelemetry    `json:"telemetry,omitempty"`
+	ClaudeProgress       *ClaudeProgress     `json:"claude_progress,omitempty"`
+	ProviderAvailability string              `json:"provider_availability,omitempty"`
 }
 
 type Question struct {

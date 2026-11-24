@@ -12,11 +12,12 @@ import (
 )
 
 type controlFeed struct {
-	Live               bool   `json:"live"`
-	State              string `json:"state"`
-	NextMessageID      string `json:"next_message_id"`
-	InterruptRequested bool   `json:"interrupt_requested"`
-	Generation         int    `json:"generation"`
+	Live                 bool   `json:"live"`
+	State                string `json:"state"`
+	NextMessageID        string `json:"next_message_id"`
+	InterruptRequested   bool   `json:"interrupt_requested"`
+	Generation           int    `json:"generation"`
+	ProviderAvailability string `json:"provider_availability"`
 }
 
 func newSessionID() string {
@@ -54,7 +55,7 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 			s.line("Turn complete.")
 		}
 		s.flush()
-		if err := publishTurnOutcome(ctx, a, path+"/control/finish", outcome); err != nil {
+		if err := publishWorkerControl(ctx, a, path+"/control/finish", outcome); err != nil {
 			return err
 		}
 		if turnErr != nil && state == "failed" {
@@ -71,10 +72,10 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 	}
 }
 
-func publishTurnOutcome(ctx context.Context, a *api, path string, outcome map[string]string) error {
+func publishWorkerControl(ctx context.Context, a *api, path string, payload any) error {
 	var last error
 	for range 3 {
-		last = a.request("POST", path, outcome, nil)
+		last = a.request("POST", path, payload, nil)
 		if last == nil || ctx.Err() != nil {
 			return last
 		}
@@ -82,7 +83,7 @@ func publishTurnOutcome(ctx context.Context, a *api, path string, outcome map[st
 			break
 		}
 	}
-	return fmt.Errorf("could not publish completed worker turn: %w", last)
+	return fmt.Errorf("could not publish worker control update: %w", last)
 }
 
 func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, path, sessionID, prompt string, resume bool) (string, error) {

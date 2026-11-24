@@ -148,9 +148,16 @@ final class CockpitModel {
         return (run, worker)
     }
 
+    /// The one gate for taking and handing back control, and through it interrupting and sending a
+    /// follow-up. A worker whose Claude adapter has exited or is being checked after a restart is
+    /// offered none of them: the service rejects every control change in both.
     func canControlWorker(_ id: String) -> Bool {
         guard let (run, worker) = workerTarget(id) else { return false }
-        return run.status == "running" && worker.control != nil &&
+        return controlRecordApplies(run, worker) && ProviderAvailability.allowsControl(ProviderAvailability(worker: worker))
+    }
+
+    private func controlRecordApplies(_ run: Run, _ worker: Worker) -> Bool {
+        run.status == "running" && worker.control != nil &&
             ["working", "waiting", "idle", "completed"].contains(worker.state)
     }
 
@@ -172,7 +179,8 @@ final class CockpitModel {
     func handBack(_ id: String) async { await setWorkerControl(id, held: false) }
 
     private func setWorkerControl(_ id: String, held: Bool) async {
-        guard canControlWorker(id), let generation = workerTarget(id)?.1.control?.generation else { return }
+        guard canControlWorker(id),
+              let generation = workerTarget(id)?.1.control?.generation else { return }
         _ = await performWorkerAction(id, label: held ? "Take control" : "Hand back input") {
             try await api.setWorkerControl(id, held: held, generation: generation)
         }

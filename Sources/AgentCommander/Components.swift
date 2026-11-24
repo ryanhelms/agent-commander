@@ -400,8 +400,20 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// What the bound provider session last reported about its consumption. Nil for a worker
     /// without a session, whose footer shows no usage cue; empty when it has reported nothing.
     var telemetry: ProviderTelemetry? = nil
+    /// The service's reported progress for a delegated worker on the built-in local Claude
+    /// session. Nil for every other worker, whose footer and Pretty status are unchanged.
+    var claudeProgress: ClaudeProgressTrack? = nil
+    /// Whether the bound local Claude adapter has exited or is being checked after a service
+    /// restart. Nil for every other worker, whose surfaces and gates are unchanged. Independent of
+    /// `state`, which keeps the worker's own Completed, Idle or Unknown.
+    var providerAvailability: ProviderAvailability? = nil
 
     var isDisconnected: Bool { state == .disconnected }
+
+    /// What the worker's surfaces say about its availability. Nil while it is normal.
+    var availabilityStatement: ProviderAvailabilityStatement? {
+        providerAvailability.map { ProviderAvailabilityStatement(availability: $0, serviceError: error, workerName: name) }
+    }
 }
 
 struct WorkerGroup: Identifiable, Equatable {
@@ -953,7 +965,9 @@ extension RunContent {
                 unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) },
                 hostIsReconnecting: reconnecting,
                 session: worker.boundSession,
-                telemetry: telemetry)
+                telemetry: telemetry,
+                claudeProgress: ClaudeProgressTrack.eligible(worker, isCoordinator: isCoordinator),
+                providerAvailability: isCoordinator ? nil : ProviderAvailability(worker: worker))
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

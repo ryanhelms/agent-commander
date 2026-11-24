@@ -110,7 +110,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	path := "/v1/workers/" + j.Worker.ID
 	owner := &api{localapi.New(j.Socket, "")}
-	if err := owner.request("POST", path+"/native-session", service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}, nil); err != nil {
+	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
+	if err := owner.request("POST", path+"/native-session", nativeSession, nil); err != nil {
 		return fmt.Errorf("bind provider session: %w", err)
 	}
 	finishSource = source.publish(ctx, a, path, ref, s)
@@ -124,12 +125,16 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		registration := struct {
 			PromptCapabilities  service.PromptCapabilities
 			SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
+			ProviderSession     *service.NativeSession      `json:"provider_session,omitempty"`
 		}{
 			PromptCapabilities: service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio()},
 			SessionCapabilities: service.SessionCapabilities{
 				CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
 				CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
 			},
+		}
+		if ref.GetHarnessInstance() == service.LocalClaudeHarness {
+			registration.ProviderSession = &nativeSession
 		}
 		if err := a.request("POST", path+"/control/ready", registration, nil); err != nil {
 			return err
@@ -141,9 +146,14 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 
 	turnID, prompt, messageID := "initial-"+j.Worker.ID, j.Worker.Task, ""
 	var parts []service.PromptPart
+	var lastFinishedState string
 	for {
 		request := acpPromptRequest(ref, turnID, prompt, parts)
 		state, turnErr := "failed", context.Cause(streamLife)
+		if lastFinishedState != "" && ref.GetHarnessInstance() == service.LocalClaudeHarness &&
+			ctx.Err() == nil && errors.Is(turnErr, errACPDisconnected) {
+			return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+		}
 		if turnErr == nil {
 			state, turnErr = runACPTurn(ctx, client, request, source, a, s, path, managed, capabilities, updates)
 		}
@@ -156,7 +166,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		if j.SSH != nil && errors.Is(turnErr, errACPDisconnected) {
 			s.line("SSH disconnected. The original request and conversation are available for reconciliation.")
 			s.flush()
-			return publishTurnOutcome(ctx, a, path+"/control/finish", map[string]string{
+			return publishWorkerControl(ctx, a, path+"/control/finish", map[string]string{
 				"state": "disconnected", "message_id": messageID,
 			})
 		}
@@ -165,21 +175,32 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			outcome["error"] = turnErr.Error()
 		}
 		s.flush()
-		if err := publishTurnOutcome(ctx, a, path+"/control/finish", outcome); err != nil {
+		if err := publishWorkerControl(ctx, a, path+"/control/finish", outcome); err != nil {
 			return err
 		}
 		if turnErr != nil {
 			return turnErr
 		}
+		lastFinishedState = state
 		next, ok := waitForFollowUp(streamLife, a, path)
 		if !ok {
-			return context.Cause(streamLife)
+			cause := context.Cause(streamLife)
+			if ref.GetHarnessInstance() == service.LocalClaudeHarness && ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
+				return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+			}
+			return cause
 		}
 		turnID, prompt, messageID, parts = next.ID, next.Text, next.ID, next.Parts
 		entry := acpFollowUpEvent(next)
 		s.line("You: " + entry.Text)
 		s.recordEvent(entry)
 	}
+}
+
+func publishClaudeProviderExit(ctx context.Context, a *api, path string, ref *model.SessionRef, state string) error {
+	return publishWorkerControl(ctx, a, path+"/control/provider-exit", map[string]string{
+		"harness_instance": ref.GetHarnessInstance(), "session_id": ref.GetSessionId(), "last_state": state,
+	})
 }
 
 func openSessionRuntime(j job, config runtime.Config) (harness.Runtime, error) {
@@ -237,7 +258,7 @@ func planningConfig(j job) (runtime.Config, error) {
 	}
 	config := runtime.Config{
 		OncePermissionsOnly: true,
-		HarnessInstance:     "local-" + j.Harness, WorkingDirectory: j.Worker.Path, Command: j.Adapter,
+		HarnessInstance:     service.LocalClaudeHarness, WorkingDirectory: j.Worker.Path, Command: j.Adapter,
 		SessionMeta: map[string]any{
 			"systemPrompt": map[string]string{"append": instructions},
 			"claudeCode": map[string]any{"options": map[string]any{
@@ -406,6 +427,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ref, turnID := request.Session, request.OperationId
+	localClaude := managed && ref.GetHarnessInstance() == service.LocalClaudeHarness
 	sent, err := client.Send(ctx, request)
 	if err = accepted(turnID, sent.GetReceipt(), err); err != nil {
 		return "failed", err
@@ -448,6 +470,9 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			}
 			if e.GetTurnId() != turnID {
 				continue
+			}
+			if localClaude {
+				s.recordClaudeProgress(claudeProgressPhase(e))
 			}
 			switch {
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_ASSISTANT:
@@ -545,9 +570,15 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				}
 			}
 		case <-ticker.C:
-			if managed && capabilities.GetCanInterrupt() && !interruptAttempted {
+			if managed && (localClaude || capabilities.GetCanInterrupt() && !interruptAttempted) {
 				var feed controlFeed
-				if a.request("GET", path+"/control", nil, &feed) == nil && feed.InterruptRequested {
+				err := a.request("GET", path+"/control", nil, &feed)
+				if err == nil && localClaude && feed.ProviderAvailability == "checking" {
+					_ = a.request("POST", path+"/control/reconcile", map[string]any{
+						"session": service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()},
+						"turn_id": turnID, "generation": feed.Generation,
+					}, nil)
+				} else if err == nil && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
 					if a.request("POST", path+"/control/interrupt/claim", map[string]int{"generation": feed.Generation}, nil) == nil {
 						interruptAttempted = true
 						result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: "interrupt-" + turnID, TurnId: turnID})

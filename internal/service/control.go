@@ -18,6 +18,7 @@ type WorkerControl struct {
 	Messages            []WorkerFollowUp     `json:"messages,omitempty"`
 	PromptCapabilities  *PromptCapabilities  `json:"prompt_capabilities,omitempty"`
 	SessionCapabilities *SessionCapabilities `json:"session_capabilities,omitempty"`
+	ActiveTurnID        string               `json:"active_turn_id,omitempty"`
 }
 
 // SessionCapabilities records the non-media operations negotiated by the SDK.
@@ -80,12 +81,16 @@ func (c *WorkerControl) next() *WorkerFollowUp {
 	return nil
 }
 
+func (c *WorkerControl) hasProcessingMessage() bool {
+	return slices.ContainsFunc(c.Messages, func(message WorkerFollowUp) bool { return message.Status == "processing" })
+}
+
 func turnActive(state string) bool {
 	return state == "working" || state == "waiting"
 }
 
 func canFollowUp(r *Run, w *Worker) bool {
-	return r.Status == "running" && w.Control != nil &&
+	return r.Status == "running" && w.Control != nil && !w.providerBlocksControl() &&
 		(turnActive(w.State) || w.State == "idle" || w.State == "completed")
 }
 
@@ -191,6 +196,9 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 			return read(*existing), nil
 		}
 	}
+	if w.ProviderAvailability == providerExited {
+		return outcome{}, conflict("the local Claude adapter exited; inspect the worker's source")
+	}
 	if !canFollowUp(r, w) {
 		return outcome{}, conflict("this worker cannot accept follow-ups right now")
 	}
@@ -216,11 +224,12 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 }
 
 type workerControlFeed struct {
-	Live               bool   `json:"live"`
-	NextMessageID      string `json:"next_message_id,omitempty"`
-	InterruptRequested bool   `json:"interrupt_requested,omitempty"`
-	Generation         int    `json:"generation,omitempty"`
-	State              string `json:"state,omitempty"`
+	Live                 bool   `json:"live"`
+	NextMessageID        string `json:"next_message_id,omitempty"`
+	InterruptRequested   bool   `json:"interrupt_requested,omitempty"`
+	Generation           int    `json:"generation,omitempty"`
+	State                string `json:"state,omitempty"`
+	ProviderAvailability string `json:"provider_availability,omitempty"`
 }
 
 func (s *service) workerControlStatus(req *http.Request, actor string) (outcome, error) {
@@ -231,7 +240,8 @@ func (s *service) workerControlStatus(req *http.Request, actor string) (outcome,
 	if actor != w.ID || w.Role != "worker" {
 		return outcome{}, denied()
 	}
-	feed := workerControlFeed{State: w.State, Live: r.Status == "running" && w.Control != nil && w.State != "stopping" && w.State != "stopped" && w.State != "failed"}
+	feed := workerControlFeed{State: w.State, ProviderAvailability: w.ProviderAvailability, Live: r.Status == "running" && w.Control != nil &&
+		w.ProviderAvailability != providerExited && w.State != "stopping" && w.State != "stopped" && w.State != "failed"}
 	if feed.Live {
 		feed.InterruptRequested = w.Control.InterruptRequested
 		feed.Generation = w.Control.Generation
@@ -256,9 +266,14 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 		Idle                bool
 		PromptCapabilities  *PromptCapabilities
 		SessionCapabilities *SessionCapabilities `json:"session_capabilities"`
+		ProviderSession     *NativeSession       `json:"provider_session"`
 	}
 	if err := decode(req, &input); err != nil {
 		return outcome{}, err
+	}
+	if input.ProviderSession != nil &&
+		(!w.isLocalClaudeWorker() || *w.NativeSession != *input.ProviderSession || input.Idle) {
+		return outcome{}, conflict("control registration does not match the original Claude session")
 	}
 	if w.Control != nil {
 		updated := false
@@ -275,7 +290,7 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 			}
 			updated = true
 		}
-		if w.State == "unknown" && input.Idle {
+		if w.State == "unknown" && input.Idle && !w.providerBlocksControl() {
 			w.State, w.Error = "idle", ""
 			updated = true
 		}
@@ -288,6 +303,10 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 		return outcome{}, conflict("worker must be working to register control")
 	}
 	w.Control = &WorkerControl{Generation: 1, PromptCapabilities: input.PromptCapabilities, SessionCapabilities: input.SessionCapabilities}
+	if input.ProviderSession != nil {
+		w.ProviderAvailability = providerAvailable
+		w.Control.ActiveTurnID = "initial-" + w.ID
+	}
 	return changed(w.Control), nil
 }
 
@@ -309,6 +328,9 @@ func (s *service) claimWorkerMessage(req *http.Request, actor string) (outcome, 
 		return outcome{}, conflict("follow-up is no longer eligible for delivery")
 	}
 	m.Status = "processing"
+	if w.ProviderAvailability == providerAvailable {
+		w.Control.ActiveTurnID = m.ID
+	}
 	w.State, w.Error, w.Result = "working", "", ""
 	return changed(ClaimedWorkerFollowUp{*m, s.state.PromptParts[m.ID]}), nil
 }
@@ -353,6 +375,19 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	}
 	if !turnActive(w.State) && w.State != "unknown" {
 		return outcome{}, conflict("there is no active managed turn")
+	}
+	if w.Control.ActiveTurnID != "" {
+		turnID := in.MessageID
+		if turnID == "" {
+			turnID = "initial-" + w.ID
+		}
+		if w.Control.ActiveTurnID != turnID {
+			return outcome{}, conflict("turn outcome does not match the original Claude turn")
+		}
+		w.Control.ActiveTurnID = ""
+	}
+	if w.ProviderAvailability == providerChecking {
+		w.ProviderAvailability = providerAvailable
 	}
 	if message != nil {
 		message.Status = finalStatus
@@ -434,7 +469,7 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 		return outcome{}, err
 	}
 	c := w.Control
-	if c == nil || !c.InterruptRequested || (!turnActive(w.State) && w.State != "unknown") {
+	if c == nil || w.providerBlocksControl() || !c.InterruptRequested || (!turnActive(w.State) && w.State != "unknown") {
 		return outcome{}, conflict("there is no active interrupt")
 	}
 	if c.InterruptClaimed {

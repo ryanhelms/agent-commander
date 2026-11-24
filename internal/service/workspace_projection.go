@@ -38,16 +38,17 @@ type workspaceRun struct {
 }
 
 type workspaceWorker struct {
-	run        *workspaceRun
-	path       string
-	attributes json.RawMessage
-	output     string
-	telemetry  *WorkerTelemetry
-	chunks     []string
-	events     []ConsoleEvent
-	messages   []aguiMessage
-	plain      bool
-	encoded    [2]json.RawMessage
+	run            *workspaceRun
+	path           string
+	attributes     json.RawMessage
+	output         string
+	telemetry      *WorkerTelemetry
+	claudeProgress *ClaudeProgress
+	chunks         []string
+	events         []ConsoleEvent
+	messages       []aguiMessage
+	plain          bool
+	encoded        [2]json.RawMessage
 }
 
 func projectionIndex(incremental bool) int {
@@ -229,7 +230,7 @@ func (p *workspaceProjection) reconcileWorker(v *workspaceWorker, w *Worker, ini
 		v.attributes = attrs
 		changed = true
 	}
-	v.telemetry = w.Telemetry
+	v.telemetry, v.claudeProgress = w.Telemetry, w.ClaudeProgress
 	if initial || w.Output != v.output {
 		next := splitOutput(w.Output)
 		if !initial && p.incrementalReaders > 0 {
@@ -329,12 +330,12 @@ func (p *workspaceProjection) updateWorker(w *Worker, appended string, events []
 		v.chunks, patches = outputPatches(v.path+"/outputChunks", v.chunks, len(v.output), appended, w.Output)
 		v.output = w.Output
 	}
-	if v.telemetry != w.Telemetry {
+	if v.telemetry != w.Telemetry || v.claudeProgress != w.ClaudeProgress {
 		attrs := p.workerAttributes(w)
 		if p.incrementalReaders > 0 {
 			patches = append(patches, attributePatches(v.path, v.attributes, attrs)...)
 		}
-		v.telemetry, v.attributes = w.Telemetry, attrs
+		v.telemetry, v.claudeProgress, v.attributes = w.Telemetry, w.ClaudeProgress, attrs
 	}
 	if len(events) > 0 {
 		var next []aguiMessage

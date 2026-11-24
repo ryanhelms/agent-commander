@@ -284,17 +284,7 @@ struct InputOwnership: View {
     var body: some View {
         // A quiet inline cue for a terminal status line: no chip, no fill.
         HStack(spacing: 10) {
-            if isKeyFocused {
-                HStack(spacing: 4) {
-                    Image(systemName: "keyboard").font(.system(size: size - 1))
-                    Text("key focus")
-                }
-                .font(Term.font(size))
-                .foregroundStyle(Term.text)
-                .fixedSize()
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Keyboard focus")
-            }
+            if isKeyFocused { KeyFocusCue(size: size) }
             // The words are shown whole or not at all. In a narrow tile the symbol stands alone, with
             // the full statement in its help tag and accessibility label.
             ViewThatFits(in: .horizontal) {
@@ -330,6 +320,24 @@ struct InputOwnership: View {
         case .observing(let holder): "\(workerName) is directed by \(holder)"
         case .held: "You control \(workerName). Your follow-up messages go to it."
         }
+    }
+}
+
+/// The trailing keyboard-focus cue of a status line. Shared by `InputOwnership` and the gated
+/// ownership cues of a worker whose provider availability is exited or checking.
+struct KeyFocusCue: View {
+    var size: CGFloat = 11
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "keyboard").font(.system(size: size - 1))
+            Text("key focus")
+        }
+        .font(Term.font(size))
+        .foregroundStyle(Term.text)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Keyboard focus")
     }
 }
 

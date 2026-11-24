@@ -61,6 +61,10 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		dirty = recoverIntegrations(run) || dirty
 		for _, w := range run.Workers {
 			if run.Status == "running" && w.State != "unknown" && w.State != "disconnected" && w.State != "stopping" && !ended(w.State) {
+				if w.isLocalClaudeWorker() && w.ProviderAvailability == providerAvailable &&
+					w.Control != nil && w.Control.ActiveTurnID != "" {
+					w.ProviderAvailability = providerChecking
+				}
 				w.State, w.Error = "unknown", "Service restarted. Waiting for evidence from the original worker."
 				if w.Control != nil {
 					for i := range w.Control.Messages {
@@ -161,6 +165,8 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/control":                                          s.setWorkerControl,
 		"POST /v1/workers/{worker}/control/ready":                                    s.workerControlReady,
 		"POST /v1/workers/{worker}/control/finish":                                   s.finishWorkerTurn,
+		"POST /v1/workers/{worker}/control/provider-exit":                            s.reportWorkerProviderExit,
+		"POST /v1/workers/{worker}/control/reconcile":                                s.reconcileWorkerProvider,
 		"POST /v1/workers/{worker}/control/interrupt/claim":                          s.claimWorkerInterrupt,
 		"POST /v1/workers/{worker}/messages":                                         s.sendWorkerMessage,
 		"POST /v1/workers/{worker}/messages/{message}/claim":                         s.claimWorkerMessage,
@@ -564,6 +570,9 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	if len(in.Events) > 24 {
 		return outcome{}, bad("too many console events")
 	}
+	if !in.ClaudeProgress.valid() {
+		return outcome{}, bad("invalid Claude progress observation")
+	}
 	for _, event := range in.Events {
 		if !event.ACP.Valid() {
 			return outcome{}, bad("invalid ACP activity")
@@ -580,13 +589,15 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	if replay {
 		return ack, nil
 	}
-	durable := w.NativeSession == nil || (w.State == "unknown" && in.Text != "")
+	restoreFromOutput := w.State == "unknown" && in.Text != "" && w.ProviderAvailability != providerChecking
+	durable := w.NativeSession == nil || restoreFromOutput
 	before := *w
+	w.observeClaudeProgress(in.ClaudeProgress)
 	if in.Batch > 1 && previous.Stream == "" {
 		in.Events = append([]ConsoleEvent{{Kind: "output", Text: "Earlier runner output is unavailable after service restart."}}, in.Events...)
 	}
 	const maxOutput = 64 << 10
-	if w.State == "unknown" && in.Text != "" {
+	if restoreFromOutput {
 		w.State, w.Error = "working", ""
 	}
 	w.Output += in.Text
@@ -748,6 +759,9 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	case "working", "waiting", "idle", "completed", "failed":
 	default:
 		return outcome{}, bad("invalid worker state")
+	}
+	if w.ProviderAvailability == providerChecking {
+		return outcome{}, conflict("the original Claude turn must be reconciled first")
 	}
 	if w.State == "disconnected" {
 		return outcome{}, conflict("SSH worker disconnected; reconcile the original session first")

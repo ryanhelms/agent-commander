@@ -671,13 +671,19 @@ struct CockpitScreen: View {
         // action is offered only where it exists and the service says it applies to this worker
         // now; every closure is bound to this worker's ID.
         let held = worker.control == .held
-        let canControl = actions.canControlWorker?(worker.id) ?? true
-        let canInterrupt = actions.canInterruptWorker?(worker.id) ?? true
+        // An exited or checking Claude adapter offers no take control, handback, interrupt or
+        // follow-up. One gate decides taking and returning control, read from the same policy as
+        // the model, so fixtures without model gates agree with the live app. Stop and passive
+        // source remain.
+        let controlAllowed = ProviderAvailability.allowsControl(worker.providerAvailability)
+        let canControl = controlAllowed && (actions.canControlWorker?(worker.id) ?? true)
+        let canInterrupt = controlAllowed && (actions.canInterruptWorker?(worker.id) ?? true)
         let canStop = actions.canStopWorker?(worker.id) ?? true
-        let handBack: (() -> Void)? = held ? actions.handBack.map { handBack in { handBack(worker.id) } } : nil
-        let sendInput: ((String) async -> Bool)? = actions.sendFollowUp.map { send in
+        let handBack: (() -> Void)? = held && canControl
+            ? actions.handBack.map { handBack in { handBack(worker.id) } } : nil
+        let sendInput: ((String) async -> Bool)? = controlAllowed ? actions.sendFollowUp.map { send in
             { text in await send(worker.id, text) }
-        }
+        } : nil
         let takeControl: (() -> Void)? = !held && canControl
             ? actions.takeControl.map { take in { take(worker.id) } } : nil
         let interrupt: (() -> Void)? = canInterrupt

@@ -249,6 +249,12 @@ The focused Pretty console reads the worker’s ACP-backed AG-UI projection. Its
 
 The ACP Adapter carries reported thinking as a distinct console event. The live workspace keeps the latest reported context window and prompt-result usage as independent readings so transcript rotation leaves the footer intact. Missing token counts stay absent. The original ACP records remain accessible through their scoped source references, and the footer snapshot stays out of the durable store.
 
+For a local Claude worker, the ACP Adapter timestamps the latest meaningful observation on the active turn and sends it through the existing idempotent console batch. The live workspace publishes this timestamp and phase independently of its transcript window. The cockpit measures age locally and offers the worker’s scoped source when the evidence is old or absent. Service heartbeats, history replay and local diagnostics leave this reading untouched.
+
+Between local Claude turns, the original runner reports confirmed adapter exit against the bound session. The service retains the last turn outcome, closes only that worker’s inbox and keeps ambiguous claims addressable. This report is durable and idempotent.
+
+For an open local Claude turn, Commander persists the expected turn ID with worker control. After a service restart, the worker remains under reconciliation until its original authenticated runner confirms the bound session, turn and current control generation or that turn ends. Ordinary terminal output cannot restore control for this worker.
+
 ## Multiplayer coordinator authorization
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.

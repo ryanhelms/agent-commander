@@ -46,21 +46,23 @@ func (a *api) requestContext(ctx context.Context, method, path string, body, des
 }
 
 type screen struct {
-	mu         sync.Mutex
-	pending    []byte
-	events     []service.ConsoleEvent
-	eventBytes int
-	batches    chan outputBatch
-	closed     bool
-	stop, done chan struct{}
+	mu             sync.Mutex
+	pending        []byte
+	events         []service.ConsoleEvent
+	claudeProgress *service.ClaudeProgress
+	eventBytes     int
+	batches        chan outputBatch
+	closed         bool
+	stop, done     chan struct{}
 }
 
 type outputBatch struct {
-	StreamID         string                 `json:"stream_id"`
-	Batch            uint64                 `json:"batch"`
-	ReplacesStreamID *string                `json:"replaces_stream_id,omitempty"`
-	Text             string                 `json:"text"`
-	Events           []service.ConsoleEvent `json:"events,omitempty"`
+	StreamID         string                  `json:"stream_id"`
+	Batch            uint64                  `json:"batch"`
+	ReplacesStreamID *string                 `json:"replaces_stream_id,omitempty"`
+	Text             string                  `json:"text"`
+	Events           []service.ConsoleEvent  `json:"events,omitempty"`
+	ClaudeProgress   *service.ClaudeProgress `json:"claude_progress,omitempty"`
 	done             chan struct{}
 }
 
@@ -193,11 +195,12 @@ func (s *screen) flush() {
 }
 
 func (s *screen) queueLocked(done chan struct{}) {
-	if len(s.pending) == 0 && len(s.events) == 0 && done == nil {
+	if len(s.pending) == 0 && len(s.events) == 0 && s.claudeProgress == nil && done == nil {
 		return
 	}
-	s.batches <- outputBatch{Text: string(s.pending), Events: s.events, done: done}
+	s.batches <- outputBatch{Text: string(s.pending), Events: s.events, ClaudeProgress: s.claudeProgress, done: done}
 	s.pending, s.events, s.eventBytes = s.pending[:0], nil, 0
+	s.claudeProgress = nil
 }
 
 func (s *screen) publish(ctx context.Context, a *api, path string) {
@@ -212,7 +215,7 @@ func (s *screen) publish(ctx context.Context, a *api, path string) {
 			batch.Text = notice + "\n" + batch.Text
 			batch.Events = append([]service.ConsoleEvent{{Kind: "output", Text: notice}}, batch.Events...)
 		}
-		if len(batch.Events) != 0 || batch.Text != "" {
+		if len(batch.Events) != 0 || batch.Text != "" || batch.ClaudeProgress != nil {
 			sequence++
 			batch.StreamID, batch.Batch = stream, sequence
 			gap = sendOutputBatch(ctx, a, path, &batch, &receipts) != nil
