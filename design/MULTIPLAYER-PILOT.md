@@ -41,11 +41,25 @@ The local rehearsal passed with disposable identities and a Git remote. Work thr
 
 4. **Designate the GitHub test repository.** Select a dedicated private repository and a disposable issue. Confirm its branch rules allow the dedicated `commander-share/<resource-id>` branch. Check that the owner's local checkout points to the selected GitHub repository. **Pass** when the owner has confirmed the checkout, test issue, and individual read and write capabilities for the pilot. Create the short-lived, repository-scoped token with Contents and Issues write at the start of step 7. [GitHub token setup](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens) · [GitHub permission reference](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)
 
-5. **Enable billing and create the relay VM.** The billing owner selects the billing account and approves an estimate covering compute, disk, IPv4, and egress. Use a small x86-64 Linux VM with persistent storage and a reserved public IPv4. An `e2-medium` with 4 GB RAM is the proposed starting size for the two edges, PostgreSQL, three NATS containers, and TCP ingress. Verify headroom on the actual host. Use restricted administrative access and expose TCP 443 for the relay. **Pass** when billing shows enabled and the VM has a reserved IP, working Docker Compose, and persistent storage. [Billing setup](https://docs.cloud.google.com/sdk/gcloud/reference/billing/projects/link) · [VM sizes](https://docs.cloud.google.com/compute/docs/general-purpose-machines) · [Cost calculator](https://cloud.google.com/products/calculator)
+5. **Enable billing and create the relay VM.** The billing owner selects the billing account and approves the [relay VM estimate](#relay-vm-estimate) covering compute, disk, IPv4, and egress. Use a small x86-64 Linux VM with persistent storage and a reserved public IPv4. An `e2-medium` with 4 GB RAM is the proposed starting size for the two edges, PostgreSQL, three NATS containers, and TCP ingress. Verify headroom on the actual host. Use restricted administrative access and expose TCP 443 for the relay. **Pass** when billing shows enabled and the VM has a reserved IP, working Docker Compose, and persistent storage. [Billing setup](https://docs.cloud.google.com/sdk/gcloud/reference/billing/projects/link) · [VM sizes](https://docs.cloud.google.com/compute/docs/general-purpose-machines)
 
 6. **Publish DNS and bring up mutual TLS.** With DNS write access to the zone, point `srv01.agentmux.bytedesk.ai` at the reserved IP using a Cloudflare **DNS-only** A record. Issue a publicly trusted certificate for the hostname using ACME DNS-01. Load the tested Linux image and run `prepare.py --public` with the certificate chain, key, Desktop client ID, and the two email allowlist entries. Start the Compose stack and verify the certificate and DNS externally. **Pass** when a client-certificate probe gets HTTP 204 with either edge stopped in turn, a probe without a certificate fails, and PostgreSQL and NATS are reachable solely on the private backbone. [Deployment commands](../multiplayer/deploy/README.md) · [Cloudflare DNS-only records](https://developers.cloudflare.com/dns/proxy-status/) · [ACME DNS-01](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge)
 
 7. **Verify the complete workflow on two Macs.** Follow the [first-session checklist](#first-session-on-two-macs). After signing in, the repository owner enrolls the checkout and enters the token directly in their tray. Start with read access, then grant the individual writes. Confirm exact-handle discovery, mutual friendship, separate grants in both directions, coordinator messages, a worker result, the pushed SHA, and the closed test issue. Revoke one grant and verify the next operation is refused while the other grants still work. **Pass** when both participants see the expected state and GitHub shows the exact pushed revision and issue closure.
+
+## Relay VM estimate
+
+The proposed configuration uses one on-demand `e2-medium` in Iowa (`us-central1`), a 30 GiB balanced persistent disk, and one attached Standard Tier regional IPv4 address. The estimate uses 730 hours and 10 GiB of outbound traffic per month for two participants, at Google Cloud list prices checked November 24, 2026.
+
+| Item | Estimated monthly cost in USD |
+| --- | ---: |
+| `e2-medium` at $0.03350571/hour. [Compute pricing](https://cloud.google.com/products/compute/pricing/general-purpose?hl=en) | $24.46 |
+| 30 GiB balanced persistent disk at $0.10/GiB-month. [Disk pricing](https://cloud.google.com/products/block-storage) | $3.00 |
+| Attached IPv4 at $0.005/hour, before any free usage. [Network pricing](https://cloud.google.com/vpc/network-pricing) | $3.65 |
+| 10 GiB Standard Tier egress. The first 200 GiB per month are shared across the billing account. [Network pricing](https://cloud.google.com/vpc/network-pricing) | $0.00–$0.85 |
+| **Estimated total** | **$31.11–$31.96** |
+
+Taxes and backup storage are additional. For example, 5 GiB of standard snapshot storage adds about $0.33 per month at Iowa list prices. A reserved but unattached address costs $0.01/hour. Reprice if the region, disk size, or traffic assumptions change. [Disk pricing](https://cloud.google.com/products/block-storage) · [Network pricing](https://cloud.google.com/vpc/network-pricing) · [Pricing calculator](https://cloud.google.com/products/calculator)
 
 ## First session on two Macs
 
@@ -74,7 +88,15 @@ The recipient device signs and encrypts a fixed recovery code in `result.code`. 
 
 Run `make pilot-macos` with the macOS 26 SDK and the Go SDK archives pinned in `go.mod`. This produces `dist/Agent-Commander-Multiplayer-Pilot-macOS-universal.zip` for local testing. The build verifies signatures and Intel and Apple silicon slices in the extracted app and both helpers. It stages separately from the installed app and prints the archive's SHA-256.
 
-For distribution to another Mac, use a Developer ID Application signing identity and a `notarytool` profile from the build Mac's Keychain. [Apple Developer ID signing](https://developer.apple.com/developer-id/) · [Apple notarization](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+For distribution to another Mac, the Apple Developer team prepares a Developer ID Application signing identity with its private key on the build Mac. An authorized operator can set up the `commander-pilot` Keychain profile with an Apple Account app-specific password. Enter it at the prompt. Use `history` to verify that the profile can reach Apple's notary service before building. [Apple Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/) · [Apple notarization credentials](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool)
+
+```sh
+security find-identity -v -p codesigning
+xcrun notarytool store-credentials commander-pilot --apple-id 'operator@example.com' --team-id 'TEAMID'
+xcrun notarytool history --keychain-profile commander-pilot
+```
+
+Run the build using the Developer ID Application name returned by `security find-identity`.
 
 ```sh
 make pilot-macos CODE_SIGN_IDENTITY='Developer ID Application: Example (TEAMID)' \
