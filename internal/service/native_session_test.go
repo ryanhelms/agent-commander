@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +13,12 @@ import (
 
 type nativeFixtureLauncher struct {
 	recorder
-	ref NativeSession
-	cwd string
+	ref    NativeSession
+	cwd    string
+	replay bool
 }
+
+func (n *nativeFixtureLauncher) RequiresStoppedHistory(NativeSession) bool { return n.replay }
 
 func (n *nativeFixtureLauncher) ReadNativeHistoryPage(_ context.Context, ref NativeSession, cwd, cursor string, limit uint32) (json.RawMessage, error) {
 	n.ref, n.cwd = ref, cwd
@@ -22,6 +26,22 @@ func (n *nativeFixtureLauncher) ReadNativeHistoryPage(_ context.Context, ref Nat
 		return nil, errors.New("private provider details")
 	}
 	return json.RawMessage(`{"observations":[{"extension":{"type":"fixture","data":"AAE="}}],"nextCursor":"next-fixture-cursor"}`), nil
+}
+
+func (n *nativeFixtureLauncher) ReadNativeHistoryRecord(_ context.Context, ref NativeSession, cwd, hint, cursor string) (json.RawMessage, error) {
+	n.ref, n.cwd = ref, cwd
+	if hint != "fixture-page" || cursor != "selected-original" {
+		return nil, errors.New("private provider details")
+	}
+	return json.RawMessage(`{"observations":[{"cursor":"selected-original","sourceRecord":{"type":"fixture"},"sourceCursor":"selected-original"}],"nextCursor":""}`), nil
+}
+
+func (n *nativeFixtureLauncher) ReadNativeJournalPage(_ context.Context, ref NativeSession, cwd, cursor string, limit uint32) (json.RawMessage, error) {
+	n.ref, n.cwd = ref, cwd
+	if cursor != "journal-cursor" || limit != 2 {
+		return nil, errors.New("private provider journal details")
+	}
+	return json.RawMessage(`{"observations":[{"extension":{"type":"claude.journal.attachment","data":"AAE="}}]}`), nil
 }
 
 func TestNativeHistoryPageAuthorizationAndBinding(t *testing.T) {
@@ -40,6 +60,8 @@ func TestNativeHistoryPageAuthorizationAndBinding(t *testing.T) {
 	ref := NativeSession{HarnessInstance: "local-codex", SessionID: "page-session"}
 	f.call("POST", path+"/native-session", "", ref, 200, "")
 	f.call("GET", history+"?limit=2&cursor=fixture-cursor", worker.Token, nil, 403, "")
+	f.call("GET", history+"?source=journal&limit=2&cursor=journal-cursor", worker.Token, nil, 403, "")
+	f.call("GET", history+"?source=unknown", "", nil, 400, "")
 	f.call("GET", history+"?limit=129", "", nil, 400, "")
 	raw := f.call("GET", history+"?limit=2&cursor=fixture-cursor", "", nil, 200, "")
 	if reader.ref != ref || reader.cwd != f.dir || !strings.Contains(string(raw), `"data":"AAE="`) || !strings.Contains(string(raw), "next-fixture-cursor") {
@@ -47,6 +69,55 @@ func TestNativeHistoryPageAuthorizationAndBinding(t *testing.T) {
 	}
 	if raw := f.call("GET", history, "", nil, 503, ""); strings.Contains(string(raw), "private provider details") {
 		t.Fatal("history error exposed native diagnostics")
+	}
+	raw = f.call("GET", history+"?source=journal&limit=2&cursor=journal-cursor", "", nil, 200, "")
+	if reader.ref != ref || reader.cwd != f.dir || !strings.Contains(string(raw), "claude.journal.attachment") {
+		t.Fatalf("supplement did not use the worker's bound session and checkout: %s", raw)
+	}
+	f.call("GET", history+"?source=journal&limit=2&cursor=fixture-cursor", "", nil, 503, "")
+	record := "?source=provider&recordCursor=selected-original&cursor=fixture-page"
+	f.call("GET", history+record, worker.Token, nil, 403, "")
+	raw = f.call("GET", history+record, "", nil, 200, "")
+	if reader.ref != ref || reader.cwd != f.dir || !strings.Contains(string(raw), "selected-original") {
+		t.Fatalf("original lookup escaped the worker binding: %s", raw)
+	}
+	for _, query := range []string{"?recordCursor=", "?recordCursor=a&limit=1", "?recordCursor=a&source=journal", "?recordCursor=a&source=live", "?recordCursor=%0a"} {
+		f.call("GET", history+query, "", nil, 400, "")
+	}
+}
+
+func TestACPReplayOnlyReadsStoppedWorkers(t *testing.T) {
+	ref := NativeSession{HarnessInstance: "local-profile-fixture:history-replay", SessionID: "session"}
+	worker := &Worker{ID: "worker", State: "completed", Worktree: t.TempDir(), NativeSession: &ref}
+	launcher := &nativeFixtureLauncher{replay: true}
+	s := &service{launcher: launcher, state: database{Runs: []*Run{{Workers: []*Worker{worker}}}}}
+	request := func(query string) string {
+		req := httptest.NewRequest("GET", "/v1/workers/worker/history?"+query, nil)
+		req.SetPathValue("worker", worker.ID)
+		response := httptest.NewRecorder()
+		s.serveNativeHistoryPage(response, req)
+		if response.Code != 200 {
+			t.Fatalf("unexpected history status: %d %s", response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	query := "limit=2&cursor=fixture-cursor"
+	s.restoreNativeHistories(context.Background())
+	if gap := request(query); !strings.Contains(gap, "after this worker stops") || launcher.ref != (NativeSession{}) {
+		t.Fatalf("history opened an active adapter: %s", gap)
+	}
+	worker.State = "stopped"
+	if page := request(query); !strings.Contains(page, "next-fixture-cursor") || launcher.ref != ref {
+		t.Fatalf("stopped worker replay returned the wrong page: %s", page)
+	}
+	s.restoreNativeHistories(context.Background())
+	if len(worker.Console) != 1 || worker.Console[0].Text != "native history marker" {
+		t.Fatalf("cold replay did not restore the stopped worker: %+v", worker.Console)
+	}
+	worker.Console[0].Text = "previously observed live detail"
+	s.restoreNativeHistories(context.Background())
+	if worker.Console[0].Text != "previously observed live detail" {
+		t.Fatal("a replay replaced details retained from the live console")
 	}
 }
 

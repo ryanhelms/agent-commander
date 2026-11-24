@@ -53,31 +53,39 @@ func (m managedCodex) readHistory(cwd string) func(context.Context, *model.ReadH
 }
 
 func configuredManagedCodex() (managedCodex, error) {
-	profile := os.Getenv("AGENT_COMMANDER_CODEX_PROFILE")
-	if !filepath.IsAbs(profile) {
-		return managedCodex{}, errors.New("managed Codex requires AGENT_COMMANDER_CODEX_PROFILE to point to a dedicated signed-in profile")
-	}
-	profile, err := filepath.EvalSymlinks(profile)
-	if err != nil {
-		return managedCodex{}, errors.New("the managed Codex profile directory is unavailable")
-	}
-	info, err := os.Stat(profile)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return managedCodex{}, errors.New("managed Codex requires a private, dedicated profile directory")
-	}
-	home, err := os.UserHomeDir()
+	profile, err := managedCodexProfile()
 	if err != nil {
 		return managedCodex{}, err
-	}
-	defaultProfile, err := filepath.EvalSymlinks(filepath.Join(home, ".codex"))
-	if err == nil && profile == defaultProfile {
-		return managedCodex{}, errors.New("the managed Codex profile must be separate from the default Codex profile")
 	}
 	binary, err := executablePath("codex", "AGENT_COMMANDER_CODEX")
 	if err != nil {
 		return managedCodex{}, err
 	}
 	return managedCodex{profile, binary}, nil
+}
+
+func managedCodexProfile() (string, error) {
+	profile := os.Getenv("AGENT_COMMANDER_CODEX_PROFILE")
+	if !filepath.IsAbs(profile) {
+		return "", errors.New("managed Codex requires AGENT_COMMANDER_CODEX_PROFILE to point to a dedicated signed-in profile")
+	}
+	profile, err := filepath.EvalSymlinks(profile)
+	if err != nil {
+		return "", errors.New("the managed Codex profile directory is unavailable")
+	}
+	info, err := os.Stat(profile)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return "", errors.New("managed Codex requires a private, dedicated profile directory")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	defaultProfile, err := filepath.EvalSymlinks(filepath.Join(home, ".codex"))
+	if err == nil && profile == defaultProfile {
+		return "", errors.New("the managed Codex profile must be separate from the default Codex profile")
+	}
+	return profile, nil
 }
 
 func (m managedCodex) instance() string {

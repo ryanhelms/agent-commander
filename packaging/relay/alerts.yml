@@ -1,0 +1,38 @@
+groups:
+  - name: commander-relay
+    rules:
+      - alert: CommanderRelayMetricsUnavailable
+        expr: up{job="commander-relay"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Commander relay metrics are unavailable
+          description: Check the relay process and its loopback metrics listener.
+
+      - alert: CommanderRelayHostUnavailable
+        expr: increase(commander_relay_unavailable_requests_total{job="commander-relay"}[5m]) >= 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Commander relay cannot reach a requested host
+          description: Check the host connector before retrying an operation.
+
+      - alert: CommanderRelayRequestSaturation
+        expr: increase(commander_relay_saturated_requests_total{job="commander-relay"}[5m]) >= 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Commander relay requests repeatedly reached the concurrency limit
+          description: Check concurrent streams and application retry behavior.
+
+      - alert: CommanderRelayForwardingInterrupted
+        expr: increase(commander_relay_interrupted_requests_total{job="commander-relay"}[5m]) >= 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Commander relay forwarding was repeatedly interrupted
+          description: Check tunnel continuity and app read timeouts. Recover accepted operations by their receipts.

@@ -1,0 +1,165 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  changelog:
+    name: Validate changelog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: python3 packaging/changelog.py check
+      - name: Check private pilot tag and release notes
+        if: github.ref_type == 'tag'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"
+          python3 packaging/changelog.py notes "$TAG"
+          [[ "$TAG" == v*-* ]] || { echo 'Use a prerelease tag for an ad hoc pilot build.'; exit 1; }
+
+  linux:
+    name: Test Go and build Linux downloads
+    needs: changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: multiplayer/go.mod
+          cache-dependency-path: |
+            go.sum
+            multiplayer/go.sum
+      - name: Fetch pinned private Go inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 packaging/sdk-inputs.py fetch "$GITHUB_REPOSITORY"
+      - name: Test Commander and the multiplayer relay
+        run: |
+          python3 packaging/go-with-sdk.py test ./...
+          go -C multiplayer test -race ./...
+          python3 -B multiplayer/deploy/prepare_test.py
+      - name: Build verified Linux relay archives
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p release-assets
+          python3 packaging/relay-release.py --output "$RUNNER_TEMP/linux-release"
+          cp "$RUNNER_TEMP"/linux-release/*.tar.gz release-assets/
+          docker build --platform linux/amd64 --file multiplayer/deploy/Dockerfile \
+            --tag commander-relay:pilot-linux-amd64 multiplayer
+          docker image save commander-relay:pilot-linux-amd64 | gzip -n > release-assets/commander-relay-pilot-linux-amd64.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        with:
+          name: linux-release
+          path: release-assets/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: Test Swift and build the universal Mac app
+    needs: changelog
+    runs-on: macos-26
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: multiplayer/go.mod
+          cache-dependency-path: |
+            go.sum
+            multiplayer/go.sum
+      - name: Test native app
+        run: make test-native
+      - name: Fetch pinned private Go inputs
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 packaging/sdk-inputs.py fetch "$GITHUB_REPOSITORY"
+      - name: Build and verify the universal app archive
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            python3 packaging/macos-pilot.py --version "$GITHUB_REF_NAME" --build-number "$GITHUB_RUN_NUMBER"
+          else
+            make pilot-macos
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        with:
+          name: macos-release
+          path: dist/Agent-Commander-Multiplayer-Pilot-macOS-universal.zip
+          if-no-files-found: error
+
+  publish:
+    name: Verify and publish private pilot release
+    if: github.ref_type == 'tag'
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: '*-release'
+          merge-multiple: true
+          path: release-assets
+      - name: Upload to draft, verify downloads, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          visibility=$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)
+          [[ "$visibility" == PRIVATE ]] || { echo 'The pilot release requires a private repository.'; exit 1; }
+          python3 packaging/changelog.py notes "$TAG" > "$RUNNER_TEMP/release-notes.md"
+          printf '\n### Installation\n\nThe universal ZIP is an ad hoc macOS 26+ pilot build. Verify it against SHA256SUMS before use.\n' >> "$RUNNER_TEMP/release-notes.md"
+          (
+            cd release-assets
+            sha256sum Agent-Commander-Multiplayer-Pilot-macOS-universal.zip \
+              agent-commander-relay-linux-{amd64,arm64}.tar.gz \
+              commander-relay-pilot-linux-amd64.tar.gz > SHA256SUMS
+          )
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            [[ "$draft" == true ]] || { echo 'This tag already has a published release.'; exit 0; }
+          else
+            gh release create "$TAG" --verify-tag --draft --prerelease \
+              --title "Agent Commander $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$TAG" release-assets/* --clobber
+          mkdir "$RUNNER_TEMP/download-check"
+          gh release download "$TAG" --pattern '*' --dir "$RUNNER_TEMP/download-check"
+          diff -u <(cd release-assets && printf '%s\n' * | sort) \
+            <(cd "$RUNNER_TEMP/download-check" && printf '%s\n' * | sort)
+          (
+            cd "$RUNNER_TEMP/download-check"
+            cmp SHA256SUMS "$GITHUB_WORKSPACE/release-assets/SHA256SUMS"
+            sha256sum --check SHA256SUMS
+          )
+          gh release edit "$TAG" --draft=false --prerelease

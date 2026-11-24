@@ -6,10 +6,36 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"agentcommander/internal/acpprocessor"
 )
+
+func TestFoldedToolKeepsEverySourceReference(t *testing.T) {
+	call := acpprocessor.Reference("live", "1", "tool_call", "")
+	progress := acpprocessor.Reference("live", "2", "tool_call_update", "")
+	result := acpprocessor.Reference("live", "3", "tool_call_update", "")
+	more := acpprocessor.Reference("provider", "3", "tool_call_update", "")
+	messages := aguiMessages("w", []ConsoleEvent{
+		{Kind: "tool_call", ToolID: "t", Name: "Read", ACP: call},
+		{Kind: "tool_update", ToolID: "t", ACP: progress},
+		{Kind: "tool_result", ToolID: "t", Text: "first", ACP: result},
+		{Kind: "tool_result", ToolID: "t", Text: "second", ACP: more},
+		{Kind: "tool_update", ToolID: "t", ACP: progress},
+		{Kind: "text", Text: "done", ACP: call},
+	})
+	if len(messages) != 3 || !reflect.DeepEqual(messages[0].Metadata, &aguiMessageMetadata{
+		ACP: progress, ACPSources: []*acpprocessor.Activity{call, progress},
+	}) || !reflect.DeepEqual(messages[1].Metadata, &aguiMessageMetadata{
+		ACP: more, ACPSources: []*acpprocessor.Activity{result, more},
+	}) || !reflect.DeepEqual(messages[2].Metadata, &aguiMessageMetadata{ACP: call}) {
+		t.Fatalf("incorrect source references for folded tool calls and results: %#v", messages)
+	}
+}
 
 func TestAGUIWorkspaceStream(t *testing.T) {
 	f := newFixture(t)
@@ -98,20 +124,35 @@ func TestAGUIWorkspaceStream(t *testing.T) {
 		{Kind: "tool_result", ToolID: "missing-call", Text: "out of window"},
 		{Kind: "tool_call", ToolID: "read-1", Name: "Read", Text: "console.md"},
 		{Kind: "tool_result", ToolID: "read-1", Text: "Fictional label"},
+		{Kind: "output", Text: "[Provider stderr] sample diagnostic"},
 	}}, 200, "")
 	output := changedRun()
 	messages := output.Workers[1].Messages
 	if len(output.Workers[0].Messages) != 0 || len(output.Workers[1].Console) != 0 ||
-		len(messages) != 3 || messages[0].Role != "assistant" || messages[2].Role != "tool" {
+		len(messages) != 5 || messages[0].Role != "assistant" || messages[3].Role != "tool" ||
+		messages[4].Role != "system" || messages[4].Content == nil || *messages[4].Content != "[Provider stderr] sample diagnostic" {
 		t.Fatalf("unexpected projection: %+v", output.Workers)
 	}
-	if len(messages[1].ToolCalls) != 1 || messages[2].Content == nil {
+	if messages[1].Role != "tool" || messages[1].ToolCallID != worker.ID+":missing-call" || messages[1].Content == nil ||
+		*messages[1].Content != "out of window" {
+		t.Fatalf("lost orphan result: %+v", messages)
+	}
+	if len(messages[2].ToolCalls) != 1 || messages[3].Content == nil {
 		t.Fatalf("missing tool call or result: %+v", messages)
 	}
-	call := messages[1].ToolCalls[0]
+	call := messages[2].ToolCalls[0]
 	if messages[0].ID != worker.ID+":1" || call.Function.Arguments != "{\"detail\":\"console.md\"}" ||
-		messages[2].ToolCallID != call.ID || *messages[2].Content != "Fictional label" {
+		messages[3].ToolCallID != call.ID || *messages[3].Content != "Fictional label" {
 		t.Fatalf("lost tool correlation: %+v", messages)
+	}
+	runPath := "/v1/runs/" + coordinator.RunID
+	polled := decodeRun(f.call("GET", runPath+"?view=ag-ui", "", nil, 200, ""))
+	if len(polled.Workers[1].Console) != 0 || !reflect.DeepEqual(polled.Workers[1].Messages, messages) {
+		t.Fatalf("polled AG-UI view diverged from live projection: %+v", polled.Workers[1])
+	}
+	ordinary := decodeRun(f.call("GET", runPath, "", nil, 200, ""))
+	if len(ordinary.Workers[1].Console) != 5 || len(ordinary.Workers[1].Messages) != 0 {
+		t.Fatal("ordinary run endpoint stopped returning the original console records")
 	}
 
 	var question Question
@@ -142,5 +183,50 @@ func TestAGUIWorkspaceStream(t *testing.T) {
 		decodeRun(snapshot.Snapshot.Runs[0]).Requests[0].Answer != answer ||
 		decodeRun(snapshot.Snapshot.Runs[1]).ID != another.RunID {
 		t.Fatalf("reconnect lost committed updates: %+v", snapshot)
+	}
+}
+
+func TestAGUITranscriptFixturePreservesProgressAndResultIdentity(t *testing.T) {
+	data, err := os.ReadFile("../../design/verification/transcript-coverage/console-events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture []ConsoleEvent
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	first := aguiMessages("first-worker", fixture)
+	second := aguiMessages("second-worker", fixture)
+	if len(first) != 7 || len(second) != len(first) {
+		t.Fatalf("wrong message count: %d, %d", len(first), len(second))
+	}
+	if *first[0].Content != *first[1].Content || first[0].ID == first[1].ID {
+		t.Fatal("repeated text did not retain its separate identities")
+	}
+	if first[2].ToolCallID != "first-worker:orphan" || *first[2].Content != "Result whose call left the preview." {
+		t.Fatalf("orphan result was lost: %+v", first[2])
+	}
+	call := first[3].ToolCalls[0]
+	var arguments struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
+		t.Fatal(err)
+	}
+	if call.ID == second[3].ToolCalls[0].ID || call.Function.Name != "Read file" ||
+		arguments.Detail != "sample.txt\nRead first chunk.\nRead next chunk." {
+		t.Fatalf("tool progress or worker identity was lost: %+v", call)
+	}
+	if fixture[3].TerminalText() != "→ Read fixture [pending]\nsample.txt" ||
+		fixture[4].TerminalText() != "Tool read-1 [in_progress]\nRead first chunk." {
+		t.Fatal("chronological console lost the original tool phases")
+	}
+	result := first[4]
+	if result.ToolCallID != call.ID || result.Error != "Tool failed." ||
+		*result.Content != "Part one\nTool failed.\nPart two: fixture://plan" {
+		t.Fatalf("tool result was incomplete: %+v", result)
+	}
+	if !strings.Contains(*first[5].Content, "AAE=") || *first[6].Content != "Retained conversation source expired." {
+		t.Fatal("opaque content or explicit gap was lost")
 	}
 }

@@ -1,0 +1,121 @@
+{
+  "stockClient": {
+    "package": "@agentclientprotocol/sdk",
+    "version": "1.8.0"
+  },
+  "commanderSDK": {
+    "sum": "h1:BSy3YKR30mUilcWHbqpOzWtuZ82MTJFrhlYCOjGMJWU=",
+    "version": "v0.1.14"
+  },
+  "transport": {
+    "sum": "h1:QJC15McjD4XFpn2XLHxcGIEy4LtMz82AE/ieudeTSSc=",
+    "version": "v0.1.0"
+  },
+  "commanderCLI": {
+    "sha256": "15a0ed9be1106b6bbc1e252012ab74664949b4d94cbaa38451e7536ce117ff6e"
+  },
+  "harnesses": [
+    {
+      "harness": "claude",
+      "cliVersion": "2.1.331",
+      "agent": {
+        "name": "@agentclientprotocol/claude-agent-acp",
+        "version": "0.109.1"
+      },
+      "protocolVersion": 1,
+      "advertised": {
+        "loadSession": true,
+        "listSessions": true,
+        "resumeSession": true,
+        "promptImage": true,
+        "promptAudio": false,
+        "embeddedContext": true
+      },
+      "exercised": {
+        "stockInitialize": "verified",
+        "portableScopedList": "verified-empty-workspace"
+      },
+      "workflowEvidence": [
+        "../incremental-native/README.md",
+        "../copilotkit-live/README.md",
+        "../sdk-runtime.md"
+      ]
+    },
+    {
+      "harness": "codex",
+      "cliVersion": "0.171.0",
+      "agent": {
+        "name": "@agentclientprotocol/codex-acp",
+        "version": "2.9.0"
+      },
+      "protocolVersion": 1,
+      "advertised": {
+        "loadSession": true,
+        "listSessions": true,
+        "resumeSession": true,
+        "promptImage": true,
+        "promptAudio": false,
+        "embeddedContext": true
+      },
+      "exercised": {
+        "stockInitialize": "verified",
+        "portableScopedList": "verified-empty-workspace"
+      },
+      "workflowEvidence": [
+        "../incremental-native/README.md",
+        "../copilotkit-live/README.md",
+        "../sdk-runtime.md"
+      ]
+    },
+    {
+      "harness": "antigravity",
+      "cliVersion": "1.5.13",
+      "agent": {
+        "name": "Antigravity ACP Server",
+        "version": "1.5.13"
+      },
+      "protocolVersion": 1,
+      "advertised": {
+        "loadSession": true,
+        "listSessions": true,
+        "resumeSession": true,
+        "promptImage": true,
+        "promptAudio": false,
+        "embeddedContext": true
+      },
+      "exercised": {
+        "stockInitialize": "verified",
+        "portableScopedList": "verified-empty-workspace"
+      },
+      "workflowEvidence": [
+        "../stock-acp.md",
+        "../native-source/README.md"
+      ]
+    },
+    {
+      "harness": "pi",
+      "cliVersion": "1.1.0",
+      "agent": {
+        "name": "pi",
+        "version": "0.2.0"
+      },
+      "protocolVersion": 1,
+      "advertised": {
+        "loadSession": true,
+        "listSessions": true,
+        "resumeSession": true,
+        "promptImage": true,
+        "promptAudio": false,
+        "embeddedContext": true
+      },
+      "exercised": {
+        "stockInitialize": "verified",
+        "portableScopedList": "verified-empty-workspace"
+      },
+      "workflowEvidence": [
+        "../pi-translation.md",
+        "../pi-rpc/verify.py"
+      ]
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"agentcommander/internal/catalog"
 	"agentcommander/internal/localapi"
 	"agentcommander/internal/mcpbridge"
 	"agentcommander/internal/provider"
@@ -26,9 +27,23 @@ import (
 const usage = `Agent Commander
 
   agentctl start                         Start the local API service
-  agentctl run DIRECTORY TASK            Start a managed coordinator
+  agentctl run [--client ID] DIRECTORY TASK
+                                         Start a managed coordinator
+  agentctl catalog list [HTTPS_URL ...]   List ACP adapter catalog metadata
+  agentctl catalog stage-binary URL ID VERSION ENTRY SIGNATURE PUBLIC_KEY
+                                         Verify and stage a catalog binary
+  agentctl catalog stage-package URL ID VERSION npm|python ENTRY SIGNATURE PUBLIC_KEY
+                                         Verify and stage an offline package bundle
+  agentctl catalog activate STAGE PUBLISHER_KEY_SHA256
+                                         Activate a staged binary
+  agentctl catalog rollback ID            Restore the previous binary pin
+  agentctl catalog updates                List verified, staged updates
+  agentctl catalog update-source ID ENTRY_URL SIGNATURE_URL PUBLIC_KEY
+                                         Configure the pinned publisher's HTTPS proof endpoints
+  agentctl catalog refresh ID             Check and stage a verified update
   agentctl list                          List runs
   agentctl show RUN                      Inspect a run and its consoles
+  agentctl terminal observe WORKER       Open a read-only tmux viewer for a local worker
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
   agentctl delegate-coding RUN PARENT NAME TASK
                                          Create an isolated coding worker
@@ -43,6 +58,8 @@ const usage = `Agent Commander
   agentctl stop-worker WORKER            Stop one managed worker
   agentctl api METHOD /v1/PATH           Call the API with an optional JSON body on stdin
   agentctl mcp                           Serve MCP for a managed actor over stdio
+  agentctl relay CONFIG.json             Serve the authenticated Commander relay
+  agentctl relay --check CONFIG.json     Validate relay configuration without starting it
 
 Arguments containing whitespace should be quoted by the calling shell.
 Set AGENT_COMMANDER_HOME for an isolated service or AGENT_COMMANDER_SOCKET for its socket.`
@@ -66,8 +83,90 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	token := os.Getenv("AGENT_COMMANDER_TOKEN")
+	if args[0] == "catalog" {
+		if len(args) > 1 && args[1] == "update-source" {
+			if len(args) != 6 {
+				return errors.New("usage: agentctl catalog update-source ID ENTRY_URL SIGNATURE_URL PUBLIC_KEY")
+			}
+			key, err := readCatalogProof(args[5])
+			if err != nil {
+				return err
+			}
+			return catalog.SetUpdateSource(ctx, paths.State, args[2], args[3], args[4], key)
+		}
+		if len(args) > 1 && args[1] == "refresh" {
+			if len(args) != 3 {
+				return errors.New("usage: agentctl catalog refresh ID")
+			}
+			update, err := catalog.Refresh(ctx, paths.State, args[2])
+			if err != nil {
+				return err
+			}
+			encoder := json.NewEncoder(os.Stdout)
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(update)
+		}
+		if len(args) == 9 && args[1] == "stage-package" {
+			if args[5] != "npm" && args[5] != "python" {
+				return errors.New("package manager must be npm or python")
+			}
+			return stageCatalogRelease(ctx, paths.State, args[2:5], args[5], args[6:])
+		}
+		if len(args) == 2 && args[1] == "updates" {
+			updates, err := catalog.Updates(paths.State)
+			if err != nil {
+				return err
+			}
+			encoder := json.NewEncoder(os.Stdout)
+			encoder.SetIndent("", "  ")
+			return encoder.Encode(updates)
+		}
+		if len(args) == 4 && args[1] == "activate" {
+			installed, err := catalog.Activate(ctx, paths.State, args[2], args[3])
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(installed)
+		}
+		if len(args) == 3 && args[1] == "rollback" {
+			installed, err := catalog.Rollback(ctx, paths.State, args[2])
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(installed)
+		}
+		if len(args) > 1 && args[1] == "stage-binary" {
+			if len(args) != 8 {
+				return errors.New("usage: agentctl catalog stage-binary URL ID VERSION ENTRY SIGNATURE PUBLIC_KEY")
+			}
+			return stageCatalogRelease(ctx, paths.State, args[2:5], "", args[5:])
+		}
+		if len(args) < 2 || args[1] != "list" {
+			return errors.New("usage: agentctl catalog list [HTTPS_URL ...]")
+		}
+		sources := args[2:]
+		if len(sources) == 0 {
+			sources = []string{catalog.DefaultURL}
+		}
+		snapshots := make([]catalog.Snapshot, 0, len(sources))
+		for _, source := range sources {
+			snapshot, err := catalog.Read(ctx, source)
+			if err != nil {
+				return fmt.Errorf("read ACP catalog: %w", err)
+			}
+			snapshots = append(snapshots, snapshot)
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(snapshots)
+	}
 	api := localapi.New(paths.Socket, token)
 	switch args[0] {
+	case "terminal":
+		if len(args) != 3 || args[1] != "observe" {
+			return errors.New("usage: agentctl terminal observe WORKER")
+		}
+		return observeTerminal(ctx, api, args[2])
 	case "app-server":
 		if len(args) != 1 {
 			return errors.New("unexpected managed Codex startup arguments")
@@ -87,6 +186,15 @@ func run(args []string) error {
 		return provider.RunPersistentACP(ctx, args[1:], os.Stdin, os.Stdout)
 	case "serve":
 		return serve(ctx, paths)
+	case "relay":
+		if len(args) == 3 && args[1] == "--check" {
+			_, err := prepareRelay(args[2])
+			return err
+		}
+		if len(args) != 2 {
+			return errors.New("usage: agentctl relay [--check] CONFIG.json")
+		}
+		return serveRelay(ctx, args[1])
 	case "start":
 		return start(ctx, paths, api)
 	case "mcp":
@@ -109,6 +217,52 @@ func run(args []string) error {
 	return enc.Encode(pretty)
 }
 
+func stageCatalogRelease(ctx context.Context, stateDir string, release []string, manager string, proofPaths []string) error {
+	var proof catalog.BinaryProof
+	fields := []*[]byte{&proof.Manifest, &proof.Signature, &proof.PublicKey}
+	for i, field := range fields {
+		data, err := readCatalogProof(proofPaths[i])
+		if err != nil {
+			return err
+		}
+		*field = data
+	}
+	snapshot, err := catalog.Read(ctx, release[0])
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(stateDir, "catalog", "staged")
+	var staged catalog.StagedBinary
+	if manager == "" {
+		staged, err = catalog.StageBinary(ctx, dir, snapshot, release[1], release[2], proof)
+	} else {
+		staged, err = catalog.StagePackage(ctx, dir, snapshot, release[1], release[2], manager, proof)
+	}
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(staged)
+}
+
+func readCatalogProof(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	const maxBytes = 64 << 10
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBytes {
+		return nil, errors.New("catalog proof file exceeds 64 KiB")
+	}
+	return data, nil
+}
+
 func operation(args []string) (method, path string, input any, err error) {
 	invalid := func() (string, string, any, error) {
 		return "", "", nil, fmt.Errorf("invalid arguments for %s\n%s", args[0], usage)
@@ -120,10 +274,18 @@ func operation(args []string) (method, path string, input any, err error) {
 		}
 		return "GET", "/v1/runs", nil, nil
 	case "run":
-		if len(args) < 3 {
+		client := "claude"
+		runArgs := args[1:]
+		if len(runArgs) > 0 && runArgs[0] == "--client" {
+			if len(runArgs) < 4 || strings.TrimSpace(runArgs[1]) == "" {
+				return invalid()
+			}
+			client, runArgs = runArgs[1], runArgs[2:]
+		}
+		if len(runArgs) < 2 {
 			return invalid()
 		}
-		dir, err := filepath.Abs(args[1])
+		dir, err := filepath.Abs(runArgs[0])
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -134,7 +296,7 @@ func operation(args []string) (method, path string, input any, err error) {
 		if !info.IsDir() {
 			return "", "", nil, errors.New("project must be a directory")
 		}
-		return "POST", "/v1/runs", map[string]string{"project": filepath.Base(dir), "path": dir, "task": strings.Join(args[2:], " "), "client": "claude"}, nil
+		return "POST", "/v1/runs", map[string]string{"project": filepath.Base(dir), "path": dir, "task": strings.Join(runArgs[1:], " "), "client": client}, nil
 	case "show", "stop", "reply", "reconcile", "delegate", "delegate-coding", "integrate":
 		if len(args) < 2 {
 			return invalid()
@@ -291,18 +453,37 @@ func start(ctx context.Context, p localapi.Paths, api *localapi.Client) error {
 	}
 }
 
+func lockServiceFile(path, busyMessage string) (*os.File, error) {
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errors.New(busyMessage)
+		}
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return lock, nil
+}
+
 func serve(ctx context.Context, p localapi.Paths) error {
 	if err := os.MkdirAll(p.State, 0700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(p.State, "service.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	stateLock, err := lockServiceFile(filepath.Join(p.State, "service.lock"), "a Commander service already owns this data directory")
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("a Commander service already owns this data directory")
+	defer stateLock.Close()
+	// Distinct homes can target the same API socket. Serialize stale-socket
+	// recovery with bind and close so a losing process cannot unlink the winner.
+	socketLock, err := lockServiceFile(p.Socket+".agentctl-lock", "this API socket is in use")
+	if err != nil {
+		return err
 	}
+	defer socketLock.Close()
 	if fi, err := os.Lstat(p.Socket); err == nil {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return fmt.Errorf("existing path is not a socket: %s", p.Socket)
@@ -344,7 +525,26 @@ func serve(ctx context.Context, p localapi.Paths) error {
 	}
 	server := http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	context.AfterFunc(ctx, func() { _ = server.Close() })
-	err = server.Serve(listener)
+	access, err := prepareHosted(p.State, handler)
+	if err != nil {
+		return err
+	}
+	if access.connect != nil {
+		relayCtx, stopRelay := context.WithCancel(ctx)
+		defer stopRelay()
+		go access.connect(relayCtx)
+	}
+	if access.direct == nil {
+		err = server.Serve(listener)
+	} else {
+		defer access.direct.listener.Close()
+		defer access.direct.server.Close()
+		defer server.Close()
+		done := make(chan error, 2)
+		go func() { done <- server.Serve(listener) }()
+		go func() { done <- access.direct.server.ServeTLS(access.direct.listener, "", "") }()
+		err = <-done
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

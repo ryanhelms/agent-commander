@@ -27,7 +27,7 @@ export function TerminalScreen({
         ref={scroll}
         className="t-scroll"
         tabIndex={0}
-        aria-label="Claude console"
+        aria-label="Session console"
         onScroll={(event) => {
           const element = event.currentTarget;
           atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;

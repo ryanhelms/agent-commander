@@ -1,0 +1,12 @@
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/provider
+cpu: Apple M5
+BenchmarkCapacitySourcePublisher/plain-text-10         	   14457	     38200 ns/op	 139.06 MB/s	      2387 ns/update	        16.00 updates/op	    4871 B/op	      32 allocs/op
+BenchmarkCapacitySourcePublisher/plain-text-10         	   16059	     25977 ns/op	 204.49 MB/s	      1624 ns/update	        16.00 updates/op	    4870 B/op	      32 allocs/op
+BenchmarkCapacitySourcePublisher/plain-text-10         	   16713	     24920 ns/op	 213.16 MB/s	      1558 ns/update	        16.00 updates/op	    4870 B/op	      32 allocs/op
+BenchmarkCapacitySourcePublisher/correlated-text-and-tools-10         	    6208	     78234 ns/op	  81.12 MB/s	      4890 ns/update	        16.00 updates/op	   19636 B/op	     300 allocs/op
+BenchmarkCapacitySourcePublisher/correlated-text-and-tools-10         	    6510	     70224 ns/op	  90.37 MB/s	      4389 ns/update	        16.00 updates/op	   19637 B/op	     300 allocs/op
+BenchmarkCapacitySourcePublisher/correlated-text-and-tools-10         	    5698	     69947 ns/op	  90.73 MB/s	      4372 ns/update	        16.00 updates/op	   19634 B/op	     300 allocs/op
+PASS
+ok  	agentcommander/internal/provider	3.582s

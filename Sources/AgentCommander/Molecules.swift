@@ -705,20 +705,113 @@ extension TerminalStatusLine where Trailing == EmptyView {
 
 /// One tool call in a transcript: a disclosure row with the tool's name, its summary and its
 /// state, and the result beneath when open. The row is a real button, so Tab reaches it and Space
-/// opens it. A call with no result text yet has nothing to open and is not a button target.
+/// opens it. A call with no result text yet has nothing to open and is not a button target. The
+/// state is the call's `ToolStatus`. An error the output does not already state is shown above the
+/// output in the status ink, so a failure with no output still opens.
 struct TranscriptToolRow: View {
     let name: String
     let detail: String?
     /// Nil while the call is still running.
-    let result: String?
+    let result: ToolResult?
     let isExpanded: Bool
     var fontSize: CGFloat = TypeRole.wallTerminalSize
+    /// The face of the row. The call, its status mapping and its disclosure are the same in both.
+    var style: Style = .terminal
     let toggle: () -> Void
 
-    private var canExpand: Bool { !(result ?? "").isEmpty }
-    private var stateWord: String { result == nil ? "running" : "done" }
+    enum Style {
+        /// A line of the terminal transcript.
+        case terminal
+        /// A quiet inline card in the Pretty conversation, below the prominence of the agent's text.
+        case pretty
+    }
+
+    private var status: ToolStatus { ToolStatus(result: result) }
+    private var canExpand: Bool { result?.error != nil || !(result?.output ?? "").isEmpty }
 
     var body: some View {
+        switch style {
+        case .terminal: terminal
+        case .pretty: pretty
+        }
+    }
+
+    /// Pretty: one rounded row with the tool, its summary and its state. Open, the result sits in
+    /// the same card in the terminal face, whole and selectable.
+    private var pretty: some View {
+        let shape = RoundedRectangle(cornerRadius: fontSize * 0.7, style: .continuous)
+        return VStack(alignment: .leading, spacing: 0) {
+            Button(action: toggle) {
+                HStack(alignment: .firstTextBaseline, spacing: fontSize * 0.5) {
+                    Image(systemName: detail?.hasPrefix("$") == true ? "terminal" : "wrench.and.screwdriver")
+                        .font(.system(size: fontSize - 1.5, weight: .medium))
+                        .foregroundStyle(.inkSecondary)
+                        .accessibilityHidden(true)
+                    Text(name)
+                        .font(.system(size: fontSize, weight: .medium))
+                        .foregroundStyle(Palette.foreground.opacity(0.88))
+                        .lineLimit(1).fixedSize()
+                    if let detail {
+                        Text(detail)
+                            .font(Term.font(fontSize - 0.5))
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(isExpanded ? 4 : 1).truncationMode(.tail)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: fontSize * 0.5)
+                    Text("\(status.mark) \(status.word)")
+                        .font(.system(size: fontSize - 1, weight: .medium))
+                        .foregroundStyle(status.ink)
+                        .lineLimit(1).fixedSize()
+                    if canExpand {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: fontSize - 3.5, weight: .semibold))
+                            .foregroundStyle(.inkSecondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .accessibilityHidden(true)
+                    }
+                }
+                .padding(.horizontal, fontSize * 0.75).padding(.vertical, fontSize * 0.45)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canExpand)
+            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(status.word)")
+            .accessibilityValue(canExpand ? (isExpanded ? "Expanded" : "Collapsed") : "")
+            .accessibilityHint(canExpand ? "Shows or hides the tool's result" : "")
+            if isExpanded, let result, canExpand {
+                Rectangle().fill(.inkHairline).frame(height: 1)
+                resultText(result)
+                    .padding(.horizontal, fontSize * 0.75).padding(.vertical, fontSize * 0.6)
+                    .background(Palette.well)
+            }
+        }
+        .background(Palette.panel.opacity(0.7), in: shape)
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(.inkHairline, lineWidth: 1) }
+    }
+
+    private func resultText(_ result: ToolResult) -> some View {
+        VStack(alignment: .leading, spacing: fontSize * 0.2) {
+            if let error = result.separateError {
+                Text(error)
+                    .foregroundStyle(status.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("\(name) \(status.word): \(error)")
+            }
+            if !result.output.isEmpty {
+                Text(result.output)
+                    .foregroundStyle(Term.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Result of \(name): \(result.output)")
+            }
+        }
+        .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+    }
+
+    private var terminal: some View {
         VStack(alignment: .leading, spacing: fontSize * 0.25) {
             Button(action: toggle) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -729,8 +822,8 @@ struct TranscriptToolRow: View {
                             .foregroundStyle(detail.hasPrefix("$") ? Term.cyan : Term.text)
                             .lineLimit(isExpanded ? 4 : 1).truncationMode(.tail)
                     }
-                    Text(result == nil ? "  … running" : "  ✓ done")
-                        .foregroundStyle(result == nil ? Term.amber : Term.green)
+                    Text("  \(status.mark) \(status.word)")
+                        .foregroundStyle(status.ink)
                         .lineLimit(1).fixedSize()
                     Spacer(minLength: 0)
                 }
@@ -739,21 +832,37 @@ struct TranscriptToolRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!canExpand)
-            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(stateWord)")
+            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(status.word)")
             .accessibilityValue(canExpand ? (isExpanded ? "Expanded" : "Collapsed") : "")
             .accessibilityHint(canExpand ? "Shows or hides the tool's result" : "")
             if isExpanded, let result, canExpand {
-                Text(result)
-                    .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
-                    .foregroundStyle(Term.text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, fontSize * 0.9)
-                    .overlay(alignment: .leading) { Rectangle().fill(Term.dim).frame(width: 1) }
-                    .padding(.leading, fontSize * 0.3)
-                    .accessibilityLabel("Result of \(name): \(result)")
+                resultText(result)
+                .padding(.leading, fontSize * 0.9)
+                .overlay(alignment: .leading) { Rectangle().fill(Term.dim).frame(width: 1) }
+                .padding(.leading, fontSize * 0.3)
             }
         }
+    }
+}
+
+/// The status of a tool result whose call the service did not send, when that result carries an
+/// error: the mark and word of its `ToolStatus`, then the error unless the output already states
+/// it. Console and Pretty both place it above the orphan's output.
+struct ToolResultStatusLine: View {
+    let result: ToolResult
+    var fontSize: CGFloat = TypeRole.wallTerminalSize
+
+    var body: some View {
+        let status = ToolStatus(result: result)
+        let error = result.separateError
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text("\(status.mark) \(status.word)").fontWeight(.semibold).fixedSize()
+            if let error { Text("  " + error).textSelection(.enabled) }
+        }
+        .font(Term.font(fontSize)).foregroundStyle(status.ink)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Tool result \(status.word)" + (error.map { ": \($0)" } ?? ""))
     }
 }
 
@@ -768,10 +877,18 @@ struct TranscriptView: View {
     let agentName: String
     var fontSize: CGFloat = TypeRole.wallTerminalSize
     var inset: CGFloat = Metric.tileInset
+    /// The worker whose console this is. With it, each entry offers its fields, as it does in
+    /// Pretty mode. A fixture without one shows the transcript alone.
+    var consoleID: String? = nil
+    /// Where an entry's fields open: beneath it in a roomy console, in a popover elsewhere.
+    var density: PrettyDensity = .compact
     /// Open tool rows, by tool-call ID.
     @State private var expanded = Set<String>()
 
     var body: some View {
+        // A streamed reply is one entry: the characters the agent sent, end to end, with its own
+        // line breaks. Every other entry stays as it arrived, in order, with the service's text.
+        let entries = TranscriptEntry.displayed(self.entries, mode: .console)
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: fontSize * 0.5) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -780,7 +897,12 @@ struct TranscriptView: View {
                             speaker(fromUser: entry.isFromUser)
                                 .padding(.top, index == 0 ? 0 : fontSize * 0.35)
                         }
-                        content(entry)
+                        if let consoleID {
+                            VStack(alignment: .leading, spacing: fontSize * 0.2) { content(entry) }
+                                .recordDetail(consoleID: consoleID, entry: entry, face: .terminal, density: density)
+                        } else {
+                            content(entry)
+                        }
                     }
                 }
             }
@@ -808,7 +930,9 @@ struct TranscriptView: View {
     @ViewBuilder private func content(_ entry: TranscriptEntry) -> some View {
         switch entry.kind {
         case .prose(let text, let fromUser):
-            Text(Self.inline(text, base: fromUser ? Term.bright : Term.text))
+            // A joined reply keeps its exact text. Line breaks at its two ends are not drawn,
+            // since the row already starts and ends a line; those inside it are.
+            Text(Self.inline(text.trimmingCharacters(in: .newlines), base: fromUser ? Term.bright : Term.text))
                 .font(Term.font(fontSize)).lineSpacing(fontSize * 0.3)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -817,12 +941,31 @@ struct TranscriptView: View {
                               isExpanded: expanded.contains(entry.id), fontSize: fontSize) {
                 if expanded.contains(entry.id) { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
             }
-        case .output(let text):
-            Text(text)
-                .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
-                .foregroundStyle(.inkTermDim)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        case .output(let result):
+            if result.error != nil { ToolResultStatusLine(result: result, fontSize: fontSize) }
+            if !result.output.isEmpty {
+                Text(result.output)
+                    .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+                    .foregroundStyle(.inkTermDim)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .other(let role, let written):
+            // `system` text is the harness's own output and reads as the agent's, as before. Any
+            // other role is named on a dim line first, and an entry with no text says so. A reply
+            // that streamed only whitespace has nothing to read either; its text is in its fields.
+            let text = written.contains(where: { !$0.isWhitespace }) ? written : ""
+            if role != "system" || text.isEmpty {
+                Text(verbatim: "· " + (role.isEmpty ? "record" : role) + (text.isEmpty ? " · no text, see fields" : ""))
+                    .font(Term.font(fontSize - 0.5)).foregroundStyle(.inkTermDim)
+                    .accessibilityLabel("\(role.isEmpty ? "Record" : role)" + (text.isEmpty ? ", no text" : ""))
+            }
+            if !text.isEmpty {
+                Text(Self.inline(text, base: Term.text))
+                    .font(Term.font(fontSize)).lineSpacing(fontSize * 0.3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

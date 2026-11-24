@@ -19,16 +19,21 @@ import (
 
 type Local struct {
 	stateDir, socket, executable, label string
+	acpProfiles                         map[string]acpProfile
+	replaySlot                          chan struct{}
 }
 
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
-	Adapter, Harness, NodePath        string        `json:",omitempty"`
-	FocusedProof                      bool          `json:",omitempty"`
-	DevflowUI                         string        `json:",omitempty"`
-	SSH                               *sshProfile   `json:",omitempty"`
-	Codex                             *managedCodex `json:",omitempty"`
+	Adapter, Harness, NodePath        string            `json:",omitempty"`
+	BuiltinInstance                   string            `json:",omitempty"`
+	FocusedProof                      bool              `json:",omitempty"`
+	DevflowUI                         string            `json:",omitempty"`
+	SSH                               *sshProfile       `json:",omitempty"`
+	RegisteredACP                     *acpProfile       `json:",omitempty"`
+	RegisteredEnv                     map[string]string `json:",omitempty"`
+	Codex                             *managedCodex     `json:",omitempty"`
 }
 
 func New(stateDir, socketPath, executable string) (*Local, error) {
@@ -47,8 +52,13 @@ func New(stateDir, socketPath, executable string) (*Local, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0700); err != nil {
 		return nil, err
 	}
+	profiles, err := loadACPProfiles(dir)
+	if err != nil {
+		return nil, err
+	}
 	sum := sha256.Sum256([]byte(dir))
-	return &Local{stateDir: dir, socket: socket, executable: binary, label: fmt.Sprintf("ac-%x", sum[:6])}, nil
+	return &Local{stateDir: dir, socket: socket, executable: binary, label: fmt.Sprintf("ac-%x", sum[:6]),
+		acpProfiles: profiles, replaySlot: make(chan struct{}, 1)}, nil
 }
 
 // A Finder-launched process may lack the PATH entries used by a login shell.
@@ -76,27 +86,61 @@ func executablePath(name, override string) (string, error) {
 
 var validID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,100}$`)
 
-func localClientExecutable(client string, useACP bool) (string, error) {
+// TmuxExecutable uses the same owner-configured binary for launching and observing workers.
+func TmuxExecutable() (string, error) {
+	return executablePath("tmux", "AGENT_COMMANDER_TMUX")
+}
+
+func localRunner(client string) (command string, useACP bool, err error) {
+	mode := os.Getenv("AGENT_COMMANDER_RUNTIME")
+	if mode != "" && mode != "acp" && mode != "legacy" {
+		return "", false, errors.New("AGENT_COMMANDER_RUNTIME must be acp or legacy when set")
+	}
+	legacy := mode == "legacy" || os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
 	switch strings.ToLower(strings.TrimSpace(client)) {
 	case "", "claude", "claude code":
-		if useACP {
-			return executablePath("claude-agent-acp", "AGENT_COMMANDER_CLAUDE_ACP")
-		}
-		return executablePath("claude", "AGENT_COMMANDER_CLAUDE")
-	case "codex":
-		if useACP {
-			if _, err := configuredManagedCodex(); err != nil {
-				return "", err
+		if !legacy {
+			command, err = localAdapter("claude-agent-acp", "AGENT_COMMANDER_CLAUDE_ACP")
+			if err == nil || mode == "acp" || os.Getenv("AGENT_COMMANDER_CLAUDE_ACP") != "" || os.Getenv("AGENT_ACP_HARNESS_DIR") != "" {
+				return command, true, err
 			}
-			return executablePath("codex-acp", "AGENT_COMMANDER_CODEX_ACP")
+		}
+		command, err = executablePath("claude", "AGENT_COMMANDER_CLAUDE")
+		return command, false, err
+	case "codex":
+		if !legacy {
+			command, err = localAdapter("codex-acp", "AGENT_COMMANDER_CODEX_ACP")
+			return command, true, err
 		}
 	}
-	return "", fmt.Errorf("managed provider unavailable: %s", client)
+	return "", false, fmt.Errorf("managed provider unavailable: %s", client)
+}
+
+func localAdapter(name, override string) (string, error) {
+	if dir := os.Getenv("AGENT_ACP_HARNESS_DIR"); dir != "" && os.Getenv(override) == "" {
+		if !filepath.IsAbs(dir) {
+			return "", errors.New("AGENT_ACP_HARNESS_DIR must be an absolute path")
+		}
+		return exec.LookPath(filepath.Join(dir, "node_modules", ".bin", name))
+	}
+	return executablePath(name, override)
 }
 
 func (l *Local) CheckClient(client string) error {
-	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") != "1"
-	_, err := localClientExecutable(client, useACP)
+	if _, selected, err := selectedBuiltin(client); selected {
+		return err
+	}
+	id, profile, registered, err := l.registeredACP(client)
+	if err != nil {
+		return err
+	}
+	if registered {
+		if _, err := profile.executable(); err != nil {
+			return fmt.Errorf("ACP profile %q executable is unavailable: %w", id, err)
+		}
+		return nil
+	}
+	_, useACP, err := localRunner(client)
 	if err == nil && useACP && strings.EqualFold(strings.TrimSpace(client), "codex") {
 		profile, profileErr := configuredManagedCodex()
 		if profileErr != nil {
@@ -129,9 +173,13 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		w.Path = assigned.Path
 	}
 	focused := os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
-	useACP := os.Getenv("AGENT_COMMANDER_RUNTIME") == "acp" && !focused
+	var useACP bool
 	var remote *sshProfile
+	var registered *acpProfile
+	var registeredID string
+	var registeredEnv map[string]string
 	var executable string
+	var builtinInstance, builtinID string
 	if w.Host != "" && w.Host != "localhost" {
 		checkout, checkErr := l.WorkerCheckout(w.Host, w.Path, w.Client)
 		if checkErr != nil {
@@ -147,14 +195,33 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		remote = &profile
 		useACP, focused = true, false
 		executable = "/usr/bin/ssh"
-	} else {
-		var err error
-		executable, err = localClientExecutable(w.Client, useACP)
+	} else if adapter, selected, err := selectedBuiltin(w.Client); selected {
 		if err != nil {
 			return err
 		}
+		builtinInstance, builtinID = adapter.Instance(), adapter.ID
+		useACP, focused = true, false
+	} else {
+		id, profile, ok, err := l.registeredACP(w.Client)
+		if err != nil {
+			return err
+		}
+		if ok {
+			executable, err = profile.executable()
+			if err != nil {
+				return fmt.Errorf("ACP profile %q executable is unavailable: %w", id, err)
+			}
+			profile.Command = executable
+			registered, registeredID, registeredEnv = &profile, id, profile.Env
+			useACP, focused = true, false
+		} else {
+			executable, useACP, err = localRunner(w.Client)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	tmux, err := executablePath("tmux", "AGENT_COMMANDER_TMUX")
+	tmux, err := TmuxExecutable()
 	if err != nil {
 		return err
 	}
@@ -162,7 +229,11 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	var codex *managedCodex
 	if useACP {
 		adapter, harness = executable, "claude"
-		if remote == nil && strings.EqualFold(strings.TrimSpace(w.Client), "codex") {
+		if builtinInstance != "" {
+			harness = builtinID
+		} else if registered != nil {
+			harness = registeredID
+		} else if remote == nil && strings.EqualFold(strings.TrimSpace(w.Client), "codex") {
 			managed, err := configuredManagedCodex()
 			if err != nil {
 				return err
@@ -181,12 +252,16 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		return err
 	}
 	jobPath := filepath.Join(dir, "launch.json")
-	devflow := coordinatorDevflow(ctx, w)
+	var devflow string
+	if registered == nil && builtinInstance == "" {
+		devflow = coordinatorDevflow(ctx, w)
+	}
 	// The prompt and scoped credential stay in a private file, outside shell argv.
 	contents, err := json.Marshal(job{
 		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
 		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath,
-		DevflowUI: devflow, SSH: remote, Codex: codex,
+		DevflowUI: devflow, SSH: remote, RegisteredACP: registered, RegisteredEnv: registeredEnv, Codex: codex,
+		BuiltinInstance: builtinInstance,
 	})
 	if err != nil {
 		return err
@@ -213,8 +288,22 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 }
 
 func (l *Local) CheckCodingClient(client string) error {
+	id, _, registered, err := l.registeredACP(client)
+	if err != nil {
+		return err
+	}
+	if registered {
+		return fmt.Errorf("coding is unavailable in the registered ACP profile %q", id)
+	}
 	client = strings.ToLower(strings.TrimSpace(client))
-	if (client != "claude" && client != "claude code") || os.Getenv("AGENT_COMMANDER_RUNTIME") != "acp" || os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1" {
+	if client != "claude" && client != "claude code" {
+		return errors.New("coding assignments currently require the managed Claude ACP profile")
+	}
+	_, useACP, err := localRunner(client)
+	if err != nil {
+		return err
+	}
+	if !useACP {
 		return errors.New("coding assignments currently require the managed Claude ACP profile")
 	}
 	return nil
@@ -237,7 +326,7 @@ func (l *Local) Stop(ctx context.Context, id string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	tmux, err := executablePath("tmux", "AGENT_COMMANDER_TMUX")
+	tmux, err := TmuxExecutable()
 	if err != nil {
 		return err
 	}

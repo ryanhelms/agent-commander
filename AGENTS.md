@@ -2,11 +2,13 @@
 
 ## Ownership
 
-Claude Fable 5.2 owns the native interface design and its Swift implementation. Give Fable the relevant original Agent Commander screenshots and component contracts when assigning interface work. Codex owns the service, API, MCP, CLI, tmux providers and backend tests. Codex independently verifies the running native app through Computer Use, exercises the real workflow, and compares captures with the approved screenshot for each implemented state. Send visual defects back to Fable for correction.
+Use Claude Opus for every new Commander-managed Claude session and project Claude agent. Leave provider-internal model routing to Claude. Claude Opus owns the native interface design and its Swift implementation. Give Opus the relevant original Agent Commander screenshots and component contracts when assigning interface work. Codex owns the service, API, MCP, CLI, tmux providers and backend tests. Codex independently verifies the running native app through Computer Use, exercises the real workflow, and compares captures with the approved screenshot for each implemented state. Send visual defects back to Opus for correction.
 
 Keep all design tokens, components, fixtures and assets in this repository. The repository named `design-system` is a separate project.
 
 ## Native UI
+
+Use the primary checkout’s `dist/Agent Commander.app` for the user-facing cockpit. Its name is **Agent Commander** and its bundle identifier is `local.agentcommander.cockpit`. Run `make run` in that checkout to build it on first use or reopen the existing bundle through Launch Services. Use the same app for interactive QA and session demos. Coordinate an explicit quit and reopen before rebuilding a running app or changing its launch arguments or environment. Preserve the developer’s chosen `CODE_SIGN_IDENTITY` for subsequent builds. Use headless fixtures for independent verification while the user is working in Commander.
 
 Apply Brad Frost’s Atomic Design strictly to each implemented view. Start with the [component map](design/system/ATOMIC-DESIGN.md) and [local tokens](design/system/tokens.json). Compose native controls and styled atoms into molecules, then feature organisms, layout templates and pages. A standard native control can serve directly as an atom. Share component implementations between the wall, zoom and PiP when they have the same responsibility. Components receive values and emit targeted actions. The API and feature models own domain operations and subscriptions.
 
@@ -15,6 +17,10 @@ When changing a screen, identify its actual Swift components and compare the ren
 ## Backend
 
 Before implementing a flow, consult the [existing GoF and Enterprise Integration Patterns decisions](design/PATTERN-DECISIONS.md). Make a short note for a new boundary or changed approach. Deliver working increments as described in the [MVP plan](MVP-PLAN.md).
+
+Use the [design pattern index](.context/design-patterns/index.md) to find a pattern by problem or category. Follow its “Commonly Used With” links when designing related behavior. Treat the examples as design references and the decision record as the source for project adoption.
+
+Build the new multiplayer relay in Go. Follow the [relay architecture](design/MULTIPLAYER-RELAY.md) for connection ownership, one-to-many delivery and extension contracts.
 
 ## Git worktrees
 

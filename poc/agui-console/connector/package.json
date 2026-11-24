@@ -1,0 +1,29 @@
+{
+  "name": "@agent-commander/copilotkit",
+  "version": "0.1.6",
+  "description": "Connect a server-side CopilotKit or AG-UI app to an Agent Commander worker.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./commander-agent.d.mts",
+      "import": "./commander-agent.mjs"
+    },
+    "./provider-media": {
+      "types": "./provider-media.d.mts",
+      "import": "./provider-media.mjs"
+    }
+  },
+  "files": [
+    "commander-agent.mjs",
+    "commander-agent.d.mts",
+    "provider-media.mjs",
+    "provider-media.d.mts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@ag-ui/client": "1.0.5",
+    "rxjs": "7.8.1"
+  }
+}

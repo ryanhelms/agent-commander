@@ -1,0 +1,67 @@
+package provider
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
+	model "agent-acp.local/sdks/go/model"
+	"agent-acp.local/sdks/go/runtime"
+	"agentcommander/internal/service"
+)
+
+// Compile this fixture inside the production provider package using a Go file
+// overlay. Each iteration feeds sixteen pre-encoded updates; encoding and HTTP
+// are outside the timed loop. The process benchmark exercises both.
+func BenchmarkCapacitySourcePublisher(b *testing.B) {
+	const width = 16
+	for _, rich := range []bool{false, true} {
+		name := "plain-text"
+		if rich {
+			name = "correlated-text-and-tools"
+		}
+		b.Run(name, func(b *testing.B) {
+			ref := &model.SessionRef{HarnessInstance: "fixture", SessionId: "selected"}
+			pub := newACPSourcePublisher()
+			pub.queue.bind(service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId})
+			updates := make([]runtime.ACPUpdate, width)
+			var dataBytes int
+			for i := range updates {
+				text := strings.Repeat("x", 255) + "\n"
+				var input string
+				switch {
+				case !rich:
+					input = fmt.Sprintf(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":%q}}`, text)
+				case (i+1)%4 == 0:
+					input = fmt.Sprintf(`{"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":%q}}],"_meta":{"privateSequence":%d}}`, text, i)
+				default:
+					input = fmt.Sprintf(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":%q},"messageId":"message","_meta":{"privateSequence":%d}}`, text, i)
+				}
+				updates[i] = runtime.ACPUpdate{Session: ref, TurnID: "turn", Cursor: fmt.Sprint(i), Body: json.RawMessage(input)}
+				dataBytes += len(input)
+			}
+			batch := make([]service.LiveSourceUpdate, 0, width)
+			b.ReportAllocs()
+			b.SetBytes(int64(dataBytes))
+			for b.Loop() {
+				for _, update := range updates {
+					pub.capture(update)
+					link := pub.take(update.Cursor)
+					if (link != nil) != rich {
+						b.Fatal("source reference did not match the input kind")
+					}
+				}
+				if rich {
+					batch = pub.queue.get(batch[:0])
+					if len(batch) != width {
+						b.Fatal("source records failed to enter the queue")
+					}
+					clear(batch)
+				}
+			}
+			b.ReportMetric(width, "updates/op")
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*width), "ns/update")
+		})
+	}
+}

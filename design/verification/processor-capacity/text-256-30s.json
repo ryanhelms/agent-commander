@@ -1,0 +1,93 @@
+{
+  "system": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+  "binary_sha256": "83bc7a8ec41698afaf0841360017709bdaa0615fa30caf5bcb9fd2c8503ca1b7",
+  "configuration": {
+    "rates": [
+      50
+    ],
+    "seconds": 30.0,
+    "idle": 5.0,
+    "size": 256,
+    "tool_every": 0,
+    "observers": 1,
+    "trials": 1
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "target_per_s": 50,
+      "idle": {
+        "wall_s": 5.23098862497136,
+        "rss_samples": 13,
+        "service": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 13.984375,
+          "rss_peak_mib": 17.703125
+        },
+        "runner": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 13.75,
+          "rss_peak_mib": 19.140625
+        },
+        "observers": [
+          {
+            "frames": 0,
+            "sse_json_bytes": 0,
+            "sse_json_bytes_per_s": 0.0
+          }
+        ]
+      },
+      "load": {
+        "wall_s": 30.553603417007253,
+        "rss_samples": 74,
+        "service": {
+          "cpu_s": 0.73,
+          "cpu_pct_one_core": 2.389243553490831,
+          "rss_median_mib": 21.0078125,
+          "rss_peak_mib": 21.28125
+        },
+        "runner": {
+          "cpu_s": 0.5499999999999999,
+          "cpu_pct_one_core": 1.8001150060547353,
+          "rss_median_mib": 19.6796875,
+          "rss_peak_mib": 20.515625
+        },
+        "observers": [
+          {
+            "frames": 187,
+            "sse_json_bytes": 19021212,
+            "sse_json_bytes_per_s": 622552.1664463347,
+            "delivered_unique": 1427,
+            "delivered_per_s": 46.704802066183774,
+            "missing": 73,
+            "first_missing_ids": [
+              1215,
+              1216,
+              1217,
+              1218,
+              1219,
+              1220,
+              1221,
+              1222,
+              1223,
+              1224
+            ],
+            "output_unique": 1500,
+            "synchronization_gap_seen": true,
+            "unexpected": 0
+          }
+        ]
+      },
+      "sent": 1500,
+      "tool_updates_sent": 0,
+      "acp_stdio_bytes": 672000,
+      "acp_stdio_bytes_per_s": 21994.132437614222,
+      "offered_per_s_over_load_window": 49.09404561967461,
+      "input_text_bytes_per_s_over_load_window": 12568.0756786367,
+      "emission_span_s": 29.98314729204867,
+      "producer_interarrival_rate": 49.994751564907425
+    }
+  ]
+}

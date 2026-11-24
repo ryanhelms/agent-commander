@@ -49,6 +49,9 @@ struct WorkerTile: View {
     /// When present, the tile's actions open as an anchored list (WorkerActionMenu) whose
     /// presentation the page controls. Without it the tile uses the native menu.
     var menuPresented: Binding<Bool>? = nil
+    /// This worker's provider source, when it has one. Both variants offer the same inspector
+    /// from the title bar's display menu and from the action list.
+    var source: ConsoleSourceAccess? = nil
 
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -89,7 +92,8 @@ struct WorkerTile: View {
                     .lineLimit(1).fixedSize()
                     .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
             }
-            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client)
+            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
+                                       source: source, terminal: NativeTerminalTarget(worker: worker))
             actionMenu
         }
     }
@@ -101,7 +105,8 @@ struct WorkerTile: View {
             ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact) {
                 if !worker.transcript.isEmpty {
                     TranscriptView(entries: worker.transcript, agentName: worker.name,
-                                   fontSize: TypeRole.wallTerminalSize, inset: 11)
+                                   fontSize: TypeRole.wallTerminalSize, inset: 11,
+                                   consoleID: worker.id, density: .compact)
                 } else {
                     TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
                                  fontSize: TypeRole.wallTerminalSize, inset: NSSize(width: 11, height: 9))
@@ -127,15 +132,19 @@ struct WorkerTile: View {
             // One full-width scrollback: the assignment, the transcript, then the request as an
             // inline prompt directly after it.
             if !worker.task.isEmpty {
-                AssignmentBlock(label: assignmentLabel, time: worker.startedAt, text: worker.task, fontSize: 13)
-                    .padding(.horizontal, 21).padding(.top, 12).padding(.bottom, 8)
-                    .fixedSize(horizontal: false, vertical: true)
+                ConsoleAssignment(consoleID: worker.id, assignment: worker.task, entries: worker.transcript,
+                                  rawOutput: worker.output) {
+                    AssignmentBlock(label: assignmentLabel, time: worker.startedAt, text: worker.task, fontSize: 13)
+                        .padding(.horizontal, 21).padding(.top, 12).padding(.bottom, 8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .regular, horizontalInset: 21) {
                 if !worker.transcript.isEmpty {
                     // Structured messages: the transcript takes the room above the request.
                     TranscriptView(entries: worker.transcript, agentName: worker.name,
-                                   fontSize: TypeRole.focusTerminalSize, inset: 21)
+                                   fontSize: TypeRole.focusTerminalSize, inset: 21,
+                                   consoleID: worker.id, density: .regular)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(1)
                 } else if worker.output.isEmpty {
@@ -216,6 +225,7 @@ struct WorkerTile: View {
             .foregroundStyle(.consoleHeaderControlInk(active: menuPresented.wrappedValue ? Palette.focus : nil))
             .popover(isPresented: menuPresented, arrowEdge: .bottom) {
                 WorkerActionMenu(worker: worker, isFocused: isFocusedVariant, actions: actions,
+                                 inspectSource: source?.open,
                                  dismiss: { menuPresented.wrappedValue = false })
             }
             .help("Actions for \(worker.name)")
@@ -233,6 +243,7 @@ struct WorkerTile: View {
             if let openRequest = actions.openRequest {
                 Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
+            if let source { Button("Inspect source…", action: source.open) }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
         } label: {
@@ -281,6 +292,8 @@ struct WorkerActionMenu: View {
     let worker: WorkerPresentation
     let isFocused: Bool
     let actions: WorkerTileActions
+    /// Opens this worker's source inspector. Present only for a worker with a provider source.
+    var inspectSource: (() -> Void)? = nil
     let dismiss: () -> Void
 
     var body: some View {
@@ -301,6 +314,10 @@ struct WorkerActionMenu: View {
             }
             if let reply = actions.openRequest {
                 row("bell", worker.isDisconnected ? "View request" : "Reply to request", action: reply)
+            }
+            if let inspectSource {
+                row("doc.text.magnifyingglass", "Inspect source…", label: "Inspect the source of \(worker.name)",
+                    action: inspectSource)
             }
             if worker.control != .held, let take = actions.takeControl {
                 row("hand.raised", "Take control", label: "Take control of \(worker.name)",
@@ -531,6 +548,8 @@ struct CoordinatorConsole: View {
     var isKeyFocused = false
     /// Sends a message to the coordinator. Present only where the service supports it.
     var sendMessage: ((String) -> Void)? = nil
+    /// The coordinator's provider source, when it has one.
+    var source: ConsoleSourceAccess? = nil
     let openRequest: (RequestPresentation) -> Void
     /// Laid-out height of the transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -541,18 +560,24 @@ struct CoordinatorConsole: View {
             ConsoleTitleBar(title: coordinator.name, client: coordinator.client, host: coordinator.host,
                             platform: coordinator.platform, location: coordinator.location,
                             locationIsBranch: coordinator.locationIsBranch, density: .console) {
-                ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name, client: coordinator.client)
+                ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name,
+                                           client: coordinator.client, source: source,
+                                           terminal: NativeTerminalTarget(worker: coordinator))
             }
             // One scrollback: the assignment, the transcript, then any waiting request directly
             // after it. A long transcript scrolls in place while the notices stay visible beneath it.
             VStack(alignment: .leading, spacing: 0) {
-                AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                    .padding(.bottom, 9)
-                    .fixedSize(horizontal: false, vertical: true)
+                ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
+                                  rawOutput: coordinator.output) {
+                    AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
+                        .padding(.bottom, 9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript, rawOutput: coordinator.output, density: .regular, horizontalInset: 0) {
                     if !coordinator.transcript.isEmpty {
                         TranscriptView(entries: coordinator.transcript, agentName: coordinator.name,
-                                       fontSize: 12.5, inset: 0)
+                                       fontSize: 12.5, inset: 0,
+                                       consoleID: coordinator.id, density: .regular)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
                     } else if coordinator.output.isEmpty {
@@ -622,6 +647,9 @@ struct AttentionStack: View {
     /// Laid over the header's title area when the stack is the content of its own window, so that
     /// area moves the window. The in-window PiP has none.
     var dragHandle: AnyView? = nil
+    /// The asking worker's provider source, when it has one. The stack stays compact: its action
+    /// opens the source inspector on that worker's own console.
+    var source: ConsoleSourceAccess? = nil
     /// Laid-out height of the context tail, reported by the terminal well.
     @State private var tailHeight: CGFloat = 44
 
@@ -699,7 +727,8 @@ struct AttentionStack: View {
                 VStack(spacing: 0) {
                     ConsoleTitleBar(title: current.workerName, client: current.client, host: current.host,
                                     platform: current.platform, lineage: [current.runTitle], density: .pip) {
-                        ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName, client: current.client)
+                        ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName,
+                                                   client: current.client, source: source)
                     }
                     if !current.contextEntries.isEmpty || !current.contextTail.isEmpty {
                         ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
@@ -707,7 +736,8 @@ struct AttentionStack: View {
                             if !current.contextEntries.isEmpty {
                                 // A recent window of whole entries: a tool result always sits with its call.
                                 TranscriptView(entries: current.contextEntries, agentName: current.workerName,
-                                               fontSize: 10.75, inset: 11)
+                                               fontSize: 10.75, inset: 11,
+                                               consoleID: current.workerID, density: .pip)
                                     .frame(height: 92)
                             } else if !current.contextTail.isEmpty {
                                 TerminalWell(output: current.contextTail.joined(separator: "\n"),

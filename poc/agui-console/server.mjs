@@ -3,10 +3,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { HttpAgent } from '@ag-ui/client';
 import { EventType } from '@ag-ui/core';
+import { connectCommanderWorker } from './commander-agent.mjs';
 
 process.env.COPILOTKIT_TELEMETRY_DISABLED = 'true';
 const { CopilotRuntime, InMemoryAgentRunner } = await import('@copilotkit/runtime/v2');
@@ -14,16 +17,26 @@ const { createCopilotNodeListener } = await import('@copilotkit/runtime/v2/node'
 
 const dir = fileURLToPath(new URL('.', import.meta.url));
 const app = join(dir, 'dist', 'Agent Commander Console.app');
+const workerArg = process.argv.indexOf('--worker');
+const workerId = workerArg === -1 ? undefined : process.argv[workerArg + 1];
+if (workerArg !== -1 && (!workerId || !/^w-[a-zA-Z0-9_-]+$/.test(workerId))) {
+  throw new Error('Pass a Commander worker ID after --worker.');
+}
 const stateDir = await mkdtemp('/tmp/ac-agui-');
-const socketPath = join(stateDir, 'service.sock');
-const workspace = join(stateDir, 'sample');
-await mkdir(workspace, { mode: 0o700 });
-await copyFile(join(dir, 'sample', 'scenario.md'), join(workspace, 'scenario.md'));
+const socketPath = workerId ? process.env.AGENT_COMMANDER_SOCKET : join(stateDir, 'service.sock');
+if (!socketPath) throw new Error('Set AGENT_COMMANDER_SOCKET to the running service’s owner socket.');
+const workspace = !workerId && join(stateDir, 'sample');
+if (workspace) {
+  await mkdir(workspace, { mode: 0o700 });
+  await copyFile(join(dir, 'sample', 'scenario.md'), join(workspace, 'scenario.md'));
+}
 const launchKey = randomUUID();
 const cookieName = 'ac_console_session';
 const token = randomBytes(24).toString('hex');
 const agentPath = '/_agent/' + token;
-const tmuxLabel = 'ac-' + createHash('sha256').update(stateDir).digest('hex').slice(0, 12);
+const tmuxLabel = !workerId && 'ac-' + createHash('sha256').update(stateDir).digest('hex').slice(0, 12);
+const attachedLifetime = new AbortController();
+const attached = workerId && connectCommanderWorker({ socketPath, workerId, signal: attachedLifetime.signal });
 const assignment = [
   'Use Read to read scenario.md in the current working directory. This is a one-agent release planning exercise.',
   'Give a brief status update. Ask the developer the exact question in scenario.md using commander_ask.',
@@ -39,7 +52,7 @@ class HTTPError extends Error {
   }
 }
 
-const service = spawn(join(dir, 'dist', 'agentctl'), ['serve'], {
+const service = !attached && spawn(join(dir, 'dist', 'agentctl'), ['serve'], {
   env: {
     ...process.env,
     AGENT_COMMANDER_HOME: stateDir,
@@ -49,7 +62,7 @@ const service = spawn(join(dir, 'dist', 'agentctl'), ['serve'], {
   stdio: ['ignore', 'ignore', 'inherit'],
 });
 let serviceError;
-service.on('error', error => { serviceError = error; });
+if (service) service.on('error', error => { serviceError = error; });
 
 function commander(path, { method = 'GET', body, key } = {}) {
   const payload = body === undefined ? undefined : JSON.stringify(body);
@@ -81,7 +94,7 @@ async function waitForService() {
   const deadline = Date.now() + 9000;
   while (Date.now() < deadline) {
     if (serviceError) throw serviceError;
-    if (service.exitCode !== null) throw new Error('Commander service exited during startup.');
+    if (service && service.exitCode !== null) throw new Error('Commander service exited during startup.');
     try {
       await commander('/v1/health');
       return;
@@ -91,6 +104,16 @@ async function waitForService() {
     }
   }
   throw new Error('Commander service did not start.');
+}
+
+async function workerConfiguration() {
+  if (!attached) return { mode: 'demo' };
+  const response = await attached.workerInfo({ signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new HTTPError(response.status, 'The selected managed worker is unavailable.');
+  const worker = await response.json();
+  if (worker.role !== 'worker' || worker.workerId !== workerId) throw new HTTPError(404, 'The selected managed worker is unavailable.');
+  return { mode: 'worker', workerId, client: worker.client, generation: worker.generation,
+    status: worker.status, nativeHistory: worker.nativeHistory };
 }
 
 let launch;
@@ -123,28 +146,6 @@ function runState(run) {
       attachCommand: 'tmux -L ' + tmuxLabel + ' attach -t ' + worker.id,
     },
   };
-}
-
-function sendText(send, messageId, content) {
-  send({ type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant' });
-  send({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: content });
-  send({ type: EventType.TEXT_MESSAGE_END, messageId });
-}
-
-function translate(send, item, workerID, tools) {
-  if (item.kind === 'text' && item.text) {
-    sendText(send, workerID + ':' + item.sequence, item.text);
-  } else if (item.kind === 'tool_call' && item.tool_id && !tools.has(item.tool_id)) {
-    tools.add(item.tool_id);
-    send({ type: EventType.TOOL_CALL_START, toolCallId: item.tool_id, toolCallName: item.name });
-    if (item.text) {
-      send({ type: EventType.TOOL_CALL_ARGS, toolCallId: item.tool_id, delta: JSON.stringify({ detail: item.text }) });
-    }
-    send({ type: EventType.TOOL_CALL_END, toolCallId: item.tool_id });
-  } else if (item.kind === 'tool_result' && tools.has(item.tool_id)) {
-    send({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.tool_id, messageId: workerID + ':' + item.sequence,
-      role: 'tool', content: item.text || 'Tool completed.' });
-  }
 }
 
 async function jsonBody(req) {
@@ -180,17 +181,17 @@ async function serveAgent(req, res) {
   const send = event => { if (!res.destroyed) res.write('data: ' + JSON.stringify(event) + '\n\n'); };
   send({ type: EventType.RUN_STARTED, threadId, runId });
   try {
-    let run = await startRun();
-    let previousSequence = 0;
+    const { id } = await startRun();
+    let previousMessages = '';
     let previousSnapshot = '';
-    const toolCalls = new Set();
     while (!disconnect.signal.aborted) {
+      const run = await commander('/v1/runs/' + id + '?view=ag-ui');
       const { terminal, snapshot, worker } = runState(run);
-      for (const event of worker.console || []) {
-        if (event.sequence > previousSequence) {
-          translate(send, event, worker.id, toolCalls);
-          previousSequence = event.sequence;
-        }
+      const messages = worker.messages ?? [];
+      const serializedMessages = JSON.stringify(messages);
+      if (serializedMessages !== previousMessages) {
+        send({ type: EventType.MESSAGES_SNAPSHOT, messages });
+        previousMessages = serializedMessages;
       }
       const serialized = JSON.stringify(snapshot);
       if (serialized !== previousSnapshot) {
@@ -206,7 +207,6 @@ async function serveAgent(req, res) {
         break;
       }
       await delay(300, undefined, { signal: disconnect.signal });
-      run = await commander('/v1/runs/' + run.id);
     }
   } catch (error) {
     if (!disconnect.signal.aborted) send({ type: EventType.RUN_ERROR, message: error.message });
@@ -228,6 +228,10 @@ async function reply(req, res) {
   if (operationId !== undefined && (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(operationId))) {
     throw new HTTPError(400, 'Invalid reply operation ID.');
   }
+  if (attached) {
+    const response = await attached.reply({ requestId, answer, idempotencyKey: operationId });
+    return json(res, response.status, await response.json());
+  }
   if (!launch) throw new HTTPError(409, 'Start the Claude session first.');
   const { id } = await launch;
   const current = await commander('/v1/runs/' + id);
@@ -240,35 +244,75 @@ async function reply(req, res) {
   json(res, 200, { id: answered.id, status: answered.status });
 }
 
+async function resumeAttachedRun({ request, route }) {
+  if (!attached || route.method !== 'agent/connect' || route.agentId !== 'commander') return;
+  const input = await request.clone().json().catch(() => undefined);
+  if (input?.forwardedProps?.commanderObserve !== true) return;
+  const { threadId, runId } = input;
+  if (threadId !== workerId || typeof runId !== 'string' || !runId || runId.length > 128) {
+    throw Response.json({ error: 'Expected the attached worker and original run ID.' }, { status: 400 });
+  }
+  const options = { runId, signal: request.signal, dispatchTools: false };
+  const response = await attached.findOperation(options);
+  if (!response.ok) throw response;
+  const receipt = await response.json();
+  if (receipt?.runId !== runId || typeof receipt.operationId !== 'string' || !receipt.operationId) {
+    throw Response.json({ error: 'Commander returned a mismatched operation receipt.' }, { status: 502 });
+  }
+  // The runtime handles a Response thrown by a request hook as the response.
+  throw await attached.observe({ ...options, operationId: receipt.operationId });
+}
+
 const assets = new Map([
   ['/', { file: 'ui/index.html', type: 'text/html; charset=utf-8' }],
   ['/ui.js', { file: 'dist/ui.js', type: 'text/javascript; charset=utf-8' }],
   ['/ui.css', { file: 'dist/ui.css', type: 'text/css; charset=utf-8' }],
+]);
+const historySources = new Map([
+  ['/provider-history', undefined],
+  ['/session-journal', 'journal'],
+  ['/live-acp-source', 'live'],
 ]);
 let copilot;
 let origin;
 const server = createServer(async (req, res) => {
   try {
     if (req.headers.host !== new URL(origin).host) throw new HTTPError(403, 'Expected the local console address.');
-    const { pathname } = new URL(req.url, origin);
+    const { pathname, searchParams } = new URL(req.url, origin);
     res.setHeader('cache-control', 'no-store');
     res.setHeader('x-content-type-options', 'nosniff');
     if (req.method === 'GET' && pathname === '/session/' + token) {
       res.writeHead(303, { location: '/', 'set-cookie': cookieName + '=' + token + '; Path=/; HttpOnly; SameSite=Strict' });
       return res.end();
     }
-    if (req.method === 'POST' && pathname === agentPath) return await serveAgent(req, res);
+    if (!attached && req.method === 'POST' && pathname === agentPath) return await serveAgent(req, res);
     const cookies = (req.headers.cookie || '').split(';').map(value => value.trim());
     if (!cookies.includes(cookieName + '=' + token)) throw new HTTPError(403, 'Open the console from its launcher.');
     if (req.headers.origin && req.headers.origin !== origin) throw new HTTPError(403, 'Unexpected request origin.');
     if (pathname.startsWith('/api/copilotkit/')) return copilot(req, res);
+    if (req.method === 'GET' && pathname === '/console-config') return json(res, 200, await workerConfiguration());
+    if (req.method === 'GET' && attached && historySources.has(pathname)) {
+      const recordCursor = pathname === '/provider-history' ? searchParams.get('recordCursor') ?? undefined : undefined;
+      const page = await attached.readHistory({
+        source: recordCursor !== undefined ? 'provider' : historySources.get(pathname),
+        recordCursor,
+        turnId: searchParams.get('turnId') ?? undefined,
+        cursor: searchParams.get('cursor') ?? undefined, limit: recordCursor === undefined ? 12 : undefined,
+        signal: AbortSignal.timeout(23000),
+      });
+      // Preserve the original JSON representation, including vendor numbers
+      // outside JavaScript's safe integer range. Reading a source is scoped.
+      res.writeHead(page.status, { 'content-type': 'application/json; charset=utf-8' });
+      if (!page.body) return res.end();
+      return await pipeline(Readable.fromWeb(page.body), res);
+    }
     if (req.method === 'POST' && pathname === '/reply') return await reply(req, res);
     const asset = assets.get(pathname);
     if (req.method !== 'GET' || !asset) throw new HTTPError(404, 'Page unavailable.');
     const content = await readFile(join(dir, asset.file));
     res.writeHead(200, {
       'content-type': asset.type,
-      'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
+      'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src data:; frame-ancestors 'none'; base-uri 'none'",
     });
     res.end(content);
   } catch (error) {
@@ -298,9 +342,10 @@ async function shutdown(exitCode = 0) {
   } catch (error) {
     console.error('Could not stop the isolated run:', error.message);
   } finally {
+    attachedLifetime.abort();
     server.close();
     server.closeAllConnections();
-    service.kill();
+    if (service) service.kill();
     process.exitCode = exitCode;
   }
 }
@@ -309,21 +354,24 @@ process.once('SIGINT', () => void shutdown());
 process.once('SIGTERM', () => void shutdown());
 
 try {
-  await waitForService();
+  if (attached) await workerConfiguration();
+  else await waitForService();
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
   origin = 'http://127.0.0.1:' + server.address().port;
   const runtime = new CopilotRuntime({
-    agents: { claude: new HttpAgent({ url: origin + agentPath }) },
+    agents: { commander: attached ? attached.agent : new HttpAgent({ url: origin + agentPath }) },
     runner: new InMemoryAgentRunner(),
     identifyUser: () => ({ id: 'local-console', name: 'Local Console' }),
   });
-  copilot = createCopilotNodeListener({ runtime, basePath: '/api/copilotkit' });
+  copilot = createCopilotNodeListener({
+    runtime, basePath: '/api/copilotkit', hooks: { onBeforeHandler: resumeAttachedRun },
+  });
   const address = origin + '/session/' + token;
   await writeFile(join(stateDir, 'console-url'), address + '\n', { mode: 0o600 });
-  console.log('Focused Claude console · isolated data at ' + stateDir);
+  console.log(attached ? `Commander worker ${workerId} · launch URL in ${join(stateDir, 'console-url')}` : 'Focused Claude console · isolated data at ' + stateDir);
   if (process.argv.includes('--open')) {
     const opener = spawn('/usr/bin/open', ['-n', '-W', app, '--args', address], { stdio: 'inherit' });
     opener.once('error', error => { console.error(error); void shutdown(1); });

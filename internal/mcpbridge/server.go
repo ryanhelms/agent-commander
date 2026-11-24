@@ -181,6 +181,12 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	register(s, "commander_status", "Read worker assignments, findings and questions. While waiting on workers, set wait_seconds to 30 to return on a status change or timeout.", func(ctx context.Context, in statusInput) (json.RawMessage, error) {
 		return runStatus(ctx, c, runPath, in.Seconds)
 	})
+	if os.Getenv("AGENT_COMMANDER_ROLE") == "coordinator" {
+		if err := registerNetworkTools(s, run, actor); err != nil {
+			return err
+		}
+	}
+	registerFrontendTools(ctx, s, c, workerPath)
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
 

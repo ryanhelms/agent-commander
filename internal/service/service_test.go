@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,6 +75,69 @@ func (f *fixture) delegate(parent LaunchSpec, key string) LaunchSpec {
 	f.t.Helper()
 	f.call("POST", "/v1/runs/"+parent.RunID+"/workers", parent.Token, map[string]string{"name": "reviewer", "task": "read source"}, 201, key)
 	return f.launched()
+}
+
+type selectiveLauncher struct{ recorder }
+
+func (selectiveLauncher) CheckAgentClient(client string) error {
+	if client == "owner-only" {
+		return errors.New("owner selection required")
+	}
+	return nil
+}
+
+func (selectiveLauncher) CheckClient(client string) error {
+	if client == "unavailable" {
+		return errors.New("test client is unavailable")
+	}
+	return nil
+}
+
+func TestDelegationSelectsAvailableClientBeforeReservation(t *testing.T) {
+	f := newFixture(t)
+	var err error
+	f.api, err = New(f.dir, selectiveLauncher{f.p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := f.run()
+	path := "/v1/runs/" + c.RunID + "/workers"
+	input := map[string]string{"name": "review", "task": "read source", "client": "unavailable"}
+	f.call("POST", path, c.Token, input, 409, "choose")
+	input["client"] = "claude"
+	f.call("POST", path, c.Token, input, 201, "choose")
+	w := f.launched()
+	if w.Client != "claude" || w.ParentID != c.ID {
+		t.Fatalf("wrong worker client or parent: %s, %s", w.Client, w.ParentID)
+	}
+	if w := f.delegate(c, "inherit"); w.Client != c.Client {
+		t.Fatalf("expected inherited client %q, got %q", c.Client, w.Client)
+	}
+	var run Run
+	raw := f.call("GET", "/v1/runs/"+c.RunID, "", nil, 200, "")
+	if err := json.Unmarshal(raw, &run); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Workers) != 3 || run.Workers[1].ID != w.ID || run.Workers[1].Client != "claude" {
+		t.Fatal("unexpected persisted workers after rejected and accepted delegations")
+	}
+}
+
+func TestOwnerCanDelegateExplicitACPProfile(t *testing.T) {
+	f := newFixture(t)
+	var err error
+	f.api, err = New(f.dir, selectiveLauncher{f.p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := f.run()
+	path := "/v1/runs/" + coordinator.RunID + "/workers"
+	input := map[string]string{"name": "review", "task": "read source", "client": "owner-only"}
+	f.call("POST", path, coordinator.Token, input, 409, "")
+	f.call("POST", path, "", input, 201, "")
+	if spec := f.launched(); spec.Client != "owner-only" || spec.ParentID != coordinator.ID {
+		t.Fatalf("owner selection did not reach the launcher: %+v", spec)
+	}
 }
 
 func TestScopedConversationAndRecovery(t *testing.T) {

@@ -1,0 +1,12 @@
+[
+  {"sequence":1,"kind":"text","text":"Same sentence."},
+  {"sequence":2,"kind":"text","text":"Same sentence."},
+  {"sequence":3,"kind":"tool_result","tool_id":"orphan","phase":"completed","text":"Result whose call left the preview."},
+  {"sequence":4,"kind":"tool_call","tool_id":"read-1","name":"Read fixture","phase":"pending","text":"sample.txt"},
+  {"sequence":5,"kind":"tool_update","tool_id":"read-1","phase":"in_progress","text":"Read first chunk."},
+  {"sequence":6,"kind":"tool_call","tool_id":"read-1","name":"Read file","phase":"in_progress","text":"Read next chunk."},
+  {"sequence":7,"kind":"tool_result","tool_id":"read-1","phase":"completed","text":"Part one"},
+  {"sequence":8,"kind":"tool_result","tool_id":"read-1","phase":"failed","text":"Tool failed.\nPart two: fixture://plan"},
+  {"sequence":9,"kind":"output","text":"[Provider event: fixture.opaque · application/octet-stream]\nBase64: AAE="},
+  {"sequence":10,"kind":"output","text":"Retained conversation source expired."}
+]

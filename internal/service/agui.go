@@ -1,22 +1,63 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
+
+	"agentcommander/internal/acpprocessor"
 )
 
 // Commander multiplexes a workspace through AG-UI state events. Each worker
 // carries its own list of protocol messages and its original console fallback.
+type aguiMessageMetadata struct {
+	ACP        *acpprocessor.Activity   `json:"acp"`
+	ACPSources []*acpprocessor.Activity `json:"acpSources,omitempty"`
+}
+
+// Folded tool progress and results can each point at different source records.
+// Keep their order while preserving the latest-reference field for older clients.
+func (m *aguiMessage) recordSource(source *acpprocessor.Activity) {
+	if source == nil {
+		return
+	}
+	if m.Metadata == nil {
+		m.Metadata = &aguiMessageMetadata{ACP: source}
+		return
+	}
+	meta := m.Metadata
+	previous := meta.ACP
+	meta.ACP = source
+	sameRecord := func(other *acpprocessor.Activity) bool {
+		return other == source || (source.Cursor != "" && other.Source == source.Source && other.Cursor == source.Cursor)
+	}
+	if len(meta.ACPSources) == 0 {
+		if !sameRecord(previous) {
+			meta.ACPSources = []*acpprocessor.Activity{previous, source}
+		}
+		return
+	}
+	for i, ref := range meta.ACPSources {
+		if sameRecord(ref) {
+			meta.ACPSources[i] = source
+			return
+		}
+	}
+	meta.ACPSources = append(meta.ACPSources, source)
+}
+
 type aguiMessage struct {
-	ID         string         `json:"id"`
-	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
-	ToolCalls  []aguiToolCall `json:"toolCalls,omitempty"`
-	ToolCallID string         `json:"toolCallId,omitempty"`
+	sequence   int
+	Metadata   *aguiMessageMetadata `json:"metadata,omitempty"`
+	ID         string               `json:"id"`
+	Role       string               `json:"role"`
+	Content    *string              `json:"content,omitempty"`
+	ToolCalls  []aguiToolCall       `json:"toolCalls,omitempty"`
+	ToolCallID string               `json:"toolCallId,omitempty"`
+	Error      string               `json:"error,omitempty"`
 }
 
 type aguiToolCall struct {
@@ -35,6 +76,11 @@ type aguiWorker struct {
 	Messages []aguiMessage `json:"messages,omitempty"`
 }
 
+func (worker *aguiWorker) projectMessages() {
+	worker.Messages = aguiMessages(worker.ID, worker.Console)
+	worker.Console = nil
+}
+
 type aguiRun struct {
 	Run
 	Workers []aguiWorker `json:"workers"`
@@ -47,7 +93,7 @@ type aguiWorkspace struct {
 type aguiPatch struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
-	Value any    `json:"value"`
+	Value any    `json:"value,omitempty"`
 }
 
 type aguiStateEvent struct {
@@ -58,9 +104,23 @@ type aguiStateEvent struct {
 
 func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 	var messages []aguiMessage
-	calls := make(map[string]bool)
+	type toolProjection struct {
+		call, result int
+		detail, text strings.Builder
+	}
+	tools := make(map[string]*toolProjection)
 	for _, item := range events {
-		message := aguiMessage{ID: fmt.Sprintf("%s:%d", workerID, item.Sequence), Role: "assistant"}
+		message := aguiMessage{sequence: item.Sequence, ID: fmt.Sprintf("%s:%d", workerID, item.Sequence), Role: "assistant"}
+		var tool *toolProjection
+		var callID string
+		if item.ToolID != "" && (item.Kind == "tool_call" || item.Kind == "tool_update" || item.Kind == "tool_result") {
+			callID = workerID + ":" + item.ToolID
+			tool = tools[callID]
+			if tool == nil {
+				tool = &toolProjection{call: -1, result: -1}
+				tools[callID] = tool
+			}
+		}
 		switch item.Kind {
 		case "text":
 			if item.Text == "" {
@@ -69,143 +129,133 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 			message.Content = &item.Text
 		case "user":
 			message.Role, message.Content = "user", &item.Text
-		case "tool_call":
-			if item.ToolID == "" || item.Name == "" || calls[item.ToolID] {
+		case "output":
+			message.Role, message.Content = "system", &item.Text
+		case "tool_call", "tool_update":
+			if tool == nil || (tool.call < 0 && item.Name == "") {
+				text := item.TerminalText()
+				message.Role, message.Content = "system", &text
+				break
+			}
+			// Keep each progress message as detail. The result controls the
+			// row's status, and the chronological console keeps the phases.
+			appendToolText(&tool.detail, item.Text)
+			if tool.call >= 0 {
+				messages[tool.call].recordSource(item.ACP)
+				if item.Name != "" {
+					messages[tool.call].ToolCalls[0].Function.Name = item.Name
+				}
 				continue
 			}
-			calls[item.ToolID] = true
-			args, _ := json.Marshal(struct {
-				Detail string `json:"detail,omitempty"`
-			}{item.Text})
-			message.ToolCalls = []aguiToolCall{{
-				ID: item.ToolID, Type: "function",
-				Function: aguiFunction{Name: item.Name, Arguments: string(args)},
-			}}
+			tool.call = len(messages)
+			message.ToolCalls = []aguiToolCall{{ID: callID, Type: "function", Function: aguiFunction{Name: item.Name}}}
 		case "tool_result":
-			// The retained window may start after a tool call. Leave its result
-			// out of the structured transcript if it has no matching call.
-			if !calls[item.ToolID] {
+			// A retained result can outlive its call. Carry the reference so
+			// clients can still display the result and correlate it if possible.
+			if tool == nil {
+				message.Role, message.Content = "system", &item.Text
+				break
+			}
+			appendToolText(&tool.text, item.TerminalText())
+			if tool.result >= 0 {
+				messages[tool.result].recordSource(item.ACP)
+				if failure := item.ToolFailure(); failure != "" {
+					messages[tool.result].Error = failure
+				}
 				continue
 			}
-			message.Role, message.ToolCallID, message.Content = "tool", item.ToolID, &item.Text
+			tool.result = len(messages)
+			message.Role, message.ToolCallID = "tool", callID
+			message.Error = item.ToolFailure()
 		default:
 			continue
 		}
+		message.recordSource(item.ACP)
 		messages = append(messages, message)
+	}
+	for _, tool := range tools {
+		if tool.call >= 0 {
+			args, _ := json.Marshal(struct {
+				Detail string `json:"detail,omitempty"`
+			}{tool.detail.String()})
+			messages[tool.call].ToolCalls[0].Function.Arguments = string(args)
+		}
+		if tool.result >= 0 {
+			text := tool.text.String()
+			messages[tool.result].Content = &text
+		}
 	}
 	return messages
 }
 
-// The ordered run list is append-only. A length change replaces the list; a
-// normal update replaces only changed runs. Reconnects always start afresh.
-func aguiDelta(old, next aguiWorkspace) []aguiPatch {
-	if len(old.Runs) != len(next.Runs) {
-		return []aguiPatch{{Op: "replace", Path: "/runs", Value: next.Runs}}
+func appendToolText(out *strings.Builder, text string) {
+	if text == "" {
+		return
 	}
-	var delta []aguiPatch
-	for i, run := range next.Runs {
-		if !bytes.Equal(old.Runs[i], run) {
-			delta = append(delta, aguiPatch{Op: "replace", Path: fmt.Sprintf("/runs/%d", i), Value: run})
-		}
+	if out.Len() > 0 {
+		out.WriteByte('\n')
 	}
-	return delta
-}
-
-func (s *service) aguiSnapshot() (aguiWorkspace, error) {
-	// Detach mutable records before encoding. Each retained Console slice is
-	// append-only or replaced by output ingestion, so its existing elements
-	// can safely be read after releasing the mutex.
-	s.mu.Lock()
-	runs := make([]aguiRun, 0, len(s.state.Runs))
-	for _, run := range s.state.Runs {
-		item := aguiRun{Run: *run, Workers: make([]aguiWorker, 0, len(run.Workers))}
-		item.Run.Workers = nil
-		item.Requests = make([]*Question, 0, len(run.Requests))
-		for _, question := range run.Requests {
-			copy := *question
-			item.Requests = append(item.Requests, &copy)
-		}
-		for _, worker := range run.Workers {
-			copy := *worker
-			if worker.Control != nil {
-				control := *worker.Control
-				control.Messages = append([]WorkerFollowUp(nil), control.Messages...)
-				copy.Control = &control
-			}
-			item.Workers = append(item.Workers, aguiWorker{Worker: copy})
-		}
-		runs = append(runs, item)
-	}
-	s.mu.Unlock()
-
-	snapshot := aguiWorkspace{Runs: make([]json.RawMessage, 0, len(runs))}
-	for _, run := range runs {
-		for i := range run.Workers {
-			worker := &run.Workers[i]
-			worker.Messages = aguiMessages(worker.ID, worker.Console)
-			worker.Console = nil
-		}
-		raw, err := json.Marshal(run)
-		if err != nil {
-			return aguiWorkspace{}, err
-		}
-		snapshot.Runs = append(snapshot.Runs, raw)
-	}
-	return snapshot, nil
+	out.WriteString(text)
 }
 
 func (s *service) streamConsole(w http.ResponseWriter, r *http.Request) {
-	// The workspace stream is for the desktop owner on the private Unix socket.
-	// Agents continue using the project-scoped API through MCP.
 	if _, supplied := r.Header["Authorization"]; supplied {
 		respondError(w, denied())
 		return
 	}
+	incremental := r.URL.Query().Get("projection") == "incremental"
 	notify := make(chan struct{}, 1)
 	s.mu.Lock()
 	if s.consoleObservers == nil {
 		s.consoleObservers = make(map[chan struct{}]struct{})
 	}
 	s.consoleObservers[notify] = struct{}{}
+	if s.workspace == nil {
+		s.workspace = &workspaceProjection{}
+		s.workspace.rebuild(s.state.Runs)
+	}
+	feed := s.workspace
+	feed.readers++
+	if incremental {
+		feed.incrementalReaders++
+	}
+	cursor := feed.revision
+	initial, err := feed.snapshot(incremental, false)
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.consoleObservers, notify)
+		feed.readers--
+		if incremental {
+			feed.incrementalReaders--
+			if feed.incrementalReaders == 0 {
+				feed.frames = nil
+				feed.frameBytes = 0
+			}
+		}
+		if feed.readers == 0 {
+			s.workspace = nil
+		}
 		s.mu.Unlock()
 	}()
-
-	current, err := s.aguiSnapshot()
 	if err != nil {
 		respondError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	httpWriter := http.NewResponseController(w)
-	write := func(frame string) error {
-		// A disconnected or stalled observer must not block service writes.
-		_ = httpWriter.SetWriteDeadline(time.Now().Add(8 * time.Second))
-		if _, err := fmt.Fprint(w, frame); err != nil {
+	controller := http.NewResponseController(w)
+	write := func(raw []byte) error {
+		_ = controller.SetWriteDeadline(time.Now().Add(8 * time.Second))
+		if _, err := w.Write(raw); err != nil {
 			return err
 		}
-		return httpWriter.Flush()
+		return controller.Flush()
 	}
-	send := func(event aguiStateEvent) error {
-		raw, err := json.Marshal(event)
-		if err != nil {
-			return err
-		}
-		return write("data: " + string(raw) + "\n\n")
-	}
-	if err := send(aguiStateEvent{Type: "STATE_SNAPSHOT", Snapshot: &current}); err != nil {
+	if write(initial) != nil {
 		return
 	}
-
-	// A second subscriber can arrive before its predecessor's read finishes.
-	// Share that bounded read across reconnects, including after the first
-	// subscriber closes its stream.
 	go s.restoreNativeHistories(context.WithoutCancel(r.Context()))
-
 	heartbeat := time.NewTicker(5 * time.Second)
 	defer heartbeat.Stop()
 	for {
@@ -213,20 +263,24 @@ func (s *service) streamConsole(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			if write(": heartbeat\n\n") != nil {
+			if write([]byte(": heartbeat\n\n")) != nil {
 				return
 			}
 		case <-notify:
-			next, err := s.aguiSnapshot()
-			if err != nil {
-				return
-			}
-			delta := aguiDelta(current, next)
-			if len(delta) > 0 {
-				if send(aguiStateEvent{Type: "STATE_DELTA", Delta: delta}) != nil {
+			for {
+				s.mu.Lock()
+				frame, next, err := feed.next(cursor, incremental)
+				s.mu.Unlock()
+				if err != nil {
 					return
 				}
-				current = next
+				if next == cursor {
+					break
+				}
+				cursor = next
+				if len(frame) > 0 && write(frame) != nil {
+					return
+				}
 			}
 		}
 	}

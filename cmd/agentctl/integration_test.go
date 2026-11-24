@@ -1,17 +1,24 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +26,92 @@ import (
 	"agentcommander/internal/service"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestHostedCommandsRejectHTTP2DebugLogging(t *testing.T) {
+	missingConfig := filepath.Join(t.TempDir(), "hosted.json")
+	t.Setenv("AGENT_COMMANDER_HOSTED_CONFIG", missingConfig)
+	for _, debug := range []string{"http2debug=1", "http2debug=0,http2debug=2"} {
+		t.Setenv("GODEBUG", debug)
+		_, hostedErr := prepareHosted(t.TempDir(), http.NotFoundHandler())
+		relayErr := run([]string{"relay", missingConfig})
+		checkErr := run([]string{"relay", "--check", missingConfig})
+		for _, err := range []error{hostedErr, relayErr, checkErr} {
+			if err == nil || !strings.Contains(err.Error(), "Go HTTP/2 debug logging disabled") {
+				t.Fatalf("hosted startup with %s returned %v", debug, err)
+			}
+		}
+	}
+	t.Setenv("AGENT_COMMANDER_HOSTED_CONFIG", "")
+	if _, err := prepareHosted(t.TempDir(), http.NotFoundHandler()); err != nil {
+		t.Fatalf("socket-only service rejected runtime debugging: %v", err)
+	}
+	t.Setenv("GODEBUG", "http2debug=0")
+	if err := run([]string{"relay", missingConfig}); !os.IsNotExist(err) {
+		t.Fatalf("disabled tracing prevented relay config loading: %v", err)
+	}
+}
+
+func TestRelayConfigurationCheck(t *testing.T) {
+	dir := t.TempDir()
+	public := httptest.NewTLSServer(http.NotFoundHandler())
+	defer public.Close()
+	cert := public.TLS.Certificates[0]
+	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for _, file := range []struct {
+		path  string
+		block pem.Block
+	}{
+		{certPath, pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}},
+		{keyPath, pem.Block{Type: "PRIVATE KEY", Bytes: key}},
+	} {
+		if err := os.WriteFile(file.path, pem.EncodeToMemory(&file.block), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	configPath := filepath.Join(dir, "relay.json")
+	check := func(changes map[string]any) error {
+		t.Helper()
+		config := map[string]any{
+			"listen": public.Listener.Addr().String(), "tunnel_listen": "127.0.0.1:0", "metrics_listen": "[::1]:0",
+			"certificate": certPath, "private_key": keyPath, "tunnel_certificate": certPath, "tunnel_private_key": keyPath,
+			"instances": []any{},
+		}
+		for name, value := range changes {
+			config[name] = value
+		}
+		payload, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, payload, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return run([]string{"relay", "--check", configPath})
+	}
+	if err := check(nil); err != nil {
+		t.Fatalf("validation must succeed without binding the occupied address: %v", err)
+	}
+	for _, test := range []struct {
+		field string
+		value any
+		error string
+	}{
+		{"tunnel_listen", public.Listener.Addr().String(), "must be distinct"},
+		{"listen", "127.0.0.1", "relay public address"},
+		{"metrics_listen", "0.0.0.0:9109", "must use a loopback IP"},
+		{"tunnel_private_key", certPath, "relay connector TLS key pair"},
+		{"instances", nil, "configure an explicit array"},
+	} {
+		if err := check(map[string]any{test.field: test.value}); err == nil || !strings.Contains(err.Error(), test.error) {
+			t.Errorf("%s: expected %q, got %v", test.field, test.error, err)
+		}
+	}
+}
 
 // Each managed actor gets a fresh instance of the actual agentctl MCP entry point.
 // Exit before the Go test harness can write its PASS banner to the JSON-RPC pipe.
@@ -81,7 +174,12 @@ func TestLocalMCPPlanningRun(t *testing.T) {
 	}
 	pendingRead := make(chan struct{})
 	var observed sync.Once
+	var loseFrontendPoll atomic.Bool
 	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/frontend-tools/calls/") && loseFrontendPoll.CompareAndSwap(true, false) {
+			http.Error(w, "test transport unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		handler.ServeHTTP(w, r)
 		if r.Method == "GET" && strings.Contains(r.URL.Path, "/questions/") {
 			observed.Do(func() { close(pendingRead) })
@@ -103,6 +201,7 @@ func TestLocalMCPPlanningRun(t *testing.T) {
 			}
 		}
 	}
+	credentials := make(map[string]string)
 	connectActor := func(expectedID string) *mcp.ClientSession {
 		t.Helper()
 		var spec service.LaunchSpec
@@ -114,6 +213,7 @@ func TestLocalMCPPlanningRun(t *testing.T) {
 		if spec.ID != expectedID || spec.Token == "" {
 			t.Fatalf("missing binding for %s (got %s)", expectedID, spec.ID)
 		}
+		credentials[spec.ID] = spec.Token
 		exe, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
@@ -206,5 +306,187 @@ func TestLocalMCPPlanningRun(t *testing.T) {
 		return q.ID == questionB.ID && q.WorkerID == idB && q.Status == "pending" && q.Answer == ""
 	}) {
 		t.Fatal("answering one question changed its sibling")
+	}
+
+	workerPath := "/v1/workers/" + idA
+	workerAPI := localapi.New(socket, credentials[idA])
+	for _, step := range []struct {
+		path string
+		body any
+	}{
+		{"/state", map[string]string{"state": "working"}},
+		{"/control/ready", struct{}{}},
+		{"/control/finish", map[string]string{"state": "completed"}},
+	} {
+		if _, err := workerAPI.Do(ctx, "POST", workerPath+step.path, step.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	humanCall("POST", workerPath+"/control", map[string]any{"held": true, "generation": 1}, nil)
+	workerRunPath := "/v1/ag-ui/workers/" + idA
+	body, err := json.Marshal(map[string]any{
+		"threadId": idA, "runId": "frontend-test",
+		"messages":       []any{map[string]string{"role": "user", "content": "Ask the app to pick a document"}},
+		"forwardedProps": map[string]int{"generation": 2},
+		"tools": []any{map[string]any{"name": "select_document", "description": "Select a document",
+			"parameters": map[string]string{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost"+workerRunPath+"/run", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpClient := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}}}
+	stream, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode != 200 {
+		t.Fatalf("frontend tool turn was not accepted: %s", stream.Status)
+	}
+	reader := bufio.NewScanner(stream.Body)
+	await := func(eventType string) map[string]any {
+		t.Helper()
+		for reader.Scan() {
+			data, ok := strings.CutPrefix(reader.Text(), "data: ")
+			if !ok {
+				continue
+			}
+			var event map[string]any
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				t.Fatal(err)
+			}
+			if event["type"] == eventType {
+				return event
+			}
+		}
+		t.Fatalf("missing %s: %v", eventType, reader.Err())
+		return nil
+	}
+	snapshot := await("STATE_SNAPSHOT")["snapshot"].(map[string]any)
+	operation := snapshot["operationId"].(string)
+	if _, err := workerAPI.Do(ctx, "POST", workerPath+"/messages/"+operation+"/claim", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	var definitions []struct{ Name string }
+	tool(workerA, "commander_frontend_tools", struct{}{}, &definitions)
+	if len(definitions) != 1 || definitions[0].Name != "select_document" {
+		t.Fatalf("wrong frontend tools: %+v", definitions)
+	}
+	completed := make(chan waitResult, 1)
+	go func() {
+		out, err := callMCP(ctx, workerA, "commander_call_frontend", map[string]any{
+			"name": "select_document", "arguments": map[string]any{"folder": "plans", "document": int64(9007199254740993)},
+		})
+		completed <- waitResult{out, err}
+	}()
+	arguments := await("TOOL_CALL_ARGS")["delta"].(string)
+	var offered struct{ Document int64 }
+	if err := json.Unmarshal([]byte(arguments), &offered); err != nil || offered.Document != 9007199254740993 {
+		t.Fatalf("frontend tool did not preserve the exact document number: %s (%v)", arguments, err)
+	}
+	id := await("TOOL_CALL_END")["toolCallId"].(string)
+	humanCall("POST", workerRunPath+"/operations/"+operation+"/tools/"+id+"/result", map[string]string{
+		"id": "app-result", "role": "tool", "toolCallId": id, "content": "Selected plans.md",
+	}, nil)
+	select {
+	case result := <-completed:
+		if result.err != nil || string(result.data) != "Selected plans.md" {
+			t.Fatalf("incorrect MCP result %q: %v", result.data, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if event := await("TOOL_CALL_RESULT"); event["toolCallId"] != id || event["content"] != "Selected plans.md" {
+		t.Fatalf("incorrect AG-UI tool result: %+v", event)
+	}
+
+	startPicker := func(callCtx context.Context) string {
+		go func() {
+			_, err := callMCP(callCtx, workerA, "commander_call_frontend", map[string]any{
+				"name": "select_document", "arguments": map[string]string{"folder": "review"},
+			})
+			completed <- waitResult{err: err}
+		}()
+		return await("TOOL_CALL_END")["toolCallId"].(string)
+	}
+	pickerCtx, cancelPicker := context.WithCancel(ctx)
+	defer cancelPicker()
+	cancelledID := startPicker(pickerCtx)
+	cancelPicker()
+	select {
+	case result := <-completed:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("MCP cancellation returned %v", result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if event := await("TOOL_CALL_RESULT"); event["toolCallId"] != cancelledID ||
+		!strings.Contains(fmt.Sprint(event["error"]), "cancelled its wait") {
+		t.Fatalf("missing cancellation for the awaiting call: %+v", event)
+	}
+	resultPath := workerRunPath + "/operations/" + operation + "/tools/"
+	_, err = human.Do(ctx, "POST", resultPath+cancelledID+"/result", map[string]string{
+		"id": "late-result", "role": "tool", "toolCallId": cancelledID, "content": "Late selection",
+	})
+	var refusal *localapi.ResponseError
+	if !errors.As(err, &refusal) || refusal.StatusCode != http.StatusConflict {
+		t.Fatalf("cancelled picker accepted a late result: %v", err)
+	}
+
+	loseFrontendPoll.Store(true)
+	disconnectedID := startPicker(ctx)
+	select {
+	case result := <-completed:
+		if result.err == nil || !strings.Contains(result.err.Error(), "result delivery is unconfirmed") {
+			t.Fatalf("ambiguous poll failure reported %v", result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	humanCall("POST", resultPath+disconnectedID+"/result", map[string]string{
+		"id": "confirmed-result", "role": "tool", "toolCallId": disconnectedID, "content": "Confirmed by original app",
+	}, nil)
+	if event := await("TOOL_CALL_RESULT"); event["toolCallId"] != disconnectedID || event["content"] != "Confirmed by original app" {
+		t.Fatalf("a poll failure lost the original app's evidence: %+v", event)
+	}
+	if os.Getenv("AGENT_COMMANDER_TEST_COPILOTKIT") == "1" {
+		// Hand the real stream to two successive AG-UI client instances.
+		_ = stream.Body.Close()
+		cmd := exec.CommandContext(ctx, "node", "../../poc/agui-console/testdata/frontend-recovery.mjs", socket, idA, "frontend-test")
+		firstDispatch, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var diagnostics bytes.Buffer
+		cmd.Stderr = &diagnostics
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		child := bufio.NewScanner(firstDispatch)
+		if !child.Scan() || child.Text() != "ready" {
+			_ = cmd.Wait()
+			t.Fatalf("client did not attach: %s", diagnostics.String())
+		}
+		chosen, err := callMCP(ctx, workerA, "commander_call_frontend", map[string]any{
+			"name": "select_document", "arguments": map[string]string{"folder": "reconnect"},
+		})
+		if err != nil || string(chosen) != "reconciled selection" {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("MCP missed the original app result: %s, %v, %s", chosen, err, diagnostics.String())
+		}
+		if _, err := workerAPI.Do(ctx, "POST", workerPath+"/control/finish", map[string]string{"state": "completed", "message_id": operation}); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("AG-UI client recovery failed: %v, %s", err, diagnostics.String())
+		}
 	}
 }

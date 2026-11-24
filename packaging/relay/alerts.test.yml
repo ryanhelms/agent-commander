@@ -1,0 +1,70 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="commander-relay",instance="127.0.0.1:9109"}'
+        values: '1 1 0 0 0 1 1+0x8'
+      - series: 'commander_relay_unavailable_requests_total{job="commander-relay",instance="127.0.0.1:9109"}'
+        values: '0 0 0 1 3 6 9 11+0x8'
+      - series: 'commander_relay_saturated_requests_total{job="commander-relay",instance="127.0.0.1:9109"}'
+        values: '0 0 0 1 3 6 9 11+0x8'
+      - series: 'commander_relay_interrupted_requests_total{job="commander-relay",instance="127.0.0.1:9109"}'
+        values: '0 0 0 1 3 6 9 11+0x8'
+      - series: 'commander_relay_unavailable_requests_total{job="commander-relay",instance="idle:9109"}'
+        values: '0 0 0 1+0x12'
+      - series: 'up{job="unrelated",instance="127.0.0.1:9999"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CommanderRelayMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: CommanderRelayMetricsUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: commander-relay
+              instance: 127.0.0.1:9109
+              severity: critical
+            exp_annotations:
+              summary: Commander relay metrics are unavailable
+              description: Check the relay process and its loopback metrics listener.
+      - eval_time: 5m
+        alertname: CommanderRelayMetricsUnavailable
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: CommanderRelayHostUnavailable
+        exp_alerts:
+          - exp_labels: &warning
+              job: commander-relay
+              instance: 127.0.0.1:9109
+              severity: warning
+            exp_annotations:
+              summary: Commander relay cannot reach a requested host
+              description: Check the host connector before retrying an operation.
+      - eval_time: 6m
+        alertname: CommanderRelayRequestSaturation
+        exp_alerts:
+          - exp_labels: *warning
+            exp_annotations:
+              summary: Commander relay requests repeatedly reached the concurrency limit
+              description: Check concurrent streams and application retry behavior.
+      - eval_time: 6m
+        alertname: CommanderRelayForwardingInterrupted
+        exp_alerts:
+          - exp_labels: *warning
+            exp_annotations:
+              summary: Commander relay forwarding was repeatedly interrupted
+              description: Check tunnel continuity and app read timeouts. Recover accepted operations by their receipts.
+      - eval_time: 13m
+        alertname: CommanderRelayHostUnavailable
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: CommanderRelayRequestSaturation
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: CommanderRelayForwardingInterrupted
+        exp_alerts: []

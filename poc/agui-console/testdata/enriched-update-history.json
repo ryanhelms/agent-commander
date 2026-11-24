@@ -1,0 +1,52 @@
+{
+  "observations": [
+    {
+      "session": {
+        "harnessInstance": "candidate-fixture",
+        "sessionId": "enriched-session"
+      },
+      "cursor": "9409bddf0910ca2b2a82fa43a948a7c1.2",
+      "turnId": "turn-swatch",
+      "tool": {
+        "callId": "call-swatch",
+        "name": "Read color swatch",
+        "phase": "completed",
+        "summary": "Read a 4 × 4 green PNG\n[ACP image] image/png"
+      },
+      "sourceRecord": {
+        "type": "acp.session_update_params",
+        "mediaType": "application/json",
+        "data": "eyJzZXNzaW9uSWQiOiJlbnJpY2hlZC1zZXNzaW9uIiwidXBkYXRlIjp7InNlc3Npb25VcGRhdGUiOiJ0b29sX2NhbGxfdXBkYXRlIiwidG9vbENhbGxJZCI6ImNhbGwtc3dhdGNoIiwic3RhdHVzIjoiY29tcGxldGVkIiwidGl0bGUiOiJSZWFkIGNvbG9yIHN3YXRjaCIsImNvbnRlbnQiOlt7InR5cGUiOiJjb250ZW50IiwiY29udGVudCI6eyJ0eXBlIjoidGV4dCIsInRleHQiOiJSZWFkIGEgNCDDlyA0IGdyZWVuIFBORyJ9fSx7InR5cGUiOiJjb250ZW50IiwiY29udGVudCI6eyJ0eXBlIjoiaW1hZ2UiLCJtaW1lVHlwZSI6ImltYWdlL3BuZyIsImRhdGEiOiJpVkJPUncwS0dnb0FBQUFOU1VoRVVnQUFBQVFBQUFBRUNBSUFBQUFta3drcEFBQUFFRWxFUVZSNG5HTlEySklBUnd6RWNRRHd3eE5CcTJKR2R3QUFBQUJKUlU1RXJrSmdnZz09In19XSwicmF3T3V0cHV0Ijp7ImNvbnRlbnQiOlt7InR5cGUiOiJ0ZXh0IiwidGV4dCI6ImZvdXIgcGl4ZWxzIHdpZGUifV0sInZlbmRvclJlc3VsdCI6W251bGwsZmFsc2UseyJ3YXJuaW5ncyI6W119XX19LCJfbWV0YSI6bnVsbCwiZnV0dXJlUGFyYW1zIjpbOTAwNzE5OTI1NDc0MDk5Myx0cnVlLG51bGwseyJkZWVwIjpbLTkwMDcxOTkyNTQ3NDA5OTUsIuKckyIsIjxvcGVuPiJdfV19"
+      },
+      "sourceCursor": "9409bddf0910ca2b2a82fa43a948a7c1.2"
+    },
+    {
+      "session": {
+        "harnessInstance": "candidate-fixture",
+        "sessionId": "enriched-session"
+      },
+      "cursor": "9409bddf0910ca2b2a82fa43a948a7c1.3",
+      "turnId": "turn-swatch",
+      "extension": {
+        "type": "acp.session_update_params",
+        "mediaType": "application/json",
+        "data": "eyJzZXNzaW9uSWQiOiJlbnJpY2hlZC1zZXNzaW9uIiwidmVuZG9yUGF5bG9hZCI6eyJzaGFwZSI6Im1pc3NpbmcgdXBkYXRlIiwibmVzdGVkIjpbbnVsbCxmYWxzZSwwLHsieCI6WzEseyJsb25nIjo5MDA3MTk5MjU0NzQwOTk3fV19XX19"
+      },
+      "sourceCursor": "9409bddf0910ca2b2a82fa43a948a7c1.3"
+    },
+    {
+      "session": {
+        "harnessInstance": "candidate-fixture",
+        "sessionId": "enriched-session"
+      },
+      "cursor": "9409bddf0910ca2b2a82fa43a948a7c1.4",
+      "turnId": "turn-swatch",
+      "extension": {
+        "type": "acp.session_update_params",
+        "mediaType": "application/json",
+        "data": "eyJzZXNzaW9uSWQiOiJlbnJpY2hlZC1zZXNzaW9uIiwidXBkYXRlIjpudWxsLCJfbWV0YSI6eyJzdGF0dXMiOiJleHBsaWNpdCBudWxsIn0sImZ1dHVyZSI6W3t9LFtdLG51bGwsOTAwNzE5OTI1NDc0MDk5OV19"
+      },
+      "sourceCursor": "9409bddf0910ca2b2a82fa43a948a7c1.4"
+    }
+  ]
+}

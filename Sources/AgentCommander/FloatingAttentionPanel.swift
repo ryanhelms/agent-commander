@@ -337,6 +337,7 @@ struct FloatingAttentionRoot: View {
         }
         .frame(width: Metric.pipWidth, height: FloatingAttentionController.stackHeight, alignment: .top)
         .padding(FloatingAttentionController.margin)
+        .consoleRecordAccess(actions)
         .onChange(of: ui.floatingReplyFocus) { _, requestID in
             guard let requestID else { return }
             ui.floatingReplyFocus = nil
@@ -358,7 +359,11 @@ struct FloatingAttentionRoot: View {
                               showNext: { ui.activeRequestID = queue[(index + 1) % queue.count].id },
                               expand: { reveal(current) },
                               close: { close(current) },
-                              dragHandle: AnyView(WindowDragHandle(onEnd: dragEnded)))
+                              dragHandle: AnyView(WindowDragHandle(onEnd: dragEnded)),
+                              // The floating stack points to the worker's console in the cockpit
+                              // window, which is brought forward and opens the inspector there.
+                              source: ui.sourcePointer(for: current, intents: actions.source,
+                                                       reveal: { reveal(current) }))
     }
 
     private func replyContext(_ content: CockpitContent) -> ReplyContext {

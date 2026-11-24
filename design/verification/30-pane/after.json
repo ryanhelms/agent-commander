@@ -1,0 +1,115 @@
+{
+  "host": {
+    "system": "Darwin",
+    "version": "26.7.3",
+    "arch": "arm64"
+  },
+  "panes": 30,
+  "idle": {
+    "approval_visible": {
+      "median_ms": 26.62,
+      "max_ms": 44.07,
+      "samples_ms": [
+        12.95,
+        29.49,
+        44.07,
+        27.61,
+        17.89,
+        25.64
+      ]
+    },
+    "reply_http": {
+      "median_ms": 8.06,
+      "max_ms": 17.69,
+      "samples_ms": [
+        6.87,
+        9.01,
+        17.69,
+        7.12,
+        9.92,
+        6.1
+      ]
+    },
+    "reply_visible": {
+      "median_ms": 10.31,
+      "max_ms": 22.73,
+      "samples_ms": [
+        9.99,
+        10.63,
+        22.73,
+        8.65,
+        15.74,
+        6.36
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "median_ms": 304.97,
+      "max_ms": 445.24,
+      "samples_ms": [
+        372.29,
+        231.71,
+        357.35,
+        227.79,
+        252.59,
+        445.24
+      ]
+    },
+    "service_rss_peak_sampled_mib": 22.88,
+    "workspace_payload_bytes": 261234
+  },
+  "loaded": {
+    "approval_visible": {
+      "median_ms": 58.95,
+      "max_ms": 283.38,
+      "samples_ms": [
+        283.38,
+        41.91,
+        70.58,
+        40.85,
+        103.62,
+        47.31
+      ]
+    },
+    "reply_http": {
+      "median_ms": 12.3,
+      "max_ms": 40.29,
+      "samples_ms": [
+        40.29,
+        11.18,
+        39.72,
+        8.44,
+        13.42,
+        8.02
+      ]
+    },
+    "reply_visible": {
+      "median_ms": 20.54,
+      "max_ms": 107.18,
+      "samples_ms": [
+        104.43,
+        14.85,
+        107.18,
+        22.78,
+        18.04,
+        18.29
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "median_ms": 289.08,
+      "max_ms": 469.41,
+      "samples_ms": [
+        229.01,
+        204.7,
+        349.15,
+        439.53,
+        469.41,
+        173.34
+      ]
+    },
+    "service_rss_peak_sampled_mib": 70.52,
+    "workspace_payload_bytes": 38169428,
+    "reconnect_with_pending_approval_ms": 51.12
+  },
+  "attachment_bytes_retrieved": 420000,
+  "cold_snapshot_contains_attachment_bytes": false
+}

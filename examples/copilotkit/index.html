@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"><title>Commander worker</title></head>
+<body>
+<main>
+<h1>Commander worker</h1>
+<form id="send"><label>Prompt <textarea name="prompt" required rows="3" cols="64"></textarea></label> <button disabled>Send</button></form>
+<p id="status" role="status">Connecting</p>
+<button id="reconnect" hidden type="button">Reconnect to this run</button>
+<section id="user-media"></section>
+<section id="pending"></section>
+<section id="results"></section>
+<p id="assistant"></p>
+<button id="history" type="button">Open provider history</button>
+<section id="records"></section>
+<p id="error" role="alert"></p>
+</main><script src="/client.js" defer></script></body></html>

@@ -1,0 +1,167 @@
+{
+  "commanderSha256": "640f0f42926dbb27fb3bbbfafb87e0f53fa397be4085c4241c9923b20576b920",
+  "connectorTarballSha256": "605f1b9c5cf1000e2a5e3df9e765b0625bbd98242dca912eaaf0afa21ebccb4d",
+  "agent": {
+    "name": "@agentclientprotocol/claude-agent-acp",
+    "title": "Claude Agent",
+    "version": "0.109.1"
+  },
+  "selection": {
+    "method": "session/set_config_option",
+    "configId": "model",
+    "value": "opus"
+  },
+  "selectionAcknowledgement": {
+    "accepted": true,
+    "configId": "model",
+    "currentValue": "opus",
+    "error": null
+  },
+  "forwardedPrompt": {
+    "method": "session/prompt",
+    "model": "opus",
+    "text": [
+      "Call commander_ask with exactly this question: \"Which code confirms ASK-TOOL-RECEIPT?\" Call commander_wait with the returned question ID. Reply with my exact answer after it arrives."
+    ]
+  },
+  "browser": {
+    "pendingRequestId": "q-327cabf56ed170e9960aa458b08772ae",
+    "toolResult": {
+      "id": "q-327cabf56ed170e9960aa458b08772ae",
+      "worker_id": "w-bdae70a19d8c8c07b4d5e27853c626ae",
+      "question": "Which code confirms ASK-TOOL-RECEIPT?",
+      "status": "pending",
+      "answer": ""
+    },
+    "assistant": "LAPIS-742",
+    "http": [
+      [
+        "GET",
+        "/",
+        200
+      ],
+      [
+        "GET",
+        "/styles.css",
+        200
+      ],
+      [
+        "GET",
+        "/client.js",
+        200
+      ],
+      [
+        "GET",
+        "/copilotkit/info",
+        200
+      ],
+      [
+        "GET",
+        "/worker",
+        200
+      ],
+      [
+        "GET",
+        "/worker",
+        200
+      ],
+      [
+        "POST",
+        "/copilotkit/agent/commander/run",
+        200
+      ],
+      [
+        "GET",
+        "/source",
+        200
+      ],
+      [
+        "POST",
+        "/reply",
+        200
+      ]
+    ]
+  },
+  "originalToolUpdate": {
+    "_meta": {
+      "claudeCode": {
+        "toolName": "mcp__commander__commander_ask"
+      }
+    },
+    "toolCallId": "toolu_01GutdvoYwdRXucVALhcvfyt",
+    "sessionUpdate": "tool_call_update",
+    "status": "completed",
+    "rawOutput": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"q-327cabf56ed170e9960aa458b08772ae\",\"worker_id\":\"w-bdae70a19d8c8c07b4d5e27853c626ae\",\"question\":\"Which code confirms ASK-TOOL-RECEIPT?\",\"status\":\"pending\",\"answer\":\"\"}\n"
+      }
+    ],
+    "content": [
+      {
+        "type": "content",
+        "content": {
+          "type": "text",
+          "text": "{\"id\":\"q-327cabf56ed170e9960aa458b08772ae\",\"worker_id\":\"w-bdae70a19d8c8c07b4d5e27853c626ae\",\"question\":\"Which code confirms ASK-TOOL-RECEIPT?\",\"status\":\"pending\",\"answer\":\"\"}\n"
+        }
+      }
+    ]
+  },
+  "originalObservationCursor": "d676cbda33450ba082f8b58b5c7df3e8.9",
+  "waitResult": {
+    "id": "q-327cabf56ed170e9960aa458b08772ae",
+    "worker_id": "w-bdae70a19d8c8c07b4d5e27853c626ae",
+    "question": "Which code confirms ASK-TOOL-RECEIPT?",
+    "status": "answered",
+    "answer": "LAPIS-742"
+  },
+  "providerTerminal": {
+    "error": null,
+    "result": {
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 8,
+        "outputTokens": 284,
+        "cachedReadTokens": 21147,
+        "cachedWriteTokens": 7428,
+        "totalTokens": 28867
+      },
+      "_meta": {
+        "quota": {
+          "token_count": {
+            "totalTokens": 28867,
+            "inputTokens": 8,
+            "cachedInputTokens": 21147,
+            "cachedWriteTokens": 7428,
+            "outputTokens": 284,
+            "reasoningOutputTokens": 0
+          },
+          "model_usage": [
+            {
+              "model": "claude-haiku-5-5",
+              "token_count": {
+                "totalTokens": 1605,
+                "inputTokens": 1232,
+                "cachedInputTokens": 0,
+                "cachedWriteTokens": 0,
+                "outputTokens": 373,
+                "reasoningOutputTokens": 0
+              }
+            },
+            {
+              "model": "claude-opus-5-5",
+              "token_count": {
+                "totalTokens": 28867,
+                "inputTokens": 8,
+                "cachedInputTokens": 21147,
+                "cachedWriteTokens": 7428,
+                "outputTokens": 284,
+                "reasoningOutputTokens": 0
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

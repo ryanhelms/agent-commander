@@ -1,0 +1,10 @@
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/commander-relay/
+!cmd/commander-relay/main.go
+!internal/
+!internal/**
+!vendor/
+!vendor/**

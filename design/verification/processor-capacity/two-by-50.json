@@ -1,0 +1,212 @@
+{
+  "system": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+  "binary_sha256": "83bc7a8ec41698afaf0841360017709bdaa0615fa30caf5bcb9fd2c8503ca1b7",
+  "configuration": {
+    "worker_count": 2,
+    "target_per_worker_s": 50,
+    "seconds": 8.0,
+    "idle": 3.0,
+    "size": 256,
+    "observers": 1
+  },
+  "trials": [
+    {
+      "idle": {
+        "wall_s": 3.0843912499258295,
+        "rss_samples": 10,
+        "service": {
+          "cpu_s": 0.010000000000000002,
+          "cpu_pct_one_core": 0.32421308419418166,
+          "rss_median_mib": 15.359375,
+          "rss_peak_mib": 17.9375
+        },
+        "runner_a": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 15.109375,
+          "rss_peak_mib": 19.09375
+        },
+        "runner_b": {
+          "cpu_s": 0.010000000000000002,
+          "cpu_pct_one_core": 0.32421308419418166,
+          "rss_median_mib": 16.0,
+          "rss_peak_mib": 19.3125
+        },
+        "observers": [
+          {
+            "frames": 0,
+            "sse_json_bytes": 0,
+            "sse_json_bytes_per_s": 0.0
+          }
+        ]
+      },
+      "load": {
+        "wall_s": 8.431005917023867,
+        "rss_samples": 19,
+        "service": {
+          "cpu_s": 0.5199999999999999,
+          "cpu_pct_one_core": 6.167710058772668,
+          "rss_median_mib": 21.859375,
+          "rss_peak_mib": 23.140625
+        },
+        "runner_a": {
+          "cpu_s": 0.14,
+          "cpu_pct_one_core": 1.6605373235157188,
+          "rss_median_mib": 18.578125,
+          "rss_peak_mib": 19.46875
+        },
+        "runner_b": {
+          "cpu_s": 0.15,
+          "cpu_pct_one_core": 1.77914713233827,
+          "rss_median_mib": 19.328125,
+          "rss_peak_mib": 20.015625
+        },
+        "observers": [
+          {
+            "frames": 101,
+            "sse_json_bytes": 16069991,
+            "sse_json_bytes_per_s": 1906058.5602901205
+          }
+        ]
+      },
+      "workers": [
+        {
+          "sent": 400,
+          "delivered_unique": 377,
+          "delivered_per_s": 44.71589792610185,
+          "missing": 23,
+          "first_missing_ids": [
+            357,
+            358,
+            359,
+            360,
+            361,
+            362,
+            363,
+            364,
+            365,
+            366
+          ],
+          "output_unique": 400,
+          "unexpected": 0,
+          "gap_seen": true
+        },
+        {
+          "sent": 400,
+          "delivered_unique": 375,
+          "delivered_per_s": 44.47867830845675,
+          "missing": 25,
+          "first_missing_ids": [
+            359,
+            360,
+            361,
+            362,
+            363,
+            364,
+            365,
+            366,
+            367,
+            368
+          ],
+          "output_unique": 400,
+          "unexpected": 0,
+          "gap_seen": true
+        }
+      ],
+      "overlap_s": 7.980682666995563,
+      "combined_emission_span_s": 7.9829433331033215,
+      "sent_per_s_over_load_window": 94.88784705804106,
+      "acp_stdio_bytes_per_s": 42509.7554820024,
+      "delivered_per_s": 89.1945762345586,
+      "trial": 1
+    },
+    {
+      "idle": {
+        "wall_s": 3.0418969999300316,
+        "rss_samples": 10,
+        "service": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 15.171875,
+          "rss_peak_mib": 17.0
+        },
+        "runner_a": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 15.5,
+          "rss_peak_mib": 19.0625
+        },
+        "runner_b": {
+          "cpu_s": 0.010000000000000002,
+          "cpu_pct_one_core": 0.3287422289521972,
+          "rss_median_mib": 16.5390625,
+          "rss_peak_mib": 18.984375
+        },
+        "observers": [
+          {
+            "frames": 0,
+            "sse_json_bytes": 0,
+            "sse_json_bytes_per_s": 0.0
+          }
+        ]
+      },
+      "load": {
+        "wall_s": 8.99033745797351,
+        "rss_samples": 11,
+        "service": {
+          "cpu_s": 0.6000000000000001,
+          "cpu_pct_one_core": 6.673831797802666,
+          "rss_median_mib": 22.609375,
+          "rss_peak_mib": 23.328125
+        },
+        "runner_a": {
+          "cpu_s": 0.14,
+          "cpu_pct_one_core": 1.5572274194872888,
+          "rss_median_mib": 18.96875,
+          "rss_peak_mib": 19.5625
+        },
+        "runner_b": {
+          "cpu_s": 0.15,
+          "cpu_pct_one_core": 1.6684579494506664,
+          "rss_median_mib": 18.859375,
+          "rss_peak_mib": 19.90625
+        },
+        "observers": [
+          {
+            "frames": 109,
+            "sse_json_bytes": 18011625,
+            "sse_json_bytes_per_s": 2003442.594251624
+          }
+        ]
+      },
+      "workers": [
+        {
+          "sent": 400,
+          "delivered_unique": 400,
+          "delivered_per_s": 44.492211985351105,
+          "missing": 0,
+          "first_missing_ids": [],
+          "output_unique": 400,
+          "unexpected": 0,
+          "gap_seen": false
+        },
+        {
+          "sent": 400,
+          "delivered_unique": 400,
+          "delivered_per_s": 44.492211985351105,
+          "missing": 0,
+          "first_missing_ids": [],
+          "output_unique": 400,
+          "unexpected": 0,
+          "gap_seen": false
+        }
+      ],
+      "overlap_s": 7.992638458032161,
+      "combined_emission_span_s": 8.003867292078212,
+      "sent_per_s_over_load_window": 88.98442397070221,
+      "acp_stdio_bytes_per_s": 39865.02193887459,
+      "delivered_per_s": 88.98442397070221,
+      "trial": 2
+    }
+  ]
+}

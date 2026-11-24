@@ -46,6 +46,11 @@ enum Palette {
     static let controlFill = Color(hex: 0x2B2D36)
     static let controlEdge = Color.white.opacity(0.22)
 
+    // Conversation roles (Pretty display). The developer's bubble is the `selection` hue deepened
+    // toward `focus`, opaque so it reads the same with reduced transparency.
+    static let userBubble = Color(hex: 0x1F3560)
+    static let userBubbleInk = Color(hex: 0xEAF2FF)
+
     // Depth roles: black-violet layers over the window material, and the lit rim on glass edges.
     static let depthTop = Color(hex: 0x0C0C15, opacity: 0.80)
     static let depthMid = Color(hex: 0x040409, opacity: 0.86)

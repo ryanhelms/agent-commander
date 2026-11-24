@@ -4,6 +4,7 @@
 <dict>
   <key>CFBundleExecutable</key><string>AgentCommander</string>
   <key>CFBundleName</key><string>Agent Commander</string>
+  <key>CFBundleDisplayName</key><string>Agent Commander</string>
   <key>CFBundleIdentifier</key><string>local.agentcommander.cockpit</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>

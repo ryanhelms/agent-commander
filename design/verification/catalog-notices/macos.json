@@ -1,0 +1,88 @@
+{
+  "adapter": "catalog-fixture",
+  "stage": "stage-2390565129",
+  "stream": [
+    {
+      "updates": []
+    },
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    },
+    {
+      "updates": []
+    },
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    }
+  ],
+  "reconnect": [
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    },
+    {
+      "updates": []
+    },
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    }
+  ],
+  "afterRollback": [
+    {
+      "updates": []
+    },
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    }
+  ],
+  "independentOwner": [
+    {
+      "updates": []
+    },
+    {
+      "updates": [
+        {
+          "adapterId": "catalog-fixture",
+          "currentVersion": "1.0.0",
+          "availableVersion": "2.0.0",
+          "manifestSHA256": "e9c671de04a7f5791389d00bc23d3913865c02c85d0592c998793ca6e751e284"
+        }
+      ]
+    }
+  ],
+  "archiveDownloadsPerOwner": 1
+}

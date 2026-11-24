@@ -19,7 +19,7 @@ type controlFeed struct {
 	Generation         int    `json:"generation"`
 }
 
-func newClaudeSession() string {
+func newSessionID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	b[6] = b[6]&0x0f | 0x40
@@ -35,7 +35,7 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 		_ = a.request("POST", path+"/state", map[string]string{"state": "failed", "error": err.Error()}, nil)
 		return err
 	}
-	sessionID := newClaudeSession()
+	sessionID := newSessionID()
 	var message service.WorkerFollowUp
 	prompt := j.Worker.Task
 	for {
@@ -65,7 +65,7 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 		if !ok {
 			return nil
 		}
-		message, prompt = next, next.Text
+		message, prompt = next.WorkerFollowUp, next.Text
 		s.line("You: " + prompt)
 		s.event("user", "", "", prompt)
 	}
@@ -139,26 +139,29 @@ func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, p
 	}
 }
 
-func waitForFollowUp(ctx context.Context, a *api, path string) (service.WorkerFollowUp, bool) {
+func waitForFollowUp(ctx context.Context, a *api, path string) (service.ClaimedWorkerFollowUp, bool) {
 	for ctx.Err() == nil {
 		var feed controlFeed
-		if a.request("GET", path+"/control", nil, &feed) == nil {
+		if a.requestContext(ctx, "GET", path+"/control", nil, &feed) == nil {
 			if !feed.Live {
-				return service.WorkerFollowUp{}, false
+				return service.ClaimedWorkerFollowUp{}, false
 			}
 			if feed.State == "unknown" {
-				_ = a.request("POST", path+"/control/ready", map[string]bool{"idle": true}, nil)
+				_ = a.requestContext(ctx, "POST", path+"/control/ready", map[string]bool{"idle": true}, nil)
 			}
 			if feed.NextMessageID != "" {
 				// Retry the same claim only before any provider process starts.
 				claim := path + "/messages/" + feed.NextMessageID + "/claim"
 				for range 3 {
-					var m service.WorkerFollowUp
-					if err := a.request("POST", claim, struct{}{}, &m); err == nil {
+					if ctx.Err() != nil {
+						return service.ClaimedWorkerFollowUp{}, false
+					}
+					var m service.ClaimedWorkerFollowUp
+					if err := a.requestContext(ctx, "POST", claim, struct{}{}, &m); err == nil {
 						return m, true
 					}
 					if !waitControlTick(ctx) {
-						return service.WorkerFollowUp{}, false
+						return service.ClaimedWorkerFollowUp{}, false
 					}
 				}
 			}
@@ -167,7 +170,7 @@ func waitForFollowUp(ctx context.Context, a *api, path string) (service.WorkerFo
 			break
 		}
 	}
-	return service.WorkerFollowUp{}, false
+	return service.ClaimedWorkerFollowUp{}, false
 }
 
 func waitControlTick(ctx context.Context) bool {

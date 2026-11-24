@@ -1,0 +1,206 @@
+{
+  "system": "macOS-26.7.3-arm64-arm-64bit-Mach-O",
+  "binary_sha256": "34f8143355ae6a9e6a8118b809295dbe5a2e031b27b50aa332b64777138e9edf",
+  "configuration": {
+    "rates": [
+      100
+    ],
+    "seconds": 8.0,
+    "idle": 3.0,
+    "size": 256,
+    "tool_every": 4,
+    "rich_source": true,
+    "burst": 67,
+    "observers": 1,
+    "projection": "incremental",
+    "trials": 2
+  },
+  "trials": [
+    {
+      "trial": 1,
+      "target_per_s": 100,
+      "idle": {
+        "wall_s": 3.0834377920255065,
+        "rss_samples": 16,
+        "service": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 18.390625,
+          "rss_peak_mib": 18.390625
+        },
+        "runner": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 19.46875,
+          "rss_peak_mib": 19.46875
+        },
+        "observers": [
+          {
+            "frames": 0,
+            "sse_json_bytes": 0,
+            "sse_json_bytes_per_s": 0.0
+          }
+        ]
+      },
+      "load": {
+        "wall_s": 8.457012875005603,
+        "rss_samples": 42,
+        "service": {
+          "cpu_s": 0.07,
+          "cpu_pct_one_core": 0.827715424282757,
+          "rss_median_mib": 23.484375,
+          "rss_peak_mib": 23.890625
+        },
+        "runner": {
+          "cpu_s": 0.06999999999999999,
+          "cpu_pct_one_core": 0.8277154242827568,
+          "rss_median_mib": 22.96875,
+          "rss_peak_mib": 23.65625
+        },
+        "observers": [
+          {
+            "frames": 60,
+            "sse_json_bytes": 934209,
+            "sse_json_bytes_per_s": 110465.59982911,
+            "delivered_unique": 800,
+            "delivered_per_s": 94.59604848945793,
+            "missing": 0,
+            "first_missing_ids": [],
+            "output_unique": 800,
+            "synchronization_gap_seen": false,
+            "unexpected": 0
+          }
+        ]
+      },
+      "sent": 800,
+      "tool_updates_sent": 200,
+      "acp_stdio_bytes": 429600,
+      "acp_stdio_bytes_per_s": 50798.07803883891,
+      "offered_per_s_over_load_window": 94.59604848945793,
+      "input_text_bytes_per_s_over_load_window": 24216.58841330123,
+      "private_source": {
+        "delivered_unique": 136,
+        "missing": 664,
+        "first_missing_ids": [
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "unexpected": 0,
+        "duplicate_ids": 0,
+        "in_order": true,
+        "invalid_originals": [],
+        "fence": true,
+        "pages_read": 28,
+        "poll_interval_s": 0.25,
+        "gaps": [
+          "Some ACP source updates could not be retained by Commander"
+        ],
+        "gap_records_seen": 7
+      },
+      "private_marker_in_workspace": false,
+      "emission_span_s": 7.9919577919645235,
+      "producer_interarrival_rate": 99.9755029741712
+    },
+    {
+      "trial": 2,
+      "target_per_s": 100,
+      "idle": {
+        "wall_s": 3.0928985830396414,
+        "rss_samples": 10,
+        "service": {
+          "cpu_s": 0.0,
+          "cpu_pct_one_core": 0.0,
+          "rss_median_mib": 18.375,
+          "rss_peak_mib": 18.375
+        },
+        "runner": {
+          "cpu_s": 0.01,
+          "cpu_pct_one_core": 0.32332130302740775,
+          "rss_median_mib": 19.59375,
+          "rss_peak_mib": 19.59375
+        },
+        "observers": [
+          {
+            "frames": 0,
+            "sse_json_bytes": 0,
+            "sse_json_bytes_per_s": 0.0
+          }
+        ]
+      },
+      "load": {
+        "wall_s": 8.831439542002045,
+        "rss_samples": 21,
+        "service": {
+          "cpu_s": 0.11,
+          "cpu_pct_one_core": 1.245550054176825,
+          "rss_median_mib": 22.078125,
+          "rss_peak_mib": 22.65625
+        },
+        "runner": {
+          "cpu_s": 0.09,
+          "cpu_pct_one_core": 1.0190864079628568,
+          "rss_median_mib": 21.234375,
+          "rss_peak_mib": 22.140625
+        },
+        "observers": [
+          {
+            "frames": 60,
+            "sse_json_bytes": 920867,
+            "sse_json_bytes_per_s": 104271.44924905911,
+            "delivered_unique": 800,
+            "delivered_per_s": 90.58545848558727,
+            "missing": 0,
+            "first_missing_ids": [],
+            "output_unique": 800,
+            "synchronization_gap_seen": false,
+            "unexpected": 0
+          }
+        ]
+      },
+      "sent": 800,
+      "tool_updates_sent": 200,
+      "acp_stdio_bytes": 429600,
+      "acp_stdio_bytes_per_s": 48644.39120676036,
+      "offered_per_s_over_load_window": 90.58545848558727,
+      "input_text_bytes_per_s_over_load_window": 23189.87737231034,
+      "private_source": {
+        "delivered_unique": 128,
+        "missing": 672,
+        "first_missing_ids": [
+          10,
+          11,
+          12,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20
+        ],
+        "unexpected": 0,
+        "duplicate_ids": 0,
+        "in_order": true,
+        "invalid_originals": [],
+        "fence": true,
+        "pages_read": 25,
+        "poll_interval_s": 0.25,
+        "gaps": [
+          "Some ACP source updates could not be retained by Commander"
+        ],
+        "gap_records_seen": 7
+      },
+      "private_marker_in_workspace": false,
+      "emission_span_s": 7.995396209065802,
+      "producer_interarrival_rate": 99.9325085471101
+    }
+  ]
+}

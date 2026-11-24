@@ -1,0 +1,134 @@
+x-private-env: &private-env
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  NO_PROXY: "*"
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  no_proxy: "*"
+
+x-participant: &participant
+  image: ${REHEARSAL_PEER_IMAGE}
+  pull_policy: never
+  user: "65532:65532"
+  read_only: true
+  tmpfs: ["/tmp:mode=1777,size=64m"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  depends_on: [ingress, fixture]
+
+x-client-env: &client-env
+  <<: *private-env
+  HOME: /participant
+  PILOT_PEER_RELAY: https://srv01.agentmux.bytedesk.ai:8443
+  PILOT_PEER_ISSUER: https://issuer.rehearsal.test:8443
+  PILOT_PEER_CA: /fixture/trust.pem
+  PILOT_PEER_GITHUB: https://github.rehearsal.test:8443
+  PILOT_PEER_BROWSER_TOKEN_FILE: /fixture/browser-token
+  PILOT_PEER_GITHUB_TOKEN_FILE: /fixture/github-token
+
+services:
+  edge-a:
+    environment: *private-env
+    build: !reset null
+    image: ${REHEARSAL_RELAY_IMAGE}
+    pull_policy: never
+  edge-b:
+    environment: *private-env
+    image: ${REHEARSAL_RELAY_IMAGE}
+  ingress:
+    ports: !reset []
+    networks:
+      ingress: {}
+      alice: {aliases: [srv01.agentmux.bytedesk.ai]}
+      bob: {aliases: [srv01.agentmux.bytedesk.ai]}
+      carol: {aliases: [srv01.agentmux.bytedesk.ai]}
+  fixture:
+    environment: *private-env
+    image: ${REHEARSAL_FIXTURE_IMAGE}
+    pull_policy: never
+    user: "65532:65532"
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls: {net.ipv4.ip_unprivileged_port_start: "443"}
+    restart: unless-stopped
+    volumes: ["fixture-secrets:/fixture:ro", "fixture-data:/state"]
+    networks:
+      ingress: {aliases: [issuer.rehearsal.test]}
+      alice:
+        aliases: &providers [issuer.rehearsal.test, github.rehearsal.test, api.github.com, github.com]
+      bob: {aliases: *providers}
+      carol: {aliases: *providers}
+  peer-a:
+    <<: *participant
+    environment: {<<: *client-env, PILOT_PEER_HANDLE: alice}
+    volumes: ["alice-secrets:/fixture:ro", "alice-state:/participant", "${REHEARSAL_TRUST}:/etc/ssl/certs/ca-certificates.crt:ro"]
+    networks: [alice]
+  peer-b:
+    <<: *participant
+    environment: {<<: *client-env, PILOT_PEER_HANDLE: bob}
+    volumes: ["bob-secrets:/fixture:ro", "bob-state:/participant", "${REHEARSAL_TRUST}:/etc/ssl/certs/ca-certificates.crt:ro"]
+    networks: [bob]
+  peer-c:
+    <<: *participant
+    environment: {<<: *client-env, PILOT_PEER_HANDLE: carol}
+    volumes: ["carol-secrets:/fixture:ro", "carol-state:/participant", "${REHEARSAL_TRUST}:/etc/ssl/certs/ca-certificates.crt:ro"]
+    networks: [carol]
+  prepare-volumes:
+    profiles: [prepare]
+    image: golang:1.26-bookworm
+    pull_policy: never
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - "${REHEARSAL_INPUTS}:/input:ro"
+      - fixture-data:/data/fixture
+      - alice-state:/data/alice
+      - bob-state:/data/bob
+      - carol-state:/data/carol
+      - fixture-secrets:/secret/fixture
+      - alice-secrets:/secret/alice
+      - bob-secrets:/secret/bob
+      - carol-secrets:/secret/carol
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        for who in fixture alice bob carol; do
+          cp /input/$$who/* /secret/$$who/
+          chown -R 65532:65532 /secret/$$who /data/$$who
+          chmod 0700 /secret/$$who /data/$$who
+          chmod 0400 /secret/$$who/*
+        done
+  stream-probe:
+    profiles: [checks]
+    image: ${REHEARSAL_FIXTURE_IMAGE}
+    pull_policy: never
+    entrypoint: [/fixture-server, stream]
+    user: "${PILOT_UID}:${PILOT_GID}"
+    networks: [backbone]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["${PILOT_CONFIG_DIR}/edge-a:/run/relay:ro"]
+networks:
+  ingress: {internal: true}
+  alice: {internal: true}
+  bob: {internal: true}
+  carol: {internal: true}
+volumes:
+  alice-state: {}
+  alice-secrets: {}
+  bob-state: {}
+  bob-secrets: {}
+  carol-state: {}
+  carol-secrets: {}
+  fixture-data: {}
+  fixture-secrets: {}

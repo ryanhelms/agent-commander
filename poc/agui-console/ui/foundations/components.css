@@ -293,6 +293,43 @@ body {
   margin-top: 0;
 }
 
+.o-journal {
+  margin-block: 0.75rem;
+}
+
+.o-journal summary {
+  cursor: pointer;
+}
+
+.o-journal details {
+  margin-inline-start: 1.25em;
+}
+
+.o-journal pre {
+  max-block-size: 18rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.o-wire-fields {
+  margin: 0.5rem 0 0.5rem var(--term-inset);
+}
+
+.o-wire-fields dt {
+  color: var(--term-dim);
+}
+
+.o-wire-fields dd {
+  margin: 0 0 0.4rem;
+}
+
+.o-journal img {
+  display: block;
+  max-inline-size: min(100%, 38rem);
+  max-block-size: 18rem;
+  object-fit: contain;
+}
+
 .o-prompt {
   margin: 0 calc(-1 * var(--term-inset));
   padding: 2px var(--term-inset) 2px calc(var(--term-inset) - 2px);

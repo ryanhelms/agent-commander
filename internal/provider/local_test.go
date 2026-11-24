@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,41 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestLocalRunnerPrefersInstalledACPAndHonorsRollback(t *testing.T) {
+	bin := t.TempDir()
+	harnessDir := t.TempDir()
+	harnessBin := filepath.Join(harnessDir, "node_modules", ".bin")
+	if err := os.MkdirAll(harnessBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(bin, "claude"), filepath.Join(harnessBin, "claude-agent-acp"), filepath.Join(harnessBin, "codex-acp")} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{"AGENT_COMMANDER_RUNTIME", "AGENT_COMMANDER_CLAUDE", "AGENT_COMMANDER_CLAUDE_ACP", "AGENT_COMMANDER_CODEX_ACP", "AGENT_COMMANDER_FOCUSED_PROOF"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("AGENT_ACP_HARNESS_DIR", harnessDir)
+	for client, name := range map[string]string{"Claude Code": "claude-agent-acp", "codex": "codex-acp"} {
+		path, acp, err := localRunner(client)
+		if err != nil || !acp || path != filepath.Join(harnessBin, name) {
+			t.Fatalf("default %s runner = %q, %v, %v", client, path, acp, err)
+		}
+	}
+	t.Setenv("AGENT_COMMANDER_RUNTIME", "legacy")
+	path, acp, err := localRunner("claude")
+	if err != nil || acp || path != filepath.Join(bin, "claude") {
+		t.Fatalf("rollback runner = %q, %v, %v", path, acp, err)
+	}
+	t.Setenv("AGENT_COMMANDER_RUNTIME", "")
+	t.Setenv("AGENT_COMMANDER_CLAUDE_ACP", filepath.Join(bin, "missing"))
+	if _, _, err := localRunner("claude"); err == nil {
+		t.Fatal("invalid explicit adapter was silently replaced")
+	}
+}
+
 func TestPromptAndCredentialsStayOutOfArgv(t *testing.T) {
 	dir := t.TempDir()
 	spec := service.LaunchSpec{ID: "worker", RunID: "run", Role: "worker", Path: dir, Token: "private-binding", Task: "A $value\n\n with quotes \" here"}
@@ -36,6 +72,9 @@ func TestPromptAndCredentialsStayOutOfArgv(t *testing.T) {
 	cmd, err := agentCommand(context.Background(), j, dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if at := slices.Index(cmd.Args, "--model"); at < 0 || at+1 >= len(cmd.Args) || cmd.Args[at+1] != "opus" {
+		t.Fatal("legacy Claude command did not select Opus")
 	}
 	for _, arg := range cmd.Args {
 		if strings.Contains(arg, spec.Token) || strings.Contains(arg, spec.Task) {
@@ -63,6 +102,29 @@ func TestPromptAndCredentialsStayOutOfArgv(t *testing.T) {
 	}
 }
 
+func TestManagedClaudeModelScope(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		job  job
+		want string
+	}{
+		{"Claude coordinator", job{Harness: "claude", Worker: service.LaunchSpec{Role: "coordinator"}}, "opus"},
+		{"Claude worker", job{Harness: "claude", Worker: service.LaunchSpec{Role: "worker"}}, "opus"},
+		{"SSH worker", job{Harness: "claude", SSH: &sshProfile{}}, "opus"},
+		{"persistent SSH worker", job{Harness: "claude", SSH: &sshProfile{Persistent: true}}, "opus"},
+		{"Codex", job{Harness: "codex", Codex: &managedCodex{}}, ""},
+		{"registered ACP", job{RegisteredACP: &acpProfile{Command: "/custom/claude-agent-acp"}}, ""},
+		{"builtin", job{Harness: "claude", BuiltinInstance: "local-builtin:claude@1"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := acpOpenRequest(tc.job, "worker-instance", "/workspace")
+			if q.Model != tc.want || q.HarnessInstance != "worker-instance" || q.WorkingDirectory != "/workspace" {
+				t.Fatalf("unexpected ACP open request %v", q)
+			}
+		})
+	}
+}
+
 func TestIsolatedTmuxConversation(t *testing.T) {
 	if os.Getenv("AGENT_COMMANDER_TEST_TMUX") != "1" {
 		t.Skip("set AGENT_COMMANDER_TEST_TMUX=1 for a real isolated tmux session")
@@ -86,6 +148,7 @@ func TestIsolatedTmuxConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AGENT_COMMANDER_CLAUDE", fake)
+	t.Setenv("AGENT_COMMANDER_RUNTIME", "legacy")
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +192,13 @@ func TestIsolatedTmuxConversation(t *testing.T) {
 	}
 	if run.Workers[0].State != "completed" || !strings.Contains(run.Workers[0].Output, "Literal assignment received.") {
 		t.Fatalf("worker did not finish: %+v", run.Workers[0])
+	}
+	var attachment service.TerminalAttachment
+	if err := a.request("GET", "/v1/workers/"+run.CoordinatorID+"/terminal", nil, &attachment); err != nil {
+		t.Fatal(err)
+	}
+	if attachment.WorkerID != run.CoordinatorID || !tmuxSessionID.MatchString(attachment.SessionID) {
+		t.Fatalf("terminal viewer did not resolve the real coordinator: %+v", attachment)
 	}
 	b, err := os.ReadFile(filepath.Join(path, "received.txt"))
 	if err != nil || string(b) != task {

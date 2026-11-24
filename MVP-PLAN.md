@@ -22,7 +22,7 @@ Build the screens in SwiftUI, using the same Atomic Design components and layout
 | Set up and recover | First run, hosts and capabilities, clients and MCP, session adoption, reconnect, provider sign-in, and preferences. |
 | Use accessibility settings | Reduced-transparency preferences, worker wall with PiP, and focused-worker control. |
 
-Claude Fable 5.2 owns the Swift implementation. Codex checks the native previews through Computer Use and compares them with the corresponding concept frames. Review the UI in the running app, then connect each workflow to the shared API in the delivery order below.
+Claude Opus owns the Swift implementation. Codex checks the native previews through Computer Use and compares them with the corresponding concept frames. Review the UI in the running app, then connect each workflow to the shared API in the delivery order below.
 
 ## First-run experience
 

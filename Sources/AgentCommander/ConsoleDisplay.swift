@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import Foundation
 
@@ -71,6 +72,19 @@ final class ConsoleModeStore {
     private static func toolKey(_ consoleID: String, _ entryID: String) -> String {
         consoleID + "\u{1F}" + entryID
     }
+
+    /// Entries whose fields are open beneath them, by console and entry. Shared by Console and
+    /// Pretty, so changing the display mode keeps an open record open.
+    private(set) var expandedDetails: Set<String> = []
+
+    func isDetailExpanded(console consoleID: String, entry entryID: String) -> Bool {
+        expandedDetails.contains(Self.toolKey(consoleID, entryID))
+    }
+
+    func setDetailExpanded(_ expanded: Bool, console consoleID: String, entry entryID: String) {
+        let key = Self.toolKey(consoleID, entryID)
+        if expanded { expandedDetails.insert(key) } else { expandedDetails.remove(key) }
+    }
 }
 
 // MARK: - Mode switch (wraps the existing Console branch untouched)
@@ -125,17 +139,84 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     }
 }
 
+/// The fixed assignment above a console's scrollback. Pretty leaves it out when the conversation
+/// below already shows the same instruction as one of the developer's prompts, so it is not read
+/// twice. Console, and Pretty's fallback to Console, always show it.
+struct ConsoleAssignment<Content: View>: View {
+    @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+
+    let consoleID: String
+    let assignment: String
+    let entries: [TranscriptEntry]
+    var rawOutput: String = ""
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let pretty = (modes?.mode(for: consoleID) ?? .console) == .pretty
+            && PrettyContent.isPresentable(entries: entries, rawOutput: rawOutput)
+        if !(pretty && PrettyContent.repeatsAssignment(assignment, in: entries)) {
+            content()
+        }
+    }
+}
+
 enum PrettyContent {
     static func isPresentable(entries: [TranscriptEntry], rawOutput: String) -> Bool {
         if entries.isEmpty { return !isBlank(rawOutput) }
         return entries.contains(where: isSubstantive)
     }
 
+    /// True when one of the developer's prompts in `entries` is exactly `assignment`. The whole
+    /// prompt is compared as the service sent it, apart from whitespace around it; a prompt whose
+    /// reference says it carried media also matches without the service's trailing media
+    /// markers, which the developer did not write. A prompt that only contains the assignment,
+    /// a reply that quotes it, and any other role never match.
+    static func repeatsAssignment(_ assignment: String, in entries: [TranscriptEntry]) -> Bool {
+        let wanted = assignment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return false }
+        return entries.contains { entry in
+            guard case .prose(let text, fromUser: true) = entry.kind else { return false }
+            if text.trimmingCharacters(in: .whitespacesAndNewlines) == wanted { return true }
+            guard let media = entry.promptMedia else { return false }
+            let shown = media.display(text)
+            // A prompt that was only media reads as a caption, which is not the developer's text.
+            return shown.removed > 0 && shown.text != media.caption && shown.text == wanted
+        }
+    }
+
     static func isSubstantive(_ entry: TranscriptEntry) -> Bool {
         switch entry.kind {
         case .prose(let text, _): return !isBlank(text)
         case .tool: return true
-        case .output(let text): return !isBlank(text)
+        case .output(let result): return result.hasText
+        case .other: return true
+        }
+    }
+
+    /// Who an entry reads as. A change of speaker opens a new turn; entries of one speaker sit
+    /// closer together.
+    static func speaker(of entry: TranscriptEntry) -> String {
+        switch entry.kind {
+        case .prose(_, let fromUser): return fromUser ? "user" : "assistant"
+        case .tool, .output: return "assistant"
+        case .other(let role, _): return role
+        }
+    }
+
+    /// What a link in agent text may do when the developer clicks it. A web link opens in the
+    /// browser. A file link selects the file in Finder when it exists on this Mac, and is never
+    /// opened or run. Every other scheme is left alone. Nothing here opens without a click.
+    @MainActor static let linkPolicy = OpenURLAction { url in
+        switch url.scheme?.lowercased() {
+        case "http", "https":
+            return .systemAction
+        case "file":
+            if FileManager.default.fileExists(atPath: url.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            return .handled
+        default:
+            return .discarded
         }
     }
 
@@ -148,6 +229,7 @@ enum PrettyContent {
 
 struct PrettyConsoleView: View {
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+    @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
 
     let consoleID: String
@@ -158,16 +240,39 @@ struct PrettyConsoleView: View {
 
     var body: some View {
         let metrics = PrettyMetrics(density)
+        // A streamed reply is one turn, as it is in Console. Pretty alone then reads adjacent
+        // routine entries (usage, session state, harness diagnostics) as one collapsed activity
+        // in their place; every other entry is laid out as it is, in order.
+        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty))
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: metrics.turnSpacing) {
+            // One conversation column. It fills a tile, and stops widening in a broad console so
+            // a prompt stays within reach of the answer beneath it.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 if entries.isEmpty {
-                    PrettyRawBlock(text: rawOutput, metrics: metrics, showsCaption: true)
+                    PrettyRawBlock(text: rawOutput, metrics: metrics, caption: "Unformatted output")
                 } else {
-                    ForEach(entries.filter(PrettyContent.isSubstantive)) { entry in
-                        row(entry, metrics: metrics)
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                        Group {
+                            switch item {
+                            case .entry(let entry):
+                                row(entry, metrics: metrics)
+                            case .activity(let activity):
+                                PrettyActivityDisclosure(
+                                    activity: activity,
+                                    metrics: metrics,
+                                    isExpanded: Binding(
+                                        get: { isExpanded(activity.id) },
+                                        set: { if $0 != isExpanded(activity.id) { toggle(activity.id) } })
+                                ) { entry in
+                                    row(entry, metrics: metrics)
+                                }
+                            }
+                        }
+                        .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
                     }
                 }
             }
+            .frame(maxWidth: metrics.columnWidth, alignment: .leading)
             .padding(.horizontal, horizontalInset)
             .padding(.vertical, metrics.verticalInset)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -176,6 +281,31 @@ struct PrettyConsoleView: View {
         .defaultScrollAnchor(.top, for: .alignment)
         .textSelection(.enabled)
         .tint(Palette.focus)
+        .environment(\.openURL, PrettyContent.linkPolicy)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Conversation")
+    }
+
+    private func spacing(before item: ConversationItem, after previous: ConversationItem, metrics: PrettyMetrics) -> CGFloat {
+        guard case .entry(let entry) = item, case .entry(let earlier) = previous else {
+            // An activity is a quiet line between turns: nearer than a change of speaker.
+            return (metrics.blockSpacing + metrics.turnSpacing) / 2
+        }
+        return PrettyContent.speaker(of: entry) == PrettyContent.speaker(of: earlier) ? metrics.blockSpacing : metrics.turnSpacing
+    }
+
+    /// A prompt as Pretty shows it. The service's trailing media marker is left out of the bubble
+    /// when the prompt's reference says it carried media. The attachment action on the entry then
+    /// stands for the media; where no action is drawn, a note beneath the bubble does.
+    private func prompt(_ text: String, of entry: TranscriptEntry) -> (text: String, note: String?) {
+        guard let media = entry.promptMedia else { return (text, nil) }
+        let shown = media.display(text)
+        guard shown.removed > 0, shown.text != media.caption else { return (shown.text, nil) }
+        var hasAction = false
+        if let offer = access?.attachments?.offer(consoleID, entry.id) {
+            if case .prompt = offer { hasAction = true } else { hasAction = access?.openSource != nil }
+        }
+        return (shown.text, hasAction ? nil : media.caption)
     }
 
     @ViewBuilder
@@ -183,9 +313,12 @@ struct PrettyConsoleView: View {
         switch entry.kind {
         case .prose(let text, let fromUser):
             if fromUser {
-                PrettyUserTurn(text: text, metrics: metrics)
+                let shown = prompt(text, of: entry)
+                PrettyUserTurn(text: shown.text, attachmentNote: shown.note, metrics: metrics)
+                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             } else {
                 PrettyAssistantTurn(text: text, metrics: metrics)
+                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: density != .pip), density: density)
             }
         case .tool(let name, let detail, let result):
             TranscriptToolRow(
@@ -194,10 +327,25 @@ struct PrettyConsoleView: View {
                 result: result,
                 isExpanded: isExpanded(entry.id),
                 fontSize: metrics.toolSize,
+                style: .pretty,
                 toggle: { toggle(entry.id) }
             )
-        case .output(let text):
-            PrettyRawBlock(text: text, metrics: metrics, showsCaption: false)
+            .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+        case .output(let result):
+            // A failed result without its call: the shared status line, then any output.
+            VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.5) {
+                if result.error != nil {
+                    ToolResultStatusLine(result: result, fontSize: metrics.toolSize)
+                }
+                if result.output.contains(where: { !$0.isWhitespace }) {
+                    PrettyRawBlock(text: result.output, metrics: metrics, caption: "Tool result")
+                }
+            }
+            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+        case .other(let role, let text):
+            PrettyRoleNote(role: role, text: text, metrics: metrics)
+                .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
         }
     }
 
@@ -229,7 +377,13 @@ private struct PrettyMetrics {
     let lineSpacing: CGFloat
     let verticalInset: CGFloat
     let userGutter: CGFloat
-    let readingWidth: CGFloat = 720
+    /// Corner radius and padding of the developer's bubble. One line reads as a pill.
+    let bubbleRadius: CGFloat
+    let bubbleInset: CGSize
+    /// Widest line of agent text. Code, tables and tool results may use the whole column.
+    let readingWidth: CGFloat = 760
+    /// Widest the conversation column grows inside a broad console.
+    let columnWidth: CGFloat = 900
     let listIndent: CGFloat = 16
     let markerWidth: CGFloat = 16
 
@@ -237,32 +391,38 @@ private struct PrettyMetrics {
         self.density = density
         switch density {
         case .regular:
-            body = .body
+            body = .system(size: 14)
             codeSize = 12
             toolSize = 12
-            turnSpacing = 14
-            blockSpacing = 9
-            lineSpacing = 3.5
-            verticalInset = 12
-            userGutter = 48
+            turnSpacing = 24
+            blockSpacing = 10
+            lineSpacing = 4.5
+            verticalInset = 16
+            userGutter = 72
+            bubbleRadius = 18
+            bubbleInset = CGSize(width: 14, height: 9)
         case .compact:
-            body = .callout
+            body = .system(size: 13)
             codeSize = 11
             toolSize = 11
-            turnSpacing = 10
+            turnSpacing = 16
             blockSpacing = 7
-            lineSpacing = 2.5
-            verticalInset = 10
-            userGutter = 24
+            lineSpacing = 3
+            verticalInset = 11
+            userGutter = 32
+            bubbleRadius = 15
+            bubbleInset = CGSize(width: 11, height: 7)
         case .pip:
-            body = .subheadline
+            body = .system(size: 12)
             codeSize = 10
             toolSize = 10
-            turnSpacing = 6
+            turnSpacing = 9
             blockSpacing = 4
             lineSpacing = 1.5
             verticalInset = 6
-            userGutter = 16
+            userGutter = 20
+            bubbleRadius = 11
+            bubbleInset = CGSize(width: 8, height: 4)
         }
     }
 
@@ -295,7 +455,7 @@ private struct PrettySurface: ViewModifier {
         content
             .background(fill, in: shape)
             .overlay {
-                if role != .userTurn || increased || reduceTransparency {
+                if role != .userTurn || increased {
                     shape.strokeBorder(
                         increased ? Palette.foreground.opacity(0.6) : Palette.border,
                         lineWidth: increased ? 1.5 : 1
@@ -306,7 +466,7 @@ private struct PrettySurface: ViewModifier {
 
     private var fill: Color {
         switch role {
-        case .userTurn: return reduceTransparency ? Palette.panel : Palette.controlFill
+        case .userTurn: return Palette.userBubble
         case .code: return Palette.well
         case .raw: return Palette.panel
         }
@@ -317,23 +477,149 @@ private struct PrettySurface: ViewModifier {
 
 private struct PrettyUserTurn: View {
     let text: String
+    /// Says the prompt carried media, on a surface that draws no attachment action for it.
+    var attachmentNote: String? = nil
     let metrics: PrettyMetrics
 
     var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: metrics.userGutter)
-            Text(verbatim: text.trimmingCharacters(in: .newlines))
-                .font(metrics.body)
-                .lineSpacing(metrics.lineSpacing)
-                .foregroundStyle(Palette.foreground)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, metrics.density == .pip ? 8 : 11)
-                .padding(.vertical, metrics.density == .pip ? 4 : 7)
-                .modifier(PrettySurface(role: .userTurn, radius: metrics.density == .pip ? 8 : 11))
+        // Right-aligned and as wide as its own text, up to a limit: the developer's side of the
+        // conversation. The gutter keeps even a long prompt off the agent's margin.
+        VStack(alignment: .trailing, spacing: metrics.density == .pip ? 2 : 4) {
+            HStack(spacing: 0) {
+                Spacer(minLength: metrics.userGutter)
+                Text(verbatim: text.trimmingCharacters(in: .newlines))
+                    .font(metrics.body)
+                    .lineSpacing(metrics.lineSpacing)
+                    .foregroundStyle(Palette.userBubbleInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, metrics.bubbleInset.width)
+                    .padding(.vertical, metrics.bubbleInset.height)
+                    .modifier(PrettySurface(role: .userTurn, radius: metrics.bubbleRadius))
+                    .layoutPriority(1)
+            }
+            if let attachmentNote {
+                Label(attachmentNote, systemImage: "paperclip")
+                    .font(.system(size: metrics.toolSize - 1, weight: .medium))
+                    .foregroundStyle(.inkSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.disabled)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Prompt: \(text)")
+        .accessibilityLabel("You: \(text)" + (attachmentNote.map { ". \($0)" } ?? ""))
+    }
+}
+
+/// A run of routine entries as one line of the conversation: a native disclosure named
+/// "Activity" with a count, closed until asked. Open, it lists every entry of the run in order,
+/// each drawn by the conversation's own row, so each keeps its text, its copy action and its
+/// fields. It is signposted by name and count, at caption size, below the prominence of a tool.
+private struct PrettyActivityDisclosure<Row: View>: View {
+    let activity: ConversationActivity
+    let metrics: PrettyMetrics
+    @Binding var isExpanded: Bool
+    @ViewBuilder let row: (TranscriptEntry) -> Row
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: metrics.blockSpacing) {
+                ForEach(activity.entries) { entry in row(entry) }
+            }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("Activity").fontWeight(.medium)
+                Text(verbatim: "· " + activity.detail).monospacedDigit()
+            }
+        }
+        .disclosureGroupStyle(PrettyActivityDisclosureStyle(
+            metrics: metrics, label: activity.accessibilityLabel))
+        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+    }
+}
+
+/// The face of the activity disclosure: the whole label is the target, not only its chevron.
+private struct PrettyActivityDisclosureStyle: DisclosureGroupStyle {
+    let metrics: PrettyMetrics
+    let label: String
+
+    func makeBody(configuration: Configuration) -> some View {
+        let size = metrics.toolSize - (metrics.density == .regular ? 0.5 : 0)
+        VStack(alignment: .leading, spacing: metrics.blockSpacing) {
+            Button {
+                configuration.isExpanded.toggle()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: size - 3, weight: .semibold))
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .frame(width: size - 2)
+                        .accessibilityHidden(true)
+                    configuration.label
+                        .font(.system(size: size))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.inkSecondary)
+                .padding(.vertical, metrics.density == .pip ? 1 : 3)
+                .padding(.trailing, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .textSelection(.disabled)
+            .help(configuration.isExpanded
+                  ? "Hide these usage, session and harness events"
+                  : "Show each usage, session and harness event, with its fields")
+            .accessibilityLabel(label)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides each usage, session and harness event of this run of activity")
+            if configuration.isExpanded {
+                configuration.content
+                    .padding(.leading, metrics.density == .pip ? 8 : 14)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Text from a role that is neither the developer nor the agent, such as `system` or `developer`.
+/// It is named by its role and set in the terminal face at lower prominence, as written: it is
+/// often harness output, so it is not read as Markdown. An entry with no text says so and leaves
+/// its content to the fields.
+private struct PrettyRoleNote: View {
+    let role: String
+    let text: String
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        let name = role.isEmpty ? "record" : role
+        VStack(alignment: .leading, spacing: metrics.density == .pip ? 2 : 4) {
+            Text(verbatim: name.uppercased())
+                .font(.system(size: metrics.density == .regular ? 10 : 9, weight: .semibold))
+                .kerning(0.6)
+                .foregroundStyle(.inkSecondary)
+                .textSelection(.disabled)
+                .accessibilityAddTraits(.isHeader)
+            if text.contains(where: { !$0.isWhitespace }) {
+                Text(verbatim: text)
+                    .font(Term.font(metrics.codeSize))
+                    .lineSpacing(metrics.density == .pip ? 1.5 : 3)
+                    .foregroundStyle(.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text("No text. Its content is in the fields.")
+                    .font(.system(size: metrics.codeSize))
+                    .foregroundStyle(.inkSecondary)
+            }
+        }
+        .padding(.leading, metrics.density == .pip ? 7 : 10)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1).fill(Palette.border).frame(width: 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name): \(text.contains(where: { !$0.isWhitespace }) ? text : "no text")")
     }
 }
 
@@ -649,7 +935,8 @@ private final class PrettyMarkdownCache {
 private struct PrettyRawBlock: View {
     let text: String
     let metrics: PrettyMetrics
-    let showsCaption: Bool
+    /// What the block holds, stated above it.
+    let caption: String
 
     private struct Chunk: Identifiable {
         let id: Int
@@ -658,8 +945,8 @@ private struct PrettyRawBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.density == .pip ? 3 : 6) {
-            if showsCaption {
-                Label("Unformatted output", systemImage: "text.alignleft")
+            if metrics.density != .pip || caption != "Tool result" {
+                Label(caption, systemImage: "text.alignleft")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.inkSecondary)
                     .textSelection(.disabled)
@@ -704,6 +991,12 @@ struct ConsoleModeTitlebarControl: View {
     let consoleName: String
     let client: AgentClient
     var showsTitle = false
+    /// Present when this console's worker has a provider source. The menu then offers the source
+    /// inspector, in either display mode, and a console that hosts the inspector presents it here.
+    var source: ConsoleSourceAccess? = nil
+    /// Present on the wall tile, focused worker and coordinator. The menu then offers the native
+    /// read-only terminal viewer, disabled for a worker that is not on this Mac.
+    var terminal: NativeTerminalTarget? = nil
 
     var body: some View {
         let mode = modes?.mode(for: consoleID) ?? .console
@@ -716,6 +1009,14 @@ struct ConsoleModeTitlebarControl: View {
 
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
+            if let source {
+                Divider()
+                ConsoleSourceMenuItems(source: source)
+            }
+            if let terminal {
+                Divider()
+                NativeTerminalMenuItems(target: terminal)
+            }
             Divider()
             HarnessAccentMenu(client: client)
         } label: {
@@ -742,9 +1043,11 @@ struct ConsoleModeTitlebarControl: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(modes == nil)
-        .help("Display: \(mode.title) — \(scope). Change the display mode or \(client.displayName) accent.")
+        .help("Display: \(mode.title) — \(scope). Change the display mode or \(client.displayName) accent"
+              + (source == nil ? "." : ", or inspect this console's source."))
         .accessibilityLabel("Display mode, \(consoleName)")
         .accessibilityValue("\(mode.title), \(scope)")
+        .modifier(ConsoleSourcePresentation(source: source))
     }
 }
 

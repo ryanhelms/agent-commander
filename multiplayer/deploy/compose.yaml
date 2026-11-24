@@ -1,0 +1,102 @@
+name: commander-multiplayer
+x-edge: &edge
+  image: "${PILOT_RELAY_IMAGE:-commander-relay:pilot}"
+  read_only: true
+  user: "${PILOT_UID}:${PILOT_GID}"
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  networks: [ingress, backbone]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats-a:
+      condition: service_started
+    nats-b:
+      condition: service_started
+    nats-c:
+      condition: service_started
+
+x-broker: &broker
+  image: nats:2.12-alpine
+  command: ["-c", "/run/broker/nats.conf"]
+  user: "${PILOT_UID}:${PILOT_GID}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: unless-stopped
+  networks: [backbone]
+
+services:
+  ingress:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    ports: ["${PILOT_BIND:-127.0.0.1}:${PILOT_PORT:-9443}:8443"]
+    volumes: ["./nginx.conf:/etc/nginx/nginx.conf:ro"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    networks: [ingress]
+    depends_on: [edge-a, edge-b]
+  edge-a:
+    <<: *edge
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    volumes: ["${PILOT_CONFIG_DIR}/edge-a:/run/relay:ro"]
+  edge-b:
+    <<: *edge
+    pull_policy: never
+    volumes: ["${PILOT_CONFIG_DIR}/edge-b:/run/relay:ro"]
+  nats-a:
+    <<: *broker
+    volumes:
+      - "${PILOT_CONFIG_DIR}/nats-a:/run/broker:ro"
+      - "${PILOT_CONFIG_DIR}/data-nats-a:/data"
+  nats-b:
+    <<: *broker
+    volumes:
+      - "${PILOT_CONFIG_DIR}/nats-b:/run/broker:ro"
+      - "${PILOT_CONFIG_DIR}/data-nats-b:/data"
+  nats-c:
+    <<: *broker
+    volumes:
+      - "${PILOT_CONFIG_DIR}/nats-c:/run/broker:ro"
+      - "${PILOT_CONFIG_DIR}/data-nats-c:/data"
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: commander
+      POSTGRES_PASSWORD_FILE: /run/db/admin-password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        install -d -o postgres -g postgres -m 0700 /run/postgresql/tls
+        cp /run/db/01-owner.sql /docker-entrypoint-initdb.d/01-owner.sql
+        chown postgres:postgres /docker-entrypoint-initdb.d/01-owner.sql
+        chmod 0600 /docker-entrypoint-initdb.d/01-owner.sql
+        cp /run/db/server.pem /run/db/server.key /run/postgresql/tls/
+        chown postgres:postgres /run/postgresql/tls/*
+        chmod 0600 /run/postgresql/tls/server.key
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_min_protocol_version=TLSv1.3 -c ssl_cert_file=/run/postgresql/tls/server.pem -c ssl_key_file=/run/postgresql/tls/server.key -c hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - "${PILOT_CONFIG_DIR}/postgres:/run/db:ro"
+      - "./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro"
+      - data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-h", "127.0.0.1", "-U", "commander", "-d", "commander"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+    networks: [backbone]
+networks:
+  ingress: {}
+  backbone: {internal: true}
+volumes:
+  data: {}

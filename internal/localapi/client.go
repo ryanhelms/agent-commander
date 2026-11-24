@@ -48,6 +48,15 @@ type Client struct {
 	token string
 }
 
+// ResponseError retains the status so callers can distinguish a refused
+// operation from a temporary service failure.
+type ResponseError struct {
+	StatusCode int
+	message    string
+}
+
+func (e *ResponseError) Error() string { return e.message }
+
 func New(socket, token string) *Client {
 	dial := &net.Dialer{Timeout: 3 * time.Second}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -67,6 +76,25 @@ func (c *Client) Do(ctx context.Context, method, path string, input any) (json.R
 	if !strings.HasPrefix(path, "/v1/") {
 		return nil, errors.New("expected a /v1/ API path")
 	}
+	return c.exchange(ctx, method, path, input, nil)
+}
+
+// Coordinator sends the actor binding to the local multiplayer device process.
+// The daemon independently verifies it with the active Commander's private API.
+func (c *Client) Coordinator(ctx context.Context, op, run, worker string, input any) (json.RawMessage, error) {
+	switch op {
+	case "discover", "submit", "receipt", "inbox":
+	default:
+		return nil, errors.New("unknown coordinator network operation")
+	}
+	if c.token == "" || run == "" || worker == "" {
+		return nil, errors.New("managed coordinator credentials are required")
+	}
+	headers := http.Header{"X-Commander-Run": []string{run}, "X-Commander-Worker": []string{worker}}
+	return c.exchange(ctx, http.MethodPost, "/coordinator/"+op, input, headers)
+}
+
+func (c *Client) exchange(ctx context.Context, method, path string, input any, headers http.Header) (json.RawMessage, error) {
 	var body io.Reader
 	if input != nil {
 		b, err := json.Marshal(input)
@@ -79,6 +107,11 @@ func (c *Client) Do(ctx context.Context, method, path string, input any) (json.R
 	if err != nil {
 		return nil, err
 	}
+	for k, values := range headers {
+		for _, value := range values {
+			req.Header.Add(k, value)
+		}
+	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -90,7 +123,15 @@ func (c *Client) Do(ctx context.Context, method, path string, input any) (json.R
 		return nil, fmt.Errorf("Commander service: %w", err)
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	var reader io.Reader = resp.Body
+	const networkLimit = 4 << 20
+	if headers != nil {
+		reader = io.LimitReader(reader, networkLimit+1)
+	}
+	b, err := io.ReadAll(reader)
+	if headers != nil && len(b) > networkLimit {
+		return nil, errors.New("network daemon response exceeds 4 MiB")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -99,9 +140,9 @@ func (c *Client) Do(ctx context.Context, method, path string, input any) (json.R
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(b, &result) == nil && result.Error != "" {
-			return nil, fmt.Errorf("Commander API (%d): %s", resp.StatusCode, result.Error)
+			return nil, &ResponseError{resp.StatusCode, fmt.Sprintf("Commander API (%d): %s", resp.StatusCode, result.Error)}
 		}
-		return nil, fmt.Errorf("Commander API (%s): %s", resp.Status, strings.TrimSpace(string(b)))
+		return nil, &ResponseError{resp.StatusCode, fmt.Sprintf("Commander API (%s): %s", resp.Status, strings.TrimSpace(string(b)))}
 	}
 	if !json.Valid(b) {
 		return nil, errors.New("invalid JSON response from Commander service")

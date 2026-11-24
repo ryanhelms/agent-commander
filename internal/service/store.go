@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"agentcommander/internal/acpprocessor"
 	"agentcommander/internal/worktrees"
 )
 
@@ -36,11 +37,13 @@ type hostPlacement interface {
 
 // ConsoleEvent preserves a provider event for structured conversation views.
 type ConsoleEvent struct {
-	Sequence int    `json:"sequence"`
-	Kind     string `json:"kind"`
-	ToolID   string `json:"tool_id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Text     string `json:"text,omitempty"`
+	ACP      *acpprocessor.Activity `json:"acp,omitempty"`
+	Sequence int                    `json:"sequence"`
+	Kind     string                 `json:"kind"`
+	ToolID   string                 `json:"tool_id,omitempty"`
+	Name     string                 `json:"name,omitempty"`
+	Phase    string                 `json:"phase,omitempty"`
+	Text     string                 `json:"text,omitempty"`
 }
 
 type Worker struct {
@@ -65,6 +68,7 @@ type Worker struct {
 	Connection    string              `json:"connection,omitempty"`
 	Coding        *worktrees.Checkout `json:"coding,omitempty"`
 	Handoff       *CodingHandoff      `json:"handoff,omitempty"`
+	FrontendTools bool                `json:"frontend_tools,omitempty"`
 }
 
 type Question struct {
@@ -101,20 +105,28 @@ type retryReceipt struct {
 }
 
 type database struct {
-	Runs     []*Run                  `json:"runs"`
-	Tokens   map[string]string       `json:"tokens"` // SHA-256(token) to worker ID
-	Receipts map[string]retryReceipt `json:"receipts"`
+	OutputBatches map[string]outputReceipt `json:"output_batches,omitempty"` // legacy workers persist their output
+	Runs          []*Run                   `json:"runs"`
+	Tokens        map[string]string        `json:"tokens"` // SHA-256(token) to worker ID
+	Receipts      map[string]retryReceipt  `json:"receipts"`
+	PromptParts   map[string][]PromptPart  `json:"prompt_parts,omitempty"`
 }
 
 type service struct {
-	mu               sync.Mutex
-	process          sync.Mutex // order launches and stops across their external effects
-	integrateBranch  sync.Mutex // serialize checked-out branch updates
-	path             string
-	state            database
-	launcher         Launcher
-	consoleObservers map[chan struct{}]struct{} // guarded by mu
-	readingHistory   map[string]bool
+	liveOutputBatches  map[string]outputReceipt // disposable with the native console window
+	mu                 sync.Mutex
+	process            sync.Mutex // order launches and stops across their external effects
+	integrateBranch    sync.Mutex // serialize checked-out branch updates
+	path               string
+	state              database
+	launcher           Launcher
+	consoleObservers   map[chan struct{}]struct{} // guarded by mu
+	operationObservers map[chan struct{}]string
+	workspace          *workspaceProjection // owner-only workspace cache, guarded by mu
+	consoleInstance    string
+	readingHistory     map[string]bool
+	frontendRounds     map[string][]*frontendRound
+	liveSource         liveSourceStore
 }
 
 func randomID(prefix string) string {
@@ -169,13 +181,21 @@ func (s *service) load(stateDir string) error {
 }
 
 func (s *service) persist() error {
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".state-*")
+	if err := writeStateJSON(s.path, s.durableState()); err != nil {
+		return err
+	}
+	s.notifyConsole()
+	return nil
+}
+
+func writeStateJSON(path string, value any) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err = json.NewEncoder(tmp).Encode(s.durableState()); err == nil {
+	if err = json.NewEncoder(tmp).Encode(value); err == nil {
 		err = tmp.Sync()
 	}
 	closeErr := tmp.Close()
@@ -185,14 +205,26 @@ func (s *service) persist() error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Rename(name, s.path); err != nil {
-		return err
-	}
-	s.notifyConsole()
-	return nil
+	return os.Rename(name, path)
 }
 
 func (s *service) notifyConsole() {
+	if s.workspace != nil {
+		s.workspace.rebuild(s.state.Runs)
+	}
+	s.notifyOperations("")
+	s.signalConsole()
+}
+
+func (s *service) notifyConsoleOutput(worker *Worker, appendedText string, appendedEvents []ConsoleEvent) {
+	if s.workspace != nil {
+		s.workspace.updateWorker(worker, appendedText, appendedEvents)
+	}
+	s.notifyOperations(worker.ID)
+	s.signalConsole()
+}
+
+func (s *service) signalConsole() {
 	for observer := range s.consoleObservers {
 		select {
 		case observer <- struct{}{}:
@@ -314,7 +346,10 @@ func (r *Run) refreshOutcome() {
 				return
 			}
 		}
-		if !ended(w.State) || (w.Control != nil && w.Control.next() != nil) {
+		// A completed turn can still receive input through its developer-held
+		// session. Handback re-evaluates the run after releasing that lease.
+		heldBetweenTurns := w.State == "completed" && w.Control != nil && w.Control.Held
+		if !ended(w.State) || heldBetweenTurns || (w.Control != nil && w.Control.next() != nil) {
 			allEnded = false
 		}
 	}

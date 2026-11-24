@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Atoms.
@@ -111,29 +112,102 @@ struct ConsoleSurface: ViewModifier {
 /// The mark of a surface that is waiting for the developer: an amber border with a soft glow
 /// whose opacity rises and falls slowly. With Reduce Motion on, the glow is steady. It sits over
 /// the surface's own edge and takes the same shape, square for a console (`radius` 0). It is
-/// decoration only: the waiting state is always also stated in text.
+/// decoration only: the waiting state is always also stated in text. The pulse is a Core Animation
+/// opacity animation, so it runs in the render server and SwiftUI never re-evaluates the content.
 struct AttentionGlow: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let active: Bool
     var radius: CGFloat = 0
-    @State private var dimmed = false
 
     func body(content: Content) -> some View {
         content.overlay {
             if active {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(Palette.attention.opacity(0.9), lineWidth: 1)
-                    .shadow(color: Palette.attention.opacity(0.5), radius: 7)
-                    .shadow(color: Palette.attention.opacity(0.35), radius: 2)
-                    .opacity(reduceMotion ? 0.85 : (dimmed ? 0.5 : 1))
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.7).repeatForever(autoreverses: true),
-                               value: dimmed)
-                    .onAppear { dimmed = true }
-                    .onDisappear { dimmed = false }
+                AttentionGlowLayer(radius: radius, reduceMotion: reduceMotion)
+                    .padding(-AttentionGlowView.bleed)   // room for the shadow outside the surface
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
         }
+    }
+}
+
+private struct AttentionGlowLayer: NSViewRepresentable {
+    let radius: CGFloat
+    let reduceMotion: Bool
+
+    func makeNSView(context: Context) -> AttentionGlowView { AttentionGlowView() }
+    func updateNSView(_ view: AttentionGlowView, context: Context) {
+        guard view.radius != radius || view.reduceMotion != reduceMotion else { return }
+        view.radius = radius
+        view.reduceMotion = reduceMotion
+        view.needsLayout = true
+    }
+}
+
+/// Draws the edge and its two shadows as static layers and pulses their shared parent's opacity.
+private final class AttentionGlowView: NSView {
+    static let bleed: CGFloat = 24
+    var radius: CGFloat = 0
+    var reduceMotion = false
+    private let glow = CALayer(), edge = CALayer(), wide = CALayer(), tight = CALayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        let tint = NSColor(Palette.attention).cgColor
+        edge.borderColor = tint.copy(alpha: 0.9)
+        edge.borderWidth = 1
+        edge.cornerCurve = .continuous
+        // SwiftUI shadowed a 0.9-alpha stroke at 0.5 and 0.35: the same products are used here.
+        for (layer, blur, alpha) in [(wide, CGFloat(7), Float(0.45)), (tight, CGFloat(2), Float(0.315))] {
+            layer.shadowColor = tint
+            layer.shadowRadius = blur
+            layer.shadowOpacity = alpha
+            layer.shadowOffset = .zero
+            glow.addSublayer(layer)
+        }
+        glow.addSublayer(edge)
+        layer?.addSublayer(glow)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); syncPulse() }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); syncPulse() }
+
+    override func layout() {
+        super.layout()
+        let rect = bounds.insetBy(dx: Self.bleed, dy: Self.bleed)
+        guard rect.width > 1, rect.height > 1 else { return }
+        let corner = min(radius, min(rect.width, rect.height) / 2)
+        let ring = CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: max(corner - 0.5, 0),
+                          cornerHeight: max(corner - 0.5, 0), transform: nil)
+            .copy(strokingWithWidth: 1, lineCap: .butt, lineJoin: .miter, miterLimit: 10)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        glow.frame = bounds
+        edge.frame = rect
+        edge.cornerRadius = corner
+        wide.shadowPath = ring
+        tight.shadowPath = ring
+        CATransaction.commit()
+        syncPulse()
+    }
+
+    /// Runs the pulse only while the view is in a window and motion is allowed.
+    private func syncPulse() {
+        let run = window != nil && superview != nil && !reduceMotion
+        glow.opacity = reduceMotion ? 0.85 : 1
+        guard run != (glow.animation(forKey: "pulse") != nil) else { return }
+        guard run else { return glow.removeAnimation(forKey: "pulse") }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1
+        pulse.toValue = 0.5
+        pulse.duration = 1.7
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        glow.add(pulse, forKey: "pulse")
     }
 }
 

@@ -1,16 +1,32 @@
 import AppKit
 import SwiftUI
 
+/// Process entry. Launch admission runs before the App value exists, so a launch handed to an open
+/// cockpit, or refused because arbitration failed, exits before any model, window, menu bar item
+/// or service starts.
 @main
+enum AgentCommanderMain {
+    @MainActor static func main() {
+        SingleInstanceLaunch.admit()
+        AgentCommander.main()
+    }
+}
+
 struct AgentCommander: App {
+    @NSApplicationDelegateAdaptor(SingleInstanceAppDelegate.self) private var appDelegate
     @State private var model = CockpitModel()
     @State private var consoleModes = ConsoleModeStore()
+    /// Live network panel state, shared by the menu bar item and the review window.
+    @State private var network = MultiplayerModel.live()
 
     var body: some Scene {
-        Window("Agent Commander", id: "cockpit") {
+        Window("Agent Commander", id: SingleInstanceLaunch.cockpitSceneID) {
             Group {
-                // A design-preview launch renders a fixture page and never starts the live subscription.
-                if let scenario = DesignPreviewScenario.requested {
+                // AGENT_COMMANDER_NETWORK_PANEL=1 shows the same live network panel for review.
+                if MultiplayerLaunch.showsPanelInWindow {
+                    MultiplayerPanelStage(model: network)
+                } else if let scenario = DesignPreviewScenario.requested {
+                    // A design-preview launch renders a fixture page and never starts the live subscription.
                     DesignPreviewPage(scenario: scenario)
                 } else {
                     CockpitView(model: model)
@@ -19,9 +35,27 @@ struct AgentCommander: App {
             .environment(consoleModes)
             .frame(minWidth: 800, minHeight: 540)
             .preferredColorScheme(.dark)
+            .singleInstanceCockpitScene()
         }
         .defaultSize(width: 1280, height: 800)
         // Unified (not compact) keeps the real title bar and traffic lights on the 52 pt chrome band.
         .windowToolbarStyle(.unified)
+
+        // Agent Commander > Settings… (⌘,) from the system command.
+        Settings {
+            SingleInstanceSettingsPage()
+                .singleInstanceAuxiliaryScene()
+        }
+
+        // Read-only native terminal for one local worker, opened from its console's display menu.
+        NativeTerminalScene()
+
+        MenuBarExtra {
+            MultiplayerPanel(model: network)
+                .preferredColorScheme(.dark)
+        } label: {
+            MultiplayerMenuBarLabel(model: network)
+        }
+        .menuBarExtraStyle(.window)
     }
 }

@@ -1,7 +1,7 @@
 // ATOMIC LEVEL: Pages.
 // ConsolePage binds the real AG-UI session and the reply API to the terminal screen.
 import React from "react";
-import { NoticeLine, Scrollback, StartLine, StatusLine } from "./organisms";
+import { FollowUpPrompt, NoticeLine, Scrollback, SessionSource, StartLine, StatusLine } from "./organisms";
 import { TerminalScreen } from "./templates";
 import { buildScrollback, statusPresentation } from "./model/contract";
 import { useReply } from "./model/useReply";
@@ -11,22 +11,24 @@ export function ConsolePage() {
   const session = useSession();
   const reply = useReply();
   const { state, timeline, running, started } = session;
+  const attached = session.configuration?.mode === "worker";
+  const clientName = session.configuration?.mode === "worker" ? session.configuration.client || "worker" : "claude";
 
-  const status = statusPresentation(state.status, started);
   const items = buildScrollback(timeline, state.requests);
   const pending = state.requests.filter((request) => request.status === "pending");
+  const status = statusPresentation(state.status === "working" && pending.length > 0 ? "waiting" : state.status, started);
 
   // The native shell mirrors the page title in the window's title bar, as Terminal does.
   React.useEffect(() => {
-    document.title = `claude — ${status.label}`;
-  }, [status.label]);
+    document.title = `${clientName} — ${status.label}`;
+  }, [clientName, status.label]);
 
   // Follow the end of the scrollback as output streams, tool results land and requests change.
   const last = timeline[timeline.length - 1];
   const lastSize = last
-    ? last.kind === "message"
-      ? last.text.length
-      : (last.result ?? "").length + last.raw.length
+    ? last.kind === "activity"
+      ? (last.result ?? "").length + last.raw.length
+      : last.text.length
     : 0;
   const followKey = [
     timeline.length,
@@ -57,15 +59,27 @@ export function ConsolePage() {
         />
       }
     >
-      {!started && <StartLine onStart={session.start} />}
+      {session.configuration?.mode === "demo" && !started && <StartLine onStart={session.start} />}
       {started && items.length === 0 && !failed && <NoticeLine kind="waiting">starting session</NoticeLine>}
       <Scrollback
         items={items}
+        clientName={clientName}
         running={running}
         focusRequestId={pending[0]?.id}
         phaseOf={reply.phaseOf}
         onReply={reply.send}
       />
+      {session.configuration?.mode === "worker" && session.configuration.nativeHistory && (
+        <>
+          <SessionSource source="provider" />
+          <SessionSource source="journal" />
+          <SessionSource source="live" />
+          {state.operationId && <SessionSource key={state.operationId} source="live" turnId={state.operationId} />}
+        </>
+      )}
+      {attached && state.status !== "stopped" && (
+        <FollowUpPrompt busy={session.submitting} locked={running || session.reopening} send={session.sendPrompt} />
+      )}
       {state.error && <NoticeLine kind="error">{state.error}</NoticeLine>}
       {session.launchError && session.launchError !== state.error && (
         <NoticeLine kind="error">{session.launchError}</NoticeLine>

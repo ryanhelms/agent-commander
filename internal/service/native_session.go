@@ -8,6 +8,12 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	model "agent-acp.local/sdks/go/model"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	"agentcommander/internal/acpprocessor"
+	"agentcommander/internal/hosted"
 )
 
 // NativeSession is the provider-issued identity the local runner received at open.
@@ -24,13 +30,54 @@ type nativeHistoryPager interface {
 	ReadNativeHistoryPage(context.Context, NativeSession, string, string, uint32) (json.RawMessage, error)
 }
 
+type nativeHistoryRecordReader interface {
+	ReadNativeHistoryRecord(context.Context, NativeSession, string, string, string) (json.RawMessage, error)
+}
+
+type nativeJournalPager interface {
+	ReadNativeJournalPage(context.Context, NativeSession, string, string, uint32) (json.RawMessage, error)
+}
+
+type stoppedHistoryPolicy interface {
+	RequiresStoppedHistory(NativeSession) bool
+}
+
+func (s *service) requiresStoppedHistory(ref NativeSession) bool {
+	policy, ok := s.launcher.(stoppedHistoryPolicy)
+	return ok && policy.RequiresStoppedHistory(ref)
+}
+
 func (s *service) serveNativeHistoryPage(w http.ResponseWriter, req *http.Request) {
 	if _, supplied := req.Header["Authorization"]; supplied {
 		respondError(w, denied())
 		return
 	}
 	query := req.URL.Query()
+	source := query.Get("source")
+	if source == "provider" {
+		source = ""
+	}
+	view := query.Get("view")
+	if view != "" && (view != "acp" || source == "journal") {
+		respondError(w, bad("the ACP view requires live or provider history"))
+		return
+	}
+	if source != "" && source != "journal" && source != "live" {
+		respondError(w, bad("unknown native history source"))
+		return
+	}
+	turnID := query.Get("turnId")
+	if query.Has("turnId") && (source != "live" || turnID == "" || len(turnID) > 256 ||
+		strings.IndexFunc(turnID, unicode.IsControl) >= 0) {
+		respondError(w, bad("turnId requires a live ACP source and a valid turn ID"))
+		return
+	}
 	cursor := query.Get("cursor")
+	kind := query.Get("kind")
+	if query.Has("kind") && (kind != LivePromptMediaPartKind || source != "live" || turnID == "") {
+		respondError(w, bad("prompt attachments require a live source and turnId"))
+		return
+	}
 	limit := uint64(32)
 	if query.Has("limit") {
 		parsed, err := strconv.ParseUint(query.Get("limit"), 10, 32)
@@ -40,8 +87,14 @@ func (s *service) serveNativeHistoryPage(w http.ResponseWriter, req *http.Reques
 		}
 		limit = parsed
 	}
-	if len(cursor) > 8192 {
+	if len(cursor) > acpprocessor.ProviderCursorLimit {
 		respondError(w, bad("history cursor exceeds size limit"))
+		return
+	}
+	recordCursor := query.Get("recordCursor")
+	if query.Has("recordCursor") && (recordCursor == "" || len(recordCursor) > acpprocessor.ProviderCursorLimit ||
+		strings.IndexFunc(recordCursor, unicode.IsControl) >= 0 || source != "" || query.Has("limit")) {
+		respondError(w, bad("recordCursor requires provider history, a nonempty record identity and no page limit"))
 		return
 	}
 	s.mu.Lock()
@@ -56,20 +109,68 @@ func (s *service) serveNativeHistoryPage(w http.ResponseWriter, req *http.Reques
 		respondError(w, &apiError{http.StatusNotImplemented, "worker has no native history binding"})
 		return
 	}
-	ref, cwd := *worker.NativeSession, worker.Worktree
+	ref, cwd, workerID := *worker.NativeSession, worker.Worktree, worker.ID
+	replayNotReady := source == "" && s.requiresStoppedHistory(ref) && worker.State != "stopped"
 	s.mu.Unlock()
 
-	reader, ok := s.launcher.(nativeHistoryPager)
-	if !ok {
+	var read func(context.Context, NativeSession, string, string, uint32) (json.RawMessage, error)
+	if source == "live" {
+		read = func(_ context.Context, ref NativeSession, _ string, cursor string, limit uint32) (json.RawMessage, error) {
+			s.mu.Lock()
+			page, err := s.liveSource.page(workerID, ref, turnID, kind, cursor, int(limit))
+			s.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(page)
+		}
+	} else if source == "journal" {
+		if reader, ok := s.launcher.(nativeJournalPager); ok {
+			read = reader.ReadNativeJournalPage
+		}
+	} else if recordCursor != "" {
+		if reader, ok := s.launcher.(nativeHistoryRecordReader); ok {
+			read = func(ctx context.Context, selected NativeSession, cwd, hint string, _ uint32) (json.RawMessage, error) {
+				return reader.ReadNativeHistoryRecord(ctx, selected, cwd, hint, recordCursor)
+			}
+		}
+	} else if reader, ok := s.launcher.(nativeHistoryPager); ok {
+		read = reader.ReadNativeHistoryPage
+	}
+	if read == nil {
 		respondError(w, &apiError{http.StatusNotImplemented, "native history paging is unavailable"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Second)
 	defer cancel()
-	page, err := reader.ReadNativeHistoryPage(ctx, ref, cwd, cursor, uint32(limit))
+	var page json.RawMessage
+	var err error
+	if replayNotReady {
+		page, err = (protojson.MarshalOptions{EmitDefaultValues: true}).Marshal(&model.ReadHistoryResponse{
+			Observations: []*model.Observation{{Session: &model.SessionRef{HarnessInstance: ref.HarnessInstance, SessionId: ref.SessionID},
+				Event: &model.Observation_Gap{Gap: &model.HistoryGap{Reason: "Provider replay becomes available after this worker stops"}}}},
+		})
+	} else {
+		page, err = read(ctx, ref, cwd, cursor, uint32(limit))
+	}
 	if err != nil {
+		if source == "live" {
+			respondError(w, err)
+			return
+		}
 		// Provider diagnostics may contain session paths or subprocess output.
 		respondError(w, &apiError{http.StatusServiceUnavailable, "native history page is unavailable"})
+		return
+	}
+	if view == "acp" {
+		page, err = acpprocessor.HistoryView(page)
+		if err != nil {
+			respondError(w, &apiError{http.StatusBadGateway, "could not decode the ACP history page"})
+			return
+		}
+	}
+	if access := hosted.From(req.Context()); access != nil && !access.Allowed() {
+		respondError(w, denied())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -151,6 +252,9 @@ func (s *service) bindNativeSession(req *http.Request, actor string) (outcome, e
 // the transcript lives with the harness. Output and Console are live views.
 func (s *service) durableState() database {
 	db := s.state
+	if len(db.OutputBatches) != 0 {
+		db.OutputBatches = make(map[string]outputReceipt, len(s.state.OutputBatches))
+	}
 	db.Runs = make([]*Run, len(s.state.Runs))
 	for i, r := range s.state.Runs {
 		run := *r
@@ -158,6 +262,9 @@ func (s *service) durableState() database {
 		for j, w := range r.Workers {
 			run.Workers[j] = w
 			if w.NativeSession == nil {
+				if receipt, ok := s.state.OutputBatches[w.ID]; ok {
+					db.OutputBatches[w.ID] = receipt
+				}
 				continue
 			}
 			durable := *w
@@ -207,7 +314,10 @@ func (s *service) restoreNativeHistories(ctx context.Context) {
 	var targets []historyTarget
 	for _, run := range s.state.Runs {
 		for _, w := range run.Workers {
-			if w.NativeSession == nil || s.readingHistory[w.ID] || turnActive(w.State) && len(w.Console) != 0 {
+			if w.NativeSession == nil || s.readingHistory[w.ID] || len(w.Console) != 0 {
+				continue
+			}
+			if s.requiresStoppedHistory(*w.NativeSession) && w.State != "stopped" {
 				continue
 			}
 			targets = append(targets, historyTarget{w.ID, w.Worktree, w.State, *w.NativeSession, lastSequence(w)})
@@ -235,7 +345,7 @@ func (s *service) restoreNativeHistories(ctx context.Context) {
 				w.Console = events
 				var out strings.Builder
 				for _, e := range events {
-					out.WriteString(e.Text)
+					out.WriteString(e.TerminalText())
 					out.WriteByte('\n')
 				}
 				w.Output = out.String()

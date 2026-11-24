@@ -17,6 +17,23 @@ final class CockpitModel {
     private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
     private var receivedStreamState = false
     private var usingLegacyService = false
+    /// Source records for the one console being inspected. A read runs beside the client's other
+    /// requests, so a slow provider history never waits in front of a reply or a control change.
+    let source: ConsoleSourceModel
+    /// The media of the one prompt being viewed, read by its worker and turn.
+    let attachments: PromptAttachmentModel
+    /// Staged adapter updates, followed on their own subscription. A change of the set never
+    /// touches `runs`.
+    let adapterUpdates: AdapterUpdateFeed
+
+    init() {
+        let reader = ServiceClient()
+        attachments = .live(reader: reader)
+        adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
+        source = ConsoleSourceModel { workerID, kind, cursor in
+            try await reader.workerHistory(workerID, source: kind, cursor: cursor)
+        }
+    }
 
     var selected: Run? { runs.first { $0.id == selectedID } }
 
@@ -137,9 +154,13 @@ final class CockpitModel {
             ["working", "waiting", "idle", "completed"].contains(worker.state)
     }
 
+    /// The one gate for interrupting a turn. Every surface and `interruptWorker` read it. A
+    /// session the service reports as not interruptible is never offered the action; a worker
+    /// with no reported capabilities is treated as before.
     func canInterruptWorker(_ id: String) -> Bool {
-        guard canControlWorker(id), let (_, worker) = workerTarget(id) else { return false }
-        return ["working", "waiting"].contains(worker.state) && worker.control?.interruptRequested != true
+        guard canControlWorker(id), let (_, worker) = workerTarget(id), let control = worker.control else { return false }
+        return ["working", "waiting"].contains(worker.state) && control.interruptRequested != true &&
+            control.sessionCanInterrupt
     }
 
     func canStopWorker(_ id: String) -> Bool {

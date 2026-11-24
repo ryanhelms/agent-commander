@@ -1,5 +1,7 @@
 # Native cockpit verification
 
+The independent agent-acp candidate is verified through its installed Go, npm and Python packages. The release build checks Commander's Go module pin in a fresh cache. [SDK release verification](sdk-release/README.md)
+
 ## Design gallery
 
 The native preview gallery opens all 28 approved screen concepts and states in one window. Its sample workspace covers local and remote workers, cross-run attention, adoption, recovery, and successful and blocked integration attempts. Sample output can advance while the view is open. The preview menu can pause that activity or reset the current view. [Open the gallery from the build guide](../../README.md)
@@ -13,6 +15,48 @@ The [native review gallery](review/index.html) holds all 28 Computer Use screens
 The [component inventory](review/COMPONENTS.md) maps all 123 named display declarations to the Atomic Design layers, links to their Swift source, and shows how each of the 28 views is composed. The [capture manifest](review/captures.json) records each image’s size and SHA-256 hash.
 
 ## Live workflow
+
+### CopilotKit reference console
+
+The same browser workflow sent prompts, opened tool results and answered addressed requests against real Claude and Codex workers. An independent AG-UI consumer repeated the interaction on each harness. [Live evidence and captures](copilotkit-live/README.md)
+
+### Native source inspector
+
+The focused conversation and receipt checks use real Claude and Codex workers on the incremental workspace feed. [Native conversation and attachment verification](incremental-native/README.md)
+
+The running native app opened selected worker source records directly from the wall. Provider history, live ACP details and an explicit journal gap were verified with macOS Accessibility. The focused Pretty console displayed the selected worker's live record. Its PiP action opened that worker's inspector and left the underlying request pending. [Native source captures](native-source/README.md)
+
+The independently installed Pi translator and stock Antigravity executable supplied the onboarding checks in native Pretty, native Console and the independently installed CopilotKit connector. Pi returned the file result in its tool message and passive history. Antigravity reported the completed tool call and returned the file marker in assistant text. [Pi verification](pi-translation.md) · [Antigravity verification](stock-acp.md)
+
+### 30-pane workspace load
+
+The test Mac ran 30 active tmux panes and answered approvals from one worker while another streamed sustained output. The reconnect preserved the pending request ID, and scoped history returned a complete large attachment while the shared workspace stream carried a notice. [Measurements and reproduction](30-pane/README.md)
+
+### Transcript coverage
+
+The synthetic fixtures distinguish saved Claude and Codex records, vendor stdout, ACP updates and the workspace AG-UI projection. The manifest maps each record shape to its available preview, scoped history, and remaining coverage. [Transcript coverage](transcript-coverage/README.md)
+
+The signed November 23 Opus build reopened the real Color Studio service in a separate local window. Both the plum Claude worker and teal Codex worker showed Pretty on the worker wall. Opening **Read receipt.txt** displayed `PLUM-4761`. The Claude prompt’s **View attachment** control decoded the retained 110-byte PNG. The controls were collapsed again for manual inspection. The full native suite passed all 148 tests in 26 suites with the provider, wire, incremental and journal fixtures enabled.
+
+### Frontend tools
+
+The managed harness can invoke an app-defined tool through its worker-scoped MCP bridge. Test coverage includes live harness interaction, hosted and relayed authorization, and the embedded AG-UI client. [Frontend tool verification](frontend-tools.md)
+
+### Catalog updates with live workers
+
+Two local service instances shared a test publisher and used separate pin directories. Concurrent explicit refreshes from separate CLI processes downloaded one signed update per owner. The observing service sent its initial empty set, the verified 2.0.0 release over the 1.0.0 pin, an empty set on activation and the same release after rollback followed by another refresh. A reconnect recovered the current set. An invalid signature produced no notice or download. The neighboring service and the existing conversations retained their state. [Cross-process reproduction](catalog-notices/verify.mjs)
+
+Two independent Commander services subscribed to catalog notices while separate CLI processes verified signed updates, activated a pin and rolled it back. A reconnected reader recovered the current notice and both services retained their own conversations. [Cross-process acceptance and native QA fixture](catalog-notices/README.md)
+
+On macOS arm64, Commander exercised two signed releases for each of three distributions through a local TLS catalog. The platform executable, npm tarball and Python wheel each launched three managed tmux workers. While the first worker waited for permission on 1.0.0, refresh rejected a bad publisher signature before downloading the archive, then two concurrent refreshes returned the same verified stage after a single download. The second worker launched on 2.0.0 after explicit activation. The third launched on 1.0.0 after rollback, with both earlier workers still waiting. All nine workers completed with the release marker from their own launch after receiving their addressed replies. The matrix passed with the Go race detector against the packaged SDK 0.1.7. [Worker lifecycle test](../../internal/provider/catalog_timeline_test.go) · [Offline package tests](../../internal/catalog/packages_test.go)
+
+A verified retry of the active version returns its existing installation. Replacing the selected stage’s archive after the first activation now returns a SHA-256 mismatch on retry and preserves the existing pin. [Activation regression](../../internal/catalog/pin_test.go)
+
+In a network-disabled Linux arm64 container, the CLI registered the pinned publisher's endpoints and fetched a signed update from a loopback TLS catalog. An invalid signature caused zero archive downloads. A valid refresh and retry made one download and returned the same stage ID. The active executable stayed on 1.0.0 until activation. Rollback restored that executable and kept the configured proof endpoints.
+
+The Linux arm64 CLI also ran each distribution's full lifecycle in a separate network-disabled container with a loopback HTTPS catalog. The catalog advertised a platform binary without its optional digest, an npm name without a version, and a PyPI name without a version. Each publisher-signed entry supplied the missing digest or exact pin. For every family, the operator discovered the entry, installed 1.0.0, received a verified notice for 2.0.0, tried an incorrect publisher key, applied the update with the correct key, and rolled back to 1.0.0. Go tests also reject mismatched release claims, changed artifacts, interrupted staging and incompatible package executables. [ACP catalog format](https://github.com/agentclientprotocol/registry/blob/main/FORMAT.md#distribution-types)
+
+Regression tests canceled binary, npm and Python activation after extraction and immediately before the pin switch. The existing executable remained selected, the unfinished installation was removed, and the same stage applied successfully on retry. These tests passed on macOS and in network-disabled Linux arm64 containers. The binary fixture also canceled a download at EOF and verified that no stage was published. A built CLI returned on Ctrl-C during both refresh and rollback while another process still held the catalog lock. [Binary tests](../../internal/catalog/pin_test.go) · [Package tests](../../internal/catalog/packages_test.go) · [Stage test](../../internal/catalog/stage_test.go)
 
 ### Harness icons
 
@@ -71,3 +115,7 @@ The [focused-worker concept](../concepts/focused-worker.png) places the ownershi
 ### Shared components
 
 Claude Fable 5.2 implemented the Swift interface. The terminal well is an atom. Worker identity, input ownership and scoped reply fields are molecules. Worker tiles, the wall, the coordinator console and the attention stack are organisms. The cockpit shell and coordinator split arrange them into pages. The live cockpit and the five design scenarios share these components. [Atomic Design analysis](../system/ATOMIC-DESIGN.md) · [Native source](../../Sources/AgentCommander)
+
+## Computer Use app identity
+
+Use the canonical `dist/Agent Commander.app` bundle with identifier `local.agentcommander.cockpit` for all cockpit QA, including the wall, Pretty and Console, design previews and the multiplayer panel. Reuse the running cockpit. Isolate each test service with its own state directory and socket. For a test that requires different startup arguments or a different socket, use the same bundle at its next planned relaunch. Earlier captures in this directory document the QA bundle identities in use at the time.

@@ -6,6 +6,48 @@ import (
 	"time"
 )
 
+func TestHeldWorkersStayAddressableAfterCoordinatorFinishes(t *testing.T) {
+	f := newFixture(t)
+	coordinator := f.run()
+	first := f.delegate(coordinator, "first")
+	second := f.delegate(coordinator, "second")
+	path := func(w LaunchSpec) string { return "/v1/workers/" + w.ID }
+	for _, worker := range []LaunchSpec{first, second} {
+		f.call("POST", path(worker)+"/state", worker.Token, map[string]string{"state": "working"}, 200, "")
+		f.call("POST", path(worker)+"/control/ready", worker.Token, struct{}{}, 200, "")
+		f.call("POST", path(worker)+"/control", "", map[string]any{"held": true, "generation": 1}, 200, "")
+	}
+	complete := map[string]string{"state": "completed"}
+	f.call("POST", path(coordinator)+"/state", coordinator.Token, complete, 200, "")
+	for _, worker := range []LaunchSpec{first, second} {
+		f.call("POST", path(worker)+"/control/finish", worker.Token, complete, 200, "")
+	}
+	restarted, err := New(f.dir, f.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.api = restarted
+	handBack := map[string]any{"held": false, "generation": 2}
+	f.call("POST", path(first)+"/control", "", handBack, 200, "")
+	var feed workerControlFeed
+	if err := json.Unmarshal(f.call("GET", path(second)+"/control", second.Token, nil, 200, ""), &feed); err != nil ||
+		!feed.Live || feed.State != "completed" || feed.Generation != 2 {
+		t.Fatalf("remaining held worker cannot receive another turn after restart: %+v, %v", feed, err)
+	}
+	prompt := map[string]any{"generation": 2, "text": "another turn"}
+	var sent WorkerFollowUp
+	if err := json.Unmarshal(f.call("POST", path(second)+"/messages", "", prompt, 202, "again"), &sent); err != nil {
+		t.Fatal(err)
+	}
+	f.call("POST", path(second)+"/messages/"+sent.ID+"/claim", second.Token, struct{}{}, 200, "")
+	f.call("POST", path(second)+"/control/finish", second.Token, map[string]string{"state": "completed", "message_id": sent.ID}, 200, "")
+	f.call("POST", path(second)+"/control", "", handBack, 200, "")
+	var run Run
+	if err := json.Unmarshal(f.call("GET", "/v1/runs/"+coordinator.RunID, "", nil, 200, ""), &run); err != nil || run.Status != "completed" {
+		t.Fatalf("last handback did not complete the run: %s, %v", run.Status, err)
+	}
+}
+
 func TestManagedWorkerControl(t *testing.T) {
 	f := newFixture(t)
 	coord := f.run()
@@ -81,5 +123,70 @@ func TestManagedWorkerControl(t *testing.T) {
 	if run.Status != "running" || run.Workers[2].State != "working" || c.Held || c.InterruptRequested ||
 		len(c.Messages) != 3 || c.Messages[0].Status != "cancelled" || c.Messages[1].Status != "interrupted" || c.Messages[2].Status != "cancelled" {
 		t.Fatalf("wrong scope or message history: run %s, neighbor %s, control %+v", run.Status, run.Workers[2].State, c)
+	}
+}
+
+func TestRegisteredSessionCapabilitiesGateInterrupts(t *testing.T) {
+	f := newFixture(t)
+	coordinator := f.run()
+	worker := f.delegate(coordinator, "capability negotiation")
+	path := "/v1/workers/" + worker.ID
+	infoPath := "/v1/ag-ui/workers/" + worker.ID
+	f.call("POST", path+"/state", worker.Token, map[string]string{"state": "working"}, 200, "")
+	f.call("POST", path+"/interrupt", "", nil, 409, "")
+	ready := func(caps *SessionCapabilities) WorkerControl {
+		t.Helper()
+		var body any = struct{}{}
+		if caps != nil {
+			body = map[string]any{"session_capabilities": caps}
+		}
+		var control WorkerControl
+		if err := json.Unmarshal(f.call("POST", path+"/control/ready", worker.Token, body, 200, ""), &control); err != nil {
+			t.Fatal(err)
+		}
+		return control
+	}
+	checkInfo := func(want *SessionCapabilities) {
+		t.Helper()
+		var info struct {
+			SessionCapabilities *SessionCapabilities `json:"sessionCapabilities"`
+		}
+		if err := json.Unmarshal(f.call("GET", infoPath, "", nil, 200, ""), &info); err != nil {
+			t.Fatal(err)
+		}
+		if want == nil && info.SessionCapabilities != nil || want != nil && (info.SessionCapabilities == nil || *info.SessionCapabilities != *want) {
+			t.Fatalf("published session capabilities = %+v, want %+v", info.SessionCapabilities, want)
+		}
+	}
+
+	ready(nil)
+	checkInfo(nil)
+	f.call("POST", path+"/interrupt", "", nil, 202, "")
+	limited := &SessionCapabilities{CanReadHistory: true}
+	control := ready(limited)
+	if control.InterruptRequested || control.InterruptClaimed {
+		t.Fatal("capability downgrade kept an undispatched interrupt")
+	}
+	f.call("POST", path+"/control/interrupt/claim", worker.Token, map[string]int{"generation": control.Generation}, 409, "")
+	f.call("POST", path+"/interrupt", "", nil, 501, "")
+	ready(nil) // Older reconnect and heartbeat messages do not erase negotiation.
+	checkInfo(limited)
+
+	reloaded, err := New(f.dir, f.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.api = reloaded
+	checkInfo(limited)
+	f.call("POST", path+"/state", worker.Token, map[string]string{"state": "working"}, 200, "")
+	f.call("POST", path+"/interrupt", "", nil, 501, "")
+	full := &SessionCapabilities{CanAnswer: true, CanInterrupt: true, CanReadHistory: true}
+	ready(full)
+	checkInfo(full)
+	f.call("POST", path+"/interrupt", "", nil, 202, "")
+	f.call("POST", path+"/control/interrupt/claim", worker.Token, map[string]int{"generation": control.Generation}, 200, "")
+	control = ready(limited)
+	if !control.InterruptRequested || !control.InterruptClaimed {
+		t.Fatal("capability downgrade lost evidence of an interrupt already dispatched")
 	}
 }

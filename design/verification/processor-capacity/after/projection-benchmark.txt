@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkspaceUpdate/1_workers/4_text_records_each-10         	  109999	      2701 ns/op	       725.0 wire-B/update	    4268 B/op	      39 allocs/op
+BenchmarkAGUIWorkspaceUpdate/1_workers/4_text_records_each-10         	  114676	      2593 ns/op	       725.0 wire-B/update	    4267 B/op	      39 allocs/op
+BenchmarkAGUIWorkspaceUpdate/1_workers/4_text_records_each-10         	  116782	      2567 ns/op	       725.0 wire-B/update	    4268 B/op	      39 allocs/op
+BenchmarkAGUIWorkspaceUpdate/1_workers/128_text_records_each-10       	   16964	     17638 ns/op	       731.0 wire-B/update	   55110 B/op	     423 allocs/op
+BenchmarkAGUIWorkspaceUpdate/1_workers/128_text_records_each-10       	   16328	     19028 ns/op	       731.0 wire-B/update	   55112 B/op	     423 allocs/op
+BenchmarkAGUIWorkspaceUpdate/1_workers/128_text_records_each-10       	   15130	     20728 ns/op	       731.0 wire-B/update	   55112 B/op	     423 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/4_text_records_each-10        	   13246	     22725 ns/op	       725.0 wire-B/update	   10820 B/op	     132 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/4_text_records_each-10        	   12360	     23990 ns/op	       725.0 wire-B/update	   10821 B/op	     132 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/4_text_records_each-10        	   13624	     21774 ns/op	       725.0 wire-B/update	   10818 B/op	     132 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/128_text_records_each-10      	    5070	     56335 ns/op	       731.0 wire-B/update	   61652 B/op	     516 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/128_text_records_each-10      	    5404	     55322 ns/op	       731.0 wire-B/update	   61650 B/op	     516 allocs/op
+BenchmarkAGUIWorkspaceUpdate/30_workers/128_text_records_each-10      	    5360	     55288 ns/op	       731.0 wire-B/update	   61650 B/op	     516 allocs/op
+PASS
+ok  	agentcommander/internal/service	4.188s

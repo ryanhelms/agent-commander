@@ -1,5 +1,19 @@
 # Local SDK runtime verification
 
+## Managed Claude model selection
+
+The project selects Opus for Commander-managed Claude sessions and project agents. Claude manages internal calls. In the live CopilotKit workflow the provider reported 28,867 Opus tokens and 1,605 Haiku tokens without assigning a role to the secondary usage. [Live acknowledgement and usage](copilotkit-live/independent-claude-opus.json) · [Claude Code model settings](https://code.claude.com/docs/en/model-config)
+
+With Commander pinned to SDK 0.1.13, a fresh local Claude coordinator inherited `ANTHROPIC_MODEL=sonnet`. The installed Claude ACP adapter 0.109.1 returned `currentValue=sonnet` and advertised `opus` as **Opus 5.5**. Commander sent one `session/set_config_option` request with `configId=model` and `value=opus`. The adapter acknowledged `currentValue=opus` before the first prompt. The test intercepted that prompt before inference.
+
+New managed Claude coordinators and workers use the same model selection for local ACP, SSH and persistent SSH. The legacy CLI receives `--model opus`. Focused race tests covered those launch configurations, the advertised model option, the older `session/set_model` fallback, and session launch failure when the adapter rejects the value or lacks both methods. The scope tests also covered Codex and independently registered adapters. The live acknowledgement above was observed on local ACP. [Model negotiation tests](../../internal/provider/claude_model_test.go) · [Launch scope and legacy CLI tests](../../internal/provider/local_test.go)
+
+## Default selection and rollback
+
+Commander built against SDK 0.1.7 launched a real Claude coordinator, Claude worker and Codex worker with the runtime selector unset. It located both adapters through the SDK harness directory. The developer took both input leases and answered the coordinator's addressed question. All three turns finished and Commander kept the two workers available.
+
+The same service state was reopened with `AGENT_COMMANDER_RUNTIME=legacy`. A new Claude run completed through the legacy CLI. In parallel, both original workers accepted AG-UI prompts, returned the expected assistant text and retained their native session IDs. Handing back the first worker left the run open. The final handback completed it. The test used an isolated socket, tmux server and checkout. [Selection tests](../../internal/provider/local_test.go) · [Ownership tests](../../internal/service/control_test.go)
+
 The standalone Go example ran against Claude Code and Codex using the pinned local profiles. A multiline prompt containing shell punctuation survived a cold history read in both providers. Each streamed a real assistant response, returned an actionable permission request, acknowledged a separately targeted interrupt, and resumed the original native session in a fresh process.
 
 | Provider | Decision observed | Effect |

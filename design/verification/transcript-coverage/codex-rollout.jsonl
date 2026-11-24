@@ -1,0 +1,4 @@
+{"type":"response_item","payload":{"type":"function_call","call_id":"read-1","name":"read_file","arguments":"{\"path\":\"sample.txt\"}","future_call_field":{"label":"fixture metadata"}}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"read-1","output":[{"type":"input_text","text":"Part one"},{"type":"input_image","image_url":"data:image/png;base64,AAE="}]}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"read-1","status":"failed","error":{"message":"Part two"},"duration_ms":7}}}
+{"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Provider-visible summary"}],"encrypted_content":"opaque-fixture"}}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"agentcommander/internal/hosted"
 	"agentcommander/internal/worktrees"
 )
 
@@ -40,7 +41,7 @@ func changed(v any) outcome { return outcome{body: v, code: 200, mutated: true} 
 type endpoint func(*http.Request, string) (outcome, error)
 
 func New(stateDir string, launcher Launcher) (http.Handler, error) {
-	s := &service{launcher: launcher}
+	s := &service{launcher: launcher, consoleInstance: randomID("console-"), frontendRounds: make(map[string][]*frontendRound)}
 	if err := s.load(stateDir); err != nil {
 		return nil, err
 	}
@@ -54,8 +55,11 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 				w.State, w.Error = "unknown", "Service restarted. Waiting for evidence from the original worker."
 				if w.Control != nil {
 					for i := range w.Control.Messages {
-						if w.Control.Messages[i].Status == "processing" {
-							w.Control.Messages[i].Status = "delivery_unknown"
+						message := &w.Control.Messages[i]
+						if message.Status == "processing" {
+							message.Status = "delivery_unknown"
+							s.markOperationEnd(run, w, message)
+							message.End.ConsoleInstance = ""
 						}
 					}
 				}
@@ -106,8 +110,19 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 		go s.stopOne(id)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/catalog/notices/events", s.streamCatalogNotices)
+	mux.HandleFunc("GET /v1/network/coordinator", s.handleJSON(s.networkCoordinator))
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
+	mux.HandleFunc("POST /v1/ag-ui/workers/{worker}/run", s.streamWorkerRun)
+	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}/operations/{operation}", s.observeWorkerRun)
+	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}/operations", s.handle(s.workerRunReceipt))
+	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}", s.handle(s.workerRunInfo))
 	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
+	mux.HandleFunc("GET /v1/workers/{worker}/terminal", s.serveTerminalAttachment)
+	mux.HandleFunc("POST /v1/workers/{worker}/output", s.handleJSON(s.output))
+	mux.HandleFunc("GET /v1/workers/{worker}/output", s.handleJSON(s.outputStream))
+	mux.HandleFunc("POST /v1/workers/{worker}/live-source", s.handleJSONLimit(s.recordLiveSource, 2<<20))
+	mux.HandleFunc("POST /v1/workers/{worker}/live-source/batch", s.handleJSONLimit(s.recordLiveSourceBatch, 2<<20))
 	mux.HandleFunc("POST /v1/requests/{qid}/reconcile", s.reconcileSSHReply)
 	mux.HandleFunc("POST /v1/workers/{worker}/ssh-link", s.handle(s.workerSSHLink))
 	mux.HandleFunc("POST /v1/runs/{run}/integrations", s.handle(s.beginIntegration))
@@ -119,20 +134,27 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	for pattern, op := range map[string]endpoint{
 		"GET /v1/runs": s.listRuns, "POST /v1/runs": s.createRun,
 		"GET /v1/runs/{run}": s.getRun, "POST /v1/runs/{run}/workers": s.delegate,
-		"POST /v1/runs/{run}/stop": s.stopRun, "POST /v1/workers/{worker}/output": s.output,
+		"POST /v1/runs/{run}/stop":            s.stopRun,
 		"POST /v1/workers/{worker}/questions": s.ask, "GET /v1/workers/{worker}/questions/{qid}": s.getQuestion,
 		"POST /v1/requests/{qid}/reply": s.reply, "POST /v1/workers/{worker}/state": s.workerState,
-		"POST /v1/workers/{worker}/result":                   s.workerResult,
-		"POST /v1/workers/{worker}/native-session":           s.bindNativeSession,
-		"GET /v1/workers/{worker}/control":                   s.workerControlStatus,
-		"POST /v1/workers/{worker}/control":                  s.setWorkerControl,
-		"POST /v1/workers/{worker}/control/ready":            s.workerControlReady,
-		"POST /v1/workers/{worker}/control/finish":           s.finishWorkerTurn,
-		"POST /v1/workers/{worker}/control/interrupt/claim":  s.claimWorkerInterrupt,
-		"POST /v1/workers/{worker}/messages":                 s.sendWorkerMessage,
-		"POST /v1/workers/{worker}/messages/{message}/claim": s.claimWorkerMessage,
-		"POST /v1/workers/{worker}/interrupt":                s.interruptWorker,
-		"POST /v1/workers/{worker}/stop":                     s.stopWorker,
+		"POST /v1/ag-ui/workers/{worker}/requests/{qid}/reply":                       s.replyToWorkerRun,
+		"POST /v1/ag-ui/workers/{worker}/operations/{operation}/tools/{call}/result": s.resolveFrontendCall,
+		"POST /v1/workers/{worker}/frontend-tools/ready":                             s.frontendToolReady,
+		"GET /v1/workers/{worker}/frontend-tools":                                    s.listFrontendTools,
+		"POST /v1/workers/{worker}/frontend-tools/calls":                             s.startFrontendCall,
+		"GET /v1/workers/{worker}/frontend-tools/calls/{call}":                       s.readFrontendCall,
+		"POST /v1/workers/{worker}/frontend-tools/calls/{call}/cancel":               s.cancelFrontendCall,
+		"POST /v1/workers/{worker}/result":                                           s.workerResult,
+		"POST /v1/workers/{worker}/native-session":                                   s.bindNativeSession,
+		"GET /v1/workers/{worker}/control":                                           s.workerControlStatus,
+		"POST /v1/workers/{worker}/control":                                          s.setWorkerControl,
+		"POST /v1/workers/{worker}/control/ready":                                    s.workerControlReady,
+		"POST /v1/workers/{worker}/control/finish":                                   s.finishWorkerTurn,
+		"POST /v1/workers/{worker}/control/interrupt/claim":                          s.claimWorkerInterrupt,
+		"POST /v1/workers/{worker}/messages":                                         s.sendWorkerMessage,
+		"POST /v1/workers/{worker}/messages/{message}/claim":                         s.claimWorkerMessage,
+		"POST /v1/workers/{worker}/interrupt":                                        s.interruptWorker,
+		"POST /v1/workers/{worker}/stop":                                             s.stopWorker,
 	} {
 		mux.HandleFunc(pattern, s.handle(op))
 	}
@@ -140,8 +162,18 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 }
 
 func (s *service) handle(op endpoint) http.HandlerFunc {
+	return s.handleJSON(func(r *http.Request, actor string) (outcome, error) {
+		return s.applyEndpoint(r, actor, op)
+	})
+}
+
+func (s *service) handleJSON(op endpoint) http.HandlerFunc {
+	return s.handleJSONLimit(op, 1<<20)
+}
+
+func (s *service) handleJSONLimit(op endpoint, limit int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		// Read the bounded body before taking the shared state lock.
 		if r.Method == "POST" {
 			raw, err := io.ReadAll(r.Body)
@@ -162,21 +194,12 @@ func (s *service) handle(op endpoint) http.HandlerFunc {
 				return
 			}
 		}
-		var before []byte
-		if r.Method == "POST" {
-			before, _ = json.Marshal(&s.state)
+		if access := hosted.From(r.Context()); access != nil && !access.Allowed() {
+			s.mu.Unlock()
+			respondError(w, denied())
+			return
 		}
 		res, err := op(r, actor)
-		if err == nil && res.mutated {
-			if e := s.persist(); e != nil {
-				var restored database
-				if restoreErr := json.Unmarshal(before, &restored); restoreErr != nil {
-					panic(restoreErr)
-				}
-				s.state = restored
-				err = fmt.Errorf("persist Commander state: %w", e)
-			}
-		}
 		var body []byte
 		if err == nil {
 			body, err = json.Marshal(res.body)
@@ -193,6 +216,31 @@ func (s *service) handle(op endpoint) http.HandlerFunc {
 		w.WriteHeader(res.code)
 		_, _ = w.Write(append(body, '\n'))
 	}
+}
+
+// applyEndpoint runs with the service lock held. A streaming command shares
+// the same durable acceptance and rollback as its ordinary JSON endpoint.
+func (s *service) applyEndpoint(r *http.Request, actor string, op endpoint) (outcome, error) {
+	if access := hosted.From(r.Context()); access != nil && !access.Allowed() {
+		return outcome{}, denied()
+	}
+	var before []byte
+	if r.Method == "POST" {
+		before, _ = json.Marshal(&s.state)
+	}
+	res, err := op(r, actor)
+	if err != nil || !res.mutated {
+		return res, err
+	}
+	if err := s.persist(); err != nil {
+		var restored database
+		if restoreErr := json.Unmarshal(before, &restored); restoreErr != nil {
+			panic(restoreErr)
+		}
+		s.state = restored
+		return outcome{}, fmt.Errorf("persist Commander state: %w", err)
+	}
+	return res, nil
 }
 
 func respondError(w http.ResponseWriter, err error) {
@@ -240,6 +288,15 @@ func (s *service) getRun(req *http.Request, actor string) (outcome, error) {
 	if !s.canRead(actor, r) {
 		return outcome{}, denied()
 	}
+	if req.URL.Query().Get("view") == "ag-ui" {
+		projected := aguiRun{Run: *r, Workers: make([]aguiWorker, len(r.Workers))}
+		projected.Run.Workers = nil
+		for i, worker := range r.Workers {
+			projected.Workers[i].Worker = *worker
+			projected.Workers[i].projectMessages()
+		}
+		return read(projected), nil
+	}
 	return read(r), nil
 }
 
@@ -269,7 +326,7 @@ func (s *service) receipt(req *http.Request, actor string, input any) (key, inte
 		return
 	}
 	payload, _ := json.Marshal(input)
-	key = digest(actor + "\x00" + req.URL.Path + "\x00" + raw)
+	key = receiptKey(receiptActor(req, actor), req.URL.Path, raw)
 	intent = digest(string(payload))
 	if rec, ok := s.state.Receipts[key]; ok {
 		if rec.Intent != intent {
@@ -279,6 +336,17 @@ func (s *service) receipt(req *http.Request, actor string, input any) (key, inte
 		target = rec.Target
 	}
 	return
+}
+
+func receiptKey(actor, path, requestID string) string {
+	return digest(actor + "\x00" + path + "\x00" + requestID)
+}
+
+func receiptActor(r *http.Request, local string) string {
+	if access := hosted.From(r.Context()); access != nil {
+		return access.ReceiptActor()
+	}
+	return local
 }
 func (s *service) remember(key, intent, target string) {
 	if key != "" {
@@ -403,6 +471,13 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 		host = "localhost"
 	}
 	if host == "localhost" {
+		if actor != "" {
+			if launcher, ok := s.launcher.(interface{ CheckAgentClient(string) error }); ok {
+				if err := launcher.CheckAgentClient(client); err != nil {
+					return outcome{}, conflict(err.Error())
+				}
+			}
+		}
 		if launcher, ok := s.launcher.(interface{ CheckClient(string) error }); ok {
 			if err := launcher.CheckClient(client); err != nil {
 				return outcome{}, conflict(err.Error())
@@ -471,10 +546,7 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	if err != nil {
 		return outcome{}, err
 	}
-	var in struct {
-		Text   string
-		Events []ConsoleEvent
-	}
+	var in workerOutput
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
@@ -482,9 +554,25 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, bad("too many console events")
 	}
 	for _, event := range in.Events {
-		if len(event.Text) > 17<<10 || len(event.ToolID) > 256 || len(event.Name) > 256 {
+		if !event.ACP.Valid() {
+			return outcome{}, bad("invalid ACP activity")
+		}
+		if len(event.Text) > 17<<10 || len(event.ToolID) > 256 || len(event.Name) > 256 || len(event.Phase) > 64 {
 			return outcome{}, bad("console event exceeds size limit")
 		}
+	}
+	previous, replay, err := s.checkOutputBatch(req, w, &in)
+	if err != nil {
+		return outcome{}, err
+	}
+	ack := read(map[string]string{"id": w.ID})
+	if replay {
+		return ack, nil
+	}
+	durable := w.NativeSession == nil || (w.State == "unknown" && in.Text != "")
+	before := *w
+	if in.Batch > 1 && previous.Stream == "" {
+		in.Events = append([]ConsoleEvent{{Kind: "output", Text: "Earlier runner output is unavailable after service restart."}}, in.Events...)
 	}
 	const maxOutput = 64 << 10
 	if w.State == "unknown" && in.Text != "" {
@@ -503,17 +591,44 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 		if count := len(w.Console); count > 0 {
 			sequence = w.Console[count-1].Sequence
 		}
-		for _, event := range in.Events {
+		for i := range in.Events {
 			sequence++
-			event.Sequence = sequence
-			w.Console = append(w.Console, event)
+			in.Events[i].Sequence = sequence
 		}
-		const eventWindow = 128
-		if len(w.Console) > eventWindow {
-			w.Console = append([]ConsoleEvent(nil), w.Console[len(w.Console)-eventWindow:]...)
+		w.Console = append(w.Console, in.Events...)
+		if len(w.Console) > consoleEventWindow {
+			w.Console = append([]ConsoleEvent(nil), w.Console[len(w.Console)-consoleEventWindow:]...)
 		}
 	}
-	return changed(map[string]string{"id": w.ID}), nil
+	receipt := in.receipt(req)
+	if durable {
+		if w.NativeSession == nil && receipt.Stream != "" {
+			if s.state.OutputBatches == nil {
+				s.state.OutputBatches = make(map[string]outputReceipt)
+			}
+			s.state.OutputBatches[w.ID] = receipt
+		}
+		if err := s.persist(); err != nil {
+			*w = before
+			if w.NativeSession == nil && receipt.Stream != "" {
+				if previous.Stream == "" {
+					delete(s.state.OutputBatches, w.ID)
+				} else {
+					s.state.OutputBatches[w.ID] = previous
+				}
+			}
+			return outcome{}, fmt.Errorf("persist runner output: %w", err)
+		}
+	} else {
+		s.notifyConsoleOutput(w, in.Text, in.Events)
+	}
+	if w.NativeSession != nil && receipt.Stream != "" {
+		if s.liveOutputBatches == nil {
+			s.liveOutputBatches = make(map[string]outputReceipt)
+		}
+		s.liveOutputBatches[w.ID] = receipt
+	}
+	return ack, nil
 }
 func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	r, w, err := s.own(req, actor)
@@ -683,7 +798,7 @@ func (s *service) stopRun(req *http.Request, actor string) (outcome, error) {
 		}
 		owned = append(owned, w.ID)
 		w.State = "stopping"
-		stopWorkerInbox(w)
+		s.stopWorkerInbox(r, w)
 	}
 	return outcome{r, 200, true, func() { s.stop(r.ID, owned) }}, nil
 }

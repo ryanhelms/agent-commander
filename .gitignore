@@ -1,4 +1,25 @@
+# Build outputs and local dependencies
 .build/
 .swiftpm/
 dist/
+node_modules/
+__pycache__/
+
+# Local workspace settings
 .DS_Store
+.claude/settings.local.json
+
+# Runtime state and credentials
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.key
+*.pem
+*.p12
+*.pfx
+client_secret*.json
+hosted-grants.json

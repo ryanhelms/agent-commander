@@ -1,0 +1,3 @@
+{"type":"item.started","item":{"type":"command_execution","id":"read-1","command":"read fixture","aggregated_output":"","status":"in_progress"}}
+{"type":"item.updated","item":{"type":"command_execution","id":"read-1","command":"read fixture","aggregated_output":"Part one","status":"in_progress"}}
+{"type":"item.completed","item":{"type":"command_execution","id":"read-1","command":"read fixture","aggregated_output":"Part one\nPart two","exit_code":7,"status":"failed"}}

@@ -2,7 +2,7 @@
 
 **Project ownership.** The separately named `design-system` repository is an unrelated project. Agent Commander owns and versions its entire design system in this workspace. Its tokens, fixtures, artwork, documentation and future Swift components have an independent release history. Keep all design changes with the Agent Commander features they serve.
 
-**Review status.** The developer approved the coordinator wall and picture-in-picture direction for the initial local build. The gallery contains 28 visual references for the broader product. Claude Fable 5.2 owns the native design implementation. This specification translates those targets into component behavior for the native Mac app. Codex and Claude Fable 5.2 developed the material, ownership, keyboard and accessibility contracts against the plan and gallery. A browser specimen exercises a few interactions with illustrative data.
+**Review status.** The developer approved the coordinator wall and picture-in-picture direction for the initial local build. The gallery contains 28 visual references for the broader product. Claude Opus owns the native design implementation. This specification translates those targets into component behavior for the native Mac app. Codex and Claude Fable 5.2 developed the material, ownership, keyboard and accessibility contracts against the plan and gallery. A browser specimen exercises a few interactions with illustrative data.
 
 [Open the component specimen](index.html) · [Browse the concept gallery](../concepts/index.html) · [Read the portable tokens](tokens.json) · [Atomic Design breakdown](ATOMIC-DESIGN.md)
 

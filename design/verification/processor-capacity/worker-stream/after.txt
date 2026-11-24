@@ -1,0 +1,55 @@
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/snapshot         	      20	   2511794 ns/op	        32.00 active-snapshots/observe	      2314 cpu-us/observe	        32.00 delivered/observe	       246.0 finish-wire-B/observe	     43100 startup-wire-B/observe	     50229 wire-B/append	 2822470 B/op	    5400 allocs/op
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/incremental      	      20	    967744 ns/op	         0 active-snapshots/observe	       810.6 cpu-us/observe	        32.00 delivered/observe	       225.0 finish-wire-B/observe	     43100 startup-wire-B/observe	       612.7 wire-B/append	  384929 B/op	    1945 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/snapshot        	      20	   2829240 ns/op	        32.00 active-snapshots/observe	      2633 cpu-us/observe	        32.00 delivered/observe	     57577 finish-wire-B/observe	     57401 startup-wire-B/observe	     57181 wire-B/append	 3571818 B/op	    6336 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/incremental     	      20	   1195692 ns/op	         0 active-snapshots/observe	      1028 cpu-us/observe	        32.00 delivered/observe	     57556 finish-wire-B/observe	     57401 startup-wire-B/observe	       613.0 wire-B/append	 1019391 B/op	    2481 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/snapshot       	      20	  21384206 ns/op	       260.0 active-snapshots/observe	     19904 cpu-us/observe	       260.0 delivered/observe	     57644 finish-wire-B/observe	     57401 startup-wire-B/observe	     57246 wire-B/append	26210369 B/op	   42345 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/incremental    	      20	   7817612 ns/op	         2.000 active-snapshots/observe	      6493 cpu-us/observe	       260.0 delivered/observe	     57623 finish-wire-B/observe	     57401 startup-wire-B/observe	      1049 wire-B/append	 5634258 B/op	   11313 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/snapshot         	      20	   2469321 ns/op	        32.00 active-snapshots/observe	      2266 cpu-us/observe	        32.00 delivered/observe	       246.0 finish-wire-B/observe	     43100 startup-wire-B/observe	     50229 wire-B/append	 2822484 B/op	    5400 allocs/op
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/incremental      	      20	    969742 ns/op	         0 active-snapshots/observe	       797.4 cpu-us/observe	        32.00 delivered/observe	       225.0 finish-wire-B/observe	     43100 startup-wire-B/observe	       612.7 wire-B/append	  384381 B/op	    1945 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/snapshot        	      20	   2756227 ns/op	        32.00 active-snapshots/observe	      2566 cpu-us/observe	        32.00 delivered/observe	     57577 finish-wire-B/observe	     57401 startup-wire-B/observe	     57181 wire-B/append	 3571812 B/op	    6335 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/incremental     	      20	   1155612 ns/op	         0 active-snapshots/observe	       990.9 cpu-us/observe	        32.00 delivered/observe	     57556 finish-wire-B/observe	     57401 startup-wire-B/observe	       613.0 wire-B/append	 1019392 B/op	    2481 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/snapshot       	      20	  22425954 ns/op	       260.0 active-snapshots/observe	     20646 cpu-us/observe	       260.0 delivered/observe	     57644 finish-wire-B/observe	     57401 startup-wire-B/observe	     57246 wire-B/append	26210161 B/op	   42345 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/incremental    	      20	   7665271 ns/op	         2.000 active-snapshots/observe	      6415 cpu-us/observe	       260.0 delivered/observe	     57623 finish-wire-B/observe	     57401 startup-wire-B/observe	      1049 wire-B/append	 5634249 B/op	   11313 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/snapshot         	      20	   2615102 ns/op	        32.00 active-snapshots/observe	      2430 cpu-us/observe	        32.00 delivered/observe	       246.0 finish-wire-B/observe	     43100 startup-wire-B/observe	     50229 wire-B/append	 2822475 B/op	    5400 allocs/op
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/incremental      	      20	    891760 ns/op	         0 active-snapshots/observe	       765.0 cpu-us/observe	        32.00 delivered/observe	       225.0 finish-wire-B/observe	     43100 startup-wire-B/observe	       612.7 wire-B/append	  384931 B/op	    1945 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/snapshot        	      20	   2776438 ns/op	        32.00 active-snapshots/observe	      2601 cpu-us/observe	        32.00 delivered/observe	     57577 finish-wire-B/observe	     57401 startup-wire-B/observe	     57181 wire-B/append	 3571809 B/op	    6336 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/incremental     	      20	   1150756 ns/op	         0 active-snapshots/observe	       996.2 cpu-us/observe	        32.00 delivered/observe	     57556 finish-wire-B/observe	     57401 startup-wire-B/observe	       613.0 wire-B/append	 1019392 B/op	    2481 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/snapshot       	      20	  26563288 ns/op	       260.0 active-snapshots/observe	     23615 cpu-us/observe	       260.0 delivered/observe	     57644 finish-wire-B/observe	     57401 startup-wire-B/observe	     57246 wire-B/append	26210350 B/op	   42345 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/incremental    	      20	   8691806 ns/op	         2.000 active-snapshots/observe	      7283 cpu-us/observe	       260.0 delivered/observe	     57623 finish-wire-B/observe	     57401 startup-wire-B/observe	      1049 wire-B/append	 5634249 B/op	   11313 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/snapshot         	      20	   2554538 ns/op	        32.00 active-snapshots/observe	      2366 cpu-us/observe	        32.00 delivered/observe	       246.0 finish-wire-B/observe	     43100 startup-wire-B/observe	     50229 wire-B/append	 2822472 B/op	    5400 allocs/op
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/incremental      	      20	   1028369 ns/op	         0 active-snapshots/observe	       869.9 cpu-us/observe	        32.00 delivered/observe	       225.0 finish-wire-B/observe	     43100 startup-wire-B/observe	       612.7 wire-B/append	  384930 B/op	    1945 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/snapshot        	      20	   2916717 ns/op	        32.00 active-snapshots/observe	      2704 cpu-us/observe	        32.00 delivered/observe	     57577 finish-wire-B/observe	     57401 startup-wire-B/observe	     57181 wire-B/append	 3571812 B/op	    6335 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/incremental     	      20	   1149729 ns/op	         0 active-snapshots/observe	       996.1 cpu-us/observe	        32.00 delivered/observe	     57556 finish-wire-B/observe	     57401 startup-wire-B/observe	       613.0 wire-B/append	 1019396 B/op	    2481 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/snapshot       	      20	  23032621 ns/op	       260.0 active-snapshots/observe	     21346 cpu-us/observe	       260.0 delivered/observe	     57644 finish-wire-B/observe	     57401 startup-wire-B/observe	     57246 wire-B/append	26210075 B/op	   42344 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/incremental    	      20	   7626592 ns/op	         2.000 active-snapshots/observe	      6474 cpu-us/observe	       260.0 delivered/observe	     57623 finish-wire-B/observe	     57401 startup-wire-B/observe	      1049 wire-B/append	 5634246 B/op	   11313 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/service
+cpu: Apple M5
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/snapshot         	      20	   2359352 ns/op	        32.00 active-snapshots/observe	      2140 cpu-us/observe	        32.00 delivered/observe	       246.0 finish-wire-B/observe	     43100 startup-wire-B/observe	     50229 wire-B/append	 2822475 B/op	    5400 allocs/op
+BenchmarkAGUIWorkerObserve/96_retained/32_appends/incremental      	      20	    951173 ns/op	         0 active-snapshots/observe	       806.2 cpu-us/observe	        32.00 delivered/observe	       225.0 finish-wire-B/observe	     43100 startup-wire-B/observe	       612.7 wire-B/append	  384927 B/op	    1945 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/snapshot        	      20	   2604935 ns/op	        32.00 active-snapshots/observe	      2410 cpu-us/observe	        32.00 delivered/observe	     57577 finish-wire-B/observe	     57401 startup-wire-B/observe	     57181 wire-B/append	 3571809 B/op	    6336 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/32_appends/incremental     	      20	   1099302 ns/op	         0 active-snapshots/observe	       961.5 cpu-us/observe	        32.00 delivered/observe	     57556 finish-wire-B/observe	     57401 startup-wire-B/observe	       613.0 wire-B/append	 1019400 B/op	    2481 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/snapshot       	      20	  20061344 ns/op	       260.0 active-snapshots/observe	     18659 cpu-us/observe	       260.0 delivered/observe	     57644 finish-wire-B/observe	     57401 startup-wire-B/observe	     57246 wire-B/append	26209888 B/op	   42342 allocs/op
+BenchmarkAGUIWorkerObserve/128_retained/260_appends/incremental    	      20	   7549483 ns/op	         2.000 active-snapshots/observe	      6473 cpu-us/observe	       260.0 delivered/observe	     57623 finish-wire-B/observe	     57401 startup-wire-B/observe	      1049 wire-B/append	 5634242 B/op	   11313 allocs/op
+PASS
