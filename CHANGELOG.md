@@ -4,6 +4,19 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+## [0.1.0-pilot.3] - 2026-11-24
+
+
+### Added
+
+- Show local Claude activity, availability, and recovery status in the cockpit.
+- Resize the floating picture-in-picture panel and restore its last size.
+
+### Changed
+
+- Default to Pretty consoles and show ACP activity and pending approvals inline.
+- Document the private multiplayer pilot deployment on Fabric GKE.
+
 ## [0.1.0-pilot.2] - 2026-11-24
 
 
