@@ -168,6 +168,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/control/provider-exit":                            s.reportWorkerProviderExit,
 		"POST /v1/workers/{worker}/control/reconcile":                                s.reconcileWorkerProvider,
 		"POST /v1/workers/{worker}/control/interrupt/claim":                          s.claimWorkerInterrupt,
+		"POST /v1/workers/{worker}/control/interrupt/report":                         s.reportWorkerInterrupt,
 		"POST /v1/workers/{worker}/messages":                                         s.sendWorkerMessage,
 		"POST /v1/workers/{worker}/messages/{message}/claim":                         s.claimWorkerMessage,
 		"POST /v1/workers/{worker}/interrupt":                                        s.interruptWorker,

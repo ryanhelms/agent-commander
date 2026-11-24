@@ -378,6 +378,8 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// Run title, then each parent worker, then this worker.
     let lineage: [String]
     let control: InputControl
+    /// The worker's first pending request in the service's order: the one its inline form answers
+    /// and its tile marks. Further requests from the same worker are in `pendingRequests`.
     let request: RequestPresentation?
     /// Local clock time the worker started, when the service recorded it.
     let startedAt: String?
@@ -386,8 +388,16 @@ struct WorkerPresentation: Identifiable, Equatable {
     var transcript: [TranscriptEntry] = []
     /// Follow-ups the service has accepted for this worker and not yet delivered to it.
     var queuedFollowUps = 0
+    /// Every follow-up receipt of a managed local Claude worker, from the service's durable
+    /// `control.messages`, with what a queued one waits for. Nil for every other worker and while
+    /// the service lists none; those keep the `queuedFollowUps` cue.
+    var followUpReceipts: FollowUpReceipts? = nil
     /// The service has been asked to interrupt this worker's current turn and has not done so yet.
     var interruptRequested = false
+    /// The service's receipt for the latest interrupt of this worker, with the last confirmed step
+    /// and outcome, addressed to its original turn. Nil from an older service and for a coordinator,
+    /// whose surfaces keep the `interruptRequested` cue.
+    var interruptReceipt: InterruptReceiptStatement? = nil
     /// Short ID of this worker's most recent answered request whose delivery the service could not
     /// confirm. The answer was accepted; whether the worker received it is unknown.
     var unconfirmedReply: String? = nil
@@ -407,8 +417,25 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// restart. Nil for every other worker, whose surfaces and gates are unchanged. Independent of
     /// `state`, which keeps the worker's own Completed, Idle or Unknown.
     var providerAvailability: ProviderAvailability? = nil
+    /// Every pending request from this worker, in the service's order, each by its own ID. The
+    /// first is `request`. Empty where a fixture sets only `request`; see `allRequests`.
+    var pendingRequests: [RequestPresentation] = []
 
     var isDisconnected: Bool { state == .disconnected }
+
+    /// An interrupt of this worker's current turn is waiting: the legacy flag, or an unresolved
+    /// receipt for the turn the worker is in now. The action list shows it as requested.
+    var interruptPending: Bool {
+        if interruptRequested { return true }
+        guard let receipt = interruptReceipt, receipt.receipt.isUnresolved else { return false }
+        return receipt.activeTurnID == receipt.receipt.turnID
+    }
+
+    /// Every pending request from this worker, oldest first. Attention counts and navigates these
+    /// by request ID, so a second approval stays reachable while the first is answered inline.
+    var allRequests: [RequestPresentation] {
+        pendingRequests.isEmpty ? (request.map { [$0] } ?? []) : pendingRequests
+    }
 
     /// What the worker's surfaces say about its availability. Nil while it is normal.
     var availabilityStatement: ProviderAvailabilityStatement? {
@@ -554,6 +581,14 @@ enum Identifier {
     /// Compact form for display. The full value stays available to accessibility and copy actions.
     static func short(_ id: String) -> String {
         id.count > 10 ? String(id.prefix(8)) : id
+    }
+
+    /// Compact form for a locally assigned turn ID. `initial-<worker>` keeps its worker suffix
+    /// ("initial · w-abc123"); other turns use `short`.
+    static func turn(_ id: String) -> String {
+        let prefix = "initial-"
+        guard id.hasPrefix(prefix), id.count > prefix.count else { return short(id) }
+        return "initial · \(short(String(id.dropFirst(prefix.count))))"
     }
 }
 
@@ -889,7 +924,9 @@ extension RunContent {
         let workers = run.workers ?? []
         let byID = Dictionary(workers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let pending = (run.requests ?? []).filter { $0.status == "pending" }
-        let requestByWorker = Dictionary(pending.map { ($0.workerID, $0) }, uniquingKeysWith: { first, _ in first })
+        // Every pending request per worker, in the service's stable order. The first is the one the
+        // worker's inline form answers; all of them are projected by ID into Attention.
+        let requestsByWorker = Dictionary(grouping: pending, by: \.workerID)
         // Answers the service accepted and could not confirm as delivered: the latest one per worker.
         let unconfirmed = (run.requests ?? []).filter { $0.status != "pending" && $0.deliveryIsUnknown }
         let unconfirmedByWorker = Dictionary(unconfirmed.map { ($0.workerID, $0) }, uniquingKeysWith: { _, last in last })
@@ -916,7 +953,8 @@ extension RunContent {
             let branch = worker.branch?.trimmingCharacters(in: .whitespaces) ?? ""
             let platform = HostPlatform(serviceHost: worker.host)
             let transcript = TranscriptEntry.entries(from: worker.messages ?? [])
-            let state = TaskState(api: worker.state, hasPendingRequest: requestByWorker[worker.id] != nil)
+            let questions = requestsByWorker[worker.id] ?? []
+            let state = TaskState(api: worker.state, hasPendingRequest: !questions.isEmpty)
             // The service's own explanation, or a plain statement when it sent none.
             let explanation = worker.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let disconnectReason: String? = state == .disconnected
@@ -927,7 +965,7 @@ extension RunContent {
             let telemetry = worker.boundSession.map { _ in
                 ProviderTelemetry.reported(fields: worker.allFields, messages: worker.messages ?? [])
             }
-            let request = requestByWorker[worker.id].map { question in
+            let requests = questions.map { question in
                 RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
                     workerID: worker.id, workerName: worker.name, workerIsCoordinator: isCoordinator,
@@ -944,6 +982,8 @@ extension RunContent {
                     awaitingApprovalToolID: PrettyRunStatus(state: state, entries: transcript)
                         .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty))
             }
+            let request = requests.first
+            let claudeProgress = ClaudeProgressTrack.eligible(worker, isCoordinator: isCoordinator)
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
                 host: worker.host, platform: platform,
@@ -961,13 +1001,24 @@ extension RunContent {
                 startedAt: Timestamp.clock(worker.createdAt, seconds: true),
                 transcript: transcript,
                 queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
+                // Only a managed local Claude worker, the same scope as its progress track.
+                followUpReceipts: claudeProgress == nil ? nil
+                    : FollowUpReceipts(control: worker.control, workerID: worker.id, workerName: worker.name,
+                                       requests: requests),
                 interruptRequested: worker.control?.interruptRequested == true,
+                interruptReceipt: isCoordinator ? nil : worker.control.flatMap { control in
+                    control.interrupt.map {
+                        InterruptReceiptStatement(receipt: $0, workerName: worker.name,
+                                                  activeTurnID: control.activeTurnID)
+                    }
+                },
                 unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) },
                 hostIsReconnecting: reconnecting,
                 session: worker.boundSession,
                 telemetry: telemetry,
-                claudeProgress: ClaudeProgressTrack.eligible(worker, isCoordinator: isCoordinator),
-                providerAvailability: isCoordinator ? nil : ProviderAvailability(worker: worker))
+                claudeProgress: claudeProgress,
+                providerAvailability: isCoordinator ? nil : ProviderAvailability(worker: worker),
+                pendingRequests: requests)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.
@@ -1007,7 +1058,7 @@ extension RunContent {
             startedAt: Timestamp.clock(run.createdAt),
             status: TaskState(api: run.status), canStop: run.canStop,
             coordinator: coordinator, wall: layout,
-            awaiting: everyone.compactMap(\.request))
+            awaiting: everyone.flatMap(\.allRequests))
     }
 
     /// Last two non-empty lines of terminal output, used as context beside a pending question.

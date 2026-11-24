@@ -10,6 +10,10 @@ import SwiftUI
 //                         (+ ProviderAvailabilityNotice row while a bound Claude adapter has exited or
 //                            is being checked after a restart)
 //                         (+ ClaudeProgressStatus row above the status line of a tracked local Claude worker)
+//                         (+ InterruptReceiptStatus row above the status line: always in the
+//                            focused variant, on the wall while the outcome is unresolved or unknown)
+//                         (+ FollowUpReceiptStatus row directly above the status line in the focused
+//                            variant of a managed local Claude worker with follow-up receipts)
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
@@ -28,6 +32,12 @@ import SwiftUI
 struct WorkerTileActions {
     var toggleZoom: (() -> Void)? = nil
     var openRequest: (() -> Void)? = nil
+    /// Opens this worker's next pending request after the one its console marks, by request ID,
+    /// in Attention. Present only while the worker has more than one pending request.
+    var openFurtherRequest: (() -> Void)? = nil
+    /// Opens the pending request a queued follow-up waits for, by that request's exact ID, through
+    /// the same routing as `openRequest`. Present only while a queued follow-up waits on one.
+    var openFollowUpBlocker: (() -> Void)? = nil
     var copyID: () -> Void = {}
     var handBack: (() -> Void)? = nil
     /// Sends a follow-up message to this worker and reports whether it was accepted. Present
@@ -92,6 +102,8 @@ struct WorkerTile: View {
             }
             availabilityRow
             progressRow
+            interruptRow
+            followUpRow
             footer
             // A follow-up cannot reach a disconnected worker, or a Claude adapter that has exited or
             // is being checked, so its compose line waits with it.
@@ -246,11 +258,54 @@ struct WorkerTile: View {
     @ViewBuilder private var progressRow: some View {
         if let track = worker.claudeProgress,
            ClaudeProgressDisplay(track: track, state: worker.state, now: Date()).isVisible {
-            // The availability strip above already offers the source, so it is offered once.
+            // The availability strip above, or the interrupt row below, already offers the source,
+            // so it is offered once.
             ClaudeProgressStatus(track: track, state: worker.state, workerName: worker.name,
                                  size: isFocusedVariant ? 11 : 10,
-                                 inspectSource: worker.providerAvailability == nil ? source?.open : nil)
+                                 inspectSource: worker.providerAvailability == nil && !interruptOffersSource
+                                     ? source?.open : nil)
                 .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Term.bar)
+                .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
+        }
+    }
+
+    /// The receipt shown on this surface: always in the focused worker, and on the wall only while
+    /// its outcome is unresolved or unknown. Nil from an older service.
+    private var shownInterruptReceipt: InterruptReceiptStatement? {
+        worker.interruptReceipt.flatMap { $0.isShown(focused: isFocusedVariant) ? $0 : nil }
+    }
+
+    /// The interrupt row offers the read-only source while its outcome is unresolved or unknown,
+    /// unless the availability strip already does.
+    private var interruptOffersSource: Bool {
+        InterruptReceiptStatement.rowOffersSource(worker.interruptReceipt, focused: isFocusedVariant,
+                                                  hasSource: source != nil,
+                                                  availability: worker.providerAvailability)
+    }
+
+    /// What happened to the developer's interrupt of this worker's turn, in its own row directly
+    /// above the status line, in every display mode. It replaces the generic `interrupt requested`
+    /// cue. Passive: it offers only the read-only source inspector; stopping stays in the actions.
+    @ViewBuilder private var interruptRow: some View {
+        if let statement = shownInterruptReceipt {
+            InterruptReceiptStatus(statement: statement, size: isFocusedVariant ? 11 : 10,
+                                   inspectSource: interruptOffersSource ? source?.open : nil)
+                .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Term.bar)
+                .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
+        }
+    }
+
+    /// The focused worker's follow-up receipts, in their own row directly above the status line:
+    /// the receipt still awaiting an outcome first, with what it waits for, then the retained latest
+    /// outcome. Passive apart from opening the blocking request by its ID.
+    @ViewBuilder private var followUpRow: some View {
+        if isFocusedVariant, let receipts = worker.followUpReceipts, receipts.isShown {
+            FollowUpReceiptStatus(receipts: receipts, size: 11, openBlocker: actions.openFollowUpBlocker)
+                .padding(.horizontal, 21).padding(.vertical, 5)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Term.bar)
                 .overlay(alignment: .top) { Rectangle().fill(Term.rule).frame(height: 1) }
@@ -267,8 +322,18 @@ struct WorkerTile: View {
                                   request: worker.request,
                                   openRequest: isFocusedVariant ? nil : actions.openRequest,
                                   reconnectingHost: worker.hostIsReconnecting ? worker.host : nil) {
-            if isFocusedVariant, let request = worker.request, !request.isWorkerDisconnected, reply != nil {
+            if isFocusedVariant, let request = worker.request, !request.isWorkerDisconnected, reply != nil,
+               request.choices.isEmpty {
                 TermHint(keys: "↩", action: "send", size: size - 1)
+            }
+            // Further pending requests from this worker, answered in Attention by their own IDs.
+            let further = worker.allRequests.count - 1
+            if further > 0, let openFurtherRequest = actions.openFurtherRequest {
+                Button(further == 1 ? "+1 request" : "+\(further) requests", action: openFurtherRequest)
+                    .buttonStyle(TermButtonStyle(ink: Term.amber, size: size - 1))
+                    .fixedSize()
+                    .help("\(worker.name) has \(further + 1) pending requests. Show the next one in Attention.")
+                    .accessibilityLabel("Show the next of \(further + 1) pending requests from \(worker.name)")
             }
             // An answer the service accepted and could not confirm as delivered.
             if isFocusedVariant, let unconfirmed = worker.unconfirmedReply {
@@ -277,13 +342,15 @@ struct WorkerTile: View {
                     .help("Your reply to request \(unconfirmed) was accepted. Whether \(worker.name) received it is unknown.")
                     .accessibilityLabel("Reply to request \(unconfirmed): delivery unknown")
             }
-            // What the service reports about the developer's own requests to this worker.
-            if isFocusedVariant, worker.interruptRequested {
+            // What the service reports about the developer's own requests to this worker. A
+            // receipt's row above says more, so the generic cue is only for an older service.
+            if isFocusedVariant, worker.interruptRequested, worker.interruptReceipt == nil {
                 Text("interrupt requested").font(Term.font(size - 1)).foregroundStyle(Term.amber)
                     .lineLimit(1).fixedSize()
                     .accessibilityLabel("Interrupt requested for \(worker.name)")
             }
-            if isFocusedVariant, worker.queuedFollowUps > 0 {
+            // The follow-up row above says more for a managed local Claude worker.
+            if isFocusedVariant, worker.followUpReceipts == nil, worker.queuedFollowUps > 0 {
                 Text(worker.queuedFollowUps == 1 ? "1 follow-up queued" : "\(worker.queuedFollowUps) follow-ups queued")
                     .font(Term.font(size - 1)).foregroundStyle(Term.cyan)
                     .lineLimit(1).fixedSize()
@@ -303,7 +370,9 @@ struct WorkerTile: View {
                 InputOwnership(workerName: worker.name, control: worker.control,
                                isKeyFocused: isKeyFocused, handBack: actions.handBack,
                                takeControl: isFocusedVariant ? actions.takeControl : nil,
-                               isBusy: actions.isBusy, size: size - 0.5)
+                               isBusy: actions.isBusy, size: size - 0.5,
+                               handBackNote: isFocusedVariant ? worker.followUpReceipts?.handBackNote : nil,
+                               handBackStatement: isFocusedVariant ? worker.followUpReceipts?.handBackStatement : nil)
             }
         }
     }
@@ -374,8 +443,17 @@ struct WorkerTile: View {
             case .held: parts.append("you have control")
             }
         }
-        if worker.interruptRequested { parts.append("interrupt requested") }
-        if worker.queuedFollowUps > 0 { parts.append("\(worker.queuedFollowUps) follow-ups queued") }
+        if let receipt = shownInterruptReceipt {
+            parts.append(receipt.summary)
+        } else if worker.interruptRequested, worker.interruptReceipt == nil {
+            parts.append("interrupt requested")
+        }
+        if let receipts = worker.followUpReceipts {
+            if isFocusedVariant, receipts.isShown { parts.append(receipts.summary) }
+            else if worker.queuedFollowUps > 0 { parts.append("\(worker.queuedFollowUps) follow-ups queued") }
+        } else if worker.queuedFollowUps > 0 {
+            parts.append("\(worker.queuedFollowUps) follow-ups queued")
+        }
         if let request = worker.request {
             parts.append(request.isWorkerDisconnected
                 ? "request \(request.shortID) waiting, reply unavailable until reconnected"
@@ -435,9 +513,9 @@ struct WorkerActionMenu: View {
             if actions.interrupt != nil || actions.stop != nil {
                 Hairline().padding(.vertical, 5)
                 if let interrupt = actions.interrupt {
-                    row("waveform.path.ecg", worker.interruptRequested ? "Interrupt requested" : "Interrupt turn",
+                    row("waveform.path.ecg", worker.interruptPending ? "Interrupt requested" : "Interrupt turn",
                         label: "Interrupt the current turn of \(worker.name)",
-                        isEnabled: !actions.isBusy && !worker.interruptRequested, action: interrupt)
+                        isEnabled: !actions.isBusy && !worker.interruptPending, action: interrupt)
                 }
                 if let stop = actions.stop {
                     row("stop.circle", "Stop worker…", tone: .failure, label: "Stop \(worker.name)",
@@ -1002,7 +1080,8 @@ struct AttentionDrawer: View {
                                    details: [.init(text: current.runTitle), .init(text: current.host)], density: .pip)
                         .padding(.bottom, 16)
                     section("Question") {
-                        Text(current.question).font(.system(size: 13)).lineSpacing(4)
+                        // Its choices are the buttons below, so their appended text list is left out.
+                        Text(current.promptWithoutChoiceList).font(.system(size: 13)).lineSpacing(4)
                             .foregroundStyle(Color(hex: 0xE6E8F0)).textSelection(.enabled)
                     }
                     if !current.contextTail.isEmpty {

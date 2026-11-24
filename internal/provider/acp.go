@@ -149,13 +149,13 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	var lastFinishedState string
 	for {
 		request := acpPromptRequest(ref, turnID, prompt, parts)
-		state, turnErr := "failed", context.Cause(streamLife)
+		state, observedTurnEnd, turnErr := "failed", false, context.Cause(streamLife)
 		if lastFinishedState != "" && ref.GetHarnessInstance() == service.LocalClaudeHarness &&
 			ctx.Err() == nil && errors.Is(turnErr, errACPDisconnected) {
 			return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
 		}
 		if turnErr == nil {
-			state, turnErr = runACPTurn(ctx, client, request, source, a, s, path, managed, capabilities, updates)
+			state, observedTurnEnd, turnErr = runACPTurn(ctx, client, request, source, a, s, path, managed, capabilities, updates)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -170,7 +170,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 				"state": "disconnected", "message_id": messageID,
 			})
 		}
-		outcome := map[string]string{"state": state, "message_id": messageID}
+		outcome := map[string]any{"state": state, "message_id": messageID, "observed_turn_end": observedTurnEnd}
 		if turnErr != nil {
 			outcome["error"] = turnErr.Error()
 		}
@@ -423,14 +423,14 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 	return updates, done, life
 }
 
-func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.SendRequest, source *acpSourcePublisher, a *api, s *screen, path string, managed bool, capabilities *model.Capabilities, updates <-chan acpUpdate) (string, error) {
+func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.SendRequest, source *acpSourcePublisher, a *api, s *screen, path string, managed bool, capabilities *model.Capabilities, updates <-chan acpUpdate) (string, bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ref, turnID := request.Session, request.OperationId
 	localClaude := managed && ref.GetHarnessInstance() == service.LocalClaudeHarness
 	sent, err := client.Send(ctx, request)
 	if err = accepted(turnID, sent.GetReceipt(), err); err != nil {
-		return "failed", err
+		return "failed", false, err
 	}
 	source.capturePrompt(ctx, request)
 	pending := map[string]*model.InputRequest{}
@@ -448,13 +448,13 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	for {
 		select {
 		case <-ctx.Done():
-			return "idle", ctx.Err()
+			return "idle", false, ctx.Err()
 		case update, ok := <-updates:
 			if update.err != nil {
-				return "failed", update.err
+				return "failed", false, update.err
 			}
 			if !ok {
-				return "failed", errACPDisconnected
+				return "failed", false, errACPDisconnected
 			}
 			e := update.event
 			if update.ended != nil {
@@ -466,7 +466,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			}
 			portableRef := source.captureObservation(ctx, e)
 			if ext := paramsSource(e); ext != nil && portableRef == nil && ctx.Err() == nil {
-				return "failed", errors.New("could not publish selected session update source")
+				return "failed", false, errors.New("could not publish selected session update source")
 			}
 			if e.GetTurnId() != turnID {
 				continue
@@ -527,11 +527,11 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetInput() != nil:
 				flushText()
 				if !capabilities.GetCanAnswer() {
-					return "failed", errors.New("provider requested an answer without advertising support for answers")
+					return "failed", false, errors.New("provider requested an answer without advertising support for answers")
 				}
 				request := e.GetInput()
 				if request.RequestId == "" || len(request.Choices) == 0 {
-					return "failed", errors.New("provider requested an unsupported form of input")
+					return "failed", false, errors.New("provider requested an unsupported form of input")
 				}
 				choices := make([]service.QuestionChoice, 0, len(request.Choices))
 				for _, option := range request.Choices {
@@ -539,7 +539,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				}
 				var q service.Question
 				if err := a.request("POST", path+"/questions", map[string]any{"question": request.Prompt, "choices": choices, "idempotency_key": request.RequestId}, &q); err != nil {
-					return "failed", err
+					return "failed", false, err
 				}
 				pending[q.ID] = request
 				s.line(q.ID + " · " + q.Question)
@@ -555,18 +555,19 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: portableRef})
 				}
 				reason := e.GetTurnEnded().Reason
+				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result"
 				if acpDisconnected(reason) {
-					return "failed", errACPDisconnected
+					return "failed", false, errACPDisconnected
 				}
 				switch reason {
 				case "end_turn":
 					s.line("")
-					return "completed", nil
+					return "completed", observedTurnEnd, nil
 				case "cancelled":
 					s.line("Turn interrupted.")
-					return "idle", nil
+					return "idle", observedTurnEnd, nil
 				default:
-					return "failed", fmt.Errorf("provider stopped the turn: %s", reason)
+					return "failed", observedTurnEnd, fmt.Errorf("provider stopped the turn: %s", reason)
 				}
 			}
 		case <-ticker.C:
@@ -579,13 +580,25 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 						"turn_id": turnID, "generation": feed.Generation,
 					}, nil)
 				} else if err == nil && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
-					if a.request("POST", path+"/control/interrupt/claim", map[string]int{"generation": feed.Generation}, nil) == nil {
+					claim := map[string]any{"generation": feed.Generation}
+					operationID := "interrupt-" + turnID
+					if feed.InterruptID != "" {
+						claim["id"], claim["turn_id"] = feed.InterruptID, turnID
+						operationID = feed.InterruptID
+					}
+					if a.request("POST", path+"/control/interrupt/claim", claim, nil) == nil {
 						interruptAttempted = true
-						result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: "interrupt-" + turnID, TurnId: turnID})
-						if err = accepted("interrupt-"+turnID, result.GetReceipt(), err); err != nil {
-							// The original turn can finish between the API claim and delivery.
-							// Its turn-ended observation remains authoritative.
+						result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: operationID, TurnId: turnID})
+						phase := "sent"
+						if err = accepted(operationID, result.GetReceipt(), err); err != nil {
+							phase = "unconfirmed"
 							s.line("Interrupt could not be confirmed: " + err.Error())
+						}
+						if feed.InterruptID != "" {
+							claim["phase"] = phase
+							if err := publishWorkerControl(ctx, a, path+"/control/interrupt/report", claim); err != nil {
+								s.line("Interrupt evidence could not be saved: " + err.Error())
+							}
 						}
 					}
 				}
@@ -596,14 +609,14 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					continue
 				}
 				if !slices.ContainsFunc(request.Choices, func(opt *model.Choice) bool { return opt.Id == q.Answer }) {
-					return "failed", errors.New("reply does not match an offered provider choice")
+					return "failed", false, errors.New("reply does not match an offered provider choice")
 				}
 				answer, err := client.Answer(ctx, &model.AnswerRequest{Session: ref, OperationId: "answer-" + id, RequestId: request.RequestId, Answer: &model.AnswerRequest_OptionId{OptionId: q.Answer}})
 				if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
-					return "failed", errACPDisconnected
+					return "failed", false, errACPDisconnected
 				}
 				if err = accepted("answer-"+id, answer.GetReceipt(), err); err != nil {
-					return "failed", err
+					return "failed", false, err
 				}
 				delete(pending, id)
 			}

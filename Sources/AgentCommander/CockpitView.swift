@@ -79,6 +79,11 @@ final class CockpitPresentationState {
     /// Requests the developer asked for by View request or Next request. They are shown even
     /// while their console is in view, until answered or closed.
     var surfacedRequests = Set<String>()
+    /// The request Next request or View request last brought forward, by request ID, inline or
+    /// in Attention. Pressing Next request again moves past it, so a choice-only request, whose
+    /// reply has no text field to hold focus, still advances. Cleared when the developer picks
+    /// another request by hand or it is no longer pending.
+    var reachedRequestID: String?
     /// Worker whose source inspector is open. The console showing that worker presents it; the
     /// cockpit page starts and abandons the reading as this changes.
     var sourceInspectorWorkerID: String?
@@ -104,6 +109,13 @@ final class CockpitPresentationState {
                                    })
     }
 
+    /// Shows this request in the attention surfaces, picked by hand (Also pending, the stack's
+    /// next card or its position). The next Next request starts from it.
+    func show(requestID: String) {
+        activeRequestID = requestID
+        reachedRequestID = nil
+    }
+
     /// Shows the worker that raised a request: zooms it in the selected run, or selects its run
     /// and zooms it there. The in-window surfaces and the floating window both use this.
     func reveal(_ request: RequestPresentation, from run: RunContent?, selectRun: (String) -> Void) {
@@ -126,45 +138,117 @@ final class CockpitPresentationState {
 }
 
 extension CockpitContent {
-    /// The request answered inline in the focused worker, if there is one.
+    /// The request answered inline in the focused worker, if there is one: that worker's first
+    /// pending request. Its other pending requests are answered from Attention.
     @MainActor func inlineRequestID(_ ui: CockpitPresentationState) -> String? {
         guard let id = ui.zoomedWorkerID else { return nil }
         return selected?.wall.workers.first { $0.id == id }?.request?.id
     }
 
-    /// Pending requests for the attention surfaces, oldest first: every run's requests, without
-    /// the ones the developer hid and without the one answered inline in the focused worker, so
-    /// each request has exactly one reply field. The side panel, the in-window PiP and the
-    /// floating window all read this one queue.
-    @MainActor func attentionQueue(_ ui: CockpitPresentationState) -> [RequestPresentation] {
-        // The focused worker's inline prompt answers its request only while the developer can see
-        // it. When the PiP floats and the cockpit is behind another app, minimized or showing the
-        // new-run form, that request joins the queue so the floating window can carry it. Back in
-        // an attended cockpit it leaves the queue again, and the inline prompt is the one field.
-        // The side panel and the fixtures render in the cockpit window itself, beside the inline
-        // prompt, so there the inline request always stays out.
+    /// The inline request while its form is actually in front of the developer. The focused
+    /// worker's inline prompt answers its request only while the developer can see it. When the
+    /// PiP floats and the cockpit is behind another app, minimized or showing the new-run form,
+    /// that request joins the queue so the floating window can carry it. Back in an attended
+    /// cockpit it leaves the queue again, and the inline prompt is the one field. The side panel
+    /// and the fixtures render in the cockpit window itself, beside the inline prompt, so there
+    /// the inline request always stays out.
+    @MainActor func shownInlineRequestID(_ ui: CockpitPresentationState) -> String? {
         let inlineIsOutOfSight = ui.usesFloatingPanel && ui.suppressesVisibleSources
             && (!ui.cockpitWindowAttended || ui.composingRun)
-        let inline = inlineIsOutOfSight ? nil : inlineRequestID(ui)
+        return inlineIsOutOfSight ? nil : inlineRequestID(ui)
+    }
+
+    /// Pending requests for the attention surfaces, oldest first: every run's requests, by request
+    /// ID, without the ones the developer hid and without the one answered inline in the focused
+    /// worker, so each request has exactly one reply field. A second request from the focused or a
+    /// visible worker stays in, because no console shows it. The side panel, the in-window PiP and
+    /// the floating window all read this one queue.
+    @MainActor func attentionQueue(_ ui: CockpitPresentationState) -> [RequestPresentation] {
+        let inline = shownInlineRequestID(ui)
         return pending.filter { request in
             !ui.dismissedRequests.contains(request.id) && request.id != inline
                 && (ui.surfacedRequests.contains(request.id) || !isSourceInView(request, ui))
         }
     }
 
-    /// True when the console that raised this request is already in front of the developer, so
-    /// surfacing the request again would repeat what its highlighted console shows. That needs
-    /// all of: the live rule is on; the cockpit window is attended; the request belongs to the
-    /// selected run and the run is showing; and the worker's tile is inside the worker viewport
-    /// (the coordinator's console is always in the pane). A request from another run, a worker
-    /// scrolled away or inside a collapsed group, or a cockpit that is behind another app or
-    /// minimized is not in view.
+    /// The explicit Next request step for the current presentation state.
+    @MainActor func attentionNavigation(_ ui: CockpitPresentationState, answering: String?) -> AttentionNavigation {
+        AttentionNavigation(order: pending.map(\.id), inline: shownInlineRequestID(ui),
+                            dismissed: ui.dismissedRequests, active: ui.activeRequestID,
+                            current: answering ?? ui.reachedRequestID)
+    }
+
+    /// The request a worker's console marks: its first pending one. A console shows exactly one
+    /// request, so only that request ID counts as already in view.
+    @MainActor func shownRequestID(ofWorker workerID: String) -> String? {
+        guard let run = selected else { return nil }
+        if run.coordinator?.id == workerID { return run.coordinator?.request?.id }
+        return run.wall.workers.first { $0.id == workerID }?.request?.id
+    }
+
+    /// True when the console that raised this request is already in front of the developer and
+    /// shows this very request, so surfacing it again would repeat what its highlighted console
+    /// shows. That needs all of: the live rule is on; the cockpit window is attended; the request
+    /// belongs to the selected run and the run is showing; the request is the one its worker's
+    /// console marks (decided by request ID, never by worker); and the worker's tile is inside the
+    /// worker viewport (the coordinator's console is always in the pane). A request from another
+    /// run, a worker's further request, a worker scrolled away or inside a collapsed group, or a
+    /// cockpit that is behind another app or minimized is not in view.
     @MainActor func isSourceInView(_ request: RequestPresentation, _ ui: CockpitPresentationState) -> Bool {
         guard ui.suppressesVisibleSources, ui.cockpitWindowAttended, !ui.composingRun,
-              request.runID == selected?.id else { return false }
+              request.runID == selected?.id,
+              shownRequestID(ofWorker: request.workerID) == request.id else { return false }
         if request.workerIsCoordinator { return true }
         return ui.visibleConsoles.contains(ConsoleVisibility.key(.wall, request.workerID))
             || ui.visibleConsoles.contains(ConsoleVisibility.key(.focused, request.workerID))
+    }
+}
+
+/// One step of Next request, as plain values so it can be exercised without a window. It walks
+/// every pending request by ID in the cockpit's stable order, including those left out of the
+/// attention surfaces because their console is in view, and the focused worker's inline request,
+/// which is reached in its own form. Requests the developer hid are skipped until none is left.
+struct AttentionNavigation: Equatable {
+    /// Every pending request ID, oldest first, across runs.
+    let order: [String]
+    /// The request answered inline in the focused worker and shown there now. Nil otherwise.
+    let inline: String?
+    let dismissed: Set<String>
+    /// The request the attention surfaces show.
+    let active: String?
+    /// The request the developer is answering or last reached: pressing again moves past it.
+    let current: String?
+
+    enum Target: Equatable {
+        /// Show this request in Attention and move to its reply.
+        case attention(String)
+        /// Move to the focused worker's inline form for this request.
+        case inline(String)
+        case none
+    }
+
+    /// The requests Next request steps through, and whether reaching them restores hidden ones:
+    /// once every request Attention could show is hidden, they all come back.
+    var candidates: (ids: [String], restoresDismissed: Bool) {
+        let open = order.filter { !dismissed.contains($0) }
+        let restores = !open.contains { $0 != inline } && order.contains { $0 != inline && dismissed.contains($0) }
+        return restores ? (order, true) : (open, false)
+    }
+
+    var target: Target {
+        let ids = candidates.ids
+        guard !ids.isEmpty else { return .none }
+        let id: String
+        if let current, let index = ids.firstIndex(of: current) {
+            // Pressing it again on the request already being answered moves to the next one.
+            id = ids.count > 1 ? ids[(index + 1) % ids.count] : current
+        } else if let active, active != inline, ids.contains(active) {
+            id = active
+        } else {
+            // The first request Attention can show; the inline one only when it is the only one.
+            id = ids.first { $0 != inline } ?? ids[0]
+        }
+        return id == inline ? .inline(id) : .attention(id)
     }
 }
 
@@ -654,7 +738,7 @@ struct CockpitScreen: View {
                             takeControl: takeControl,
                             isPinned: ui.drawerPinned,
                             togglePin: { ui.drawerPinned.toggle() },
-                            show: { request in ui.activeRequestID = request.id },
+                            show: { request in ui.show(requestID: request.id) },
                             openWorker: { expand(current) },
                             close: { closeDrawer() })
                 .frame(width: Metric.attentionDrawerWidth)
@@ -667,6 +751,14 @@ struct CockpitScreen: View {
 
     private func tile(_ worker: WorkerPresentation, variant: WorkerTile.Variant) -> some View {
         let openRequest: (() -> Void)? = worker.request.map { request in { open(request) } }
+        // The worker's further requests, by ID. Repeated presses step past the one already shown.
+        let further = worker.allRequests.dropFirst()
+        let openFurtherRequest: (() -> Void)? = (further.first { $0.id != ui.activeRequestID } ?? further.first)
+            .map { request in { open(request) } }
+        // The exact pending request a queued follow-up waits for, through the same ID routing: its
+        // inline form when it is the one shown there, otherwise Attention. Never Next request.
+        let openFollowUpBlocker: (() -> Void)? = worker.followUpReceipts?.blockingRequest
+            .map { request in { open(request) } }
         // One mapping for every surface of a worker (wall tile, focused view, action list). Each
         // action is offered only where it exists and the service says it applies to this worker
         // now; every closure is bound to this worker's ID.
@@ -701,6 +793,8 @@ struct CockpitScreen: View {
         let tileActions = WorkerTileActions(
             toggleZoom: { toggleZoom(worker.id) },
             openRequest: openRequest,
+            openFurtherRequest: openFurtherRequest,
+            openFollowUpBlocker: openFollowUpBlocker,
             copyID: { copy(worker.id) },
             handBack: handBack,
             sendInput: sendInput,
@@ -811,7 +905,7 @@ struct CockpitScreen: View {
     private func focusReply(_ requestID: String) {
         // A request shown in the floating window is answered there: bring that window forward and
         // let its own view take the keyboard.
-        if ui.usesFloatingPanel, requestID != inlineRequestID {
+        if ui.usesFloatingPanel, requestID != content.shownInlineRequestID(ui) {
             ui.floatingReplyFocus = requestID
             ui.bringFloatingPanelForward?()
             return
@@ -838,39 +932,37 @@ struct CockpitScreen: View {
         ui.surfacedRequests.insert(request.id)
         ui.dismissedRequests.remove(request.id)
         if request.id != inlineRequestID { ui.activeRequestID = request.id }
+        ui.reachedRequestID = request.id
         focusReply(request.id)
     }
 
+    /// A deliberate step through every pending request by ID (see `AttentionNavigation`),
+    /// including a second request from the focused or a visible worker and ones left out of the
+    /// attention surfaces because their console is in view.
     private func nextRequest() {
         ui.drawerClosed = false
-        // A deliberate step through every pending request, including ones left out of the
-        // attention surfaces because their console is in view.
-        let inline = inlineRequestID
-        var queue = content.pending.filter { $0.id != inline && !ui.dismissedRequests.contains($0.id) }
-        if queue.isEmpty {
-            ui.dismissedRequests.removeAll()
-            queue = content.pending.filter { $0.id != inline }
+        let answering = replyFocus.flatMap { id in content.pending.contains { $0.id == id } ? id : nil }
+        let navigation = content.attentionNavigation(ui, answering: answering)
+        if navigation.candidates.restoresDismissed { ui.dismissedRequests.removeAll() }
+        switch navigation.target {
+        case .attention(let id):
+            ui.surfacedRequests.insert(id)
+            ui.activeRequestID = id
+            ui.reachedRequestID = id
+            focusReply(id)
+        case .inline(let id):
+            // The focused worker's own form answers it; Attention keeps showing the others.
+            ui.reachedRequestID = id
+            focusReply(id)
+        case .none:
+            break
         }
-        guard !queue.isEmpty else {
-            if let inline { focusReply(inline) }
-            return
-        }
-        var target = queue.first { $0.id == ui.activeRequestID } ?? queue[0]
-        // Pressing it again on the request already being answered moves to the next one.
-        let isAnswering = replyFocus == target.id
-            || (ui.usesFloatingPanel && ui.surfacedRequests.contains(target.id) && ui.activeRequestID == target.id)
-        if isAnswering, queue.count > 1, let index = queue.firstIndex(where: { $0.id == target.id }) {
-            target = queue[(index + 1) % queue.count]
-        }
-        ui.surfacedRequests.insert(target.id)
-        ui.activeRequestID = target.id
-        focusReply(target.id)
     }
 
     private func showNext(after request: RequestPresentation) {
         let queue = stack
         guard queue.count > 1, let index = queue.firstIndex(where: { $0.id == request.id }) else { return }
-        ui.activeRequestID = queue[(index + 1) % queue.count].id
+        ui.show(requestID: queue[(index + 1) % queue.count].id)
     }
 
     private func expand(_ request: RequestPresentation) {
@@ -962,6 +1054,7 @@ struct CockpitScreen: View {
         ui.surfacedRequests.formIntersection(live)
         ui.drafts = ui.drafts.filter { live.contains($0.key) }
         if let active = ui.activeRequestID, !live.contains(active) { ui.activeRequestID = nil }
+        if let reached = ui.reachedRequestID, !live.contains(reached) { ui.reachedRequestID = nil }
     }
 
     /// A worker that drops with a request waiting is announced once. A reply field that held the

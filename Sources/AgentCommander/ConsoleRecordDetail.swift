@@ -269,12 +269,25 @@ extension ConsoleRecordDetail {
             ]
             if let interrupt = control.interruptRequested { held["interrupt_requested"] = .bool(interrupt) }
             if let messages = control.messages {
-                held["messages"] = .array(messages.map { ["id": .string($0.id), "status": .string($0.status)] })
+                held["messages"] = .array(messages.map { message in
+                    var fields: [String: AGUIValue] = ["id": .string(message.id), "status": .string(message.status)]
+                    if let generation = message.generation { fields["generation"] = .number(AGUINumber(generation)) }
+                    return .object(fields)
+                })
             }
             if let capabilities = control.sessionCapabilities {
                 var session: [String: AGUIValue] = [:]
                 if let canInterrupt = capabilities.canInterrupt { session["can_interrupt"] = .bool(canInterrupt) }
                 held["session_capabilities"] = .object(session)
+            }
+            if let turn = control.activeTurnID { held["active_turn_id"] = .string(turn) }
+            if let receipt = control.interrupt {
+                var interrupt: [String: AGUIValue] = [
+                    "id": .string(receipt.id), "turn_id": .string(receipt.turnID),
+                    "generation": .number(AGUINumber(receipt.generation)), "phase": .string(receipt.phaseValue)
+                ]
+                if let outcome = receipt.outcomeValue { interrupt["outcome"] = .string(outcome) }
+                held["interrupt"] = .object(interrupt)
             }
             fields["control"] = .object(held)
         }

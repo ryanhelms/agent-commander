@@ -280,6 +280,11 @@ struct InputOwnership: View {
 
     /// Text size, so the cue matches the status line it sits in.
     var size: CGFloat = 11
+    /// What handing back cancels, shown beside Hand back, e.g. `cancels 1 queued follow-up`. Nil
+    /// when it cancels nothing.
+    var handBackNote: String? = nil
+    /// The full consequence, for the note's help tag and the button's accessibility hint.
+    var handBackStatement: String? = nil
 
     var body: some View {
         // A quiet inline cue for a terminal status line: no chip, no fill.
@@ -305,6 +310,14 @@ struct InputOwnership: View {
                     .buttonStyle(TermButtonStyle(ink: Term.green, size: size))
                     .disabled(isBusy)
                     .accessibilityLabel("Hand back control of \(workerName)")
+                    .accessibilityHint(handBackStatement ?? "")
+                if let handBackNote {
+                    Text(handBackNote)
+                        .font(Term.font(size - 0.5)).foregroundStyle(Term.amber)
+                        .lineLimit(1).fixedSize()
+                        .help(handBackStatement ?? handBackNote)
+                        .accessibilityHidden(true)
+                }
             }
             if !held, let takeControl {
                 Button("take control", action: takeControl)
@@ -352,6 +365,73 @@ struct ReplyContext {
     let isOnline: Bool
     /// Emits the request to answer. The feature layer reads that request's own draft.
     let send: (RequestPresentation) -> Void
+}
+
+/// The provider's exact choices for one request: one native button per choice. A click puts that
+/// choice's exact ID in the request's own draft and sends it through the request's reply action,
+/// because the service accepts only an offered ID. The feature layer's send reads that one
+/// request's draft, so the answer is addressed to this request ID and no other request changes.
+/// Every surface that answers a permission request draws this: `PrettyRequestForm` and
+/// `RequestReply` (the focused Console prompt, the PiP prompt, the Attention panel and queue).
+/// One row when the choices fit; otherwise one per line. The group is the request's focus target.
+struct RequestChoiceButtons: View {
+    let request: RequestPresentation
+    let context: ReplyContext
+
+    /// The answer a choice sends: its exact ID, never its label.
+    static func answer(for choice: QuestionChoice) -> String { choice.id }
+
+    var body: some View {
+        let isSending = context.sending.contains(request.id)
+        let unavailable = request.replyUnavailableStatement
+        let blocked = !context.isOnline || isSending || unavailable != nil
+        let isFocused = context.focus.wrappedValue == request.id
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { buttons(blocked: blocked, isSending: isSending, unavailable: unavailable) }
+            VStack(alignment: .leading, spacing: 6) {
+                buttons(blocked: blocked, isSending: isSending, unavailable: unavailable)
+            }
+        }
+        // The request's one focus anchor, outside both layouts so the ID is never bound twice. An
+        // explicit Next Request or follow-up blocker focuses this group and outlines it; it never
+        // selects or sends a choice. Each button keeps its own click and keyboard activation.
+        .padding(3)
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(Palette.focus, lineWidth: 1.5)
+                .opacity(isFocused ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .focused(context.focus, equals: request.id)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Choices for request \(request.shortID)")
+    }
+
+    @ViewBuilder
+    private func buttons(blocked: Bool, isSending: Bool, unavailable: String?) -> some View {
+        ForEach(request.choices) { choice in
+            Button {
+                // The exact ID, through the request's own draft and reply action. A send already
+                // in flight for this request disables the buttons, and the model refuses a
+                // second one, so one click answers once.
+                guard !blocked else { return }
+                context.draft(request.id).wrappedValue = Self.answer(for: choice)
+                context.send(request)
+            } label: {
+                Text(verbatim: choice.label).lineLimit(2)
+            }
+            .buttonStyle(.bordered)
+            .disabled(blocked)
+            .help(unavailable ?? "Reply with \(choice.id)")
+            .accessibilityLabel(choice.label)
+            .accessibilityHint("Replies to request \(request.shortID) with \(choice.id)")
+        }
+        if isSending {
+            ProgressView().controlSize(.small).accessibilityLabel("Sending reply")
+        }
+    }
 }
 
 /// The one reply control. It answers exactly one request by ID and never touches terminal input.
@@ -409,6 +489,13 @@ struct RequestReply: View {
             .accessibilityLabel("Reply is held until \(request.host) reconnects")
             .accessibilityValue(held)
         }
+        if !request.choices.isEmpty {
+            // A permission request with the provider's exact choices: the same buttons as the
+            // Pretty form, in place of the free-form prompt, which the service would refuse.
+            RequestChoiceButtons(request: request, context: context)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
         // A terminal prompt: an amber mark, a native multiline field in the terminal face, and an
         // explicit send action. Black behind bright text, with an amber outline while it has focus.
         HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -448,6 +535,7 @@ struct RequestReply: View {
         .padding(.vertical, 6)
         .background(Term.background)
         .overlay { Rectangle().strokeBorder(isFocused ? Term.amber : Term.promptEdge, lineWidth: 1) }
+        }
         }
     }
 }
@@ -650,7 +738,8 @@ struct RequestPrompt: View {
                 }
                 .font(Term.font(size - 1))
                 .lineLimit(1)
-                Text(request.question)
+                // The choice list appended for text surfaces is left out when buttons draw it.
+                Text(request.promptWithoutChoiceList)
                     .font(Term.font(size, weight: .semibold))
                     .lineSpacing(size * 0.3)
                     .foregroundStyle(Term.bright)
@@ -659,7 +748,7 @@ struct RequestPrompt: View {
                     .padding(.leading, (size - 1) * 1.2)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Input needed, request \(request.shortID). \(request.question)")
+            .accessibilityLabel("Input needed, request \(request.shortID). \(request.promptWithoutChoiceList)")
             RequestReply(request: request, context: reply)
         }
         .padding(.leading, inset).padding(.trailing, inset).padding(.vertical, density == .focused ? 9 : 8)

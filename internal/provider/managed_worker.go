@@ -16,6 +16,7 @@ type controlFeed struct {
 	State                string `json:"state"`
 	NextMessageID        string `json:"next_message_id"`
 	InterruptRequested   bool   `json:"interrupt_requested"`
+	InterruptID          string `json:"interrupt_id"`
 	Generation           int    `json:"generation"`
 	ProviderAvailability string `json:"provider_availability"`
 }

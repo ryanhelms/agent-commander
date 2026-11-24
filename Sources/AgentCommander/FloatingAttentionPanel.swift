@@ -726,7 +726,7 @@ struct FloatingAttentionRoot: View {
                               next: queue.count > 1 ? queue[(index + 1) % queue.count] : nil,
                               position: index + 1, count: queue.count,
                               reply: replyContext(content),
-                              showNext: { ui.activeRequestID = queue[(index + 1) % queue.count].id },
+                              showNext: { ui.show(requestID: queue[(index + 1) % queue.count].id) },
                               expand: { reveal(current) },
                               close: { close(current) },
                               dragHandle: AnyView(WindowDragHandle(onEnd: dragEnded)),

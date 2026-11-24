@@ -209,7 +209,7 @@ private func lead(_ reducer: AGUIWorkspaceReducer) -> Worker { reducer.runs[0].w
         #expect(worker.state == "waiting")
         #expect(worker.connection == nil)
         #expect(worker.control == WorkerControl(held: true, generation: 3, interruptRequested: nil,
-                                                 messages: [WorkerFollowUp(id: "m", status: "queued")]))
+                                                 messages: [WorkerFollowUp(id: "m", status: "queued", generation: 3)]))
         #expect(worker.allFields["control"]?["messages"]?[0]?["text"] == "t")
         #expect(worker.extendedFields == ["coding": ["a/b": ["m~n": [nil, 2, 3]], "x~/y": ["z": []]]])
         #expect(worker.allFields["outputChunks"] == nil)
