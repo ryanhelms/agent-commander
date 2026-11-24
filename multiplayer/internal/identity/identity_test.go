@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,9 @@ import (
 )
 
 type codeRecord struct{ challenge, nonce, redirect string }
+
+const googleDesktopFixtureSecret = "test-only"
+
 type testIssuer struct {
 	*httptest.Server
 	mu     sync.Mutex
@@ -80,6 +84,14 @@ func issuer(t *testing.T, name string) *testIssuer {
 		http.Redirect(w, r, u.String(), 302)
 	})
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		want := ""
+		if f.name == googleIssuer {
+			want = googleDesktopFixtureSecret
+		}
+		if r.FormValue("client_secret") != want {
+			failure(w, 400)
+			return
+		}
 		code := r.FormValue("code")
 		f.mu.Lock()
 		saved, ok := f.codes[code]
@@ -192,6 +204,38 @@ func testBrowserLogin(t *testing.T, issuerName string) {
 	edge := httptest.NewTLSServer(mux)
 	defer edge.Close()
 	client := Client{BaseURL: edge.URL, HTTP: edge.Client(), OIDCHTTP: httpClient, AllowLoopbackHTTP: true}
+	if issuerName == googleIssuer {
+		client.GoogleDesktopConfig = filepath.Join(t.TempDir(), "google-desktop-client.json")
+		unexpectedBrowser := func(string) error {
+			t.Error("browser opened before the Google Desktop credentials were validated")
+			return errors.New("unexpected browser")
+		}
+		_, err := client.Login(t.Context(), k, unexpectedBrowser)
+		if err == nil || !strings.Contains(err.Error(), "provision this Mac") {
+			t.Fatalf("expected a provisioning error, got %v", err)
+		}
+		writeConfig := func(id string, mode os.FileMode) {
+			t.Helper()
+			file := []byte(`{"installed":{"client_id":"` + id + `","client_secret":"` + googleDesktopFixtureSecret + `"}}`)
+			if err := os.WriteFile(client.GoogleDesktopConfig, file, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(client.GoogleDesktopConfig, mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		writeConfig("different-client", 0600)
+		_, err = client.Login(t.Context(), k, unexpectedBrowser)
+		if err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("expected a client ID mismatch, got %v", err)
+		}
+		writeConfig("native", 0644)
+		_, err = client.Login(t.Context(), k, unexpectedBrowser)
+		if err == nil || !strings.Contains(err.Error(), "private regular file") {
+			t.Fatalf("expected a private file error, got %v", err)
+		}
+		writeConfig("native", 0600)
+	}
 	browser := func(raw string) error {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host != local.Host {

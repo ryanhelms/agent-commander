@@ -221,6 +221,8 @@ The [two-person multiplayer pilot](MULTIPLAYER-PILOT.md) keeps device identity, 
 
 The OIDC identity adapter validates the signed token before handling Google's documented claim forms. Enrollment uses the provider and subject as the account key. Both Google issuer spellings select the same account, and existing device ownership survives enrollment through either form.
 
+The Google Desktop variant sources its OAuth client credentials from the device's private state. It checks the configured client ID against the relay's enrollment challenge and sends the client secret only to Google's token endpoint, with redirects disabled for that exchange. PKCE, the browser callback and the signed ID-token handoff use the existing identity adapter.
+
 ## Native terminal observation
 
 The local provider acts as an Adapter between a Commander worker ID and its existing tmux session. The owner API resolves a selected worker on demand. After resolution, the bundled CLI attaches a read-only tmux client on SwiftTerm’s PTY with its size ignored. Closing the viewer disconnects that client. The runner retains the session, input ownership, and provider-native history.

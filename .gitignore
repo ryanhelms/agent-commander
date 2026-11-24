@@ -22,4 +22,5 @@ __pycache__/
 *.p12
 *.pfx
 client_secret*.json
+google-desktop-client.json
 hosted-grants.json

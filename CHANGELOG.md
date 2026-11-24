@@ -4,6 +4,10 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Fixed
+
+- Google pilot sign-in uses operator-provisioned Desktop OAuth credentials for the PKCE exchange on the Mac.
+
 ## [0.1.0-pilot.1] - 2026-11-24
 
 

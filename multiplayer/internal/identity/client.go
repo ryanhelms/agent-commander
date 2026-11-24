@@ -22,10 +22,11 @@ import (
 // HTTP presents the device certificate only to the configured edge. OIDCHTTP
 // is a separate trust context for the provider and never inherits device keys.
 type Client struct {
-	BaseURL           string
-	HTTP              *http.Client
-	OIDCHTTP          *http.Client
-	AllowLoopbackHTTP bool
+	BaseURL             string
+	HTTP                *http.Client
+	OIDCHTTP            *http.Client
+	GoogleDesktopConfig string
+	AllowLoopbackHTTP   bool
 }
 type HTTPError struct{ Status int }
 
@@ -107,6 +108,19 @@ func (c Client) Login(ctx context.Context, keys *devicekeys.Keys, openBrowser fu
 	endpoint := provider.Endpoint()
 	endpoint.AuthStyle = oauth2.AuthStyleInParams
 	oauth := oauth2.Config{ClientID: ch.ClientID, Endpoint: endpoint, RedirectURL: redirect, Scopes: []string{oidc.ScopeOpenID}}
+	issuerHTTP := c.OIDCHTTP
+	if ch.Issuer == googleIssuer {
+		oauth.ClientSecret, err = c.googleDesktopSecret(ch.ClientID, endpoint.TokenURL)
+		if err != nil {
+			return Session{}, err
+		}
+		if issuerHTTP == nil {
+			issuerHTTP = http.DefaultClient
+		}
+		direct := *issuerHTTP
+		direct.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		issuerHTTP = &direct
+	}
 	if ch.Email {
 		oauth.Scopes = append(oauth.Scopes, "email")
 	}
@@ -165,8 +179,8 @@ func (c Client) Login(ctx context.Context, keys *devicekeys.Keys, openBrowser fu
 	if received.err != nil {
 		return Session{}, received.err
 	}
-	if c.OIDCHTTP != nil {
-		ctx = oidc.ClientContext(ctx, c.OIDCHTTP)
+	if issuerHTTP != nil {
+		ctx = oidc.ClientContext(ctx, issuerHTTP)
 	}
 	tok, err := oauth.Exchange(ctx, received.code, oauth2.VerifierOption(verifier))
 	if err != nil {

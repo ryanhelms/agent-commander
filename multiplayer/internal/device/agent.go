@@ -146,7 +146,10 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, RootCAs: c.Roots}, ForceAttemptHTTP2: true}
 	a.http = &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	a.identity = identity.Client{BaseURL: c.Relay, HTTP: a.http, OIDCHTTP: c.OIDCHTTP}
+	a.identity = identity.Client{
+		BaseURL: c.Relay, HTTP: a.http, OIDCHTTP: c.OIDCHTTP,
+		GoogleDesktopConfig: filepath.Join(c.Dir, "google-desktop-client.json"),
+	}
 	a.ctx, a.stop = context.WithCancel(ctx)
 	if e = a.loadPolicy(a.creds.Session.User); e != nil {
 		a.stop()

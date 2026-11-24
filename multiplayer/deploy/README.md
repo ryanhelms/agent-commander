@@ -8,6 +8,14 @@ Use Docker Engine with Compose v2, Python 3.10 or newer with TLS 1.3 support, Op
 
 Register a native public OIDC client with Authorization Code, PKCE S256, the `openid` scope, and the loopback redirect `http://127.0.0.1:<ephemeral-port>` with path `/`. Allow the two pilot accounts to use this registration. Edges and devices must agree on the issuer URL and trust its certificate. The tray handles the browser callback, binds the identity to a device key and rotates relay credentials.
 
+For Google, provision the matching Desktop OAuth JSON on each Mac through the pilot operator's private distribution process. The device agent reads `google-desktop-client.json` from its private state directory, `~/.agent-commander/network/` by default. Keep the directory at mode `0700` and the file at `0600`. The JSON uses Google's `installed.client_id` and `installed.client_secret` fields. Keep this file out of Git and shared release archives. The helper checks that the client ID matches the relay's challenge and sends the Desktop client secret directly to Google's token endpoint along with the PKCE verifier. The edge configuration uses the client ID only. [Google Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)
+
+```sh
+pilot_state="$HOME/.agent-commander/network"
+install -d -m 700 "$pilot_state"
+install -m 600 /path/to/google-desktop-oauth-export.json "$pilot_state/google-desktop-client.json"
+```
+
 With an email allowlist, the tray also requests the OIDC email scope. The edge checks the signed verified-email claim during enrollment and applies the list to access and refresh tokens. Omitting the list allows users of the configured OIDC audience to enroll.
 
 Generate the runtime files once for a new deployment. Supply the relay hostname as it appears in the TLS certificate. The certificate file includes its intermediate chain. For a private trial, omitting the certificate and key creates a relay certificate using the generated pilot CA. Give the two devices only the public `ca.pem` trust anchor for that setup.
