@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"agentcommander/internal/catalog"
+	"agentcommander/internal/linear"
 	"agentcommander/internal/localapi"
 	"agentcommander/internal/mcpbridge"
 	"agentcommander/internal/provider"
 	"agentcommander/internal/service"
+	"agentcommander/internal/toolregistry"
 )
 
 const usage = `Agent Commander
@@ -506,11 +508,18 @@ func serve(ctx context.Context, p localapi.Paths) error {
 	if err != nil {
 		return err
 	}
-	adapter, err := provider.New(p.State, p.Socket, binary)
+	registry, err := toolregistry.Load(p.State, linear.IssueRead(p.State, nil))
 	if err != nil {
 		return err
 	}
-	handler, err := service.New(p.State, adapter)
+	if err := registry.RegisterCompanion(provider.DevflowCompanion()); err != nil {
+		return err
+	}
+	adapter, err := provider.NewWithToolRegistry(p.State, p.Socket, binary, registry)
+	if err != nil {
+		return err
+	}
+	handler, err := service.NewWithToolRegistry(p.State, adapter, registry)
 	if err != nil {
 		return err
 	}

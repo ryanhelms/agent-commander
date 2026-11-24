@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"agentcommander/internal/service"
+	"agentcommander/internal/toolregistry"
 	"agentcommander/internal/worktrees"
 )
 
@@ -21,15 +22,17 @@ type Local struct {
 	stateDir, socket, executable, label string
 	acpProfiles                         map[string]acpProfile
 	replaySlot                          chan struct{}
+	tools                               *toolregistry.Registry
 }
 
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
-	Adapter, Harness, NodePath        string            `json:",omitempty"`
-	BuiltinInstance                   string            `json:",omitempty"`
-	FocusedProof                      bool              `json:",omitempty"`
-	DevflowUI                         string            `json:",omitempty"`
+	Adapter, Harness, NodePath        string `json:",omitempty"`
+	BuiltinInstance                   string `json:",omitempty"`
+	FocusedProof                      bool   `json:",omitempty"`
+	Companions                        []toolregistry.CompanionBinding
+	DevflowUI                         string            `json:",omitempty"` // pending launch records from before the registry
 	SSH                               *sshProfile       `json:",omitempty"`
 	RegisteredACP                     *acpProfile       `json:",omitempty"`
 	RegisteredEnv                     map[string]string `json:",omitempty"`
@@ -37,6 +40,10 @@ type job struct {
 }
 
 func New(stateDir, socketPath, executable string) (*Local, error) {
+	return NewWithToolRegistry(stateDir, socketPath, executable, nil)
+}
+
+func NewWithToolRegistry(stateDir, socketPath, executable string, registry *toolregistry.Registry) (*Local, error) {
 	dir, err := filepath.Abs(stateDir)
 	if err != nil {
 		return nil, err
@@ -58,7 +65,7 @@ func New(stateDir, socketPath, executable string) (*Local, error) {
 	}
 	sum := sha256.Sum256([]byte(dir))
 	return &Local{stateDir: dir, socket: socket, executable: binary, label: fmt.Sprintf("ac-%x", sum[:6]),
-		acpProfiles: profiles, replaySlot: make(chan struct{}, 1)}, nil
+		acpProfiles: profiles, replaySlot: make(chan struct{}, 1), tools: registry}, nil
 }
 
 // A Finder-launched process may lack the PATH entries used by a login shell.
@@ -252,17 +259,15 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		return err
 	}
 	jobPath := filepath.Join(dir, "launch.json")
-	var devflow string
-	if registered == nil && builtinInstance == "" {
-		devflow = coordinatorDevflow(ctx, w)
-	}
-	// The prompt and scoped credential stay in a private file, outside shell argv.
-	contents, err := json.Marshal(job{
+	launch := job{
 		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
-		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath,
-		DevflowUI: devflow, SSH: remote, RegisteredACP: registered, RegisteredEnv: registeredEnv, Codex: codex,
+		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath, SSH: remote,
+		RegisteredACP: registered, RegisteredEnv: registeredEnv, Codex: codex,
 		BuiltinInstance: builtinInstance,
-	})
+	}
+	launch.Companions = l.tools.BindCompanions(ctx, launch.companionScope())
+	// The prompt and scoped credential stay in a private file, outside shell argv.
+	contents, err := json.Marshal(launch)
 	if err != nil {
 		return err
 	}

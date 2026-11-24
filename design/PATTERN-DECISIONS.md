@@ -76,7 +76,19 @@ The cockpit keys persistent accent preferences by harness identity. A color chan
 
 ## Optional coordinator companions
 
-The local provider adapter discovers the Devflow UI companion through a bounded MCP tool listing in the run’s checkout. It registers the companion for a coordinator only when the restricted server advertises exactly `devflow_ui_open`. Only the coordinator’s live connection requests an automatic browser open. The discovery probe has no browser side effects. A missing executable, an older release, or a broader tool surface leaves the planning run available with its usual permissions. The service owns executable selection and passes the verified path through the private launch file. The live companion receives the socket, actor ID, scoped token and coordinator role from that job. The discovery process receives no actor binding. Commander enforces the token’s permissions on each worker activity or reply request.
+Devflow is a first-party companion in the scoped tool registry. At launch, the registry probes for exactly `devflow_ui_open` in the checkout of an interactive local Claude coordinator. The probe has a deadline and receives neither actor credentials nor the auto-open flag. The private launch record carries the versioned selection and the resolved executable path. The live harness attaches the UI-only MCP server with `--auto-open` and the coordinator's scoped credential. It can also call `devflow_ui_open` explicitly to open or navigate the console. An incompatible or missing companion leaves the planning run available. A pending job from an earlier build can use its previously verified Devflow path.
+
+## Scoped coordinator tools
+
+The Commander API remains the Facade for brokered read tools. First-party Go code registers versioned tool descriptors and handlers at startup. An optional private `tool-grants.json` in the service state directory selects registered tool versions for an exact project path, for example `{"projects":[{"path":"/absolute/project","tools":{"connector.read":1}}]}`. A grant binds that path to its resolved directory at startup. Configuration changes take effect when the service restarts.
+
+`commander_list_tools` and `commander_call_tool` use the existing MCP connection. The service checks the bearer against the addressed local coordinator and active run on discovery and invocation, then applies the project grant. A call validates the registered schema before running with a five-second context deadline outside the service lock. The service rechecks authorization before returning the bounded result. Provider errors return a generic failure, and tool results go directly to the requesting MCP client.
+
+Configured tools bind their settings to each project grant at startup. Linear's Adapter passes one issue identifier and the allowed team UUIDs as variables in a fixed, filtered GraphQL query. It checks the returned issue and team again before projecting the result. The grant names a service-side key file. An absent issue and an issue outside the allowed teams have the same outcome. Unavailable credentials and upstream rate limits use fixed errors, and GraphQL partial failures withhold the result.
+
+To add a brokered connector, declare a versioned `toolregistry.Tool` with a read action and an input schema. Supply `Run` for a handler that takes no project settings, or `Bind` to validate settings and construct a handler for each project grant. Register it in the service's `toolregistry.Load` call. The integration test registers a workspace reader alongside Linear and exercises both through the real `agentctl mcp` subprocess. The test checks discovery, project isolation, worker-role spoofing, schema validation, deadline enforcement, and independent dispatch. [Registration example](../cmd/agentctl/workspace_connector_fixture_test.go) · [Integration test](../cmd/agentctl/linear_mcp_integration_test.go)
+
+Run the connector proof with `AGENT_COMMANDER_TEST_INTEGRATION=1 go test -count=1 ./cmd/agentctl -run '^TestLinearLookupThroughAgentctlMCP$'`.
 
 ## Incremental follow-ups
 

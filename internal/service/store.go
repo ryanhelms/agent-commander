@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agentcommander/internal/acpprocessor"
+	"agentcommander/internal/toolregistry"
 	"agentcommander/internal/worktrees"
 )
 
@@ -120,6 +121,7 @@ type service struct {
 	path               string
 	state              database
 	launcher           Launcher
+	tools              *toolregistry.Registry
 	consoleObservers   map[chan struct{}]struct{} // guarded by mu
 	operationObservers map[chan struct{}]string
 	workspace          *workspaceProjection // owner-only workspace cache, guarded by mu

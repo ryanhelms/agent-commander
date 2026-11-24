@@ -116,6 +116,33 @@ Ask **“Open the Devflow provider editor for this repo”** or **“Open the ta
 
 Commander checks for the UI launcher when a coordinator starts. It looks for Devflow in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. Set `AGENT_COMMANDER_DEVFLOW` to an absolute executable path in the service environment for another installation. Start a new run after upgrading Devflow. Planning still works when the companion is unavailable.
 
+## Read Linear issues from a coordinator
+
+Grant `linear.issue.read` to a specific checkout in the service's `tool-grants.json`. Use the checkout path you pass to Commander and the UUID of each Linear team that project may read.
+
+```json
+{
+  "projects": [
+    {
+      "path": "/absolute/path/to/checkout",
+      "tools": {
+        "linear.issue.read": {
+          "version": 1,
+          "settings": {
+            "credential": "engineering",
+            "team_ids": ["7f6d8dee-b367-4a1f-8cbe-b0d0d6d8f250"]
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+Create a Linear personal API key with **Read** permission and restrict it to the configured teams. In the Commander state directory, save the key as plain text in `linear-credentials/engineering.key`. Set the directory to mode `0700` and both the key and grant file to mode `0600`. Commander reads the key in the service on each call. Grant changes take effect at service restart. [Linear API key permissions](https://linear.app/docs/api-and-webhooks#api-keys)
+
+Ask a coordinator in that checkout to read an issue such as `ENG-123`. It can discover the tool through `commander_list_tools` and call it with ID `linear.issue.read`, version `1`, and arguments `{"issue_id":"ENG-123"}`. The response contains the issue's identifier, title, description, state, and URL. Commander checks the returned team UUID before releasing the result, and flags descriptions it truncates.
+
 ## Use the CLI
 
 ```sh

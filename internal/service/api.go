@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"agentcommander/internal/hosted"
+	"agentcommander/internal/toolregistry"
 	"agentcommander/internal/worktrees"
 )
 
@@ -40,8 +41,16 @@ func changed(v any) outcome { return outcome{body: v, code: 200, mutated: true} 
 
 type endpoint func(*http.Request, string) (outcome, error)
 
-func New(stateDir string, launcher Launcher) (http.Handler, error) {
-	s := &service{launcher: launcher, consoleInstance: randomID("console-"), frontendRounds: make(map[string][]*frontendRound)}
+func New(stateDir string, launcher Launcher, tools ...toolregistry.Tool) (http.Handler, error) {
+	registry, err := toolregistry.Load(stateDir, tools...)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithToolRegistry(stateDir, launcher, registry)
+}
+
+func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregistry.Registry) (http.Handler, error) {
+	s := &service{launcher: launcher, tools: registry, consoleInstance: randomID("console-"), frontendRounds: make(map[string][]*frontendRound)}
 	if err := s.load(stateDir); err != nil {
 		return nil, err
 	}
@@ -112,6 +121,8 @@ func New(stateDir string, launcher Launcher) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/catalog/notices/events", s.streamCatalogNotices)
 	mux.HandleFunc("GET /v1/network/coordinator", s.handleJSON(s.networkCoordinator))
+	mux.HandleFunc("GET /v1/runs/{run}/workers/{worker}/tools", s.listScopedTools)
+	mux.HandleFunc("POST /v1/runs/{run}/workers/{worker}/tools/calls", s.callScopedTool)
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
 	mux.HandleFunc("POST /v1/ag-ui/workers/{worker}/run", s.streamWorkerRun)
 	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}/operations/{operation}", s.observeWorkerRun)

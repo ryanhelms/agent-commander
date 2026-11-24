@@ -182,6 +182,7 @@ func Run(ctx context.Context, c *localapi.Client) error {
 		return runStatus(ctx, c, runPath, in.Seconds)
 	})
 	if os.Getenv("AGENT_COMMANDER_ROLE") == "coordinator" {
+		registerScopedTools(s, c, runPath+"/workers/"+actor+"/tools")
 		if err := registerNetworkTools(s, run, actor); err != nil {
 			return err
 		}

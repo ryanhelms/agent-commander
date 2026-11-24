@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"agentcommander/internal/service"
+	"agentcommander/internal/toolregistry"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -21,9 +23,21 @@ func TestDevflowCompanionFixture(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	for _, key := range []string{"AGENT_COMMANDER_SOCKET", "AGENT_COMMANDER_TOKEN", "AGENT_COMMANDER_WORKER_ID", "AGENT_COMMANDER_RUN_ID", "AGENT_COMMANDER_ROLE"} {
-		if _, present := os.LookupEnv(key); present {
-			os.Exit(1)
+	live := os.Getenv("COMMANDER_TEST_DEVFLOW_LIVE") == "1"
+	if live {
+		if mode != "record" || os.Getenv("AGENT_COMMANDER_ROLE") != "coordinator" ||
+			os.Getenv("AGENT_COMMANDER_TOKEN") == "" || os.Getenv("AGENT_COMMANDER_WORKER_ID") == "" ||
+			!filepath.IsAbs(os.Getenv("AGENT_COMMANDER_SOCKET")) {
+			os.Exit(2)
+		}
+	} else {
+		for _, key := range []string{"AGENT_COMMANDER_SOCKET", "AGENT_COMMANDER_TOKEN", "AGENT_COMMANDER_WORKER_ID", "AGENT_COMMANDER_RUN_ID", "AGENT_COMMANDER_ROLE"} {
+			if _, present := os.LookupEnv(key); present {
+				os.Exit(1)
+			}
+		}
+		if mode == "record" && recordDevflow("probe") != nil {
+			os.Exit(2)
 		}
 	}
 	if mode == "hang" {
@@ -31,6 +45,25 @@ func TestDevflowCompanionFixture(t *testing.T) {
 		os.Exit(1)
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "devflow-fixture", Version: "fixture"}, nil)
+	if live {
+		if recordDevflow("auto "+os.Getenv("AGENT_COMMANDER_WORKER_ID")) != nil {
+			os.Exit(2)
+		}
+		mcp.AddTool(server, &mcp.Tool{Name: devflowTool}, func(_ context.Context, _ *mcp.CallToolRequest, in devflowDestination) (*mcp.CallToolResult, any, error) {
+			if err := recordDevflow("explicit " + in.Screen + " " + in.Role); err != nil {
+				return nil, nil, err
+			}
+			raw, err := json.Marshal(in)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}, nil, nil
+		})
+		if server.Run(context.Background(), &mcp.StdioTransport{}) != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	install := func(name string) {
 		mcp.AddTool(server, &mcp.Tool{Name: name}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
 			// Discovery must never call a companion tool.
@@ -48,6 +81,25 @@ func TestDevflowCompanionFixture(t *testing.T) {
 	os.Exit(0)
 }
 
+type devflowDestination struct {
+	Screen string `json:"screen"`
+	Role   string `json:"role"`
+}
+
+func recordDevflow(event string) error {
+	path := os.Getenv("COMMANDER_TEST_DEVFLOW_EVENTS")
+	if path == "" {
+		return errors.New("missing Devflow fixture events file")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(event + "\n")
+	return err
+}
+
 func devflowFixture(t *testing.T, checkout, mode string) string {
 	t.Helper()
 	t.Setenv("COMMANDER_TEST_DEVFLOW_MODE", mode)
@@ -59,7 +111,12 @@ func devflowFixture(t *testing.T, checkout, mode string) string {
 	t.Setenv("COMMANDER_TEST_MCP_HELPER", binary)
 	name := filepath.Join(t.TempDir(), "devflow")
 	script := `#!/bin/sh
-[ "$#" = 4 ] && [ "$1" = mcp ] && [ "$2" = --ui-only ] && [ "$3" = --client ] && [ "$4" = agent-commander ] || exit 1
+[ "$1" = mcp ] && [ "$2" = --ui-only ] && [ "$3" = --client ] && [ "$4" = agent-commander ] || exit 1
+case "$#" in
+4) unset COMMANDER_TEST_DEVFLOW_LIVE ;;
+5) [ "$5" = --auto-open ] || exit 1; export COMMANDER_TEST_DEVFLOW_LIVE=1 ;;
+*) exit 1 ;;
+esac
 [ "$(pwd -P)" = "$(cd "$COMMANDER_TEST_CHECKOUT" && pwd -P)" ] || exit 1
 exec "$COMMANDER_TEST_MCP_HELPER" -test.run='^TestDevflowCompanionFixture$'
 `
@@ -71,43 +128,69 @@ exec "$COMMANDER_TEST_MCP_HELPER" -test.run='^TestDevflowCompanionFixture$'
 }
 
 func TestCoordinatorProbesOnlyNarrowCompanions(t *testing.T) {
-	worker := service.LaunchSpec{Role: "coordinator", Path: t.TempDir()}
-	t.Setenv("AGENT_COMMANDER_FOCUSED_PROOF", "")
+	assignment := job{Claude: "/fixture/claude", Worker: service.LaunchSpec{Role: "coordinator", Path: t.TempDir()}}
+	registry := devflowRegistry(t, t.TempDir())
+	probe := func(ctx context.Context) string {
+		bindings := registry.BindCompanions(ctx, assignment.companionScope())
+		if len(bindings) == 0 {
+			return ""
+		}
+		if len(bindings) != 1 || bindings[0].ID != "devflow.ui" || bindings[0].Version != 1 {
+			t.Fatalf("unexpected Devflow binding: %+v", bindings)
+		}
+		return bindings[0].Command
+	}
 	t.Setenv("AGENT_COMMANDER_TOKEN", "ambient-test-value")
 	t.Setenv("AGENT_COMMANDER_WORKER_ID", "ambient-test-worker")
-	path := devflowFixture(t, worker.Path, "one")
-	if got := coordinatorDevflow(t.Context(), worker); got != path {
+	path := devflowFixture(t, assignment.Worker.Path, "one")
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := probe(t.Context()); got != path {
 		t.Fatalf("compatible companion: got %q, want %q", got, path)
 	}
 	t.Setenv("COMMANDER_TEST_DEVFLOW_MODE", "too-broad")
-	if got := coordinatorDevflow(t.Context(), worker); got != "" {
+	if got := probe(t.Context()); got != "" {
 		t.Fatal("registered a process exposing an additional MCP tool")
 	}
 	t.Setenv("COMMANDER_TEST_DEVFLOW_MODE", "hang")
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	before := time.Now()
-	if got := coordinatorDevflow(ctx, worker); got != "" || time.Since(before) > 3*time.Second {
+	if got := probe(ctx); got != "" || time.Since(before) > 3*time.Second {
 		t.Fatal("unresponsive discovery did not cancel promptly")
 	}
-	t.Setenv("AGENT_COMMANDER_FOCUSED_PROOF", "1")
+	assignment.FocusedProof = true
 	t.Setenv("COMMANDER_TEST_DEVFLOW_MODE", "one")
-	if got := coordinatorDevflow(t.Context(), worker); got != "" {
+	if got := probe(t.Context()); got != "" {
 		t.Fatal("registered a companion for the focused proof")
 	}
-	t.Setenv("AGENT_COMMANDER_FOCUSED_PROOF", "")
-	worker.Role = "worker"
-	if got := coordinatorDevflow(t.Context(), worker); got != "" {
+	assignment.FocusedProof = false
+	assignment.Worker.Role = "worker"
+	if got := probe(t.Context()); got != "" {
 		t.Fatal("registered a companion for a planning worker")
 	}
 	t.Setenv("AGENT_COMMANDER_DEVFLOW", "./devflow")
 	if got := devflowExecutable(); got != "" {
 		t.Fatal("accepted a checkout-relative executable override")
 	}
-	t.Setenv("AGENT_COMMANDER_DEVFLOW", filepath.Join(worker.Path, "missing"))
+	t.Setenv("AGENT_COMMANDER_DEVFLOW", filepath.Join(assignment.Worker.Path, "missing"))
 	if got := devflowExecutable(); got != "" {
 		t.Fatal("accepted a missing explicit executable")
 	}
+}
+
+func devflowRegistry(t *testing.T, state string) *toolregistry.Registry {
+	t.Helper()
+	registry, err := toolregistry.Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.RegisterCompanion(DevflowCompanion()); err != nil {
+		t.Fatal(err)
+	}
+	return registry
 }
 
 func TestCoordinatorAllowlistAndPrivateBinding(t *testing.T) {
@@ -166,6 +249,46 @@ func TestCoordinatorAllowlistAndPrivateBinding(t *testing.T) {
 	}
 }
 
+func TestDevflowLaunchCompatibilityAndScope(t *testing.T) {
+	var pending job
+	if err := json.Unmarshal([]byte(`{"Worker":{"Role":"coordinator","Host":"localhost"},"Claude":"/trusted/claude","DevflowUI":"/trusted/devflow"}`), &pending); err != nil {
+		t.Fatal(err)
+	}
+	servers, _, allow := agentPolicy(pending)
+	if servers["devflow"].Command != "/trusted/devflow" || !strings.Contains(allow, "mcp__devflow__devflow_ui_open") {
+		t.Fatal("pending pre-registry launch lost its verified Devflow binding")
+	}
+	pending.Companions = []toolregistry.CompanionBinding{DevflowCompanion().Binding("/registered/devflow")}
+	if servers, _, _ := agentPolicy(pending); servers["devflow"].Command != "/registered/devflow" {
+		t.Fatal("legacy path overrode the selection in the new launch record")
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*job)
+	}{
+		{"worker", func(j *job) { j.Worker.Role = "worker" }},
+		{"SSH", func(j *job) { j.Worker.Host = "dev-linux"; j.SSH = &sshProfile{} }},
+		{"Codex", func(j *job) { j.Codex = &managedCodex{} }},
+		{"external ACP", func(j *job) { j.RegisteredACP = &acpProfile{} }},
+		{"compiled adapter", func(j *job) { j.BuiltinInstance = "fixture" }},
+		{"focused proof", func(j *job) { j.FocusedProof = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			job := pending
+			test.change(&job)
+			servers, _, allow := agentPolicy(job)
+			if _, attached := servers["devflow"]; attached || strings.Contains(allow, "mcp__devflow__") {
+				t.Fatal("ineligible job received a registered Devflow connection")
+			}
+		})
+	}
+	pending.Companions = []toolregistry.CompanionBinding{DevflowCompanion().Binding("")}
+	servers, instructions, allow := agentPolicy(pending)
+	if _, attached := servers["devflow"]; attached || strings.Contains(allow, "mcp__devflow__") || !strings.Contains(instructions, "devflow ui in the checkout") {
+		t.Fatal("an unavailable selection should offer the local Devflow fallback")
+	}
+}
+
 func TestReleasedDevflowUICompanion(t *testing.T) {
 	path := os.Getenv("AGENT_COMMANDER_TEST_DEVFLOW_EXECUTABLE")
 	if path == "" {
@@ -176,8 +299,16 @@ func TestReleasedDevflowUICompanion(t *testing.T) {
 		t.Fatalf("git init: %v %s", err, out)
 	}
 	t.Setenv("AGENT_COMMANDER_DEVFLOW", path)
-	t.Setenv("AGENT_COMMANDER_FOCUSED_PROOF", "")
-	if got := coordinatorDevflow(t.Context(), service.LaunchSpec{Role: "coordinator", Path: dir}); got != path {
+	t.Setenv("DEVFLOW_NO_UPDATE", "1")
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := devflowRegistry(t, t.TempDir())
+	bindings := registry.BindCompanions(t.Context(), toolregistry.CompanionScope{
+		ProjectPath: dir, Role: "coordinator", Host: "localhost", Interactive: true,
+	})
+	if len(bindings) != 1 || bindings[0].Command != resolved {
 		t.Fatal("installed Devflow did not advertise the UI-only tool for the temporary Git checkout")
 	}
 }
