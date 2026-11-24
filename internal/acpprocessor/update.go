@@ -99,15 +99,50 @@ type Activity struct {
 	Cursor string `json:"cursor,omitempty"`
 	// PageCursor is the SDK page containing a selected provider original.
 	// Its absence addresses the first page. Cursor still identifies the record.
-	PageCursor  string `json:"pageCursor,omitempty"`
-	TurnID      string `json:"turnId,omitempty"`
-	Kind        string `json:"kind"`
-	MessageID   string `json:"messageId,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
-	MIMEType    string `json:"mimeType,omitempty"`
-	ModeID      string `json:"modeId,omitempty"`
-	ItemCount   *int   `json:"itemCount,omitempty"`
-	Usage       *Usage `json:"usage,omitempty"`
+	PageCursor  string      `json:"pageCursor,omitempty"`
+	TurnID      string      `json:"turnId,omitempty"`
+	Kind        string      `json:"kind"`
+	MessageID   string      `json:"messageId,omitempty"`
+	ContentType string      `json:"contentType,omitempty"`
+	MIMEType    string      `json:"mimeType,omitempty"`
+	ModeID      string      `json:"modeId,omitempty"`
+	ItemCount   *int        `json:"itemCount,omitempty"`
+	Usage       *Usage      `json:"usage,omitempty"`
+	TurnTokens  *TokenUsage `json:"turnTokens,omitempty"`
+}
+
+// TokenUsage is the last prompt result's optional usage snapshot. Preserve
+// omission and zero independently and do not accumulate reported counts.
+type TokenUsage struct {
+	InputTokens       *int64 `json:"inputTokens,omitempty"`
+	OutputTokens      *int64 `json:"outputTokens,omitempty"`
+	ThoughtTokens     *int64 `json:"thoughtTokens,omitempty"`
+	CachedReadTokens  *int64 `json:"cachedReadTokens,omitempty"`
+	CachedWriteTokens *int64 `json:"cachedWriteTokens,omitempty"`
+	TotalTokens       *int64 `json:"totalTokens,omitempty"`
+}
+
+func (u TokenUsage) reportable() bool {
+	present := false
+	for _, value := range []*int64{u.InputTokens, u.OutputTokens, u.ThoughtTokens, u.CachedReadTokens, u.CachedWriteTokens, u.TotalTokens} {
+		if value != nil {
+			if *value < 0 {
+				return false
+			}
+			present = true
+		}
+	}
+	return present
+}
+
+func PromptResultTokens(data []byte) *TokenUsage {
+	var result struct {
+		Usage *TokenUsage `json:"usage"`
+	}
+	if json.Unmarshal(data, &result) != nil || result.Usage == nil || !result.Usage.reportable() {
+		return nil
+	}
+	return result.Usage
 }
 
 type Usage struct {
@@ -142,9 +177,11 @@ func (a *Activity) Valid() bool {
 	}
 	if a.Usage != nil && a.Usage.Cost != nil {
 		c := a.Usage.Cost
-		return bounded(c.Currency, 16) == c.Currency && !math.IsNaN(c.Amount) && !math.IsInf(c.Amount, 0)
+		if bounded(c.Currency, 16) != c.Currency || math.IsNaN(c.Amount) || math.IsInf(c.Amount, 0) {
+			return false
+		}
 	}
-	return true
+	return a.TurnTokens == nil || a.TurnTokens.reportable()
 }
 
 const ProviderCursorLimit = 8192

@@ -17,7 +17,9 @@ import Foundation
 //                   ConsoleRecordDetail.messageIDs  the messages an entry's fields reach
 //
 // Only messages the service marks as live `agent_message_chunk` text are joined, and only while
-// they follow one another directly with the same ACP message and turn identity. A message
+// they follow one another directly with the same ACP message and turn identity. Live
+// `agent_thought_chunk` text the provider emitted is joined the same way into one thought, which
+// never joins a reply; it keeps the role the service gave it, and Pretty shows it as Thinking. A message
 // without that mark is a whole message and stays its own entry. The joined text is the chunks'
 // content end to end, with nothing trimmed or inserted.
 
@@ -50,12 +52,16 @@ struct TranscriptOrigin: Equatable, Sendable {
 enum ConversationChunks {
     static let liveSource = "live"
     static let chunkKind = "agent_message_chunk"
+    /// A piece of the reasoning the provider emitted, as ACP names it.
+    static let thoughtKind = "agent_thought_chunk"
 
     /// The reply a live chunk belongs to. Two chunks join only when their keys are equal, so a
     /// chunk with an ACP message ID never joins one without, or one with another ID.
     struct Key: Equatable, Sendable {
         let messageID: String?
         let turnID: String?
+        /// A thought chunk. A thought and a reply never join.
+        var isThought = false
     }
 
     /// What a display mode does to a transcript beyond joining the chunks of a reply. Joining is
@@ -71,15 +77,25 @@ enum ConversationChunks {
         static let pretty = DisplayPolicy(summarisesNotes: true)
     }
 
-    /// The key of a live assistant text chunk. Nil for every other message: another role, a tool
-    /// call or result, structured content, provider history, or a message with no ACP mark.
+    /// The key of a live assistant text chunk, or of a live thought chunk from any role but the
+    /// developer's. Nil for every other message: a tool call or result, structured content,
+    /// provider history, or a message with no ACP mark.
     static func key(of message: AGUIMessage) -> Key? {
-        guard message.role == "assistant", message.toolCallID == nil, message.toolCalls?.isEmpty ?? true,
+        guard message.role != "user", message.toolCallID == nil, message.toolCalls?.isEmpty ?? true,
               case .object(let acp)? = message.metadata?["acp"],
-              acp["kind"]?.stringValue == chunkKind, acp["source"]?.stringValue == liveSource,
+              acp["source"]?.stringValue == liveSource,
               acp["contentType"]?.stringValue ?? "text" == "text",
               !message.hasStructuredContent else { return nil }
-        return Key(messageID: identity(acp["messageId"]), turnID: identity(acp["turnId"]))
+        let kind = acp["kind"]?.stringValue
+        let isThought: Bool
+        if kind == chunkKind, message.role == "assistant" {
+            isThought = false
+        } else if kind == thoughtKind {
+            isThought = true
+        } else {
+            return nil
+        }
+        return Key(messageID: identity(acp["messageId"]), turnID: identity(acp["turnId"]), isThought: isThought)
     }
 
     private static func identity(_ value: AGUIValue?) -> String? {
@@ -150,15 +166,21 @@ extension TranscriptOrigin {
         return name
     }
 
-    /// A token count to three figures: 950, 45.2k, 200k, 1.2M. The same in every locale.
+    /// A token count to three figures: 950, 45.2k, 200k, 1.2M, 3.4B. The same in every locale.
+    /// Any Int64 is formatted without overflow; a negative count is written in full.
     static func compact(_ count: Int64) -> String {
         func scaled(_ unit: Int64, _ suffix: String) -> String {
-            let tenths = (count * 10 + unit / 2) / unit
+            // Divide first, so the largest counts cannot overflow; round half up to tenths.
+            let step = unit / 10
+            let (quotient, remainder) = count.quotientAndRemainder(dividingBy: step)
+            let tenths = quotient + (remainder >= step - remainder ? 1 : 0)
             return String(tenths / 10) + (tenths % 10 == 0 || tenths >= 1000 ? "" : "." + String(tenths % 10)) + suffix
         }
         if count < 1000 { return String(count) }
-        // 999,950 and above rounds to 1000k; say 1M.
-        return count < 999_950 ? scaled(1000, "k") : scaled(1_000_000, "M")
+        // A count that would round up to 1000 of a unit is written in the next unit.
+        if count < 999_950 { return scaled(1000, "k") }
+        if count < 999_950_000 { return scaled(1_000_000, "M") }
+        return scaled(1_000_000_000, "B")
     }
 }
 
@@ -169,6 +191,9 @@ extension TranscriptEntry {
 
     /// True when the message directly before this entry's is a chunk of the same reply.
     var continuesTurn: Bool { origin?.chunk?.joinsPrevious ?? false }
+
+    /// Reasoning the provider emitted as live ACP thought chunks, joined like a reply.
+    var isThought: Bool { origin?.kind == ConversationChunks.thoughtKind }
 
     /// The entries Pretty shows: `folded` under the Pretty policy, so chunk runs are joined and
     /// an operational note reads as its one-line summary.
@@ -186,7 +211,8 @@ extension TranscriptEntry {
     /// which hold every entry they stand for.
     static func displayed(_ entries: [TranscriptEntry], mode: ConsoleDisplayMode) -> [TranscriptEntry] {
         switch mode {
-        case .console: folded(entries, policy: .console)
+        // Terminal mode's fallback is the Console transcript.
+        case .terminal, .console: folded(entries, policy: .console)
         case .pretty: folded(entries, policy: .pretty).filter(PrettyContent.isSubstantive)
         }
     }
@@ -203,11 +229,18 @@ extension TranscriptEntry {
         }) else { return entries }
         var shown: [TranscriptEntry] = []
         shown.reserveCapacity(entries.count)
-        // The open turn. It is held apart so its text grows in place.
-        var turn: (id: String, origin: TranscriptOrigin, text: String)?
+        // The open turn. It is held apart so its text grows in place. `thoughtRole` is the role
+        // of a thought's first chunk, nil for a reply.
+        var turn: (id: String, origin: TranscriptOrigin, text: String, thoughtRole: String?)?
 
         func close() {
             guard let open = turn else { return }
+            // A thought stays the service's record of its role, text exactly as joined.
+            if let role = open.thoughtRole {
+                shown.append(TranscriptEntry(id: open.id, kind: .other(role: role, text: open.text), origin: open.origin))
+                turn = nil
+                return
+            }
             // A reply that is only whitespace has nothing to read as prose. It stays as the
             // assistant's record with no text, as Console shows such a chunk, so its fields are
             // still reached from the turn. The text is kept exactly; whitespace beside other
@@ -230,7 +263,11 @@ extension TranscriptEntry {
                     close()
                     var opened = origin
                     opened.chunk?.joinsPrevious = false
-                    turn = (ConversationChunks.turnID(firstChunkID: entry.id), opened, chunk.text)
+                    var thoughtRole: String?
+                    if opened.kind == ConversationChunks.thoughtKind {
+                        if case .other(let role, _) = entry.kind { thoughtRole = role } else { thoughtRole = "assistant" }
+                    }
+                    turn = (ConversationChunks.turnID(firstChunkID: entry.id), opened, chunk.text, thoughtRole)
                 }
                 continue
             }
@@ -283,8 +320,9 @@ extension ConsoleRecordDetail {
             let fields: AGUIValue = message.allFields
             return fields
         }
+        let isThought = chunks.first.flatMap { ConversationChunks.key(of: $0) }?.isThought ?? false
         var turn: [String: AGUIValue] = [
-            "role": "assistant",
+            "role": .string(chunks.first?.role ?? "assistant"),
             "content": .string(ConversationChunks.text(of: chunks)),
             "chunkCount": .number(AGUINumber(chunks.count)),
             "messageIds": .array(chunks.map { .string($0.id) })
@@ -298,7 +336,8 @@ extension ConsoleRecordDetail {
         return [
             Section(
                 id: "turn", title: "Turn",
-                provenance: "One assistant reply as this view reads it: the content of \(count) live ACP "
+                provenance: (isThought ? "The provider's emitted thinking" : "One assistant reply")
+                    + " as this view reads it: the content of \(count) live ACP "
                     + "\(count == 1 ? "chunk" : "chunks") end to end, with nothing trimmed or added. "
                     + "The service sent each chunk as its own message.",
                 json: AGUIValue.object(turn).prettyText),
@@ -308,5 +347,147 @@ extension ConsoleRecordDetail {
                     + "and ACP source reference.",
                 json: AGUIValue.array(originals).prettyText)
         ]
+    }
+}
+
+// MARK: - Activity events
+
+/// What Pretty shows for an activity line: a symbol, a short label and the event's readable text.
+/// It is built from the routing the transcript already did: the entry's role and text, and its
+/// ACP kind and one-line summary. Nothing is inferred beyond them, and nothing here answers or
+/// acts on anything; the entry's fields and source stay where its row's action reaches them.
+///
+/// Recognised: `usage_update` Context, `current_mode_update` Mode, `available_commands_update`
+/// Commands, `session_info_update` Session, `config_option_update` Config, `plan` Plan, and the
+/// service's relayed `[Provider stderr]`, `[Provider stdout]`, `[Provider event: …]` and
+/// `[Service …]` text. Any other record with an ACP kind is named by that kind and shows its own
+/// text. A record with no text has an empty detail: its content is only in its fields.
+struct ActivityEvent: Equatable, Sendable {
+    enum Tone: Equatable, Sendable {
+        case quiet
+        /// May need the developer: harness stderr, or a provider event about a permission.
+        case attention
+    }
+
+    let symbol: String
+    let label: String
+    let detail: String
+    let tone: Tone
+
+    var accessibilityLabel: String {
+        label + ": " + (detail.isEmpty ? "no text, content in its fields" : detail)
+    }
+
+    /// Nil for an entry that is not activity: a prompt, reply, tool, result or thought, and a
+    /// note with neither an ACP kind nor a relayed marker, which keeps its role note.
+    init?(entry: TranscriptEntry) {
+        guard case .other(let role, let text) = entry.kind, !entry.isThought,
+              role != "user", role != "assistant" else { return nil }
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind = entry.origin?.kind ?? ""
+
+        if let rest = Self.after("[Provider stderr]", in: body) {
+            self.init(symbol: "exclamationmark.bubble", label: "stderr", detail: rest, tone: .attention)
+        } else if let rest = Self.after("[Provider stdout]", in: body) {
+            self.init(symbol: "text.alignleft", label: "stdout", detail: rest, tone: .quiet)
+        } else if body.hasPrefix("[Provider event:"), let close = body.firstIndex(of: "]") {
+            let name = body[body.index(body.startIndex, offsetBy: "[Provider event:".count)..<close]
+                .trimmingCharacters(in: .whitespaces)
+            let rest = body[body.index(after: close)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if name == Self.permissionRequested {
+                // The live approval request. Its question is the one the request form answers;
+                // the choice list Commander appended for text surfaces is left out here, since the
+                // form draws the choices. The record and its fields keep the text as sent.
+                let question = Self.withoutChoiceInstructions(rest)
+                self.init(symbol: "hand.raised", label: "Approval",
+                          detail: question.isEmpty ? "requested" : question, tone: .attention)
+                return
+            }
+            let detail = [name, rest].filter { !$0.isEmpty }.joined(separator: " · ")
+            let permission = detail.range(of: "permission", options: .caseInsensitive) != nil
+            self.init(symbol: permission ? "hand.raised" : "bolt.horizontal", label: "Provider",
+                      detail: detail, tone: permission ? .attention : .quiet)
+        } else if body.hasPrefix("[Service "), let close = body.firstIndex(of: "]") {
+            let name = body[body.index(body.startIndex, offsetBy: "[Service ".count)..<close]
+            let rest = body[body.index(after: close)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            self.init(symbol: "gearshape", label: "Service",
+                      detail: [String(name), rest].filter { !$0.isEmpty }.joined(separator: " · "), tone: .quiet)
+        } else if !kind.isEmpty {
+            let known: (symbol: String, label: String)? = switch kind {
+            case "usage_update": ("gauge.with.dots.needle.33percent", "Context")
+            case "current_mode_update": ("slider.horizontal.3", "Mode")
+            case "available_commands_update": ("command", "Commands")
+            case "session_info_update": ("info.circle", "Session")
+            case "config_option_update": ("switch.2", "Config")
+            case "plan": ("list.bullet", "Plan")
+            default: nil
+            }
+            let label = known?.label ?? Self.humanized(kind)
+            self.init(symbol: known?.symbol ?? "circle.dashed", label: label,
+                      detail: Self.detail(body, kind: kind, label: label), tone: .quiet)
+        } else {
+            return nil
+        }
+    }
+
+    init(symbol: String, label: String, detail: String, tone: Tone) {
+        self.symbol = symbol
+        self.label = label
+        self.detail = detail
+        self.tone = tone
+    }
+
+    /// The provider event name the ACP runner gives a live input request.
+    static let permissionRequested = "Permission requested"
+    /// The line Commander appends to a question that offers choices, before one `Label [id]` line
+    /// per choice. The same text `RequestPresentation.promptWithoutChoiceList` removes.
+    static let choiceInstructions = "\nReply with one of the IDs in brackets."
+
+    /// `question` without Commander's appended choice instructions, only when they are exactly
+    /// there: the instruction line, then one or more `Label [id]` lines to the end and nothing
+    /// else. Any other text, a provider's own brackets included, is returned unchanged.
+    static func withoutChoiceInstructions(_ question: String) -> String {
+        guard let range = question.range(of: choiceInstructions, options: .backwards) else { return question }
+        let tail = question[range.upperBound...]
+        guard tail.hasPrefix("\n") else { return question }
+        let lines = tail.dropFirst().split(separator: "\n", omittingEmptySubsequences: false)
+        let isChoice: (Substring) -> Bool = { line in
+            guard line.hasSuffix("]"), let open = line.range(of: " [", options: .backwards) else { return false }
+            let label = line[..<open.lowerBound]
+            let id = line[open.upperBound..<line.index(before: line.endIndex)]
+            return !label.trimmingCharacters(in: .whitespaces).isEmpty && !id.isEmpty && !id.contains("]")
+        }
+        guard !lines.isEmpty, lines.allSatisfy(isChoice) else { return question }
+        return question[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The text after `marker`, trimmed. Nil when `body` does not start with it.
+    private static func after(_ marker: String, in body: String) -> String? {
+        guard body.hasPrefix(marker) else { return nil }
+        return body.dropFirst(marker.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The readable part of a record's text: without a leading `[ACP kind]` marker, and without
+    /// the label the summary already starts with (`Context 13.6k …` reads `13.6k …`).
+    private static func detail(_ body: String, kind: String, label: String) -> String {
+        var text = Substring(body)
+        let marker = "[ACP " + kind + "]"
+        if text.hasPrefix(marker) { text = text.dropFirst(marker.count) }
+        text = Substring(text.trimmingCharacters(in: .whitespaces))
+        if text.hasPrefix(label) {
+            let rest = text.dropFirst(label.count)
+            if rest.isEmpty || rest.first == " " {
+                text = Substring(rest.trimmingCharacters(in: .whitespaces))
+                if text.hasPrefix("·") { text = Substring(text.dropFirst().trimmingCharacters(in: .whitespaces)) }
+            }
+        }
+        return String(text)
+    }
+
+    /// `tool_call_update` reads `Tool call update`; `acp.prompt_result` reads `Prompt result`.
+    private static func humanized(_ kind: String) -> String {
+        let last = kind.split(separator: ".").last.map(String.init) ?? kind
+        let words = last.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 }

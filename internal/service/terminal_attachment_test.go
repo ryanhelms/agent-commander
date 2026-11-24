@@ -15,7 +15,7 @@ func (p terminalFixtureLauncher) ResolveTerminal(_ context.Context, id string) (
 	return p.resolve(id), nil
 }
 
-func TestTerminalAttachmentOwnerAndLocalIdentity(t *testing.T) {
+func TestTerminalAttachmentOwnerAndRunnerIdentity(t *testing.T) {
 	f := newFixture(t)
 	var calls int
 	launcher := terminalFixtureLauncher{continuityLauncher: continuityLauncher{recorder: f.p}}
@@ -42,8 +42,12 @@ func TestTerminalAttachmentOwnerAndLocalIdentity(t *testing.T) {
 		"name": "remote", "task": "remote worker", "host": "linux-build",
 	}, 201, "")
 	remote := f.launched()
-	f.call("GET", "/v1/workers/"+remote.ID+"/terminal", "", nil, 501, "")
-	if calls != 1 {
-		t.Fatalf("resolved %d times; only the owner-local lookup should reach tmux", calls)
+	remotePath := "/v1/workers/" + remote.ID + "/terminal"
+	if err := json.Unmarshal(f.call("GET", remotePath, "", nil, 200, ""), &got); err != nil || got.WorkerID != remote.ID {
+		t.Fatalf("unexpected attachment for SSH runner: %+v, %v", got, err)
+	}
+	f.call("GET", remotePath, remote.Token, nil, 403, "")
+	if calls != 2 {
+		t.Fatalf("resolved %d times; only owner lookups should reach tmux", calls)
 	}
 }

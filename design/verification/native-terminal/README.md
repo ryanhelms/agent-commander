@@ -1,5 +1,15 @@
 # First native terminal
 
+## Inline rollout
+
+Computer Use verified the installed app on the isolated RetryLab run. The coordinator and both worker tiles opened in Terminal mode, and focusing Backoff budget kept the coordinator and selected worker live. A pending Transport review request showed that worker’s terminal and its addressed reply field in the floating PiP. Commander recorded the submitted choice on Transport review’s request. Detach exposed Backoff budget’s transcript, and reconnect reopened its original pane. Returning to the wall left exactly three read-only viewers and their three size helpers on the original sessions.
+
+The inline views use the approved window’s square console surface, with the connection indicator in each existing title bar. PiP keeps its request controls under the terminal. The tmux status line and dotted padding are visible when a viewport extends past the pane’s current dimensions. The viewer leaves those dimensions under the control of the worker and any writable tmux client.
+
+The native well appears in All Agents and Smart View design previews with sample output. Those pages currently run as design previews.
+
+## Standalone viewer
+
 [Worker viewer at 920 × 580 points](worker-viewer.png). The capture shows the production SwiftUI viewer containing SwiftTerm’s AppKit view in an offscreen window on macOS. A real local Commander service launched two isolated tmux workers. A scripted model supplied deterministic output for the review. The green status bar and the printed attach instructions came from tmux and the managed runner.
 
 The operator opens **Watch Terminal…** from the coordinator or worker display menu. The native viewer shares the console title bar and square surface. It shows the worker’s live screen and keeps its last frame on detach. The existing Console and Pretty presentations retain their AG-UI subscriptions.

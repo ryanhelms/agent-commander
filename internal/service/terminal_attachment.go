@@ -9,7 +9,8 @@ import (
 	"agentcommander/internal/hosted"
 )
 
-// TerminalAttachment identifies a managed tmux session on this machine.
+// TerminalAttachment identifies the local tmux session hosting a managed runner.
+// The harness behind that runner may execute on an SSH host.
 type TerminalAttachment struct {
 	WorkerID   string `json:"worker_id"`
 	SocketPath string `json:"socket_path"`
@@ -28,15 +29,15 @@ func (s *service) serveTerminalAttachment(w http.ResponseWriter, req *http.Reque
 	id := req.PathValue("worker")
 	s.mu.Lock()
 	_, worker := s.worker(id)
-	local := worker != nil && (worker.Host == "" || worker.Host == "localhost")
+	found := worker != nil
 	s.mu.Unlock()
-	if worker == nil {
+	if !found {
 		respondError(w, missing("worker"))
 		return
 	}
 	resolver, ok := s.launcher.(terminalResolver)
-	if !ok || !local {
-		respondError(w, &apiError{http.StatusNotImplemented, "native terminal viewing requires a local tmux worker"})
+	if !ok {
+		respondError(w, &apiError{http.StatusNotImplemented, "native terminal viewing requires a managed tmux runner"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)

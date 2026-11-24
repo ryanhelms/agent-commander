@@ -70,6 +70,7 @@ type Worker struct {
 	Coding        *worktrees.Checkout `json:"coding,omitempty"`
 	Handoff       *CodingHandoff      `json:"handoff,omitempty"`
 	FrontendTools bool                `json:"frontend_tools,omitempty"`
+	Telemetry     *WorkerTelemetry    `json:"telemetry,omitempty"`
 }
 
 type Question struct {

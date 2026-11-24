@@ -268,7 +268,7 @@ func (s *service) durableState() database {
 				continue
 			}
 			durable := *w
-			durable.Output, durable.Console = "", nil
+			durable.Output, durable.Console, durable.Telemetry = "", nil, nil
 			if w.Control != nil {
 				control := *w.Control
 				control.Messages = append([]WorkerFollowUp(nil), control.Messages...)

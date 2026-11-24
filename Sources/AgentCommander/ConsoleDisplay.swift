@@ -5,12 +5,27 @@ import Foundation
 // MARK: - Mode + shared presentation state
 
 enum ConsoleDisplayMode: String, CaseIterable, Identifiable, Sendable {
+    /// The live native terminal (NativeTerminalSlot), read-only. A console without one shows its
+    /// Console transcript.
+    case terminal
     case console
     case pretty
 
     var id: String { rawValue }
-    var title: String { self == .console ? "Console" : "Pretty" }
-    var symbol: String { self == .console ? "terminal" : "text.bubble" }
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .console: "Console"
+        case .pretty: "Pretty"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .terminal: "apple.terminal"
+        case .console: "terminal"
+        case .pretty: "text.bubble"
+        }
+    }
 }
 
 /// Launch-scoped presentation state. One instance, owned by the App, shared by every projection
@@ -18,7 +33,11 @@ enum ConsoleDisplayMode: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 @Observable
 final class ConsoleModeStore {
-    private(set) var globalMode: ConsoleDisplayMode = .console
+    /// Pretty by default on every fresh launch: an ACP-bound console shows `PrettyACPConsole`, and
+    /// any other console its Pretty transcript, or Console when Pretty has nothing to show.
+    /// Terminal stays one choice away in the display menus, per console or for all, and the
+    /// standalone terminal window does not read this value.
+    private(set) var globalMode: ConsoleDisplayMode = .pretty
     /// Keyed by stable worker/coordinator ID. Only holds values that differ from `globalMode`.
     private(set) var overrides: [String: ConsoleDisplayMode] = [:]
     private(set) var expandedTools: Set<String> = []
@@ -105,6 +124,9 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     private let rawOutput: String
     private let density: PrettyDensity
     private let horizontalInset: CGFloat
+    /// The worker whose live terminal Terminal mode shows. Nil where a console has none (the
+    /// queue inspector); Terminal mode then shows the Console transcript.
+    private let terminal: NativeTerminalTarget?
     private let console: () -> ConsoleContent
 
     init(
@@ -113,6 +135,7 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         rawOutput: String = "",
         density: PrettyDensity,
         horizontalInset: CGFloat = 12,
+        terminal: NativeTerminalTarget? = nil,
         @ViewBuilder console: @escaping () -> ConsoleContent
     ) {
         self.consoleID = consoleID
@@ -120,11 +143,15 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         self.rawOutput = rawOutput
         self.density = density
         self.horizontalInset = horizontalInset
+        self.terminal = terminal
         self.console = console
     }
 
     var body: some View {
-        if (modes?.mode(for: consoleID) ?? .console) == .pretty,
+        let mode = modes?.mode(for: consoleID) ?? .console
+        if mode == .terminal {
+            NativeTerminalSlot(target: terminal, density: density, horizontalInset: horizontalInset, fallback: console)
+        } else if mode == .pretty,
            PrettyContent.isPresentable(entries: entries, rawOutput: rawOutput) {
             PrettyConsoleView(
                 consoleID: consoleID,
@@ -199,7 +226,8 @@ enum PrettyContent {
         switch entry.kind {
         case .prose(_, let fromUser): return fromUser ? "user" : "assistant"
         case .tool, .output: return "assistant"
-        case .other(let role, _): return role
+        // The provider's thinking belongs to the agent's side of the turn.
+        case .other(let role, _): return entry.isThought ? "assistant" : role
         }
     }
 
@@ -237,12 +265,15 @@ struct PrettyConsoleView: View {
     let rawOutput: String
     let density: PrettyDensity
     var horizontalInset: CGFloat = 12
+    /// The open tool call of a worker waiting for the developer's reply, which reads as awaiting
+    /// approval. Nil everywhere else, so every call keeps the status its result gives it.
+    var awaitingToolID: String? = nil
 
     var body: some View {
         let metrics = PrettyMetrics(density)
-        // A streamed reply is one turn, as it is in Console. Pretty alone then reads adjacent
-        // routine entries (usage, session state, harness diagnostics) as one collapsed activity
-        // in their place; every other entry is laid out as it is, in order.
+        // A streamed reply is one turn, as it is in Console. Pretty then sets adjacent routine
+        // entries (usage, session state, harness diagnostics) close together as activity lines in
+        // their place, each visible; every other entry is laid out as it is, in order.
         let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty))
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
@@ -257,13 +288,7 @@ struct PrettyConsoleView: View {
                             case .entry(let entry):
                                 row(entry, metrics: metrics)
                             case .activity(let activity):
-                                PrettyActivityDisclosure(
-                                    activity: activity,
-                                    metrics: metrics,
-                                    isExpanded: Binding(
-                                        get: { isExpanded(activity.id) },
-                                        set: { if $0 != isExpanded(activity.id) { toggle(activity.id) } })
-                                ) { entry in
+                                PrettyActivityRun(activity: activity, metrics: metrics) { entry in
                                     row(entry, metrics: metrics)
                                 }
                             }
@@ -328,6 +353,7 @@ struct PrettyConsoleView: View {
                 isExpanded: isExpanded(entry.id),
                 fontSize: metrics.toolSize,
                 style: .pretty,
+                isAwaitingApproval: entry.id == awaitingToolID,
                 toggle: { toggle(entry.id) }
             )
             .frame(maxWidth: metrics.readingWidth, alignment: .leading)
@@ -344,8 +370,23 @@ struct PrettyConsoleView: View {
             }
             .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
         case .other(let role, let text):
-            PrettyRoleNote(role: role, text: text, metrics: metrics)
-                .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            if entry.isThought {
+                PrettyThinkingRow(
+                    text: text,
+                    metrics: metrics,
+                    isExpanded: Binding(
+                        get: { isExpanded(entry.id) },
+                        set: { if $0 != isExpanded(entry.id) { toggle(entry.id) } }))
+                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            } else if let event = ActivityEvent(entry: entry) {
+                // A recognised event, or any record with an ACP kind: one visible activity line.
+                // It never carries a reply; a pending request is answered only in its form.
+                PrettyActivityRow(event: event, metrics: metrics)
+                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            } else {
+                PrettyRoleNote(role: role, text: text, metrics: metrics)
+                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            }
         }
     }
 
@@ -511,73 +552,113 @@ private struct PrettyUserTurn: View {
     }
 }
 
-/// A run of routine entries as one line of the conversation: a native disclosure named
-/// "Activity" with a count, closed until asked. Open, it lists every entry of the run in order,
-/// each drawn by the conversation's own row, so each keeps its text, its copy action and its
-/// fields. It is signposted by name and count, at caption size, below the prominence of a tool.
-private struct PrettyActivityDisclosure<Row: View>: View {
+/// A run of adjacent routine entries, set close together in their place. Every line is visible:
+/// nothing that needs the developer can sit behind a count. Each line is the conversation's own
+/// row, so it keeps its source and fields action.
+private struct PrettyActivityRun<Row: View>: View {
     let activity: ConversationActivity
     let metrics: PrettyMetrics
-    @Binding var isExpanded: Bool
     @ViewBuilder let row: (TranscriptEntry) -> Row
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: metrics.blockSpacing) {
-                ForEach(activity.entries) { entry in row(entry) }
-            }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("Activity").fontWeight(.medium)
-                Text(verbatim: "· " + activity.detail).monospacedDigit()
-            }
+        VStack(alignment: .leading, spacing: metrics.density == .pip ? 1 : 3) {
+            ForEach(activity.entries) { entry in row(entry) }
         }
-        .disclosureGroupStyle(PrettyActivityDisclosureStyle(
-            metrics: metrics, label: activity.accessibilityLabel))
         .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(activity.accessibilityLabel)
     }
 }
 
-/// The face of the activity disclosure: the whole label is the target, not only its chevron.
-private struct PrettyActivityDisclosureStyle: DisclosureGroupStyle {
+/// One activity line, in the terminal's restrained voice: a small symbol, a short label and the
+/// event's readable detail. An event that may need the developer, such as harness stderr or a
+/// permission notice, is drawn in the attention ink; the rest are secondary. Details wrap, so
+/// nothing is cut; a record with only fields says so and its fields action opens them.
+private struct PrettyActivityRow: View {
+    let event: ActivityEvent
     let metrics: PrettyMetrics
-    let label: String
 
-    func makeBody(configuration: Configuration) -> some View {
+    var body: some View {
+        let size = metrics.codeSize
+        let ink: Color = event.tone == .attention ? Palette.attention : Palette.secondary
+        HStack(alignment: .firstTextBaseline, spacing: metrics.density == .pip ? 5 : 7) {
+            Image(systemName: event.symbol)
+                .font(.system(size: size - 1, weight: .medium))
+                .foregroundStyle(ink)
+                .frame(width: size + 2)
+                .accessibilityHidden(true)
+            Text(verbatim: event.label)
+                .font(Term.font(size, weight: .semibold))
+                .foregroundStyle(ink)
+                .lineLimit(1).fixedSize()
+            Text(verbatim: event.detail.isEmpty ? "fields only" : event.detail)
+                .font(Term.font(size))
+                .foregroundStyle(event.detail.isEmpty ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.text))
+                .lineSpacing(metrics.density == .pip ? 1 : 2)
+                // Never clipped, in any density: the conversation scrolls instead.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, metrics.density == .pip ? 0 : 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(event.accessibilityLabel)
+    }
+}
+
+/// Reasoning the provider emitted as live ACP thought chunks, joined into one thought. Closed, it
+/// is one quiet line, "Thinking" and the start of the thought; open, the whole text in italics
+/// beside a tinted rule, so it never reads as the agent's reply. Only emitted thought chunks are
+/// shown here; nothing is inferred from other output.
+private struct PrettyThinkingRow: View {
+    let text: String
+    let metrics: PrettyMetrics
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        let thought = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = thought.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         let size = metrics.toolSize - (metrics.density == .regular ? 0.5 : 0)
-        VStack(alignment: .leading, spacing: metrics.blockSpacing) {
-            Button {
-                configuration.isExpanded.toggle()
-            } label: {
+        VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.6) {
+            Button { isExpanded.toggle() } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: size - 3, weight: .semibold))
-                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: size - 2)
-                        .accessibilityHidden(true)
-                    configuration.label
-                        .font(.system(size: size))
-                        .lineLimit(1)
+                    Image(systemName: "brain").font(.system(size: size - 1))
+                    Text("Thinking").fontWeight(.medium)
+                    if !isExpanded, !preview.isEmpty {
+                        Text(verbatim: preview).italic().foregroundStyle(Palette.secondary)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                 }
-                .foregroundStyle(.inkSecondary)
+                .font(.system(size: size))
+                .foregroundStyle(Palette.focus)
                 .padding(.vertical, metrics.density == .pip ? 1 : 3)
                 .padding(.trailing, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .textSelection(.disabled)
-            .help(configuration.isExpanded
-                  ? "Hide these usage, session and harness events"
-                  : "Show each usage, session and harness event, with its fields")
-            .accessibilityLabel(label)
-            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows or hides each usage, session and harness event of this run of activity")
-            if configuration.isExpanded {
-                configuration.content
-                    .padding(.leading, metrics.density == .pip ? 8 : 14)
+            .help(isExpanded ? "Hide the provider's thinking" : "Show the thinking the provider reported")
+            .accessibilityLabel("Thinking")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the reasoning the provider emitted for this turn")
+            if isExpanded {
+                Text(verbatim: thought.isEmpty ? "The provider sent no thinking text." : thought)
+                    .font(metrics.body.italic())
+                    .lineSpacing(metrics.lineSpacing)
+                    .foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, metrics.density == .pip ? 8 : 12)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1).fill(Palette.focus.opacity(0.45)).frame(width: 2)
+                    }
+                    .accessibilityLabel("Thinking: \(thought)")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
         .accessibilityElement(children: .contain)
     }
 }
@@ -994,8 +1075,9 @@ struct ConsoleModeTitlebarControl: View {
     /// Present when this console's worker has a provider source. The menu then offers the source
     /// inspector, in either display mode, and a console that hosts the inspector presents it here.
     var source: ConsoleSourceAccess? = nil
-    /// Present on the wall tile, focused worker and coordinator. The menu then offers the native
-    /// read-only terminal viewer, disabled for a worker that is not on this Mac.
+    /// Present on the wall tile, focused worker, coordinator and PiP. The bar then shows the inline
+    /// terminal's status in Terminal mode, and the menu offers detach or reconnect and the
+    /// standalone read-only viewer.
     var terminal: NativeTerminalTarget? = nil
 
     var body: some View {
@@ -1007,6 +1089,9 @@ struct ConsoleModeTitlebarControl: View {
         // Semibold, the weight of the action glyph beside it: the regular symbol was too thin to find.
         let glyph = Image(systemName: mode.symbol).fontWeight(.semibold)
 
+        HStack(spacing: 6) {
+        // The inline terminal's status, in the bar the console already has.
+        if let terminal { NativeTerminalChromeStatus(consoleID: consoleID, target: terminal) }
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
             if let source {
@@ -1015,7 +1100,7 @@ struct ConsoleModeTitlebarControl: View {
             }
             if let terminal {
                 Divider()
-                NativeTerminalMenuItems(target: terminal)
+                NativeTerminalMenuItems(target: terminal, consoleID: consoleID)
             }
             Divider()
             HarnessAccentMenu(client: client)
@@ -1048,6 +1133,7 @@ struct ConsoleModeTitlebarControl: View {
         .accessibilityLabel("Display mode, \(consoleName)")
         .accessibilityValue("\(mode.title), \(scope)")
         .modifier(ConsoleSourcePresentation(source: source))
+        }
     }
 }
 

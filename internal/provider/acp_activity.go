@@ -28,6 +28,8 @@ func acpActivityEvent(update *acpprocessor.Update, source, cursor string) servic
 			kind, value = "text", block.Text.Text
 		case v.UserMessageChunk != nil:
 			kind, value = "user", block.Text.Text
+		case v.AgentThoughtChunk != nil:
+			kind, value = "thinking", block.Text.Text
 		default:
 			value += " " + block.Text.Text
 		}

@@ -129,7 +129,7 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 			message.Content = &item.Text
 		case "user":
 			message.Role, message.Content = "user", &item.Text
-		case "output":
+		case "output", "thinking":
 			message.Role, message.Content = "system", &item.Text
 		case "tool_call", "tool_update":
 			if tool == nil || (tool.call < 0 && item.Name == "") {

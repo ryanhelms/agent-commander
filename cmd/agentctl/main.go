@@ -45,7 +45,7 @@ const usage = `Agent Commander
   agentctl catalog refresh ID             Check and stage a verified update
   agentctl list                          List runs
   agentctl show RUN                      Inspect a run and its consoles
-  agentctl terminal observe WORKER       Open a read-only tmux viewer for a local worker
+  agentctl terminal observe WORKER       Watch a managed worker’s tmux terminal read-only
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
   agentctl delegate-coding RUN PARENT NAME TASK
                                          Create an isolated coding worker

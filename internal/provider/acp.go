@@ -492,7 +492,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				if event.ACP != nil {
 					event.ACP.TurnID = e.TurnId
 				}
-				s.line(event.Text)
+				s.line(event.TerminalText())
 				s.recordEvent(event)
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_SYSTEM:
 				flushText()
@@ -524,6 +524,9 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetTurnEnded() != nil:
 				flushText()
 				if portableRef != nil {
+					if original := e.GetSourceRecord(); original.GetType() == "acp.prompt_result" {
+						portableRef.TurnTokens = acpprocessor.PromptResultTokens(original.GetData())
+					}
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: portableRef})
 				}
 				reason := e.GetTurnEnded().Reason

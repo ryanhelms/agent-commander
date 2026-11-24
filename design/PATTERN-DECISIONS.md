@@ -241,6 +241,14 @@ Ordinary sign-out retires the device's lease in the credential transaction and m
 
 The local provider acts as an Adapter between a Commander worker ID and its existing tmux session. The owner API resolves a selected worker on demand. After resolution, the bundled CLI attaches a read-only tmux client on SwiftTerm’s PTY with its size ignored. Closing the viewer disconnects that client. The runner retains the session, input ownership, and provider-native history.
 
+The owner API resolves the runner independently of the harness execution host. A managed SSH harness also has a runner in local tmux. Its native viewport shows that runner’s output, and any missing or replaced local runner fails the same identity check. Each visible viewport owns its attachment while the structured event stream remains available for workflow controls and history.
+
+## Focused Pretty console
+
+The focused Pretty console reads the worker’s ACP-backed AG-UI projection. Its native approval controls carry the request ID and the offered choice ID to the existing reply command. The service retains ownership of validation and delivery to the original ACP peer. Tool disclosures keep their existing correlation to the source record and follow-ups use the worker’s existing input grant.
+
+The ACP Adapter carries reported thinking as a distinct console event. The live workspace keeps the latest reported context window and prompt-result usage as independent readings so transcript rotation leaves the footer intact. Missing token counts stay absent. The original ACP records remain accessible through their scoped source references, and the footer snapshot stays out of the durable store.
+
 ## Multiplayer coordinator authorization
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.

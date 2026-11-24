@@ -605,6 +605,7 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 		for i := range in.Events {
 			sequence++
 			in.Events[i].Sequence = sequence
+			w.observeTelemetry(in.Events[i].ACP)
 		}
 		w.Console = append(w.Console, in.Events...)
 		if len(w.Console) > consoleEventWindow {

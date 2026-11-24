@@ -1074,6 +1074,7 @@ struct WindowAttentionProbe: NSViewRepresentable {
 /// routes each intent back to the model by run or request ID.
 struct CockpitView: View {
     @Environment(ConsoleModeStore.self) private var consoleModes
+    @Environment(NativeTerminalLedger.self) private var nativeTerminals: NativeTerminalLedger?
     let model: CockpitModel
     @State private var ui = CockpitView.initialState()
     /// The floating window for the PiP presentation. It lives as long as the live page.
@@ -1108,7 +1109,8 @@ struct CockpitView: View {
             .task { await model.adapterUpdates.follow() }
             .onAppear {
                 guard floatingPanel == nil else { return }
-                let controller = FloatingAttentionController(model: model, ui: ui, actions: actions, consoleModes: consoleModes)
+                let controller = FloatingAttentionController(model: model, ui: ui, actions: actions, consoleModes: consoleModes,
+                                                             nativeTerminals: nativeTerminals)
                 controller.start()
                 floatingPanel = controller
             }

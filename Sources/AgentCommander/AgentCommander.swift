@@ -16,6 +16,8 @@ struct AgentCommander: App {
     @NSApplicationDelegateAdaptor(SingleInstanceAppDelegate.self) private var appDelegate
     @State private var model = CockpitModel()
     @State private var consoleModes = ConsoleModeStore()
+    /// Inline native terminal status for every console. Design previews never attach.
+    @State private var nativeTerminals = NativeTerminalLedger.forLaunch()
     /// Live network panel state, shared by the menu bar item and the review window.
     @State private var network = MultiplayerModel.live()
 
@@ -33,6 +35,7 @@ struct AgentCommander: App {
                 }
             }
             .environment(consoleModes)
+            .environment(nativeTerminals)
             .frame(minWidth: 800, minHeight: 540)
             .preferredColorScheme(.dark)
             .singleInstanceCockpitScene()
@@ -48,7 +51,7 @@ struct AgentCommander: App {
         }
 
         // Read-only native terminal for one local worker, opened from its console's display menu.
-        NativeTerminalScene()
+        NativeTerminalScene(model: model)
 
         MenuBarExtra {
             MultiplayerPanel(model: network)

@@ -12,6 +12,11 @@ import SwiftUI
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
 //   AttentionStack      = request controls + ConsoleTitleBar + TerminalWell + RequestPrompt
 //                         + TerminalStatusLine (the PiP)
+//
+// In Pretty on an ACP-bound worker, PrettyACPConsole replaces the scrollback on each of these:
+// regular with the request form on the focused WorkerTile; compact with no form on a wall tile;
+// regular with no form on CoordinatorConsole, whose AttentionNotices still open each request;
+// pip with the request form in AttentionStack, in place of the scrollback and RequestPrompt.
 //   RunHeader           = Breadcrumb + StatusLabel + run actions
 //   NavigationRail      = BrandMark + NavigationRow
 
@@ -55,6 +60,15 @@ struct WorkerTile: View {
 
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
+    @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+
+    /// The provider session when this console shows `PrettyACPConsole`: Pretty mode on an
+    /// ACP-bound worker, in either variant. Nil otherwise.
+    private var prettySession: NativeSession? {
+        guard PrettyACPScope.applies(mode: modes?.mode(for: worker.id) ?? .console, session: worker.session)
+        else { return nil }
+        return worker.session
+    }
 
     private var isPending: Bool { worker.request != nil }
     private var isFocusedVariant: Bool { variant == .focused }
@@ -98,11 +112,22 @@ struct WorkerTile: View {
         }
     }
 
-    /// Wall density: the terminal tail fills the tile.
-    private var well: some View {
+    /// Wall density: the terminal tail fills the tile. In Pretty on an ACP-bound worker, the
+    /// compact structured console; its request is answered in the PiP or the focused worker.
+    @ViewBuilder private var well: some View {
+        if let session = prettySession {
+            PrettyACPConsole(worker: worker, session: session, density: .compact)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            terminalWell
+        }
+    }
+
+    private var terminalWell: some View {
         ZStack(alignment: .topLeading) {
             Term.background
-            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact) {
+            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact,
+                              terminal: NativeTerminalTarget(worker: worker)) {
                 if !worker.transcript.isEmpty {
                     TranscriptView(entries: worker.transcript, agentName: worker.name,
                                    fontSize: TypeRole.wallTerminalSize, inset: 11,
@@ -113,12 +138,14 @@ struct WorkerTile: View {
                 }
             }
             if worker.transcript.isEmpty && worker.output.isEmpty {
-                Text(worker.task)
-                    .font(Term.font(TypeRole.wallTerminalSize))
-                    .foregroundStyle(.inkTermDim)
-                    .padding(.horizontal, 11).padding(.vertical, 9)
-                    .allowsHitTesting(false)
-                    .accessibilityLabel("No output yet. Task: \(worker.task)")
+                NativeTerminalTranscriptOnly(consoleID: worker.id, target: NativeTerminalTarget(worker: worker)) {
+                    Text(worker.task)
+                        .font(Term.font(TypeRole.wallTerminalSize))
+                        .foregroundStyle(.inkTermDim)
+                        .padding(.horizontal, 11).padding(.vertical, 9)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel("No output yet. Task: \(worker.task)")
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -139,30 +166,38 @@ struct WorkerTile: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .regular, horizontalInset: 21) {
-                if !worker.transcript.isEmpty {
-                    // Structured messages: the transcript takes the room above the request.
-                    TranscriptView(entries: worker.transcript, agentName: worker.name,
-                                   fontSize: TypeRole.focusTerminalSize, inset: 21,
-                                   consoleID: worker.id, density: .regular)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(1)
-                } else if worker.output.isEmpty {
-                    Text("… waiting for this worker's first output")
-                        .font(Term.font(13)).foregroundStyle(.inkTermDim)
-                        .padding(.horizontal, 21).padding(.vertical, 8)
-                } else {
-                    TerminalWell(output: worker.output, workerID: worker.id, style: .transcript, workerName: worker.name,
-                                 fontSize: TypeRole.focusTerminalSize, inset: NSSize(width: 21, height: 4),
-                                 onContentHeight: { transcriptHeight = $0 })
-                        .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
-                        .layoutPriority(1)
+            if let session = prettySession {
+                // Pretty on an ACP-bound worker: the structured transcript only, with the request
+                // as a native form inside it.
+                PrettyACPConsole(worker: worker, session: session, reply: reply)
+            } else {
+                ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output,
+                                  density: .regular, horizontalInset: 21,
+                                  terminal: NativeTerminalTarget(worker: worker)) {
+                    if !worker.transcript.isEmpty {
+                        // Structured messages: the transcript takes the room above the request.
+                        TranscriptView(entries: worker.transcript, agentName: worker.name,
+                                       fontSize: TypeRole.focusTerminalSize, inset: 21,
+                                       consoleID: worker.id, density: .regular)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .layoutPriority(1)
+                    } else if worker.output.isEmpty {
+                        Text("… waiting for this worker's first output")
+                            .font(Term.font(13)).foregroundStyle(.inkTermDim)
+                            .padding(.horizontal, 21).padding(.vertical, 8)
+                    } else {
+                        TerminalWell(output: worker.output, workerID: worker.id, style: .transcript, workerName: worker.name,
+                                     fontSize: TypeRole.focusTerminalSize, inset: NSSize(width: 21, height: 4),
+                                     onContentHeight: { transcriptHeight = $0 })
+                            .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
+                            .layoutPriority(1)
+                    }
                 }
-            }
-            if let request = worker.request, let reply {
-                RequestPrompt(request: request, reply: reply, density: .focused, inset: 21)
-                    .padding(.top, 8)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let request = worker.request, let reply {
+                    RequestPrompt(request: request, reply: reply, density: .focused, inset: 21)
+                        .padding(.top, 8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             // Takes only the room left over. It never sets the transcript's or the request's size.
             Spacer(minLength: 0)
@@ -206,6 +241,9 @@ struct WorkerTile: View {
                 Text(worker.queuedFollowUps == 1 ? "1 follow-up queued" : "\(worker.queuedFollowUps) follow-ups queued")
                     .font(Term.font(size - 1)).foregroundStyle(Term.cyan)
                     .lineLimit(1).fixedSize()
+            }
+            if let telemetry = worker.telemetry {
+                ProviderUsageStatus(telemetry: telemetry, size: size - 1)
             }
             InputOwnership(workerName: worker.name, control: worker.control,
                            isKeyFocused: isKeyFocused, handBack: actions.handBack,
@@ -553,6 +591,13 @@ struct CoordinatorConsole: View {
     let openRequest: (RequestPresentation) -> Void
     /// Laid-out height of the transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
+    @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+
+    private var prettySession: NativeSession? {
+        guard PrettyACPScope.applies(mode: modes?.mode(for: coordinator.id) ?? .console, session: coordinator.session)
+        else { return nil }
+        return coordinator.session
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -564,50 +609,59 @@ struct CoordinatorConsole: View {
                                            client: coordinator.client, source: source,
                                            terminal: NativeTerminalTarget(worker: coordinator))
             }
-            // One scrollback: the assignment, the transcript, then any waiting request directly
-            // after it. A long transcript scrolls in place while the notices stay visible beneath it.
-            VStack(alignment: .leading, spacing: 0) {
-                ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
-                                  rawOutput: coordinator.output) {
-                    AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                        .padding(.bottom, 9)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript, rawOutput: coordinator.output, density: .regular, horizontalInset: 0) {
-                    if !coordinator.transcript.isEmpty {
-                        TranscriptView(entries: coordinator.transcript, agentName: coordinator.name,
-                                       fontSize: 12.5, inset: 0,
-                                       consoleID: coordinator.id, density: .regular)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .layoutPriority(1)
-                    } else if coordinator.output.isEmpty {
-                        Text("… waiting for the coordinator's first output")
-                            .font(Term.font(12.5)).foregroundStyle(.inkTermDim)
-                    } else {
-                        TerminalWell(output: coordinator.output, workerID: coordinator.id, workerName: coordinator.name,
-                                     fontSize: 12.5, inset: NSSize(width: 0, height: 2),
-                                     onContentHeight: { transcriptHeight = $0 })
-                            .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
-                            .layoutPriority(1)
+            if let session = prettySession {
+                prettyScrollback(session: session)
+            } else {
+                // One scrollback: the assignment, the transcript, then any waiting request directly
+                // after it. A long transcript scrolls in place while the notices stay visible beneath it.
+                VStack(alignment: .leading, spacing: 0) {
+                    ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
+                                      rawOutput: coordinator.output) {
+                        AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
+                            .padding(.bottom, 9)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript,
+                                      rawOutput: coordinator.output, density: .regular, horizontalInset: 0,
+                                      terminal: NativeTerminalTarget(worker: coordinator)) {
+                        if !coordinator.transcript.isEmpty {
+                            TranscriptView(entries: coordinator.transcript, agentName: coordinator.name,
+                                           fontSize: 12.5, inset: 0,
+                                           consoleID: coordinator.id, density: .regular)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .layoutPriority(1)
+                        } else if coordinator.output.isEmpty {
+                            Text("… waiting for the coordinator's first output")
+                                .font(Term.font(12.5)).foregroundStyle(.inkTermDim)
+                        } else {
+                            TerminalWell(output: coordinator.output, workerID: coordinator.id, workerName: coordinator.name,
+                                         fontSize: 12.5, inset: NSSize(width: 0, height: 2),
+                                         onContentHeight: { transcriptHeight = $0 })
+                                .frame(maxWidth: .infinity, maxHeight: transcriptHeight)
+                                .layoutPriority(1)
+                        }
+                    }
+                    if let error = coordinator.error, !error.isEmpty {
+                        ConsoleNotice(text: error, state: coordinator.state)
+                            .padding(.top, 8)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(awaiting) { request in
+                        AttentionNotice(request: request, detail: detail(for: request)) { openRequest(request) }
+                            .padding(.top, 8)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
                 }
-                if let error = coordinator.error, !error.isEmpty {
-                    ConsoleNotice(text: error, state: coordinator.state)
-                        .padding(.top, 8)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(awaiting) { request in
-                    AttentionNotice(request: request, detail: detail(for: request)) { openRequest(request) }
-                        .padding(.top, 8)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
+                .padding(.top, 12).padding(.horizontal, 17).padding(.bottom, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Term.background)
             }
-            .padding(.top, 12).padding(.horizontal, 17).padding(.bottom, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Term.background)
             TerminalStatusLine(state: coordinator.state, size: 11.5, inset: 17,
                                reconnectingHost: coordinator.hostIsReconnecting ? coordinator.host : nil) {
+                if let telemetry = coordinator.telemetry {
+                    ProviderUsageStatus(telemetry: telemetry, size: 10.5)
+                }
                 if isKeyFocused {
                     InputOwnership(workerName: coordinator.name, control: coordinator.control, isKeyFocused: true)
                 }
@@ -624,6 +678,35 @@ struct CoordinatorConsole: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Coordinator \(coordinator.name), \(coordinator.state.label)"
                             + (coordinator.hostIsReconnecting ? ", host reconnecting" : ""))
+    }
+
+    /// Pretty on an ACP-bound coordinator: the assignment, the structured console at the
+    /// console's own inset, then the error and the waiting-request notices. Each notice opens its
+    /// request where it is answered; the coordinator holds no reply form.
+    private func prettyScrollback(session: NativeSession) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
+                              rawOutput: coordinator.output) {
+                AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
+                    .padding(.horizontal, 17).padding(.top, 12).padding(.bottom, 9)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            PrettyACPConsole(worker: coordinator, session: session, density: .regular, inset: 17)
+            VStack(alignment: .leading, spacing: 8) {
+                if let error = coordinator.error, !error.isEmpty {
+                    ConsoleNotice(text: error, state: coordinator.state)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(awaiting) { request in
+                    AttentionNotice(request: request, detail: detail(for: request)) { openRequest(request) }
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 17)
+            .padding(.vertical, (coordinator.error?.isEmpty == false || !awaiting.isEmpty) ? 8 : 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Term.background)
     }
 
     private func detail(for request: RequestPresentation) -> String {
@@ -650,8 +733,21 @@ struct AttentionStack: View {
     /// The asking worker's provider source, when it has one. The stack stays compact: its action
     /// opens the source inspector on that worker's own console.
     var source: ConsoleSourceAccess? = nil
+    /// The conversation's exact height when the stack fills a resizable window of its own: Pretty
+    /// and Terminal both take exactly this much, so the window's room goes to the transcript and
+    /// everything else keeps its size. Nil keeps the compact in-window PiP (92 pt at most).
+    var conversationHeight: CGFloat? = nil
     /// Laid-out height of the context tail, reported by the terminal well.
     @State private var tailHeight: CGFloat = 44
+    @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+
+    /// The asking worker's session when the PiP shows `PrettyACPConsole`: Pretty mode on that
+    /// worker's console and an ACP-bound session. The mode follows the worker, as on its tile.
+    private var prettySession: NativeSession? {
+        guard PrettyACPScope.applies(mode: modes?.mode(for: current.workerID) ?? .console,
+                                     session: current.workerSession) else { return nil }
+        return current.workerSession
+    }
 
     var body: some View {
         // Layered stack: the opaque back card sits behind and above the front card, with its own lit
@@ -728,31 +824,51 @@ struct AttentionStack: View {
                     ConsoleTitleBar(title: current.workerName, client: current.client, host: current.host,
                                     platform: current.platform, lineage: [current.runTitle], density: .pip) {
                         ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName,
-                                                   client: current.client, source: source)
+                                                   client: current.client, source: source,
+                                                   terminal: NativeTerminalTarget(request: current))
                     }
-                    if !current.contextEntries.isEmpty || !current.contextTail.isEmpty {
-                        ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
-                                          rawOutput: current.contextTail.joined(separator: "\n"), density: .pip, horizontalInset: 8) {
-                            if !current.contextEntries.isEmpty {
-                                // A recent window of whole entries: a tool result always sits with its call.
-                                TranscriptView(entries: current.contextEntries, agentName: current.workerName,
-                                               fontSize: 10.75, inset: 11,
-                                               consoleID: current.workerID, density: .pip)
-                                    .frame(height: 92)
-                            } else if !current.contextTail.isEmpty {
-                                TerminalWell(output: current.contextTail.joined(separator: "\n"),
-                                             workerID: "pip-\(current.id)", workerName: current.workerName,
-                                             fontSize: 10.75, inset: NSSize(width: 11, height: 7),
-                                             onContentHeight: { tailHeight = $0 })
-                                    .frame(height: min(tailHeight, 86))
+                    if let session = prettySession {
+                        // Pretty on an ACP-bound worker: its recent structured window and this
+                        // request's one reply form, at PiP density.
+                        PrettyACPConsole(request: current, session: session, reply: reply,
+                                         inset: 11, conversationHeight: conversationHeight ?? 92)
+                    } else {
+                        // Terminal mode shows the asking worker's live terminal here, with or without
+                        // AG-UI context; its identity follows the request's worker, so rotating the
+                        // stack changes the attachment. With a conversation height the slot keeps that
+                        // height even before there is output, so the stack's size never depends on it.
+                        VStack(spacing: 0) {
+                            NativeTerminalRegion(consoleID: current.workerID, target: NativeTerminalTarget(request: current),
+                                                 hasTranscript: !current.contextEntries.isEmpty || !current.contextTail.isEmpty) {
+                                ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
+                                                  rawOutput: current.contextTail.joined(separator: "\n"), density: .pip,
+                                                  horizontalInset: 8, terminal: NativeTerminalTarget(request: current)) {
+                                    if !current.contextEntries.isEmpty {
+                                        // A recent window of whole entries: a tool result always sits with its call.
+                                        TranscriptView(entries: current.contextEntries, agentName: current.workerName,
+                                                       fontSize: 10.75, inset: 11,
+                                                       consoleID: current.workerID, density: .pip)
+                                            .frame(height: conversationHeight ?? 92)
+                                    } else if !current.contextTail.isEmpty {
+                                        TerminalWell(output: current.contextTail.joined(separator: "\n"),
+                                                     workerID: "pip-\(current.id)", workerName: current.workerName,
+                                                     fontSize: 10.75, inset: NSSize(width: 11, height: 7),
+                                                     onContentHeight: { tailHeight = $0 })
+                                            .frame(height: conversationHeight ?? min(tailHeight, 86))
+                                    }
+                                }
+                                .frame(minHeight: conversationHeight, maxHeight: conversationHeight ?? 92)
                             }
                         }
-                        .frame(maxHeight: 92)
+                        .frame(height: conversationHeight, alignment: .top)
+                        RequestPrompt(request: current, reply: reply, density: .compact, inset: 11)
                     }
-                    RequestPrompt(request: current, reply: reply, density: .compact, inset: 11)
                     // The asking worker's status: disconnected ahead of needs input, as on its tile.
                     TerminalStatusLine(state: current.workerState, size: 10.75, inset: 11,
                                        reconnectingHost: current.hostIsReconnecting ? current.host : nil) {
+                        if let telemetry = current.workerTelemetry {
+                            ProviderUsageStatus(telemetry: telemetry, size: 10)
+                        }
                         // The shared ownership cue: its words whole, or the symbol alone with the
                         // full statement in its help tag and accessibility label.
                         InputOwnership(workerName: current.workerName,

@@ -101,7 +101,12 @@ struct AgentConsoleCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .harnessHeaderFill(agent.client)
                 Hairline()
-                ConsolePreview(lines: agent.lines)
+                // FIXTURE ONLY in Terminal mode: these cards come from design previews, so the
+                // native well draws their sample lines and never starts a terminal.
+                NativeTerminalCardPreview(consoleID: agent.id, workerName: agent.title,
+                                          lines: agent.lines.map(\.text)) {
+                    ConsolePreview(lines: agent.lines)
+                }
                 Hairline()
                 HStack {
                     MetaItem(symbol: "arrow.triangle.branch", text: agent.branch, help: "Branch \(agent.branch)")
@@ -333,24 +338,32 @@ struct RequestInspector: View {
                     .buttonStyle(CapsuleButtonStyle(height: 33))
             }
             question.padding(.top, 16)
-            if let worker, !worker.output.isEmpty || !worker.transcript.isEmpty {
-                HStack {
-                    AgentAvatar(client: worker.client, size: 16, onHarnessHeader: true)
-                    Kicker(text: "Recent output")
-                    Spacer()
-                    ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client)
+            if let worker {
+                // Drawn for a transcript, or in Terminal mode for a worker whose live terminal will
+                // show, so the bar's terminal status always has its viewport beneath it.
+                let terminal = NativeTerminalTarget(worker: worker)
+                NativeTerminalRegion(consoleID: worker.id, target: terminal,
+                                     hasTranscript: !worker.output.isEmpty || !worker.transcript.isEmpty) {
+                    HStack {
+                        AgentAvatar(client: worker.client, size: 16, onHarnessHeader: true)
+                        Kicker(text: "Recent output")
+                        Spacer()
+                        ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
+                                                   terminal: terminal)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .harnessHeaderFill(worker.client)
+                    .padding(.top, 18)
+                    ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact, horizontalInset: 8,
+                                      terminal: terminal) {
+                        TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
+                                     fontSize: 12.5, inset: NSSize(width: 14, height: 11))
+                    }
+                        .frame(height: 124)
+                        .background(Palette.well, in: RoundedRectangle(cornerRadius: 6))
+                        .harnessAccentOutline(worker.client, cornerRadius: 6)
+                    LineagePath(names: worker.lineage).padding(.top, 13)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 6)
-                .harnessHeaderFill(worker.client)
-                .padding(.top, 18)
-                ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact, horizontalInset: 8) {
-                    TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
-                                 fontSize: 12.5, inset: NSSize(width: 14, height: 11))
-                }
-                    .frame(height: 124)
-                    .background(Palette.well, in: RoundedRectangle(cornerRadius: 6))
-                    .harnessAccentOutline(worker.client, cornerRadius: 6)
-                LineagePath(names: worker.lineage).padding(.top, 13)
             }
             Spacer(minLength: 16)
             Hairline()

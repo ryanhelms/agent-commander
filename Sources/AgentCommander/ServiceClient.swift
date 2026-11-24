@@ -353,12 +353,42 @@ struct Question: Decodable, Identifiable, Equatable, Sendable {
     /// What the service knows about the answer reaching the worker. Absent on older records and on
     /// requests that have no answer yet.
     var delivery: String? = nil
-    enum CodingKeys: String, CodingKey {
-        case id, workerID = "worker_id", question, status, answer, delivery
+    /// The explicit choices the service offered with the question. When present, the service
+    /// accepts only the exact ID of one of them as the answer. Absent on free-form requests.
+    var choices: [QuestionChoice]? = nil
+
+    init(id: String, workerID: String, question: String, status: String, answer: String,
+         delivery: String? = nil, choices: [QuestionChoice]? = nil) {
+        self.id = id
+        self.workerID = workerID
+        self.question = question
+        self.status = status
+        self.answer = answer
+        self.delivery = delivery
+        self.choices = choices
     }
+
+    /// One reader for the request API and the AG-UI projection, so both treat `choices` alike.
+    init(from decoder: Decoder) throws { try self.init(projection: AGUIValue(from: decoder)) }
 
     /// The answer was accepted, and the service cannot say whether the worker received it.
     var deliveryIsUnknown: Bool { delivery?.lowercased() == "unknown" }
+}
+
+/// One choice offered with a request: the ID the reply must carry and the label to show.
+struct QuestionChoice: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let label: String
+
+    init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+
+    init(projection value: AGUIValue) throws {
+        guard case .object(let fields) = value else { throw AGUIValueError("A choice is not an object") }
+        self.init(id: try fields.string("id"), label: try fields.string("label"))
+    }
 }
 
 extension Question {
@@ -366,7 +396,18 @@ extension Question {
         guard case .object(let fields) = value else { throw AGUIValueError("A request is not an object") }
         self.init(id: try fields.string("id"), workerID: try fields.string("worker_id"),
                   question: try fields.string("question"), status: try fields.string("status"),
-                  answer: try fields.string("answer"), delivery: try fields.optionalString("delivery"))
+                  answer: try fields.string("answer"), delivery: try fields.optionalString("delivery"),
+                  choices: Self.choices(fields["choices"]))
+    }
+
+    /// The offered choices, all or none. A list with any element that is not an `{id, label}`
+    /// object with both set, or a legacy list of strings, reads as no choices: the request stays
+    /// free-form and its question keeps the service's text list. It never rejects the request.
+    static func choices(_ value: AGUIValue?) -> [QuestionChoice]? {
+        guard let list = try? AGUINode.list(value, make: QuestionChoice.init(projection:)),
+              !list.isEmpty,
+              list.allSatisfy({ !$0.id.isEmpty && !$0.label.isEmpty }) else { return nil }
+        return list
     }
 }
 
@@ -380,7 +421,7 @@ struct Run: Decodable, Identifiable, Sendable {
     let branch: String?
 
     /// Every field of the run as the service sent it, including those this model does not name,
-    /// such as `worker_limit`, `test_command`, `integrations` and each request's `choices`.
+    /// such as `worker_limit`, `test_command` and `integrations`.
     /// Workers are not repeated here: read `workers`. An empty object for a run that was not
     /// read from the service.
     let allFields: AGUIValue

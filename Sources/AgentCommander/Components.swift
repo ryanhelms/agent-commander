@@ -203,6 +203,9 @@ struct ToolResult: Equatable {
 /// Pretty transcripts, the focused worker and the PiP all read it through `TranscriptToolRow`.
 enum ToolStatus: Equatable {
     case running, done, failed, declined, cancelled, interrupted
+    /// A call with no result whose worker is waiting for the developer's reply to a request. Never
+    /// read from a result: only the ACP Pretty console sets it, for the open call it can identify.
+    case awaitingApproval
 
     /// No result yet is running, and a result without an error is done. The service's fixed
     /// reasons name their own status, and any other error is a failure.
@@ -227,6 +230,8 @@ enum ToolStatus: Equatable {
         case .declined: "declined"
         case .cancelled: "cancelled"
         case .interrupted: "interrupted"
+        // Written as the status it is everywhere it is read, visible row and spoken label alike.
+        case .awaitingApproval: "Awaiting approval"
         }
     }
 
@@ -234,6 +239,7 @@ enum ToolStatus: Equatable {
     var mark: String {
         switch self {
         case .running: "…"
+        case .awaitingApproval: "?"
         case .done: "✓"
         case .failed: "✗"
         case .declined, .cancelled, .interrupted: "!"
@@ -246,7 +252,7 @@ enum ToolStatus: Equatable {
         switch self {
         case .done: Term.green
         case .failed: Term.red
-        case .running, .declined, .cancelled, .interrupted: Term.amber
+        case .running, .awaitingApproval, .declined, .cancelled, .interrupted: Term.amber
         }
     }
 }
@@ -315,6 +321,25 @@ struct RequestPresentation: Identifiable, Equatable {
     /// The asking worker's provider session, when the service has bound one. A request surface
     /// uses it to point to that worker's source inspector.
     var workerSession: NativeSession? = nil
+    /// The explicit choices the service offered. When present, the reply must be the exact ID of
+    /// one of them; the service rejects any other answer. Empty for a free-form request.
+    var choices: [QuestionChoice] = []
+    /// The asking worker's reported provider usage, as on its tile. Nil without a session.
+    var workerTelemetry: ProviderTelemetry? = nil
+    /// The asking worker's one tool call that is awaiting this request's approval, resolved from
+    /// its whole transcript before `contextEntries` is cut to a recent window. Nil unless the
+    /// request offers choices and exactly one call is open; see `PrettyRunStatus.awaitingToolID`.
+    var awaitingApprovalToolID: String? = nil
+
+    /// The question without the choice list the service appends for text surfaces, when that
+    /// list is exactly the one `choices` describes. Otherwise the question as sent.
+    var promptWithoutChoiceList: String {
+        guard !choices.isEmpty else { return question }
+        let suffix = "\nReply with one of the IDs in brackets."
+            + choices.map { "\n\($0.label) [\($0.id)]" }.joined()
+        guard question.hasSuffix(suffix) else { return question }
+        return String(question.dropLast(suffix.count))
+    }
 
     /// What happens to a reply sent while the host reconnects, in full. Nil otherwise.
     var replyHeldStatement: String? {
@@ -372,6 +397,9 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// The provider session the service has bound this worker to. Nil for a legacy or unbound
     /// worker, which has no source inspector and shows its console as before.
     var session: NativeSession? = nil
+    /// What the bound provider session last reported about its consumption. Nil for a worker
+    /// without a session, whose footer shows no usage cue; empty when it has reported nothing.
+    var telemetry: ProviderTelemetry? = nil
 
     var isDisconnected: Bool { state == .disconnected }
 }
@@ -884,6 +912,9 @@ extension RunContent {
             // A persistent link that is reconnecting. A disconnected worker is reported as that alone.
             let reconnecting = state != .disconnected
                 && worker.connection?.lowercased() == Worker.connectionReconnecting
+            let telemetry = worker.boundSession.map { _ in
+                ProviderTelemetry.reported(fields: worker.allFields, messages: worker.messages ?? [])
+            }
             let request = requestByWorker[worker.id].map { question in
                 RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
@@ -894,7 +925,12 @@ extension RunContent {
                     contextEntries: TranscriptEntry.recent(transcript),
                     disconnectReason: disconnectReason,
                     hostIsReconnecting: reconnecting,
-                    workerSession: worker.boundSession)
+                    workerSession: worker.boundSession,
+                    choices: question.choices ?? [],
+                    workerTelemetry: telemetry,
+                    // From the full transcript: the PiP's window could hide a competing open call.
+                    awaitingApprovalToolID: PrettyRunStatus(state: state, entries: transcript)
+                        .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty))
             }
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
@@ -916,7 +952,8 @@ extension RunContent {
                 interruptRequested: worker.control?.interruptRequested == true,
                 unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) },
                 hostIsReconnecting: reconnecting,
-                session: worker.boundSession)
+                session: worker.boundSession,
+                telemetry: telemetry)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

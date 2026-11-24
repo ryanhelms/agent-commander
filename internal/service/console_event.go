@@ -11,6 +11,8 @@ func (event ConsoleEvent) ToolFailure() string {
 
 func (event ConsoleEvent) TerminalText() string {
 	switch event.Kind {
+	case "thinking":
+		return "Thinking · " + event.Text
 	case "tool_call":
 		line := "→ " + event.Name
 		if event.Phase != "" && event.Phase != "tool_call" {

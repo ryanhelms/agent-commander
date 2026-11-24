@@ -75,8 +75,9 @@ struct WorkerIdentity: View {
 /// The bar is always one line at a fixed height for its density, and nothing in it wraps. The
 /// title, the trailing controls and the platform mark are kept at every width. As the pane
 /// narrows the bar gives up, in order: the client word, the visible `ssh` prefix, the lineage,
-/// and the branch. After that the title and then the host name truncate at the tail. The full
-/// statement, SSH hop included, stays in the help tag and the accessibility label.
+/// the branch, and the host name. After that the title truncates at the tail, keeping a readable
+/// start ahead of the trailing controls. The full statement, host and SSH hop included, stays in
+/// the help tag and the accessibility label.
 struct ConsoleTitleBar<Accessory: View>: View {
     enum Density { case tile, console, focused, pip }
 
@@ -91,7 +92,8 @@ struct ConsoleTitleBar<Accessory: View>: View {
     var density: Density = .tile
     @ViewBuilder let accessory: Accessory
 
-    private enum HostForm { case full, named }
+    /// `.mark` keeps only the platform mark; the host stays in the help tag and spoken statement.
+    private enum HostForm { case full, named, mark }
 
     private var height: CGFloat {
         switch density {
@@ -149,10 +151,14 @@ struct ConsoleTitleBar<Accessory: View>: View {
                 row(lineage: false, client: false, host: .named, branch: true)
                 // Then the branch goes as a whole; platform and host stay.
                 row(lineage: false, client: false, host: .named, branch: false)
-                // Last, the title and then the host name truncate. The platform mark never does.
-                row(lineage: false, client: false, host: .named, branch: false, truncates: true)
+                // Then the host name, so the console's name is never what gives way first.
+                row(lineage: false, client: false, host: .mark, branch: false)
+                // Last, the title truncates, keeping its first characters. The platform mark never goes.
+                row(lineage: false, client: false, host: .mark, branch: false, truncates: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // The title cluster is offered width ahead of the trailing controls.
+            .layoutPriority(1)
             .help(statement)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(statement)
@@ -195,8 +201,9 @@ struct ConsoleTitleBar<Accessory: View>: View {
             .foregroundStyle(Palette.foreground)
             .lineLimit(1).truncationMode(.tail)
             .fixedSize(horizontal: !truncates, vertical: false)
-            // When truncating, the title keeps its width ahead of the host name.
-            .layoutPriority(truncates ? 1 : 0)
+            // When truncating, the title keeps a readable start and its width ahead of the host.
+            .frame(minWidth: truncates ? titleSize * 4.5 : nil, alignment: .leading)
+            .layoutPriority(truncates ? 2 : 0)
     }
 
     /// Platform and host. `.full` spells out the SSH hop for a remote host; `.named` keeps the
@@ -206,9 +213,11 @@ struct ConsoleTitleBar<Accessory: View>: View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             PlatformMark(platform: platform, size: metaSize, tint: Palette.foreground)
             if form == .full, platform.isRemote { Text("ssh").foregroundStyle(Term.cyan).fixedSize() }
-            Text(host).foregroundStyle(Term.text)
-                .truncationMode(.tail)
-                .fixedSize(horizontal: !truncates, vertical: false)
+            if form != .mark {
+                Text(host).foregroundStyle(Term.text)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: !truncates, vertical: false)
+            }
         }
         .font(Term.font(metaSize)).lineLimit(1)
     }
@@ -717,6 +726,9 @@ struct TranscriptToolRow: View {
     var fontSize: CGFloat = TypeRole.wallTerminalSize
     /// The face of the row. The call, its status mapping and its disclosure are the same in both.
     var style: Style = .terminal
+    /// The worker is waiting for the developer's reply and this is its open call. Only a call
+    /// with no result reads as awaiting approval; every other call keeps its own status.
+    var isAwaitingApproval = false
     let toggle: () -> Void
 
     enum Style {
@@ -726,7 +738,9 @@ struct TranscriptToolRow: View {
         case pretty
     }
 
-    private var status: ToolStatus { ToolStatus(result: result) }
+    private var status: ToolStatus {
+        isAwaitingApproval && result == nil ? .awaitingApproval : ToolStatus(result: result)
+    }
     private var canExpand: Bool { result?.error != nil || !(result?.output ?? "").isEmpty }
 
     var body: some View {

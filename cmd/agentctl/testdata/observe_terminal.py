@@ -166,11 +166,23 @@ def verify(binary, root, stack):
         assert pane(target, size) == writer_size
         writer.resize(40, 112)
         wait(lambda: pane(target, size) == "112x39", "external writer still sizes the pane")
-        os.write(second.fd, b"NO_SECOND_INPUT\r")
-        (root / "ALPHA.release").touch()
-        second.expect("LATE_ALPHA")
-        writer.expect("LATE_ALPHA")
-        assert b"NO_SECOND_INPUT" not in writer.output
+        # Exercise the same pane in another viewport and a sibling on the wall at once.
+        with ExitStack() as extra:
+            mirrored = Client(observe, env, 18, 73)
+            extra.callback(mirrored.close)
+            other = Client([binary, "terminal", "observe", workers[1]["id"]], env, 16, 71)
+            extra.callback(other.close)
+            mirrored.expect("LIVE_ALPHA")
+            other.expect("LIVE_BRAVO")
+            os.write(second.fd, b"NO_SECOND_INPUT\r")
+            (root / "ALPHA.release").touch()
+            second.expect("LATE_ALPHA")
+            mirrored.expect("LATE_ALPHA")
+            writer.expect("LATE_ALPHA")
+            assert b"NO_SECOND_INPUT" not in writer.output
+            assert b"LIVE_BRAVO" not in mirrored.output
+            assert b"ALPHA" not in other.output
+        wait(lambda: len(clients()) == 3, "closing extra viewports leaves other clients attached")
         assert pane(target, size) == "112x39"
         assert "LATE_BRAVO" not in text(neighbor) and "NO_SECOND_INPUT" not in text(neighbor)
 
