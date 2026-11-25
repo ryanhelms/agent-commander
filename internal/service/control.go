@@ -20,11 +20,13 @@ type WorkerControl struct {
 	SessionCapabilities *SessionCapabilities `json:"session_capabilities,omitempty"`
 	Interrupt           *WorkerInterrupt     `json:"interrupt,omitempty"`
 	ActiveTurnID        string               `json:"active_turn_id,omitempty"`
+	LastStopReason      string               `json:"last_stop_reason,omitempty"`
 }
 
 // SessionCapabilities records the non-media operations negotiated by the SDK.
 // A nil capability set on an older worker preserves its existing controls.
 type SessionCapabilities struct {
+	ProtocolVersion int  `json:"protocol_version,omitempty"`
 	CanAnswer       bool `json:"can_answer"`
 	CanInterrupt    bool `json:"can_interrupt"`
 	CanResume       bool `json:"can_resume"`
@@ -38,6 +40,7 @@ type WorkerFollowUp struct {
 	Text       string        `json:"text"`
 	Generation int           `json:"generation"`
 	End        *operationEnd `json:"end,omitempty"`
+	StopReason string        `json:"stop_reason,omitempty"`
 }
 
 type operationEnd struct {
@@ -199,6 +202,9 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 		}
 	}
 	if w.ProviderAvailability == providerExited {
+		if w.Error != "" {
+			return outcome{}, conflict(w.Error + "; inspect the worker's source")
+		}
 		return outcome{}, conflict("the local Claude adapter exited; inspect the worker's source")
 	}
 	if !canFollowUp(r, w) {
@@ -226,22 +232,24 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 }
 
 type workerControlFeed struct {
-	Live                 bool   `json:"live"`
-	NextMessageID        string `json:"next_message_id,omitempty"`
-	InterruptRequested   bool   `json:"interrupt_requested,omitempty"`
-	InterruptID          string `json:"interrupt_id,omitempty"`
-	Generation           int    `json:"generation,omitempty"`
-	State                string `json:"state,omitempty"`
-	ProviderAvailability string `json:"provider_availability,omitempty"`
+	Revision             string                `json:"revision,omitempty"`
+	Answers              []workerControlAnswer `json:"answers,omitempty"`
+	Live                 bool                  `json:"live"`
+	NextMessageID        string                `json:"next_message_id,omitempty"`
+	InterruptRequested   bool                  `json:"interrupt_requested,omitempty"`
+	InterruptID          string                `json:"interrupt_id,omitempty"`
+	Generation           int                   `json:"generation,omitempty"`
+	State                string                `json:"state,omitempty"`
+	ProviderAvailability string                `json:"provider_availability,omitempty"`
 }
 
-func (s *service) workerControlStatus(req *http.Request, actor string) (outcome, error) {
-	r, w := s.worker(req.PathValue("worker"))
+func (s *service) workerControlSnapshot(workerID, actor, turn string) (workerControlFeed, error) {
+	r, w := s.worker(workerID)
 	if w == nil {
-		return outcome{}, missing("worker")
+		return workerControlFeed{}, missing("worker")
 	}
-	if actor != w.ID || w.Role != "worker" {
-		return outcome{}, denied()
+	if actor != w.ID || (w.Role != "worker" && turn == "") {
+		return workerControlFeed{}, denied()
 	}
 	feed := workerControlFeed{State: w.State, ProviderAvailability: w.ProviderAvailability, Live: r.Status == "running" && w.Control != nil &&
 		w.ProviderAvailability != providerExited && w.State != "stopping" && w.State != "stopped" && w.State != "failed"}
@@ -257,7 +265,18 @@ func (s *service) workerControlStatus(req *http.Request, actor string) (outcome,
 			}
 		}
 	}
-	return read(feed), nil
+	sessionPermissions := turn == ACPSessionPermissionScope && w.PeerCapabilities != nil &&
+		w.PeerCapabilities.ProtocolVersion == 2
+	if turn != "" && (turn == activeProviderTurn(w) || sessionPermissions) {
+		for _, q := range r.Requests {
+			permission := s.state.Permissions[q.ID]
+			if q.WorkerID == w.ID && permission.Turn == turn &&
+				q.Status == "answered" && q.Delivery != "unknown" {
+				feed.Answers = append(feed.Answers, workerControlAnswer{q.ID, permission.Request, q.Answer})
+			}
+		}
+	}
+	return feed, nil
 }
 
 func (s *service) workerControlReady(req *http.Request, actor string) (outcome, error) {
@@ -310,9 +329,11 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 		return outcome{}, conflict("worker must be working to register control")
 	}
 	w.Control = &WorkerControl{Generation: 1, PromptCapabilities: input.PromptCapabilities, SessionCapabilities: input.SessionCapabilities}
+	if w.NativeSession != nil {
+		w.Control.ActiveTurnID = "initial-" + w.ID
+	}
 	if input.ProviderSession != nil {
 		w.ProviderAvailability = providerAvailable
-		w.Control.ActiveTurnID = "initial-" + w.ID
 	}
 	return changed(w.Control), nil
 }
@@ -335,7 +356,7 @@ func (s *service) claimWorkerMessage(req *http.Request, actor string) (outcome, 
 		return outcome{}, conflict("follow-up is no longer eligible for delivery")
 	}
 	m.Status = "processing"
-	if w.ProviderAvailability == providerAvailable {
+	if w.NativeSession != nil {
 		w.Control.ActiveTurnID = m.ID
 	}
 	w.State, w.Error, w.Result = "working", "", ""
@@ -352,6 +373,8 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		Error           string
 		MessageID       string `json:"message_id"`
 		ObservedTurnEnd bool   `json:"observed_turn_end"`
+		DeliveryUnknown bool   `json:"delivery_unknown"`
+		StopReason      string `json:"stop_reason,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -370,9 +393,36 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	if in.State == "idle" {
 		finalStatus = "interrupted"
 	}
+	if in.DeliveryUnknown {
+		if in.State != "failed" || in.ObservedTurnEnd || in.StopReason != "" {
+			return outcome{}, bad("unknown provider delivery requires an unconfirmed failed turn")
+		}
+		finalStatus = "delivery_unknown"
+	}
+	switch in.StopReason {
+	case "":
+	case "end_turn":
+		if in.State != "completed" {
+			return outcome{}, bad("end_turn requires a completed turn")
+		}
+	case "cancelled":
+		if in.State != "idle" {
+			return outcome{}, bad("cancelled requires an idle worker")
+		}
+	case "max_tokens", "max_turn_requests", "refusal":
+		if in.State != "idle" {
+			return outcome{}, bad("a provider-stopped turn leaves the worker idle")
+		}
+		finalStatus = "completed"
+	default:
+		return outcome{}, bad("invalid provider stop reason")
+	}
 	if in.MessageID != "" {
 		message = w.Control.message(in.MessageID)
 		if message != nil && message.Status == finalStatus {
+			if message.StopReason != in.StopReason {
+				return outcome{}, conflict("follow-up already has a different stop reason")
+			}
 			return read(w), nil
 		}
 		if message == nil || (message.Status != "processing" && message.Status != "delivery_unknown") {
@@ -390,7 +440,7 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 			turnID = "initial-" + w.ID
 		}
 		if w.Control.ActiveTurnID != turnID {
-			return outcome{}, conflict("turn outcome does not match the original Claude turn")
+			return outcome{}, conflict("turn outcome does not match the original provider turn")
 		}
 		if receipt := w.Control.Interrupt; receipt != nil && receipt.TurnID == turnID && receipt.Outcome == "" {
 			if in.ObservedTurnEnd {
@@ -406,11 +456,13 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	}
 	if message != nil {
 		message.Status = finalStatus
+		message.StopReason = in.StopReason
 	}
+	w.Control.LastStopReason = in.StopReason
 	w.Control.InterruptRequested = false
 	w.Control.InterruptClaimed = false
 	w.State, w.Error = in.State, in.Error
-	r.cancelQuestions(w.ID)
+	s.finishTurnPermissions(r, w, in.State == "failed")
 	if message != nil {
 		s.markOperationEnd(r, w, message)
 	}
@@ -495,11 +547,14 @@ func (s *service) interruptWorker(req *http.Request, actor string) (outcome, err
 }
 
 func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome, error) {
-	_, w, err := s.own(req, actor)
+	r, w, err := s.own(req, actor)
 	if err != nil {
 		return outcome{}, err
 	}
-	var input interruptTarget
+	var input struct {
+		interruptTarget
+		PermissionTurn string `json:"permission_turn_id,omitempty"`
+	}
 	if err := decode(req, &input); err != nil {
 		return outcome{}, err
 	}
@@ -507,7 +562,7 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 	if c == nil || w.providerBlocksControl() || !c.InterruptRequested || (!turnActive(w.State) && w.State != "unknown") {
 		return outcome{}, conflict("there is no active interrupt")
 	}
-	if c.Interrupt != nil && !c.Interrupt.matches(input) {
+	if c.Interrupt != nil && !c.Interrupt.matches(input.interruptTarget) {
 		return outcome{}, conflict("interrupt claim does not match the original request")
 	}
 	if c.InterruptClaimed {
@@ -515,6 +570,16 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 	}
 	if c.Generation != input.Generation {
 		return outcome{}, conflict("worker control changed before interrupt")
+	}
+	if input.PermissionTurn != "" {
+		if input.PermissionTurn != activeProviderTurn(w) {
+			return outcome{}, conflict("interrupt does not match the active provider permission turn")
+		}
+		for _, q := range r.Requests {
+			if q.WorkerID == w.ID && q.Status == "pending" && s.state.Permissions[q.ID].Turn == input.PermissionTurn {
+				q.Status = "cancelled"
+			}
+		}
 	}
 	c.InterruptClaimed = true
 	if c.Interrupt != nil {
@@ -524,6 +589,8 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 }
 
 func (s *service) stopWorkerInbox(run *Run, w *Worker) {
+	s.retireProviderPermissions(run, w.ID)
+	s.retireElicitations(w.ID)
 	if w.Control == nil {
 		return
 	}

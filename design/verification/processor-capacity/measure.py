@@ -111,24 +111,27 @@ class SourceReader:
                 query["cursor"] = self.cursor
             route = f"/v1/workers/{self.worker}/history?" + urlencode(query)
             page = pane.api(self.socket, "GET", route)
-            self.pages += 1
-            for row in page.get("observations", []):
-                cursor = row.get("cursor", "")
-                if row.get("gap"):
-                    reason = row["gap"].get("reason", "")
-                    if reason not in ("No live ACP source records are retained for this session",
-                                      "No live ACP source records are retained for this turn"):
-                        self.gaps.add((cursor or self.cursor, reason))
-                    continue
-                if cursor not in self.cursors:
-                    self.cursors.add(cursor)
-                    self.record(row)
+            self.accept_page(page)
             following = page.get("nextCursor")
             if not following:
                 break
             if following == self.cursor:
                 raise RuntimeError("private source cursor did not advance")
             self.cursor = following
+
+    def accept_page(self, page, *, dedupe=True):
+        self.pages += 1
+        for row in page.get("observations", []):
+            cursor = row.get("cursor", "")
+            if row.get("gap"):
+                reason = row["gap"].get("reason", "")
+                if reason not in ("No live ACP source records are retained for this session",
+                                  "No live ACP source records are retained for this turn"):
+                    self.gaps.add((cursor or self.cursor, reason))
+                continue
+            if not dedupe or cursor not in self.cursors:
+                self.cursors.add(cursor)
+                self.record(row)
 
     def record(self, row):
         carrier = "sourceRecord" if row.get("sourceRecord") else "extension"
@@ -188,6 +191,40 @@ class SourceReader:
                 "update_types": self.kinds, "pages_read": self.pages,
                 "poll_interval_s": self.poll_interval, "gaps": sorted({reason for _, reason in self.gaps}),
                 "gap_records_seen": len(self.gaps)}
+
+
+class SourceStream(SourceReader, pane.Workspace):
+    """Read the same private source records from one continuous subscription."""
+    def __init__(self, socket, worker, outer, text_bytes, tool_every):
+        SourceReader.__init__(self, socket, worker, outer, text_bytes, tool_every)
+        self.poll_interval = None
+        pane.Workspace.__init__(self, socket, f"/v1/workers/{worker}/live-source/events")
+
+    def _follow(self):
+        checkpoint = ""
+        try:
+            for line in self.response:
+                if line.startswith(b"id: "):
+                    checkpoint = line[4:].rstrip(b"\r\n").decode()
+                if not line.startswith(b"data: "):
+                    continue
+                raw = line[6:].rstrip(b"\r\n")
+                with self.ready:
+                    self.payload_bytes += len(raw)
+                    self.accept_page(json.loads(raw), dedupe=False)
+                    self.cursor = checkpoint
+        except Exception as error:
+            with self.ready:
+                self.error = error
+
+    def poll(self):
+        with self.ready:
+            if self.error:
+                raise RuntimeError("private source stream failed") from self.error
+
+    def report(self, expected):
+        with self.ready:
+            return super().report(expected) | {"sse_json_bytes": self.payload_bytes}
 
 
 def cpu_seconds(value):
@@ -256,6 +293,7 @@ def trial(binary, args, rate, trial_number):
         label = "ac-" + hashlib.sha256(str(state).encode()).hexdigest()[:12]
         tmux = [shutil.which("tmux"), "-L", label]
         observers = []
+        source_reader = None
         with (root / "service.log").open("w+") as log:
             proc = subprocess.Popen([binary, "serve"], env=env, stdout=log, stderr=log)
             try:
@@ -281,7 +319,9 @@ def trial(binary, args, rate, trial_number):
                     raise RuntimeError(f"tmux pane PID is not the expected runner: {comm}")
                 pids = [proc.pid, runner]
                 idle = phase(pids, observers, args.idle)
-                source_reader = SourceReader(sock, worker, args.outer_source, args.size, args.tool_every) if args.rich_source else None
+                if args.rich_source:
+                    reader = SourceStream if args.stream_source else SourceReader
+                    source_reader = reader(sock, worker, args.outer_source, args.size, args.tool_every)
 
                 def delivered():
                     if source_reader is not None:
@@ -318,6 +358,8 @@ def trial(binary, args, rate, trial_number):
                 result["producer_interarrival_rate"] = (count - 1) / span if count > 1 else None
                 return result
             finally:
+                if isinstance(source_reader, SourceStream):
+                    source_reader.close()
                 for observer in observers:
                     observer.close()
                 subprocess.run(tmux + ["kill-server"], env=env, capture_output=True)
@@ -339,6 +381,7 @@ def main():
     parser.add_argument("--size", type=int, default=256, help="text bytes per event, including marker and newline")
     parser.add_argument("--tool-every", type=int, default=0, help="make every Nth input a tool progress update")
     parser.add_argument("--rich-source", action="store_true", help="mark every update and verify private originals via a scoped history reader")
+    parser.add_argument("--stream-source", action="store_true", help="read tracked originals from the private SSE endpoint")
     parser.add_argument("--outer-source", action="store_true", help="place the private marker on ACP params and end with a passive source fence")
     parser.add_argument("--burst", type=int, default=1, help="release this many scheduled updates together at the group's last deadline")
     parser.add_argument("--observers", type=int, default=1)
@@ -346,7 +389,7 @@ def main():
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.outer_source:
+    if args.outer_source or args.stream_source:
         args.rich_source = True
     if min(args.rates) < 1 or min(args.seconds, args.idle, args.observers, args.trials) <= 0 or args.tool_every < 0 or args.burst < 1:
         parser.error("rates, windows, observers, trials must be positive; tool-every must be nonnegative")

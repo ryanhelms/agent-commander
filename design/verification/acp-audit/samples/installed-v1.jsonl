@@ -1,0 +1,3 @@
+{"harness": "installed-claude", "offer": "v1", "status": "failed", "selected_session": true, "negotiated": 1, "delivered": false, "assistant_bytes": 196, "failure_category": "provider", "elapsed_ms": 9813}
+{"harness": "installed-codex", "offer": "v1", "status": "completed", "selected_session": true, "negotiated": 1, "delivered": true, "assistant_bytes": 26, "elapsed_ms": 12291}
+{"harness": "installed-antigravity", "offer": "v1", "status": "completed", "selected_session": true, "negotiated": 1, "delivered": true, "assistant_bytes": 26, "elapsed_ms": 5591}

@@ -59,9 +59,15 @@ The SDK candidate packages the same generated contract as a Go module proxy arch
 
 The ACP Adapter uses a Content-Based Router keyed by the upstream `sessionUpdate` discriminator. A typed activity identifies the bounded workspace projection and its worker-scoped source record (Claim Check). The source observation cursor identifies the record, and the page cursor advances a history traversal. Runner uploads use Message Sequence and Idempotent Receiver: a single sender applies backpressure, retries a batch with the same identity and waits for its receipt. Native projections are volatile, while legacy output and its receipt commit together. Incremental owner subscriptions share immutable AG-UI JSON Patch frames by workspace revision. A reader exceeding the retained frames recovers with a snapshot and a gap reason. [Processor benchmarks](verification/processor-capacity/README.md)
 
+The selected worker's private source uses a separate Publish-Subscribe feed with the same cursor epochs as paged live history. Subscribers receive bounded pages and can resume from the last delivered page. The bundled SDK retains evicted control evidence independently of ordinary output, so a known text gap can recover while an uncertain permission or turn outcome closes the affected control path.
+
 The local cockpit feed uses a GoF Adapter and EIP Message Translator to project retained provider events as AG-UI messages. A Publish-Subscribe Channel signals committed workspace changes over the private socket. Each subscription starts with a current snapshot and sends ordered state patches. Reconnection replaces the projection with a fresh snapshot. Reply commands keep their existing Request-Reply path and Correlation Identifier.
 
+A local ACP broker can own one adapter process for multiple tmux runners. An owner-issued, single-use launch ticket binds each runner to its exact session setup. The broker shares only compatible executable pins, checkouts, policies, credential profiles, and wire versions. It routes messages by native session identity and keeps bounded output queues per runner. Explicit prewarming uses the same broker with a separate process scope for each worker. Qualification measures the added forwarding cost as well as shared process memory.
+
 The local Claude adapter uses a stable provider session ID and passes each follow-up through standard input. The service uses an addressed inbox as a Message Store. The receiver claims a follow-up by its Correlation Identifier under the current control generation. A caller-provided idempotency key returns the same acceptance receipt after a retry. Handoff cancels queued commands from the outgoing controller. A restart marks a claimed turn with an uncertain outcome until the original runner reports evidence. The original runner can report the outcome using the same message ID.
+
+The worker control API supports a bounded Publish-Subscribe wait on the authenticated worker's current revision. Committed mutations wake waiting readers, and each reader compares its own control snapshot. Claims, choices, and operation receipts still use addressed Request-Reply commands. Admission checks run outside the durable command transaction. The service rechecks authorization, idempotency, and capacity before launching.
 
 Console and Pretty share that feed. The cockpit keeps a display mode per worker ID so zoom, the wall and PiP agree even when a new snapshot replaces the worker object. Selecting a mode for all consoles sets the default and clears individual choices.
 
@@ -77,6 +83,10 @@ The cockpit keys persistent accent preferences by harness identity. A color chan
 ## Optional coordinator companions
 
 Devflow is a first-party companion in the scoped tool registry. At launch, the registry probes for exactly `devflow_ui_open` in the checkout of an interactive local Claude coordinator. The probe has a deadline and receives neither actor credentials nor the auto-open flag. The private launch record carries the versioned selection and the resolved executable path. The live harness attaches the UI-only MCP server with `--auto-open` and the coordinator's scoped credential. It can also call `devflow_ui_open` explicitly to open or navigate the console. An incompatible or missing companion leaves the planning run available. A pending job from an earlier build can use its previously verified Devflow path.
+
+## MCP tools over ACP
+
+The optional stateless binding adds an Adapter around the same scoped Commander tool server. Its logical request ID is independent of ACP transport correlation. The registration owns its per-request authorization, concurrency limit and cancellation. The binding replaces the local Commander MCP subprocess only when explicitly enabled and advertised by the connected peer. [Draft revision](https://github.com/agentclientprotocol/agent-client-protocol/blob/d1585b5932ec5ed2f7b02e298be92afae9462194/docs/rfds/mcp-over-acp.mdx)
 
 ## Scoped coordinator tools
 
@@ -151,6 +161,8 @@ The prompt Message Translator forwards AG-UI text, inline image, and inline audi
 A text-only multipart prompt retains its boundaries on the ACP wire and in the worker's turn-scoped Live source. A string and one text block represent the same ACP input. Repartitioning a new multipart prompt under an accepted run ID conflicts. A receipt created by the older joining translator can recover the original operation by its concatenated text. The legacy CLI receives that text through its existing stdin path. [Independent ACP wire check](../internal/provider/acp_profiles_test.go) · [Receipt upgrade test](../internal/service/agui_run_test.go)
 
 The ACP result translator keeps the failure from a direct or wrapped MCP result alongside the ACP display content. A typed MCP failure can change a completed call's console status to failed. The translator preserves an explicit cancellation or decline and keeps the complete structured result, attachments and error data in the scoped source. [MCP tool errors](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling) · [ACP tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls)
+
+ACP elicitations use Request-Reply with a Correlation Identifier assigned to the exact worker and provider session. The worker's cancellable wait receives the local owner's reviewed form or URL consent directly. Form answers bypass the run database and workspace feed. URL consent and provider-reported completion are separate states. [Owner API](../internal/service/elicitation.go)
 
 A live permission request or terminal response can carry provider fields beyond its actionable choices or stop reason. The SDK associates the original method data with its typed observation. Commander stores that observation once under its worker, turn and SDK cursor, and the AG-UI row carries the reference. Reading the original permission options is passive. Only the policy-filtered options on the active request can authorize an answer. Retransmission of the same source cursor does not create another request or source record. [Scoped source](../internal/service/live_source.go) · [Runner and independent ACP peer](../internal/provider/acp_profiles_test.go)
 
@@ -262,3 +274,8 @@ For an open local Claude turn, Commander persists the expected turn ID with work
 ## Multiplayer coordinator authorization
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.
+
+
+### Reattaching an existing provider session
+
+An owner command reserves a new control generation and a fresh worker credential after the service verifies that the original worker is inactive. The provider adapter verifies the saved checkout and executable identity before bringing up a replacement runner. The runner reports the same native session identity before the service accepts follow-ups. Discovery uses the saved provider and checkout without establishing a new conversation. The Idempotent Receiver reuses the original reservation on command retry. An unresolved earlier operation keeps its delivery receipt and requires the owner's explicit acknowledgement before reattachment. A stopped-history load and reattachment for the same worker cannot overlap.

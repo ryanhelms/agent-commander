@@ -74,14 +74,22 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			config.MCPServers[i].Env["AGENT_COMMANDER_PERSISTENT_SSH_WAIT"] = "1"
 		}
 	}
-	if _, supplied := config.Env["PATH"]; j.NodePath != "" && !supplied {
-		if config.Env == nil {
-			config.Env = make(map[string]string)
-		}
-		config.Env["PATH"] = j.NodePath + string(os.PathListSeparator) + os.Getenv("PATH")
-	}
+	setACPNodePath(&config, j.NodePath)
+	j.ACPBroker.apply(&config, j.Executable)
 	stderr := &lineWriter{s: s}
 	config.Stderr = stderr
+	if err := configureACPProtocol(&config); err != nil {
+		return err
+	}
+	configureACPActivity(&config)
+	if resume := j.Worker.Reattach; resume != nil {
+		config.ModelOnResume = acpOpenRequest(j, config.HarnessInstance, cwd).GetModel()
+		if resume.ProtocolVersion != 0 {
+			config.ProtocolVersion = resume.ProtocolVersion
+		}
+	}
+	configureACPToolTransport(ctx, j, &config, a)
+	configureACPElicitation(j, &config, a, s)
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
 	config.OnACPUpdate = source.capture
@@ -99,60 +107,127 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}()
 	client := agentacp.New(rt)
 	openCtx, cancelOpen := context.WithTimeout(ctx, 30*time.Second)
-	opened, err := client.Open(openCtx, acpOpenRequest(j, config.HarnessInstance, cwd))
-	cancelOpen()
-	if err != nil {
-		return fmt.Errorf("open %s session: %w", j.Harness, err)
+	var session *model.Session
+	if resume := j.Worker.Reattach; resume != nil {
+		opened, err := client.Resume(openCtx, &model.ResumeRequest{Session: &model.SessionRef{
+			HarnessInstance: resume.Ref.HarnessInstance, SessionId: resume.Ref.SessionID,
+		}})
+		cancelOpen()
+		if err != nil {
+			return fmt.Errorf("reattach %s session: %w", j.Harness, err)
+		}
+		session = opened.GetSession()
+	} else {
+		opened, err := client.Open(openCtx, acpOpenRequest(j, config.HarnessInstance, cwd))
+		cancelOpen()
+		if err != nil {
+			return fmt.Errorf("open %s session: %w", j.Harness, err)
+		}
+		session = opened.GetSession()
 	}
-	ref := opened.GetSession().GetRef()
+	ref := session.GetRef()
 	if ref.GetSessionId() == "" || ref.GetHarnessInstance() != config.HarnessInstance {
 		return errors.New("harness returned an invalid session identity")
 	}
 	path := "/v1/workers/" + j.Worker.ID
-	owner := &api{localapi.New(j.Socket, "")}
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
-	if err := owner.request("POST", path+"/native-session", nativeSession, nil); err != nil {
-		return fmt.Errorf("bind provider session: %w", err)
-	}
-	finishSource = source.publish(ctx, a, path, ref, s)
-	showAssignment(s, j)
-	s.event("user", "", "", j.Worker.Task)
-	go terminalInput(j, a, s)
-
 	managed := j.Worker.Role == "worker"
-	capabilities := opened.GetSession().GetCapabilities()
-	if managed {
-		registration := struct {
-			PromptCapabilities  service.PromptCapabilities
-			SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
-			ProviderSession     *service.NativeSession      `json:"provider_session,omitempty"`
-		}{
-			PromptCapabilities: service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio()},
-			SessionCapabilities: service.SessionCapabilities{
-				CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
-				CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
-			},
-		}
-		if ref.GetHarnessInstance() == service.LocalClaudeHarness {
-			registration.ProviderSession = &nativeSession
-		}
-		if err := a.request("POST", path+"/control/ready", registration, nil); err != nil {
+	capabilities := session.GetCapabilities()
+	protocolVersion := 1
+	if negotiated, ok := rt.(interface {
+		NegotiatedProtocolVersion(*model.SessionRef) (int, error)
+	}); ok {
+		var err error
+		protocolVersion, err = negotiated.NegotiatedProtocolVersion(ref)
+		if err != nil {
 			return err
 		}
 	}
+	promptCaps := service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio(), ResourceLink: j.BuiltinInstance == "", EmbeddedContext: capabilities.GetCanPromptEmbeddedContext()}
+	sessionCaps := service.SessionCapabilities{
+		ProtocolVersion: protocolVersion,
+		CanAnswer:       capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
+		CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
+	}
+	if resume := j.Worker.Reattach; resume != nil {
+		if nativeSession != resume.Ref || !managed || resume.ProtocolVersion != 0 && protocolVersion != resume.ProtocolVersion {
+			return errors.New("harness did not reattach the original worker session")
+		}
+	} else {
+		binding := struct {
+			service.NativeSession
+			ProviderBinding  string                      `json:"provider_binding,omitempty"`
+			PeerCapabilities service.SessionCapabilities `json:"peer_capabilities"`
+		}{NativeSession: nativeSession, ProviderBinding: j.ProviderBinding, PeerCapabilities: sessionCaps}
+		owner := &api{localapi.New(j.Socket, "")}
+		if err := owner.request("POST", path+"/native-session", binding, nil); err != nil {
+			return fmt.Errorf("bind provider session: %w", err)
+		}
+	}
+	finishSource = source.publish(ctx, a, path, ref, s)
+	if resume := j.Worker.Reattach; resume != nil {
+		registration := struct {
+			service.ReattachSpec
+			PromptCapabilities  service.PromptCapabilities
+			SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
+		}{*resume, promptCaps, sessionCaps}
+		if err := publishWorkerControl(ctx, a, path+"/control/reattached", registration); err != nil {
+			return err
+		}
+		s.line("Reattached to the original provider session.")
+	} else {
+		showAssignment(s, j)
+		s.event("user", "", "", j.Worker.Task)
+		if managed {
+			registration := struct {
+				PromptCapabilities  service.PromptCapabilities
+				SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
+				ProviderSession     *service.NativeSession      `json:"provider_session,omitempty"`
+			}{PromptCapabilities: promptCaps, SessionCapabilities: sessionCaps}
+			if ref.GetHarnessInstance() == service.LocalClaudeHarness {
+				registration.ProviderSession = &nativeSession
+			}
+			if err := a.request("POST", path+"/control/ready", registration, nil); err != nil {
+				return err
+			}
+		}
+	}
+	go terminalInput(j, a, s)
 	observeCtx, stopObserve := context.WithCancel(ctx)
+	if protocolVersion == 2 {
+		source.v2 = &acpV2Inputs{api: a, path: path}
+		go func() {
+			if err := runACPControl(observeCtx, client, a, s, path, ref, service.ACPSessionPermissionScope, false, false, capabilities, true); err != nil && observeCtx.Err() == nil {
+				s.line("Provider permission delivery is uncertain.")
+			}
+		}()
+	}
 	updates, observeDone, streamLife := workerObservations(observeCtx, client, ref, source, s)
 	defer func() { stopObserve(); <-observeDone }()
 
 	turnID, prompt, messageID := "initial-"+j.Worker.ID, j.Worker.Task, ""
 	var parts []service.PromptPart
 	var lastFinishedState string
+	if j.Worker.Reattach != nil {
+		next, ok := waitForFollowUp(streamLife, a, path)
+		if !ok {
+			cause := context.Cause(streamLife)
+			if ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
+				return publishACPProviderExit(ctx, a, path, ref, "idle", cause)
+			}
+			return cause
+		}
+		lastFinishedState = "idle"
+		turnID, prompt, messageID, parts = next.ID, next.Text, next.ID, next.Parts
+		entry := acpFollowUpEvent(next)
+		s.line("You: " + entry.Text)
+		s.recordEvent(entry)
+	}
 	for {
 		request := acpPromptRequest(ref, turnID, prompt, parts)
 		state, observedTurnEnd, turnErr := "failed", false, context.Cause(streamLife)
-		if lastFinishedState != "" && ref.GetHarnessInstance() == service.LocalClaudeHarness &&
-			ctx.Err() == nil && errors.Is(turnErr, errACPDisconnected) {
-			return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+		if lastFinishedState != "" && ctx.Err() == nil && idleACPExit(ref, turnErr) {
+			return publishACPProviderExit(ctx, a, path, ref, lastFinishedState, turnErr)
 		}
 		if turnErr == nil {
 			state, observedTurnEnd, turnErr = runACPTurn(ctx, client, request, source, a, s, path, managed, capabilities, updates)
@@ -171,8 +246,22 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			})
 		}
 		outcome := map[string]any{"state": state, "message_id": messageID, "observed_turn_end": observedTurnEnd}
+		switch state {
+		case "max_tokens", "max_turn_requests", "refusal":
+			outcome["stop_reason"] = state
+			state, outcome["state"] = "idle", "idle"
+		case "completed":
+			outcome["stop_reason"] = "end_turn"
+		case "idle":
+			if observedTurnEnd {
+				outcome["stop_reason"] = "cancelled"
+			}
+		}
 		if turnErr != nil {
 			outcome["error"] = turnErr.Error()
+			if !observedTurnEnd && (errors.Is(turnErr, errACPObservationGap) || errors.Is(turnErr, errACPDisconnected)) {
+				outcome["delivery_unknown"] = true
+			}
 		}
 		s.flush()
 		if err := publishWorkerControl(ctx, a, path+"/control/finish", outcome); err != nil {
@@ -185,8 +274,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		next, ok := waitForFollowUp(streamLife, a, path)
 		if !ok {
 			cause := context.Cause(streamLife)
-			if ref.GetHarnessInstance() == service.LocalClaudeHarness && ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
-				return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+			if ctx.Err() == nil && idleACPExit(ref, cause) {
+				return publishACPProviderExit(ctx, a, path, ref, lastFinishedState, cause)
 			}
 			return cause
 		}
@@ -197,10 +286,19 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 }
 
-func publishClaudeProviderExit(ctx context.Context, a *api, path string, ref *model.SessionRef, state string) error {
-	return publishWorkerControl(ctx, a, path+"/control/provider-exit", map[string]string{
+func idleACPExit(ref *model.SessionRef, cause error) bool {
+	return errors.Is(cause, errACPObservationGap) ||
+		ref.GetHarnessInstance() == service.LocalClaudeHarness && errors.Is(cause, errACPDisconnected)
+}
+
+func publishACPProviderExit(ctx context.Context, a *api, path string, ref *model.SessionRef, state string, cause error) error {
+	report := map[string]string{
 		"harness_instance": ref.GetHarnessInstance(), "session_id": ref.GetSessionId(), "last_state": state,
-	})
+	}
+	if errors.Is(cause, errACPObservationGap) {
+		report["reason"] = "observation_gap"
+	}
+	return publishWorkerControl(ctx, a, path+"/control/provider-exit", report)
 }
 
 func openSessionRuntime(j job, config runtime.Config) (harness.Runtime, error) {
@@ -269,6 +367,9 @@ func planningConfig(j job) (runtime.Config, error) {
 		},
 	}
 
+	if os.Getenv("AGENT_COMMANDER_ACP_SYSTEM_PROMPT") == "standard" {
+		config.SystemPromptAppend = instructions
+	}
 	for name, srv := range servers {
 		config.MCPServers = append(config.MCPServers, runtime.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
 	}
@@ -306,6 +407,16 @@ func acpPromptRequest(ref *model.SessionRef, turnID, text string, parts []servic
 			item.Content = &model.PromptPart_Image{Image: &model.PromptMedia{MimeType: part.MIMEType, Data: part.Data}}
 		case "audio":
 			item.Content = &model.PromptPart_Audio{Audio: &model.PromptMedia{MimeType: part.MIMEType, Data: part.Data}}
+		case "resource_link":
+			item.Content = &model.PromptPart_ResourceLink{ResourceLink: &model.PromptResourceLink{Uri: part.URI, Name: part.Name, MimeType: part.MIMEType}}
+		case "resource":
+			resource := &model.PromptResource{Uri: part.URI, MimeType: part.MIMEType}
+			if part.ResourceText != nil {
+				resource.Body = &model.PromptResource_Text{Text: *part.ResourceText}
+			} else {
+				resource.Body = &model.PromptResource_Blob{Blob: part.Data}
+			}
+			item.Content = &model.PromptPart_Resource{Resource: resource}
 		}
 		request.Parts = append(request.Parts, item)
 	}
@@ -381,11 +492,30 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 			}
 
 			if err == nil && event.GetGap() != nil {
-				activity := source.captureGap(ctx, event)
-				const message = "Live provider observations expired. Inspect the scoped source for the provider's report."
-				screen.line(message)
-				screen.recordEvent(service.ConsoleEvent{Kind: "output", Text: message, ACP: activity})
+				// Compiled adapters use their own retention contracts. Only the
+				// bundled ACP runtime guarantees continuity for this marker.
+				recoverable := !source.portable && runtime.IsObservationOnlyGap(event)
+				if recoverable {
+					if source.activeTurn.Load() {
+						select {
+						case updates <- acpUpdate{event: event}:
+						case <-ctx.Done():
+							return
+						}
+					} else {
+						source.showObservationGap(ctx, screen, event, true)
+					}
+					continue
+				}
+				source.showObservationGap(ctx, screen, event, false)
 				cause, err = errACPObservationGap, errACPObservationGap
+			}
+			if err == nil && source.v2 != nil && source.v2.handles(event) {
+				if err := source.v2.observe(ctx, source, screen, event); err != nil {
+					cause = err
+					return
+				}
+				continue
 			}
 			if err == nil && event.GetTurnId() == "" && event.GetGap() == nil {
 				if source.portable && source.takeIdle(idleKey(event.Session, event.Cursor)) {
@@ -394,6 +524,11 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 				activity := source.captureObservation(ctx, event)
 				if activity != nil {
 					entry := idleSourcedEvent(event, activity)
+					if source.v2 != nil {
+						if message, ok := acpV2Message(event, activity); ok {
+							entry = message
+						}
+					}
 					screen.line(previewText(entry.TerminalText()))
 					screen.recordEvent(entry)
 				}
@@ -427,28 +562,67 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ref, turnID := request.Session, request.OperationId
+	source.activeTurn.Store(true)
+	defer source.activeTurn.Store(false)
 	localClaude := managed && ref.GetHarnessInstance() == service.LocalClaudeHarness
 	sent, err := client.Send(ctx, request)
 	if err = accepted(turnID, sent.GetReceipt(), err); err != nil {
 		return "failed", false, err
 	}
+	var controlErrors <-chan error
+	if a != nil && (managed || capabilities.GetCanAnswer()) {
+		errs := make(chan error, 1)
+		done := make(chan struct{})
+		defer func() { cancel(); <-done }()
+		go func() {
+			defer close(done)
+			controlCtx, stopControl := context.WithCancel(ctx)
+			defer stopControl()
+			if err := runACPControl(controlCtx, client, a, s, path, ref, turnID, managed, localClaude, capabilities, source.v2 != nil); err != nil {
+				errs <- err
+			}
+		}()
+		controlErrors = errs
+	}
 	source.capturePrompt(ctx, request)
-	pending := map[string]*model.InputRequest{}
-	interruptAttempted := false
-	ticker := time.NewTicker(350 * time.Millisecond)
-	defer ticker.Stop()
 	var text strings.Builder
+	var textTimer *time.Timer
+	var textDeadline <-chan time.Time
+	firstText := true
 	flushText := func() {
 		if text.Len() > 0 {
 			s.event("text", "", "", text.String())
 			text.Reset()
 		}
 	}
-	defer flushText()
+	scheduleText := func() {
+		if textDeadline != nil {
+			return
+		}
+		const maxCoalescing = 25 * time.Millisecond
+		if textTimer == nil {
+			textTimer = time.NewTimer(maxCoalescing)
+		} else {
+			textTimer.Reset(maxCoalescing)
+		}
+		textDeadline = textTimer.C
+	}
+	defer func() {
+		if textTimer != nil {
+			textTimer.Stop()
+		}
+		flushText()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return "idle", false, ctx.Err()
+		case err := <-controlErrors:
+			return "failed", false, err
+		case <-textDeadline:
+			textDeadline = nil
+			flushText()
+			s.publishAvailable()
 		case update, ok := <-updates:
 			if update.err != nil {
 				return "failed", false, update.err
@@ -457,6 +631,11 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				return "failed", false, errACPDisconnected
 			}
 			e := update.event
+			if e.GetGap() != nil {
+				flushText()
+				source.showObservationGap(ctx, s, e, true)
+				continue
+			}
 			if update.ended != nil {
 				if e.TurnId == turnID {
 					defer close(update.ended)
@@ -474,18 +653,46 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			if localClaude {
 				s.recordClaudeProgress(claudeProgressPhase(e))
 			}
+			if source.v2 != nil {
+				if entry, ok := acpV2Message(e, portableRef); ok {
+					flushText()
+					s.write(entry.Text)
+					s.recordEvent(entry)
+					if entry.Kind == "text" && entry.Text != "" {
+						if firstText {
+							firstText = false
+							s.publishAvailable()
+						} else {
+							scheduleText()
+						}
+					}
+					continue
+				}
+			}
 			switch {
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_ASSISTANT:
 				value := consoleText(e.GetText().Text)
 				s.write(value)
-				if ref := sourceReference(source.take(e.Cursor), portableRef); ref != nil {
+				if ref := sourceReference(source.take(e.Cursor), portableRef); ref != nil || firstText {
+					if value == "" && ref == nil {
+						continue
+					}
 					flushText()
 					s.recordEvent(service.ConsoleEvent{Kind: "text", Text: value, ACP: ref})
+					if firstText && value != "" {
+						firstText = false
+						s.publishAvailable()
+					} else {
+						scheduleText()
+					}
 					continue
 				}
-				text.WriteString(value)
-				if strings.HasSuffix(value, "\n") || text.Len() >= 8192 {
-					flushText()
+				if value != "" {
+					scheduleText()
+					text.WriteString(value)
+					if strings.HasSuffix(value, "\n") || text.Len() >= 8192 {
+						flushText()
+					}
 				}
 			case e.GetTool() != nil:
 				flushText()
@@ -547,15 +754,21 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					choices = append(choices, service.QuestionChoice{ID: option.Id, Label: option.Label})
 				}
 				var q service.Question
-				if err := a.request("POST", path+"/questions", map[string]any{"question": request.Prompt, "choices": choices, "idempotency_key": request.RequestId}, &q); err != nil {
+				if err := a.requestContext(ctx, "POST", path+"/questions", map[string]any{
+					"question": request.Prompt, "choices": choices,
+					"idempotency_key": request.RequestId, "provider_turn": turnID, "provider_request": request.RequestId,
+				}, &q); err != nil {
 					return "failed", false, err
 				}
-				pending[q.ID] = request
+				if q.Status == "cancelled" {
+					continue
+				}
 				s.line(q.ID + " · " + q.Question)
 				if portableRef != nil {
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Permission requested] " + q.Question, ACP: portableRef})
 				}
 			case e.GetTurnEnded() != nil:
+				source.activeTurn.Store(false)
 				flushText()
 				if portableRef != nil {
 					if original := e.GetSourceRecord(); original.GetType() == "acp.prompt_result" {
@@ -564,7 +777,8 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: portableRef})
 				}
 				reason := e.GetTurnEnded().Reason
-				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result"
+				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result" ||
+					e.GetSourceRecord().GetType() == runtime.ACPV2TurnResultSource
 				if acpDisconnected(reason) {
 					return "failed", false, errACPDisconnected
 				}
@@ -575,62 +789,84 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				case "cancelled":
 					s.line("Turn interrupted.")
 					return "idle", observedTurnEnd, nil
+				case "max_tokens", "max_turn_requests", "refusal":
+					s.line("Turn stopped: " + reason + ". This conversation is ready for a follow-up.")
+					return reason, observedTurnEnd, nil
 				default:
 					return "failed", observedTurnEnd, fmt.Errorf("provider stopped the turn: %s", reason)
 				}
 			}
-		case <-ticker.C:
-			if managed && (localClaude || capabilities.GetCanInterrupt() && !interruptAttempted) {
-				var feed controlFeed
-				err := a.request("GET", path+"/control", nil, &feed)
-				if err == nil && localClaude && feed.ProviderAvailability == "checking" {
-					_ = a.request("POST", path+"/control/reconcile", map[string]any{
-						"session": service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()},
-						"turn_id": turnID, "generation": feed.Generation,
-					}, nil)
-				} else if err == nil && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
-					claim := map[string]any{"generation": feed.Generation}
-					operationID := "interrupt-" + turnID
-					if feed.InterruptID != "" {
-						claim["id"], claim["turn_id"] = feed.InterruptID, turnID
-						operationID = feed.InterruptID
-					}
-					if a.request("POST", path+"/control/interrupt/claim", claim, nil) == nil {
-						interruptAttempted = true
-						result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: operationID, TurnId: turnID})
-						phase := "sent"
-						if err = accepted(operationID, result.GetReceipt(), err); err != nil {
-							phase = "unconfirmed"
-							s.line("Interrupt could not be confirmed: " + err.Error())
-						}
-						if feed.InterruptID != "" {
-							claim["phase"] = phase
-							if err := publishWorkerControl(ctx, a, path+"/control/interrupt/report", claim); err != nil {
-								s.line("Interrupt evidence could not be saved: " + err.Error())
-							}
-						}
-					}
-				}
-			}
-			for id, request := range pending {
-				var q service.Question
-				if a.request("GET", path+"/questions/"+id, nil, &q) != nil || q.Status != "answered" {
-					continue
-				}
-				if !slices.ContainsFunc(request.Choices, func(opt *model.Choice) bool { return opt.Id == q.Answer }) {
-					return "failed", false, errors.New("reply does not match an offered provider choice")
-				}
-				answer, err := client.Answer(ctx, &model.AnswerRequest{Session: ref, OperationId: "answer-" + id, RequestId: request.RequestId, Answer: &model.AnswerRequest_OptionId{OptionId: q.Answer}})
-				if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
-					return "failed", false, errACPDisconnected
-				}
-				if err = accepted("answer-"+id, answer.GetReceipt(), err); err != nil {
-					return "failed", false, err
-				}
-				delete(pending, id)
-			}
 		}
 	}
+}
+
+func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *screen, path string,
+	ref *model.SessionRef, turnID string, managed, localClaude bool, capabilities *model.Capabilities, backgroundPermissions bool) error {
+	answered := make(map[string]bool)
+	interruptAttempted := false
+	for feed := range a.watchControl(ctx, path, turnID) {
+		if localClaude && feed.ProviderAvailability == "checking" {
+			_ = a.requestContext(ctx, "POST", path+"/control/reconcile", map[string]any{
+				"session": service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()},
+				"turn_id": turnID, "generation": feed.Generation,
+			}, nil)
+		} else if managed && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
+			claim := map[string]any{"generation": feed.Generation}
+			if !backgroundPermissions {
+				claim["permission_turn_id"] = turnID
+			}
+			operationID := "interrupt-" + turnID
+			if feed.InterruptID != "" {
+				claim["id"], claim["turn_id"] = feed.InterruptID, turnID
+				operationID = feed.InterruptID
+			}
+			if a.requestContext(ctx, "POST", path+"/control/interrupt/claim", claim, nil) == nil {
+				interruptAttempted = true
+				result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: operationID, TurnId: turnID})
+				phase := "sent"
+				if err = accepted(operationID, result.GetReceipt(), err); err != nil {
+					phase = "unconfirmed"
+					if ctx.Err() == nil {
+						s.line("Interrupt could not be confirmed: " + err.Error())
+					}
+				}
+				if feed.InterruptID != "" {
+					claim["phase"] = phase
+					delete(claim, "permission_turn_id")
+					reportCtx, cancelReport := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+					err := publishWorkerControl(reportCtx, a, path+"/control/interrupt/report", claim)
+					cancelReport()
+					if err != nil && ctx.Err() == nil {
+						s.line("Interrupt evidence could not be saved: " + err.Error())
+					}
+				}
+			}
+		}
+		if interruptAttempted {
+			continue
+		}
+		for _, q := range feed.Answers {
+			if answered[q.ID] {
+				continue
+			}
+			id := "answer-" + q.ID
+			answer, err := client.Answer(ctx, &model.AnswerRequest{
+				Session: ref, OperationId: id, RequestId: q.ProviderRequest,
+				Answer: &model.AnswerRequest_OptionId{OptionId: q.Choice},
+			})
+			if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
+				return errACPDisconnected
+			}
+			if err = accepted(id, answer.GetReceipt(), err); err != nil {
+				if turnID != service.ACPSessionPermissionScope || ctx.Err() != nil {
+					return err
+				}
+				s.line("Provider permission is no longer available for reply.")
+			}
+			answered[q.ID] = true
+		}
+	}
+	return nil
 }
 
 func acpDisconnected(reason string) bool {

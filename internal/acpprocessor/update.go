@@ -103,6 +103,7 @@ type Activity struct {
 	TurnID      string      `json:"turnId,omitempty"`
 	Kind        string      `json:"kind"`
 	MessageID   string      `json:"messageId,omitempty"`
+	MessageOp   string      `json:"messageOp,omitempty"`
 	ContentType string      `json:"contentType,omitempty"`
 	MIMEType    string      `json:"mimeType,omitempty"`
 	ModeID      string      `json:"modeId,omitempty"`
@@ -170,7 +171,8 @@ func (a *Activity) Valid() bool {
 	if a.Source != "live" && a.Source != "provider" || a.Kind == "" ||
 		bounded(a.Kind, 128) != a.Kind || bounded(a.Cursor, cursorLimit(a.Source)) != a.Cursor || bounded(a.TurnID, 256) != a.TurnID ||
 		a.PageCursor != "" && (a.Source != "provider" || bounded(a.PageCursor, ProviderCursorLimit) != a.PageCursor) ||
-		bounded(a.MessageID, 256) != a.MessageID || bounded(a.ContentType, 32) != a.ContentType ||
+		bounded(a.MessageID, 256) != a.MessageID ||
+		a.MessageOp != "" && (a.MessageID == "" || (a.MessageOp != "append" && a.MessageOp != "replace")) || bounded(a.ContentType, 32) != a.ContentType ||
 		bounded(a.MIMEType, 128) != a.MIMEType || bounded(a.ModeID, 128) != a.ModeID ||
 		a.ItemCount != nil && *a.ItemCount < 0 {
 		return false

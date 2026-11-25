@@ -95,7 +95,7 @@ func startWorkerForward(ownerSocket, token string) (string, func(), error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "unix", ownerSocket)
-	}, ResponseHeaderTimeout: 15 * time.Second}
+	}, ResponseHeaderTimeout: 30 * time.Second}
 	proxy := &httputil.ReverseProxy{Transport: transport, Rewrite: func(req *httputil.ProxyRequest) {
 		req.SetURL(&url.URL{Scheme: "http", Host: "localhost"})
 		req.Out.Header.Set("Authorization", "Bearer "+token)

@@ -48,3 +48,13 @@ gh release create "$input_tag" dist/go-build-inputs.tar.gz \
 | `SHA256SUMS` | SHA-256 manifest for the four downloadable archives. |
 
 The ad hoc Mac build is for testing. Use the [Developer ID packaging procedure](design/MULTIPLAYER-PILOT.md#build-the-universal-macos-archive) for the notarized distribution archive.
+
+If macOS reports that Apple cannot check an archive for malicious software, verify which build was copied to the Mac. The ad hoc CI archive does not carry a Developer ID signature or a notarization ticket. For distribution, use the notarized universal archive from the procedure above. Verify the extracted app before sharing it.
+
+```sh
+codesign --verify --deep --strict --all-architectures "Agent Commander.app"
+xcrun stapler validate "Agent Commander.app"
+spctl --assess --type execute --verbose=4 "Agent Commander.app"
+```
+
+If macOS says the app will damage the computer, record the exact alert, download source, and archive checksum for investigation. [Apple's guide to opening apps safely](https://support.apple.com/en-us/102445)

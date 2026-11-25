@@ -63,7 +63,7 @@ func TestACPReplayProfileKeepsTheSelectedExecutableBinding(t *testing.T) {
 	profile := local.acpProfiles["stock"]
 	profile.Args = []string{"different"}
 	local.acpProfiles["stock"] = profile
-	if _, _, err := local.openNativeHistory(ref, dir); err == nil {
+	if _, err := local.ReadNativeHistoryPage(t.Context(), ref, dir, "", 1); err == nil {
 		t.Fatal("a changed launch profile could read an earlier adapter's session")
 	}
 }
@@ -135,27 +135,46 @@ func TestRegisteredACPExecutableEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := `
-import {readFileSync} from 'node:fs';
+import {readFileSync, writeFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 if (process.argv[2] !== '$literal ; no shell') process.exit(2);
 const updates = readFileSync(process.argv[3], 'utf8').trimEnd().split('\n').map(JSON.parse);
 const emit = (message) => console.log(JSON.stringify({jsonrpc:'2.0', ...message}));
 const result = (id, body) => emit({id,result:body});
-const sessionId = 'independent-fixture-' + process.pid;
+let sessionId = 'independent-fixture-' + process.pid, resumed = false;
 let prompt;
 for await (const line of createInterface({input:process.stdin})) {
   const message = JSON.parse(line);
   switch (message.method) {
     case 'initialize':
-      result(message.id, {protocolVersion:1,agentCapabilities:{promptCapabilities:{image:true,audio:true}}});
+      result(message.id, {protocolVersion:1,agentCapabilities:{promptCapabilities:{image:true,audio:true},sessionCapabilities:{list:{},resume:{}}}});
       break;
     case 'session/new':
       if (message.params.mcpServers[0]?.name !== 'commander') process.exit(3);
       result(message.id, {sessionId});
       break;
+    case 'session/list':
+      result(message.id, {sessions:[
+        {sessionId:'foreign',cwd:'/another-project'},
+        {sessionId:readFileSync('media-session','utf8'),cwd:message.params.cwd,title:'Media worker'}]});
+      break;
+    case 'session/resume':
+      sessionId = readFileSync('media-session','utf8');
+      if(message.params.sessionId !== sessionId) process.exit(6);
+      resumed = true;
+      result(message.id, {});
+      break;
     case 'session/prompt': {
       const content = message.params.prompt;
+      if (resumed) {
+        if (content.length !== 1 || content[0].text !== 'first prompt after explicit reattach') process.exit(7);
+        emit({method:'session/update',params:{sessionId,update:{
+          sessionUpdate:'agent_message_chunk',content:{type:'text',text:'REATTACHED_ORIGINAL_SESSION'}}}});
+        result(message.id,{stopReason:'end_turn'});
+        break;
+      }
       if (content[0].text === 'Start media worker.') {
+        writeFileSync('media-session',sessionId,{mode:0o600});
         result(message.id,{stopReason:'end_turn'});
         break;
       }
@@ -265,6 +284,7 @@ for await (const line of createInterface({input:process.stdin})) {
 			t.Cleanup(func() { _ = local.Stop(context.Background(), mediaWorker.ID) })
 			assertACPMediaPrompt(t, handler, client, mediaWorker.ID)
 			assertACPTextPrompt(t, handler, client, mediaWorker.ID)
+			assertACPReattachment(t, client, run.ID, mediaWorker.ID)
 			if err := client.request("POST", "/v1/requests/"+run.Requests[0].ID+"/reply", map[string]string{"answer": "once"}, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -564,4 +584,61 @@ func assertACPLiveSource(t *testing.T, client *api, worker *service.Worker) {
 		}
 	}
 	t.Fatal("scoped ACP source did not retain the linked permission and terminal records, original tool fields and complete attachment")
+}
+
+func assertACPReattachment(t *testing.T, client *api, runID, workerID string) {
+	t.Helper()
+	path := "/v1/workers/" + workerID
+	call := func(method, route string, input, out any) {
+		t.Helper()
+		if err := client.request(method, route, input, out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait := func(accept func(service.Worker) bool) service.Worker {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			var run service.Run
+			call("GET", "/v1/runs/"+runID, nil, &run)
+			for _, worker := range run.Workers {
+				if worker.ID == workerID {
+					if worker.State == "failed" || worker.Error != "" {
+						t.Fatalf("worker error after reattach: %s\n%s", worker.Error, worker.Output)
+					}
+					if accept(*worker) {
+						return *worker
+					}
+				}
+			}
+		}
+		t.Fatal("timed out waiting for the selected worker")
+		return service.Worker{}
+	}
+	stopped := func(w service.Worker) bool { return w.State == "stopped" }
+	call("POST", path+"/stop", struct{}{}, nil)
+	original := wait(stopped)
+	if original.NativeSession == nil || original.Control == nil {
+		t.Fatal("stopped worker lost its provider binding")
+	}
+	var page service.ProviderSessionPage
+	call("GET", path+"/provider-sessions?limit=1", nil, &page)
+	if len(page.Sessions) != 1 || page.Sessions[0].SessionID != original.NativeSession.SessionID {
+		t.Fatalf("discovery leaked or omitted a session: %+v", page)
+	}
+	input := map[string]any{"idempotency_key": "resume-test", "generation": original.Control.Generation}
+	call("POST", path+"/reattach", input, nil)
+	fresh := wait(func(w service.Worker) bool { return w.State == "idle" })
+	call("POST", path+"/reattach", input, nil)
+	if fresh.NativeSession == nil || *fresh.NativeSession != *original.NativeSession ||
+		fresh.Control == nil || !fresh.Control.Held || fresh.Control.Generation != original.Control.Generation+1 {
+		t.Fatalf("original identity or lease lost: %+v", fresh)
+	}
+	call("POST", path+"/messages", map[string]any{
+		"generation": fresh.Control.Generation, "text": "first prompt after explicit reattach",
+	}, nil)
+	wait(func(w service.Worker) bool {
+		return w.State == "completed" && strings.Contains(w.Output, "REATTACHED_ORIGINAL_SESSION")
+	})
+	call("POST", path+"/stop", struct{}{}, nil)
+	wait(stopped)
 }

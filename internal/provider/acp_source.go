@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	model "agent-acp.local/sdks/go/model"
 	"agent-acp.local/sdks/go/runtime"
@@ -23,9 +24,11 @@ import (
 )
 
 type acpSourcePublisher struct {
-	portable bool // a compiled adapter can produce SDK observations without an ACP wire peer
-	queue    *sourceQueue
-	mu       sync.Mutex
+	v2         *acpV2Inputs
+	portable   bool // a compiled adapter can produce SDK observations without an ACP wire peer
+	activeTurn atomic.Bool
+	queue      *sourceQueue
+	mu         sync.Mutex
 
 	// The SDK delivers text and tools as portable summaries. Join richer wire
 	// identities by cursor before their live projection. A bounded ring mirrors
@@ -113,6 +116,16 @@ func (p *acpSourcePublisher) captureGap(ctx context.Context, obs *model.Observat
 	activity := acpprocessor.Reference("live", cursor, "agentacp.gap", "")
 	activity.TurnID = obs.TurnId
 	return activity
+}
+
+func (p *acpSourcePublisher) showObservationGap(ctx context.Context, screen *screen, event *model.Observation, recoverable bool) {
+	activity := p.captureGap(ctx, event)
+	message := "Live provider observations expired. Turn delivery may be uncertain. Inspect the scoped source for the provider's report."
+	if recoverable {
+		message = "Some live provider output expired. Pending requests and turn results were preserved."
+	}
+	screen.line(message)
+	screen.recordEvent(service.ConsoleEvent{Kind: "output", Text: message, ACP: activity})
 }
 
 func (p *acpSourcePublisher) captureObservation(ctx context.Context, obs *model.Observation) *acpprocessor.Activity {
@@ -321,7 +334,9 @@ func (p *acpSourcePublisher) capturePrompt(ctx context.Context, request *model.S
 	}
 	ref, turn := request.GetSession(), request.GetOperationId()
 	session := service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()}
-	if !slices.ContainsFunc(parts, func(part *model.PromptPart) bool { return part.GetImage() != nil || part.GetAudio() != nil }) {
+	if !slices.ContainsFunc(parts, func(part *model.PromptPart) bool {
+		return part.GetImage() != nil || part.GetAudio() != nil || part.GetResourceLink() != nil || part.GetResource() != nil
+	}) {
 		if len(parts) == 1 {
 			return
 		}
@@ -343,7 +358,14 @@ func (p *acpSourcePublisher) capturePrompt(ctx context.Context, request *model.S
 			kind, media = "audio", part.GetAudio()
 		}
 		update := service.LiveSourceUpdate{Session: session, Cursor: promptPartCursor(turn, index), TurnID: turn}
-		if media == nil {
+		if part.GetResourceLink() != nil || part.GetResource() != nil {
+			block, _, err := runtime.PromptResourceBlock(part, true)
+			if err != nil {
+				continue
+			}
+			update.Kind = service.LivePromptMediaPartKind
+			update.Body, _ = json.Marshal(block)
+		} else if media == nil {
 			update.Kind = service.LivePromptTextPartKind
 			update.Body, _ = json.Marshal(acp.TextBlock(part.GetText()))
 		} else {
