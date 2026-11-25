@@ -311,6 +311,9 @@ func (p *workspaceProjection) rebuild(runs []*Run) {
 
 func plainConsole(events []ConsoleEvent) bool {
 	for _, e := range events {
+		if e.ACP != nil && e.ACP.MessageOp != "" {
+			return false
+		}
 		switch e.Kind {
 		case "text", "user", "output":
 		default:

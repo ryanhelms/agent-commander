@@ -26,6 +26,7 @@ type WorkerControl struct {
 // SessionCapabilities records the non-media operations negotiated by the SDK.
 // A nil capability set on an older worker preserves its existing controls.
 type SessionCapabilities struct {
+	ProtocolVersion int  `json:"protocol_version,omitempty"`
 	CanAnswer       bool `json:"can_answer"`
 	CanInterrupt    bool `json:"can_interrupt"`
 	CanResume       bool `json:"can_resume"`
@@ -264,7 +265,9 @@ func (s *service) workerControlSnapshot(workerID, actor, turn string) (workerCon
 			}
 		}
 	}
-	if turn != "" && turn == activeProviderTurn(w) {
+	sessionPermissions := turn == ACPSessionPermissionScope && w.PeerCapabilities != nil &&
+		w.PeerCapabilities.ProtocolVersion == 2
+	if turn != "" && (turn == activeProviderTurn(w) || sessionPermissions) {
 		for _, q := range r.Requests {
 			permission := s.state.Permissions[q.ID]
 			if q.WorkerID == w.ID && permission.Turn == turn &&
@@ -459,8 +462,7 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	w.Control.InterruptRequested = false
 	w.Control.InterruptClaimed = false
 	w.State, w.Error = in.State, in.Error
-	r.cancelQuestions(w.ID)
-	s.retireProviderPermissions(r, w.ID)
+	s.finishTurnPermissions(r, w, in.State == "failed")
 	if message != nil {
 		s.markOperationEnd(r, w, message)
 	}

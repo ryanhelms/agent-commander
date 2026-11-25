@@ -154,7 +154,8 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"GET /v1/runs/{run}": s.getRun, "POST /v1/runs/{run}/workers": s.delegate,
 		"POST /v1/runs/{run}/stop":            s.stopRun,
 		"POST /v1/workers/{worker}/questions": s.ask, "GET /v1/workers/{worker}/questions/{qid}": s.getQuestion,
-		"POST /v1/requests/{qid}/reply": s.reply, "POST /v1/workers/{worker}/state": s.workerState,
+		"POST /v1/workers/{worker}/questions/dismiss-provider": s.dismissProviderPermission,
+		"POST /v1/requests/{qid}/reply":                        s.reply, "POST /v1/workers/{worker}/state": s.workerState,
 		"POST /v1/ag-ui/workers/{worker}/requests/{qid}/reply":                       s.replyToWorkerRun,
 		"POST /v1/ag-ui/workers/{worker}/operations/{operation}/tools/{call}/result": s.resolveFrontendCall,
 		"POST /v1/workers/{worker}/frontend-tools/ready":                             s.frontendToolReady,
@@ -678,16 +679,19 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		_, q := s.question(target)
 		return read(q), nil
 	}
+	sessionPermission := in.ProviderTurn == ACPSessionPermissionScope && w.PeerCapabilities != nil &&
+		w.PeerCapabilities.ProtocolVersion == 2
 	if in.ProviderTurn != "" || in.ProviderRequest != "" {
-		if in.ProviderTurn == "" || in.ProviderTurn != activeProviderTurn(w) ||
+		if in.ProviderTurn == "" || !sessionPermission && in.ProviderTurn != activeProviderTurn(w) ||
 			in.ProviderRequest == "" || len(in.ProviderRequest) > 256 || len(in.Choices) == 0 {
 			return outcome{}, conflict("permission does not match the active provider turn")
 		}
-		if w.Control != nil && w.Control.InterruptClaimed {
+		if !sessionPermission && w.Control != nil && w.Control.InterruptClaimed {
 			return read(Question{Status: "cancelled"}), nil
 		}
 	}
-	if ended(w.State) {
+	if ended(w.State) && !(sessionPermission && w.Role == "worker" && w.State == "completed" &&
+		w.Control != nil && r.Status == "running" && !w.providerBlocksControl()) {
 		return outcome{}, conflict("worker has ended")
 	}
 	if w.State == "disconnected" {
@@ -751,7 +755,11 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	if actor != "" && w.Control != nil && w.Control.Held {
 		return outcome{}, conflict("developer holds worker input")
 	}
-	if q.Status != "pending" || r.Status == "stopping" || r.Status == "stopped" || w.State == "stopping" || ended(w.State) {
+	backgroundPermission := w.Role == "worker" && w.State == "completed" && w.Control != nil &&
+		r.Status == "running" && !w.providerBlocksControl() &&
+		s.state.Permissions[q.ID].Turn == ACPSessionPermissionScope
+	if q.Status != "pending" || r.Status == "stopping" || r.Status == "stopped" ||
+		w.State == "stopping" || ended(w.State) && !backgroundPermission {
 		return outcome{}, conflict("the requesting worker is no longer running")
 	}
 	q.Answer, q.Status = in.Answer, "answered"

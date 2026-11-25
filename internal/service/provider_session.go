@@ -48,6 +48,7 @@ type ReattachSpec struct {
 	Ref             NativeSession
 	ProviderBinding string
 	Generation      int
+	ProtocolVersion int `json:"protocol_version,omitempty"`
 }
 
 type providerSessionStatus struct {
@@ -212,7 +213,10 @@ func (s *service) reattachWorker(req *http.Request, actor string) (outcome, erro
 	}
 	spec.Token = randomID("") + randomID("")
 	s.state.Tokens[digest(spec.Token)] = w.ID
-	spec.Reattach = &ReattachSpec{*w.NativeSession, w.ProviderBinding, w.Control.Generation}
+	spec.Reattach = &ReattachSpec{
+		Ref: *w.NativeSession, ProviderBinding: w.ProviderBinding, Generation: w.Control.Generation,
+		ProtocolVersion: status.PeerCapabilities.ProtocolVersion,
+	}
 	s.remember(key, intent, w.ID)
 	return outcome{w, http.StatusAccepted, true, func() { s.launch(spec) }}, nil
 }

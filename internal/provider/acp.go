@@ -82,8 +82,14 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	stderr := &lineWriter{s: s}
 	config.Stderr = stderr
-	if j.Worker.Reattach != nil {
+	if err := configureACPProtocol(&config); err != nil {
+		return err
+	}
+	if resume := j.Worker.Reattach; resume != nil {
 		config.ModelOnResume = acpOpenRequest(j, config.HarnessInstance, cwd).GetModel()
+		if resume.ProtocolVersion != 0 {
+			config.ProtocolVersion = resume.ProtocolVersion
+		}
 	}
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
@@ -128,13 +134,24 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
 	managed := j.Worker.Role == "worker"
 	capabilities := session.GetCapabilities()
+	protocolVersion := 1
+	if negotiated, ok := rt.(interface {
+		NegotiatedProtocolVersion(*model.SessionRef) (int, error)
+	}); ok {
+		var err error
+		protocolVersion, err = negotiated.NegotiatedProtocolVersion(ref)
+		if err != nil {
+			return err
+		}
+	}
 	promptCaps := service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio(), ResourceLink: j.BuiltinInstance == "", EmbeddedContext: capabilities.GetCanPromptEmbeddedContext()}
 	sessionCaps := service.SessionCapabilities{
-		CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
+		ProtocolVersion: protocolVersion,
+		CanAnswer:       capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
 		CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
 	}
 	if resume := j.Worker.Reattach; resume != nil {
-		if nativeSession != resume.Ref || !managed {
+		if nativeSession != resume.Ref || !managed || resume.ProtocolVersion != 0 && protocolVersion != resume.ProtocolVersion {
 			return errors.New("harness did not reattach the original worker session")
 		}
 	} else {
@@ -178,6 +195,14 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	go terminalInput(j, a, s)
 	observeCtx, stopObserve := context.WithCancel(ctx)
+	if protocolVersion == 2 {
+		source.v2 = &acpV2Inputs{api: a, path: path}
+		go func() {
+			if err := runACPControl(observeCtx, client, a, s, path, ref, service.ACPSessionPermissionScope, false, false, capabilities, true); err != nil && observeCtx.Err() == nil {
+				s.line("Provider permission delivery is uncertain.")
+			}
+		}()
+	}
 	updates, observeDone, streamLife := workerObservations(observeCtx, client, ref, source, s)
 	defer func() { stopObserve(); <-observeDone }()
 
@@ -188,8 +213,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		next, ok := waitForFollowUp(streamLife, a, path)
 		if !ok {
 			cause := context.Cause(streamLife)
-			if ref.GetHarnessInstance() == service.LocalClaudeHarness && ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
-				return publishClaudeProviderExit(ctx, a, path, ref, "idle")
+			if ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
+				return publishACPProviderExit(ctx, a, path, ref, "idle", cause)
 			}
 			return cause
 		}
@@ -343,6 +368,9 @@ func planningConfig(j job) (runtime.Config, error) {
 		},
 	}
 
+	if os.Getenv("AGENT_COMMANDER_ACP_SYSTEM_PROMPT") == "standard" {
+		config.SystemPromptAppend = instructions
+	}
 	for name, srv := range servers {
 		config.MCPServers = append(config.MCPServers, runtime.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
 	}
@@ -483,6 +511,13 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 				source.showObservationGap(ctx, screen, event, false)
 				cause, err = errACPObservationGap, errACPObservationGap
 			}
+			if err == nil && source.v2 != nil && source.v2.handles(event) {
+				if err := source.v2.observe(ctx, source, screen, event); err != nil {
+					cause = err
+					return
+				}
+				continue
+			}
 			if err == nil && event.GetTurnId() == "" && event.GetGap() == nil {
 				if source.portable && source.takeIdle(idleKey(event.Session, event.Cursor)) {
 					continue
@@ -490,6 +525,11 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 				activity := source.captureObservation(ctx, event)
 				if activity != nil {
 					entry := idleSourcedEvent(event, activity)
+					if source.v2 != nil {
+						if message, ok := acpV2Message(event, activity); ok {
+							entry = message
+						}
+					}
 					screen.line(previewText(entry.TerminalText()))
 					screen.recordEvent(entry)
 				}
@@ -539,7 +579,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			defer close(done)
 			controlCtx, stopControl := context.WithCancel(ctx)
 			defer stopControl()
-			if err := runACPControl(controlCtx, client, a, s, path, ref, turnID, managed, localClaude, capabilities); err != nil {
+			if err := runACPControl(controlCtx, client, a, s, path, ref, turnID, managed, localClaude, capabilities, source.v2 != nil); err != nil {
 				errs <- err
 			}
 		}()
@@ -599,6 +639,18 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			}
 			if localClaude {
 				s.recordClaudeProgress(claudeProgressPhase(e))
+			}
+			if source.v2 != nil {
+				if entry, ok := acpV2Message(e, portableRef); ok {
+					flushText()
+					s.write(entry.Text)
+					s.recordEvent(entry)
+					if firstText && entry.Kind == "text" && entry.Text != "" {
+						firstText = false
+						s.publishAvailable()
+					}
+					continue
+				}
 			}
 			switch {
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_ASSISTANT:
@@ -711,7 +763,8 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: portableRef})
 				}
 				reason := e.GetTurnEnded().Reason
-				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result"
+				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result" ||
+					e.GetSourceRecord().GetType() == runtime.ACPV2TurnResultSource
 				if acpDisconnected(reason) {
 					return "failed", false, errACPDisconnected
 				}
@@ -734,7 +787,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 }
 
 func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *screen, path string,
-	ref *model.SessionRef, turnID string, managed, localClaude bool, capabilities *model.Capabilities) error {
+	ref *model.SessionRef, turnID string, managed, localClaude bool, capabilities *model.Capabilities, backgroundPermissions bool) error {
 	answered := make(map[string]bool)
 	interruptAttempted := false
 	for feed := range a.watchControl(ctx, path, turnID) {
@@ -744,7 +797,10 @@ func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *sc
 				"turn_id": turnID, "generation": feed.Generation,
 			}, nil)
 		} else if managed && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
-			claim := map[string]any{"generation": feed.Generation, "permission_turn_id": turnID}
+			claim := map[string]any{"generation": feed.Generation}
+			if !backgroundPermissions {
+				claim["permission_turn_id"] = turnID
+			}
 			operationID := "interrupt-" + turnID
 			if feed.InterruptID != "" {
 				claim["id"], claim["turn_id"] = feed.InterruptID, turnID
@@ -788,7 +844,10 @@ func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *sc
 				return errACPDisconnected
 			}
 			if err = accepted(id, answer.GetReceipt(), err); err != nil {
-				return err
+				if turnID != service.ACPSessionPermissionScope || ctx.Err() != nil {
+					return err
+				}
+				s.line("Provider permission is no longer available for reply.")
 			}
 			answered[q.ID] = true
 		}

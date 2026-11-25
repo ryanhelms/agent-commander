@@ -24,6 +24,7 @@ import (
 )
 
 type acpSourcePublisher struct {
+	v2         *acpV2Inputs
 	portable   bool // a compiled adapter can produce SDK observations without an ACP wire peer
 	activeTurn atomic.Bool
 	queue      *sourceQueue

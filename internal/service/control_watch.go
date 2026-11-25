@@ -10,6 +10,10 @@ import (
 
 const MaxWorkerControlWait = 25 * time.Second
 
+// ACPSessionPermissionScope addresses ACP v2 permissions that may outlive one
+// foreground turn. The service derives its availability from the peer binding.
+const ACPSessionPermissionScope = "$session"
+
 type workerControlAnswer struct {
 	ID              string `json:"id"`
 	ProviderRequest string `json:"provider_request"`
@@ -86,4 +90,49 @@ func (s *service) waitWorkerControl(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *service) finishTurnPermissions(run *Run, worker *Worker, failed bool) {
+	for _, question := range run.Requests {
+		if question.WorkerID != worker.ID {
+			continue
+		}
+		permission := s.state.Permissions[question.ID]
+		if !failed && permission.Turn == ACPSessionPermissionScope {
+			continue
+		}
+		if question.Status == "pending" {
+			question.Status = "cancelled"
+		}
+		delete(s.state.Permissions, question.ID)
+	}
+}
+
+func (s *service) dismissProviderPermission(request *http.Request, actor string) (outcome, error) {
+	run, worker, err := s.own(request, actor)
+	if err != nil {
+		return outcome{}, err
+	}
+	var input struct {
+		ProviderRequest string `json:"provider_request"`
+	}
+	if err := decode(request, &input); err != nil {
+		return outcome{}, err
+	}
+	if input.ProviderRequest == "" || len(input.ProviderRequest) > 256 {
+		return outcome{}, bad("invalid provider permission request")
+	}
+	for _, question := range run.Requests {
+		permission := s.state.Permissions[question.ID]
+		if question.WorkerID != worker.ID || permission.Request != input.ProviderRequest ||
+			permission.Turn != ACPSessionPermissionScope {
+			continue
+		}
+		delete(s.state.Permissions, question.ID)
+		if question.Status == "pending" {
+			question.Status = "cancelled"
+		}
+		return changed(question), nil
+	}
+	return read(struct{}{}), nil
 }
