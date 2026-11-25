@@ -202,9 +202,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	for {
 		request := acpPromptRequest(ref, turnID, prompt, parts)
 		state, observedTurnEnd, turnErr := "failed", false, context.Cause(streamLife)
-		if lastFinishedState != "" && ref.GetHarnessInstance() == service.LocalClaudeHarness &&
-			ctx.Err() == nil && errors.Is(turnErr, errACPDisconnected) {
-			return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+		if lastFinishedState != "" && ctx.Err() == nil && idleACPExit(ref, turnErr) {
+			return publishACPProviderExit(ctx, a, path, ref, lastFinishedState, turnErr)
 		}
 		if turnErr == nil {
 			state, observedTurnEnd, turnErr = runACPTurn(ctx, client, request, source, a, s, path, managed, capabilities, updates)
@@ -236,6 +235,9 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		}
 		if turnErr != nil {
 			outcome["error"] = turnErr.Error()
+			if errors.Is(turnErr, errACPObservationGap) {
+				outcome["delivery_unknown"] = true
+			}
 		}
 		s.flush()
 		if err := publishWorkerControl(ctx, a, path+"/control/finish", outcome); err != nil {
@@ -248,8 +250,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		next, ok := waitForFollowUp(streamLife, a, path)
 		if !ok {
 			cause := context.Cause(streamLife)
-			if ref.GetHarnessInstance() == service.LocalClaudeHarness && ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
-				return publishClaudeProviderExit(ctx, a, path, ref, lastFinishedState)
+			if ctx.Err() == nil && idleACPExit(ref, cause) {
+				return publishACPProviderExit(ctx, a, path, ref, lastFinishedState, cause)
 			}
 			return cause
 		}
@@ -260,10 +262,19 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 }
 
-func publishClaudeProviderExit(ctx context.Context, a *api, path string, ref *model.SessionRef, state string) error {
-	return publishWorkerControl(ctx, a, path+"/control/provider-exit", map[string]string{
+func idleACPExit(ref *model.SessionRef, cause error) bool {
+	return errors.Is(cause, errACPObservationGap) ||
+		ref.GetHarnessInstance() == service.LocalClaudeHarness && errors.Is(cause, errACPDisconnected)
+}
+
+func publishACPProviderExit(ctx context.Context, a *api, path string, ref *model.SessionRef, state string, cause error) error {
+	report := map[string]string{
 		"harness_instance": ref.GetHarnessInstance(), "session_id": ref.GetSessionId(), "last_state": state,
-	})
+	}
+	if errors.Is(cause, errACPObservationGap) {
+		report["reason"] = "observation_gap"
+	}
+	return publishWorkerControl(ctx, a, path+"/control/provider-exit", report)
 }
 
 func openSessionRuntime(j job, config runtime.Config) (harness.Runtime, error) {
@@ -444,10 +455,22 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 			}
 
 			if err == nil && event.GetGap() != nil {
-				activity := source.captureGap(ctx, event)
-				const message = "Live provider observations expired. Inspect the scoped source for the provider's report."
-				screen.line(message)
-				screen.recordEvent(service.ConsoleEvent{Kind: "output", Text: message, ACP: activity})
+				// Compiled adapters use their own retention contracts. Only the
+				// bundled ACP runtime guarantees continuity for this marker.
+				recoverable := !source.portable && runtime.IsObservationOnlyGap(event)
+				if recoverable {
+					if source.activeTurn.Load() {
+						select {
+						case updates <- acpUpdate{event: event}:
+						case <-ctx.Done():
+							return
+						}
+					} else {
+						source.showObservationGap(ctx, screen, event, true)
+					}
+					continue
+				}
+				source.showObservationGap(ctx, screen, event, false)
 				cause, err = errACPObservationGap, errACPObservationGap
 			}
 			if err == nil && event.GetTurnId() == "" && event.GetGap() == nil {
@@ -490,6 +513,8 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ref, turnID := request.Session, request.OperationId
+	source.activeTurn.Store(true)
+	defer source.activeTurn.Store(false)
 	localClaude := managed && ref.GetHarnessInstance() == service.LocalClaudeHarness
 	sent, err := client.Send(ctx, request)
 	if err = accepted(turnID, sent.GetReceipt(), err); err != nil {
@@ -543,6 +568,11 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				return "failed", false, errACPDisconnected
 			}
 			e := update.event
+			if e.GetGap() != nil {
+				flushText()
+				source.showObservationGap(ctx, s, e, true)
+				continue
+			}
 			if update.ended != nil {
 				if e.TurnId == turnID {
 					defer close(update.ended)
@@ -662,6 +692,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Permission requested] " + q.Question, ACP: portableRef})
 				}
 			case e.GetTurnEnded() != nil:
+				source.activeTurn.Store(false)
 				flushText()
 				if portableRef != nil {
 					if original := e.GetSourceRecord(); original.GetType() == "acp.prompt_result" {

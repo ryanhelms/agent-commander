@@ -56,6 +56,7 @@ func (u LiveSourceUpdate) BodyLimit() int {
 
 type liveSourceStore struct {
 	windows map[string]*liveSourceWindow
+	waiters map[string]*sourceWake
 	tick    uint64
 	bytes   int
 }
@@ -81,7 +82,9 @@ func (s *service) recordLiveSource(req *http.Request, actor string) (outcome, er
 	if err := update.prepare(worker.NativeSession); err != nil {
 		return outcome{}, err
 	}
-	s.liveSource.append(worker.ID, update)
+	if s.liveSource.append(worker.ID, update) {
+		s.liveSource.wake(worker.ID)
+	}
 	return read(map[string]string{"id": worker.ID}), nil
 }
 
@@ -123,8 +126,14 @@ func (s *service) recordLiveSourceBatch(req *http.Request, actor string) (outcom
 	if _, err := dec.Token(); err != io.EOF {
 		return outcome{}, bad("unexpected data after ACP source batch")
 	}
+	published := false
 	for i := range count {
-		s.liveSource.append(worker.ID, updates[i])
+		if s.liveSource.append(worker.ID, updates[i]) {
+			published = true
+		}
+	}
+	if published {
+		s.liveSource.wake(worker.ID)
 	}
 	return read(map[string]string{"id": worker.ID}), nil
 }
@@ -177,7 +186,7 @@ func (update *LiveSourceUpdate) prepare(bound *NativeSession) error {
 	return nil
 }
 
-func (s *liveSourceStore) append(worker string, update LiveSourceUpdate) {
+func (s *liveSourceStore) append(worker string, update LiveSourceUpdate) bool {
 	if s.windows == nil {
 		s.windows = make(map[string]*liveSourceWindow)
 	}
@@ -188,7 +197,7 @@ func (s *liveSourceStore) append(worker string, update LiveSourceUpdate) {
 	}
 	if update.Cursor != "" {
 		if _, retained := w.cursors[update.Cursor]; retained {
-			return
+			return false
 		}
 		w.cursors[update.Cursor] = struct{}{}
 	}
@@ -220,7 +229,9 @@ func (s *liveSourceStore) append(worker string, update LiveSourceUpdate) {
 		}
 		s.bytes -= oldest.bytes
 		delete(s.windows, oldestID)
+		s.wake(oldestID)
 	}
+	return true
 }
 
 // RetainedSize charges metadata and source bytes identically on both sides of the local API.

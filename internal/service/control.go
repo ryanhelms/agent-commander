@@ -201,6 +201,9 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 		}
 	}
 	if w.ProviderAvailability == providerExited {
+		if w.Error != "" {
+			return outcome{}, conflict(w.Error + "; inspect the worker's source")
+		}
 		return outcome{}, conflict("the local Claude adapter exited; inspect the worker's source")
 	}
 	if !canFollowUp(r, w) {
@@ -367,6 +370,7 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		Error           string
 		MessageID       string `json:"message_id"`
 		ObservedTurnEnd bool   `json:"observed_turn_end"`
+		DeliveryUnknown bool   `json:"delivery_unknown"`
 		StopReason      string `json:"stop_reason,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
@@ -385,6 +389,12 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	finalStatus := in.State
 	if in.State == "idle" {
 		finalStatus = "interrupted"
+	}
+	if in.DeliveryUnknown {
+		if in.State != "failed" || in.ObservedTurnEnd || in.StopReason != "" {
+			return outcome{}, bad("unknown provider delivery requires an unconfirmed failed turn")
+		}
+		finalStatus = "delivery_unknown"
 	}
 	switch in.StopReason {
 	case "":

@@ -136,6 +136,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("GET /v1/workers/{worker}/terminal", s.serveTerminalAttachment)
 	mux.HandleFunc("POST /v1/workers/{worker}/output", s.handleJSON(s.output))
 	mux.HandleFunc("GET /v1/workers/{worker}/output", s.handleJSON(s.outputStream))
+	mux.HandleFunc("GET /v1/workers/{worker}/live-source/events", s.streamLiveSource)
 	mux.HandleFunc("POST /v1/workers/{worker}/live-source", s.handleJSONLimit(s.recordLiveSource, 2<<20))
 	mux.HandleFunc("POST /v1/workers/{worker}/live-source/batch", s.handleJSONLimit(s.recordLiveSourceBatch, 2<<20))
 	mux.HandleFunc("POST /v1/requests/{qid}/reconcile", s.reconcileSSHReply)
