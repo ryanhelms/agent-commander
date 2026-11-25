@@ -1402,9 +1402,12 @@ struct ElicitationPanel: View {
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 480)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 460)
+        // A fixed size, like the Source Inspector panel. A popover cannot read a scroll view's
+        // content height, so without one it collapses the scroll view to its minimum and clips
+        // the form. The cards scroll inside this frame. Loading, empty and URL states sit at the top.
+        .frame(width: 460, height: 520, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Input requests, \(workerName)")
     }
