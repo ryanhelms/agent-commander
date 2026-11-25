@@ -88,6 +88,17 @@ func TestACPElicitationOwnerAnswersAndScopesExternalCompletion(t *testing.T) {
 	if len(list()) != 0 {
 		t.Fatal("resolved form data remained visible")
 	}
+	choiceForm := form
+	choiceForm.RequestedSchema = json.RawMessage(`{"type":"object","properties":{"colors":{"type":"array","minItems":1,"items":{"anyOf":[{"const":"#ff0000","title":"Red"},{"const":"#00ff00","title":"Green"}]}}},"required":["colors"]}`)
+	choiceDone := begin(ctx, choiceForm)
+	shown = waitFor(ctx, "form")
+	route = base + "/" + shown.ID + "/reply"
+	f.call("POST", route, "", runtime.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"colors":["Blue"]}`)}, 400, "")
+	selected := runtime.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"colors":["#ff0000","#00ff00"]}`)}
+	f.call("POST", route, "", selected, 200, "")
+	if got := replyFrom(ctx, choiceDone); got.Action != "accept" || !bytes.Equal(got.Content, selected.Content) {
+		t.Fatalf("titled choices changed: %+v", got)
+	}
 	url := runtime.ElicitationRequest{SessionID: ref.SessionID, Mode: "url", Message: "Confirm the external destination",
 		ElicitationID: "opaque-id", URL: "https://example.test/confirm?a=%24literal"}
 	urlDone := begin(ctx, url)

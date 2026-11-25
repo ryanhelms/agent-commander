@@ -65,8 +65,8 @@ func elicitationSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 		case "string", "number", "integer", "boolean":
 		case "array":
 			items, ok := property["items"].(map[string]any)
-			if !ok || items["type"] != "string" || items["enum"] == nil && items["anyOf"] == nil {
-				return nil, bad("elicitation multi-select fields require explicit choices")
+			if !ok || !elicitationChoices(items) {
+				return nil, bad("elicitation multi-select fields require explicit string choices")
 			}
 		default:
 			return nil, bad("elicitation form has an unsupported field type")
@@ -86,6 +86,34 @@ func elicitationSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 		return nil, bad("invalid elicitation form constraints")
 	}
 	return resolved, nil
+}
+
+func elicitationChoices(items map[string]any) bool {
+	if enum, ok := items["enum"].([]any); ok && items["type"] == "string" && len(enum) != 0 {
+		for _, value := range enum {
+			if _, stringChoice := value.(string); !stringChoice {
+				return false
+			}
+		}
+		return true
+	}
+	choices, ok := items["anyOf"].([]any)
+	if !ok || len(choices) == 0 || items["type"] != nil && items["type"] != "string" {
+		return false
+	}
+	for _, value := range choices {
+		choice, ok := value.(map[string]any)
+		if !ok || len(choice) != 2 {
+			return false
+		}
+		if _, ok := choice["const"].(string); !ok {
+			return false
+		}
+		if _, ok := choice["title"].(string); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *service) awaitElicitation(w http.ResponseWriter, req *http.Request) {
