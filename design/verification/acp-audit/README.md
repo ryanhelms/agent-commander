@@ -31,10 +31,10 @@ These comparisons include workstream builds. The sampled service and adapter RSS
 
 | Harness | Observed workflow | Startup selection |
 | --- | --- | --- |
-| Claude managed Opus, ACP adapter 0.109.1 | The installed account completed a synthetic v1 turn with Opus. The first v2 run found a configuration-ID mismatch. A managed Opus prompt passed over v2 with SDK 0.1.18. | v1 by default. Full v2 parity requires installed permissions, cancellation, reconnect, and history. |
+| Claude managed Opus, ACP adapter 0.109.1 | The installed account completed a synthetic v1 turn with Opus. The first v2 run found a configuration-ID mismatch. A managed Opus prompt passed over v2 with SDK 0.1.18. With the final SDK, both v1 and v2 interrupted a pending synthetic workflow and completed the next prompt on the original native session. The verifier joins streamed text chunks before comparing the literal output. | v1 by default. Full v2 parity requires installed permissions, cancellation, reconnect, and history. |
 | Codex ACP adapter 2.9.0 | The installed adapter returned the synthetic marker in both v1 and v2. | v1 by default while v2 parity and performance remain open. |
 | Antigravity 1.5.13 | The installed adapter selected v1 when offered v2. The delegated worker read the fixture marker and replayed the same value in eight stopped-session records. | v1. |
-| Pi ACP translator 0.2.0 | The installed loopback fixture exercised addressed approval, original tool results, and reattachment. | v1. |
+| Pi ACP translator 0.2.0 | The installed adapter selected v1 when offered v2. The loopback fixture exercised addressed approval, original tool results, and reattachment. | v1. |
 
 The existing SSH path remains available through `AGENT_COMMANDER_SSH_LINK=legacy`. The windowed link requires explicit negotiation by the endpoint. New local sessions accept these independent overrides:
 
