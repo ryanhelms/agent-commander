@@ -66,3 +66,5 @@ golang.org/x/tools v0.42.0 h1:uNgphsn75Tdz5Ji2q36v/nsFSfR/9BRFvqhGBaJGd5k=
 golang.org/x/tools v0.42.0/go.mod h1:Ma6lCIwGZvHK6XtgbswSoWroEkhugApmsXyrUmBhfr0=
 google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
 google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+agent-acp.local/sdks/go v0.1.18 h1:AlDWdENJml50gZI1fx5uWjIsareLO+4qJf36Z5/giGI=
+agent-acp.local/sdks/go v0.1.18/go.mod h1:jjR0kSvsKz4PRmNv5oj8Gxc0Zn3JDrzkZp+oSvtNlPc=
