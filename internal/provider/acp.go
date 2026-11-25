@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -74,12 +73,8 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			config.MCPServers[i].Env["AGENT_COMMANDER_PERSISTENT_SSH_WAIT"] = "1"
 		}
 	}
-	if _, supplied := config.Env["PATH"]; j.NodePath != "" && !supplied {
-		if config.Env == nil {
-			config.Env = make(map[string]string)
-		}
-		config.Env["PATH"] = j.NodePath + string(os.PathListSeparator) + os.Getenv("PATH")
-	}
+	setACPNodePath(&config, j.NodePath)
+	j.ACPBroker.apply(&config, j.Executable)
 	stderr := &lineWriter{s: s}
 	config.Stderr = stderr
 	if err := configureACPProtocol(&config); err != nil {
