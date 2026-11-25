@@ -63,7 +63,7 @@ func TestACPReplayProfileKeepsTheSelectedExecutableBinding(t *testing.T) {
 	profile := local.acpProfiles["stock"]
 	profile.Args = []string{"different"}
 	local.acpProfiles["stock"] = profile
-	if _, _, err := local.openNativeHistory(ref, dir); err == nil {
+	if _, err := local.ReadNativeHistoryPage(t.Context(), ref, dir, "", 1); err == nil {
 		t.Fatal("a changed launch profile could read an earlier adapter's session")
 	}
 }
