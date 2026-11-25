@@ -157,17 +157,17 @@ def metrics(samples):
             "max_ms": max(samples), "samples_ms": samples}
 
 
-def phase(root, path, approval, feed, pid, load):
+def phase(root, path, approval, feed, pid, load, samples):
     shown = []
     command = []
     projection = []
     delivery = []
     delivery_view = []
     memory = [rss(pid)]
-    start_ticket = SAMPLES if load else 0
+    start_ticket = samples if load else 0
     before = feed.payload_bytes
     previous_subscription_bytes = 0
-    for ticket in range(start_ticket, start_ticket + SAMPLES):
+    for ticket in range(start_ticket, start_ticket + samples):
         started = time.monotonic()
         (root / f"request-{ticket}").touch()
         pending = feed.until(lambda runs: (
@@ -213,6 +213,7 @@ def phase(root, path, approval, feed, pid, load):
     }
     if load:
         result["reconnect_with_pending_approval_ms"] = reconnect
+        result["reconnected_reply_sample_index"] = 0
     return result, feed
 
 
@@ -233,7 +234,7 @@ def create_panes(path, workspace, first_text=False):
     return ids
 
 
-def first_structured_text(root, path, worker_id, feed):
+def first_structured_text(root, path, worker_id, feed, count):
     route = f"/v1/workers/{worker_id}"
     row = feed.until(lambda runs: (
         w if (w := worker(runs, worker_id)).get("state") in ("idle", "completed") else {}
@@ -241,7 +242,7 @@ def first_structured_text(root, path, worker_id, feed):
     held = api(path, "POST", route + "/control", {"held": True, "generation": row["control"]["generation"]})
     generation = held["generation"]
     samples, early, wire_terminal_time = [], [], []
-    for ticket in range(SAMPLES):
+    for ticket in range(count):
         operation = api(path, "POST", route + "/messages",
                         {"generation": generation, "text": f"textprobe {ticket}"}, 202)
         marker = re.compile(rf"FIRST:{ticket}:(\d+):chunk")
@@ -305,7 +306,7 @@ def wait_for_service(process, path):
     raise TimeoutError("Fixture service did not become available")
 
 
-def benchmark(binary, output, projection, first_text=False):
+def benchmark(binary, output, projection, first_text=False, samples=SAMPLES):
     start_load_average = os.getloadavg()
     stream_route = "/v1/ag-ui/events" + ("?projection=incremental" if projection == "incremental" else "")
     with tempfile.TemporaryDirectory(prefix="ac-30-", dir="/tmp") as name:
@@ -337,13 +338,13 @@ def benchmark(binary, output, projection, first_text=False):
                 panes = subprocess.check_output(["tmux", "-L", label, "list-panes", "-a", "-F", "#{pane_id}"], env=env)
                 assert len(panes.splitlines()) == PANES
                 print(f"Confirmed {PANES} active tmux panes.", flush=True)
-                baseline, feed = phase(root, path, ids["approval"], feed, process.pid, False)
+                baseline, feed = phase(root, path, ids["approval"], feed, process.pid, False, samples)
                 (root / "flood").touch()
                 feed.until(lambda runs: re.search(r"FIXTURE_TICK:[1-9][0-9]{2,}\n", output_text(worker(runs, ids["heavy"]))),
                            "sustained heavy output")
-                loaded, feed = phase(root, path, ids["approval"], feed, process.pid, True)
+                loaded, feed = phase(root, path, ids["approval"], feed, process.pid, True, samples)
                 if first_text:
-                    loaded["first_structured_text"] = first_structured_text(root, path, ids["text"], feed)
+                    loaded["first_structured_text"] = first_structured_text(root, path, ids["text"], feed, samples)
                 bytes_read, cursor = attachment(root, path, ids["heavy"], feed)
                 run_ids = [r["id"] for r in feed.runs]
                 feed.close()
@@ -398,8 +399,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--projection", choices=["incremental", "legacy"], default="legacy")
     parser.add_argument("--first-text", action="store_true", help="also measure first newline-free text under load")
+    parser.add_argument("--samples", type=int, default=SAMPLES, help="number of decisions per idle and loaded phase")
     args = parser.parse_args()
-    benchmark(args.agentctl.resolve(), args.output, args.projection, args.first_text)
+    if args.samples < 1:
+        parser.error("--samples must be positive")
+    benchmark(args.agentctl.resolve(), args.output, args.projection, args.first_text, args.samples)
 
 
 if __name__ == "__main__":
