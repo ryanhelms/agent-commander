@@ -18,6 +18,8 @@ import SwiftUI
 //                            status, capabilities, discovery and explicit reattach)
 //                         (+ FollowUpContextMenu and FollowUpContextChip in the focused follow-up's
 //                            TerminalComposer when the session accepts file links or snapshots)
+//                         (+ ElicitationPanel popover from the action list for a bound worker: the
+//                            agent's form and URL requests with accept, decline and cancel)
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
@@ -80,6 +82,9 @@ struct WorkerTile: View {
     /// This worker's provider session: status, discovery and reattach. Both variants offer the
     /// same panel from the action list. Nil for a worker without a bound session.
     var providerSession: ProviderSessionAccess? = nil
+    /// This worker's structured requests from its agent. Both variants offer the same panel from
+    /// the action list. Nil for a worker without a bound session.
+    var elicitations: ElicitationAccess? = nil
 
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -145,6 +150,8 @@ struct WorkerTile: View {
                 // The action list's own popover is on the button; the session panel is anchored
                 // beside it, so the two never share a presenter.
                 .background { Color.clear.modifier(ProviderSessionPresentation(access: providerSession)) }
+                // The input-request panel has its own anchor beside the same button.
+                .background { Color.clear.modifier(ElicitationPresentation(access: elicitations)) }
         }
     }
 
@@ -407,6 +414,7 @@ struct WorkerTile: View {
                 WorkerActionMenu(worker: worker, isFocused: isFocusedVariant, actions: actions,
                                  inspectSource: source?.open,
                                  openProviderSession: providerSession?.open,
+                                 openElicitations: elicitations?.open,
                                  dismiss: { menuPresented.wrappedValue = false })
             }
             .help("Actions for \(worker.name)")
@@ -425,6 +433,7 @@ struct WorkerTile: View {
                 Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
             if let source { Button("Inspect source…", action: source.open) }
+            if let elicitations { Button("Input requests…", action: elicitations.open) }
             if let providerSession { Button("Provider session…", action: providerSession.open) }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
@@ -497,6 +506,8 @@ struct WorkerActionMenu: View {
     var inspectSource: (() -> Void)? = nil
     /// Opens this worker's provider-session panel. Present only for a worker with a bound session.
     var openProviderSession: (() -> Void)? = nil
+    /// Opens this worker's input-request panel. Present only for a worker with a bound session.
+    var openElicitations: (() -> Void)? = nil
     let dismiss: () -> Void
 
     var body: some View {
@@ -521,6 +532,11 @@ struct WorkerActionMenu: View {
             if let inspectSource {
                 row("doc.text.magnifyingglass", "Inspect source…", label: "Inspect the source of \(worker.name)",
                     action: inspectSource)
+            }
+            if let openElicitations {
+                row("list.bullet.rectangle", "Input requests…",
+                    label: "Structured input requests from the agent of \(worker.name)",
+                    action: openElicitations)
             }
             if let openProviderSession {
                 row("arrow.triangle.2.circlepath", "Provider session…",

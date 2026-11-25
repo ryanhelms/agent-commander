@@ -538,6 +538,9 @@ struct CockpitActions {
     /// A worker's provider session: status, discovery and reattach. Nil where the service offers
     /// none, and no console offers the panel.
     var providerSession: ProviderSessionIntents? = nil
+    /// A worker's structured requests from its agent: read, answer and open. Nil where the service
+    /// offers none, and no console offers the panel.
+    var elicitations: ElicitationIntents? = nil
     // Feature capabilities drawn in the concepts. Each control appears only when its action exists,
     // so the live app offers none of them until the service supports the operation.
     var messageCoordinator: (@MainActor (_ runID: String, _ text: String) -> Void)? = nil
