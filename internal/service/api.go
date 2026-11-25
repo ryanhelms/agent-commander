@@ -133,6 +133,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}/operations", s.handle(s.workerRunReceipt))
 	mux.HandleFunc("GET /v1/ag-ui/workers/{worker}", s.handle(s.workerRunInfo))
 	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
+	mux.HandleFunc("GET /v1/workers/{worker}/provider-sessions", s.listProviderSessions)
 	mux.HandleFunc("GET /v1/workers/{worker}/terminal", s.serveTerminalAttachment)
 	mux.HandleFunc("POST /v1/workers/{worker}/output", s.handleJSON(s.output))
 	mux.HandleFunc("GET /v1/workers/{worker}/output", s.handleJSON(s.outputStream))
@@ -166,6 +167,9 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/control/ready":                                    s.workerControlReady,
 		"POST /v1/workers/{worker}/control/finish":                                   s.finishWorkerTurn,
 		"POST /v1/workers/{worker}/control/provider-exit":                            s.reportWorkerProviderExit,
+		"GET /v1/workers/{worker}/session":                                           s.getProviderSessionStatus,
+		"POST /v1/workers/{worker}/reattach":                                         s.reattachWorker,
+		"POST /v1/workers/{worker}/control/reattached":                               s.readyReattachedWorker,
 		"POST /v1/workers/{worker}/control/reconcile":                                s.reconcileWorkerProvider,
 		"POST /v1/workers/{worker}/control/interrupt/claim":                          s.claimWorkerInterrupt,
 		"POST /v1/workers/{worker}/control/interrupt/report":                         s.reportWorkerInterrupt,
@@ -770,6 +774,13 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	}
 	if w.ProviderAvailability == providerChecking {
 		return outcome{}, conflict("the original Claude turn must be reconciled first")
+	}
+	if w.ProviderAvailability == providerReattaching {
+		if in.State != "failed" {
+			return outcome{}, conflict("reattachment must confirm the original provider session first")
+		}
+		failReattachment(r, w, in.Error)
+		return changed(w), nil
 	}
 	if w.State == "disconnected" {
 		return outcome{}, conflict("SSH worker disconnected; reconcile the original session first")

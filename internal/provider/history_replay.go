@@ -204,3 +204,13 @@ func (c *replayCache) remove(key replayCacheKey, entry replayCacheEntry) {
 	c.bytes -= entry.index.Size()
 	delete(c.items, key)
 }
+
+func (c *replayCache) invalidate(native service.NativeSession) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.items {
+		if key.native == native {
+			c.remove(key, entry)
+		}
+	}
+}

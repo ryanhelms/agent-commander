@@ -647,9 +647,14 @@ func Runner(jobPath string) error {
 	if !useSessions {
 		showAssignment(s, j)
 	}
-	if err := state("working", ""); err != nil {
+	if j.Worker.Reattach == nil {
+		if err := state("working", ""); err != nil {
+			s.close()
+			return fmt.Errorf("register worker: %w", err)
+		}
+	} else if !useSessions {
 		s.close()
-		return fmt.Errorf("register worker: %w", err)
+		return errors.New("reattachment requires the original ACP runner")
 	}
 	if useSessions {
 		err := runACP(ctx, j, a, s)
