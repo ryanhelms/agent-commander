@@ -4,6 +4,22 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Added
+
+- Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
+- Provide a scoped live ACP source subscription with cursor expiration and recovery.
+- Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
+
+### Changed
+
+- Publish first structured ACP text promptly, wake workers when owner controls change, and build a single replay index for stopped conversations.
+- Negotiate a windowed persistent SSH connection with compatible endpoints and preserve the legacy connection for older endpoints.
+
+### Fixed
+
+- Retire unanswered ACP permissions on interrupt and preserve the original session for explicit follow-ups after protocol stop outcomes.
+- Verify the advertised Opus configuration before prompting managed Claude workers.
+
 ## [0.1.0-pilot.3] - 2026-11-24
 
 
