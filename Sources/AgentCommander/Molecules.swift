@@ -345,6 +345,11 @@ struct ReplyContext {
 /// send action are disabled, a draft written earlier stays in place, and one line above the prompt
 /// says why. The full reason, with the service's explanation, is the help tag and the accessible
 /// value of that line and of the closed controls.
+///
+/// While a persistent SSH link reconnects the reply stays open, because the worker is still
+/// running. The same line says the reply can be sent now and is held until the host returns:
+/// Commander keeps one answer and the worker reads it when the link comes back. The full
+/// statement is the help tag and accessible value of that line and the hint of the controls.
 struct RequestReply: View {
     let request: RequestPresentation
     let context: ReplyContext
@@ -353,11 +358,15 @@ struct RequestReply: View {
         let draft = context.draft(request.id)
         let isSending = context.sending.contains(request.id)
         let unavailable = request.replyUnavailableStatement
+        let held = request.replyHeldStatement
         let blocked = !context.isOnline || isSending || unavailable != nil
         let isEmpty = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let isFocused = context.focus.wrappedValue == request.id && unavailable == nil
         let sendHelp = unavailable
-            ?? (context.isOnline ? "Send reply to \(request.workerName) (↩ or ⌘↩ while typing)" : "The local service is offline")
+            ?? (context.isOnline
+                ? "Send reply to \(request.workerName) (↩ or ⌘↩ while typing)"
+                    + (held == nil ? "" : ". Commander holds it until \(request.host) reconnects.")
+                : "The local service is offline")
 
         VStack(alignment: .leading, spacing: 4) {
         if let unavailable {
@@ -371,6 +380,17 @@ struct RequestReply: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Reply unavailable")
             .accessibilityValue(unavailable)
+        } else if let held {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("↻ ").accessibilityHidden(true)
+                Text("reply now · held until \(request.host) reconnects").lineLimit(2)
+            }
+            .font(Term.font(11)).foregroundStyle(Term.amber)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(held)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reply is held until \(request.host) reconnects")
+            .accessibilityValue(held)
         }
         // A terminal prompt: an amber mark, a native multiline field in the terminal face, and an
         // explicit send action. Black behind bright text, with an amber outline while it has focus.
@@ -390,7 +410,7 @@ struct RequestReply: View {
                 .disabled(blocked)
                 .onSubmit { if !blocked && !isEmpty { context.send(request) } }
                 .accessibilityLabel("Reply to request \(request.shortID) from \(request.workerName)")
-                .accessibilityHint(unavailable ?? "")
+                .accessibilityHint(unavailable ?? held ?? "")
             if isSending {
                 Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.amber)
                     .accessibilityLabel("Sending reply")
@@ -404,7 +424,7 @@ struct RequestReply: View {
                     .disabled(blocked || isEmpty)
                     .help(sendHelp)
                     .accessibilityLabel("Send reply to \(request.workerName)")
-                    .accessibilityHint(unavailable ?? "")
+                    .accessibilityHint(unavailable ?? held ?? "")
             }
         }
         .padding(.horizontal, 9)
@@ -567,7 +587,8 @@ struct AttentionNotice: View {
                 Text("? ").fontWeight(.semibold)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(request.workerName) needs input").fontWeight(.semibold).lineLimit(1)
-                    Text(request.isWorkerDisconnected ? "\(detail) · disconnected" : detail)
+                    Text(request.isWorkerDisconnected ? "\(detail) · disconnected"
+                         : request.hostIsReconnecting ? "\(detail) · \(request.host) reconnecting" : detail)
                         .foregroundStyle(.inkTermDim).lineLimit(1)
                 }
                 Spacer(minLength: 8)
@@ -583,7 +604,7 @@ struct AttentionNotice: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(request.workerName) needs input. Show request \(request.shortID).")
-        .accessibilityHint(request.replyUnavailableStatement ?? "")
+        .accessibilityHint(request.replyUnavailableStatement ?? request.replyHeldStatement ?? "")
     }
 }
 
@@ -644,11 +665,16 @@ struct TerminalStatusLine<Trailing: View>: View {
     var inset: CGFloat = Metric.tileInset
     var request: RequestPresentation? = nil
     var openRequest: (() -> Void)? = nil
+    /// The execution host, while its persistent SSH link is reconnecting. Nil otherwise. It
+    /// follows the status, which stays the worker's own.
+    var reconnectingHost: String? = nil
     @ViewBuilder let trailing: Trailing
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             TerminalStatus(state: state, size: size)
+            // Its word is kept ahead of the trailing cue's. In a narrow tile the mark stands alone.
+            if let reconnectingHost { HostLinkStatus(host: reconnectingHost, size: size).layoutPriority(2) }
             if let request, let openRequest {
                 Button("view request", action: openRequest)
                     .buttonStyle(TermButtonStyle(ink: Term.amber, size: size))
@@ -668,8 +694,10 @@ struct TerminalStatusLine<Trailing: View>: View {
 
 extension TerminalStatusLine where Trailing == EmptyView {
     init(state: TaskState, size: CGFloat = 11.5, inset: CGFloat = Metric.tileInset,
-         request: RequestPresentation? = nil, openRequest: (() -> Void)? = nil) {
-        self.init(state: state, size: size, inset: inset, request: request, openRequest: openRequest) { EmptyView() }
+         request: RequestPresentation? = nil, openRequest: (() -> Void)? = nil,
+         reconnectingHost: String? = nil) {
+        self.init(state: state, size: size, inset: inset, request: request, openRequest: openRequest,
+                  reconnectingHost: reconnectingHost) { EmptyView() }
     }
 }
 
