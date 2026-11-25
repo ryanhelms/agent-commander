@@ -216,7 +216,7 @@ def phase(root, path, approval, feed, pid, load):
     return result, feed
 
 
-def create_panes(path, workspace):
+def create_panes(path, workspace, first_text=False):
     ids = {}
     for group in range(3):
         role = ("heavy", "approval", "quiet")[group]
@@ -224,9 +224,46 @@ def create_panes(path, workspace):
         if role in ("heavy", "approval"):
             ids[role] = run["coordinator_id"]
         for index in range(9):
-            api(path, "POST", f"/v1/runs/{run['id']}/workers",
-                {"client": "fixture", "name": f"Quiet {group}-{index}", "task": "quiet"}, 201)
+            text_probe = first_text and group == 2 and index == 0
+            row = api(path, "POST", f"/v1/runs/{run['id']}/workers",
+                      {"client": "fixture", "name": f"Quiet {group}-{index}",
+                       "task": "textprobe-ready" if text_probe else "quiet"}, 201)
+            if text_probe:
+                ids["text"] = row["id"]
     return ids
+
+
+def first_structured_text(root, path, worker_id, feed):
+    route = f"/v1/workers/{worker_id}"
+    row = feed.until(lambda runs: (
+        w if (w := worker(runs, worker_id)).get("state") in ("idle", "completed") else {}
+    ), "idle first-text fixture")
+    held = api(path, "POST", route + "/control", {"held": True, "generation": row["control"]["generation"]})
+    generation = held["generation"]
+    samples, early, wire_terminal_time = [], [], []
+    for ticket in range(SAMPLES):
+        operation = api(path, "POST", route + "/messages",
+                        {"generation": generation, "text": f"textprobe {ticket}"}, 202)
+        marker = re.compile(rf"FIRST:{ticket}:(\d+):chunk")
+
+        def first(runs):
+            for message in worker(runs, worker_id).get("messages", []):
+                if message.get("role") == "assistant":
+                    match = marker.search(message.get("content") or "")
+                    if match:
+                        return int(match[1]), time.monotonic_ns()
+            return None
+
+        sent_ns, received_ns = feed.until(first, f"first structured text {ticket}")
+        feed.until(lambda runs: any(m["id"] == operation["id"] and m["status"] == "completed"
+                                   for m in worker(runs, worker_id).get("control", {}).get("messages", [])),
+                   f"terminal outcome for first-text fixture {ticket}")
+        terminal_ns = int((root / f"text-finished-{ticket}").read_text())
+        samples.append(round((received_ns - sent_ns) / 1e6, 2))
+        early.append(received_ns < terminal_ns)
+        wire_terminal_time.append(round((terminal_ns - sent_ns) / 1e6, 2))
+    return {"subscriber": metrics(samples), "arrived_before_peer_terminal": early,
+            "peer_terminal_delay": metrics(wire_terminal_time)}
 
 
 def attachment(root, path, heavy, feed):
@@ -268,7 +305,7 @@ def wait_for_service(process, path):
     raise TimeoutError("Fixture service did not become available")
 
 
-def benchmark(binary, output, projection):
+def benchmark(binary, output, projection, first_text=False):
     start_load_average = os.getloadavg()
     stream_route = "/v1/ag-ui/events" + ("?projection=incremental" if projection == "incremental" else "")
     with tempfile.TemporaryDirectory(prefix="ac-30-", dir="/tmp") as name:
@@ -292,7 +329,7 @@ def benchmark(binary, output, projection):
             process = subprocess.Popen([binary, "serve"], env=env, stdout=log, stderr=log)
             try:
                 wait_for_service(process, path)
-                ids = create_panes(path, workspace)
+                ids = create_panes(path, workspace, first_text)
                 feed = Workspace(path, stream_route)
                 feed.until(lambda runs: sum("READY:" in output_text(w) and bool(w.get("native_session"))
                                            for r in runs for w in r.get("workers", [])) == PANES,
@@ -305,6 +342,8 @@ def benchmark(binary, output, projection):
                 feed.until(lambda runs: re.search(r"FIXTURE_TICK:[1-9][0-9]{2,}\n", output_text(worker(runs, ids["heavy"]))),
                            "sustained heavy output")
                 loaded, feed = phase(root, path, ids["approval"], feed, process.pid, True)
+                if first_text:
+                    loaded["first_structured_text"] = first_structured_text(root, path, ids["text"], feed)
                 bytes_read, cursor = attachment(root, path, ids["heavy"], feed)
                 run_ids = [r["id"] for r in feed.runs]
                 feed.close()
@@ -358,8 +397,9 @@ def main():
     parser.add_argument("--agentctl", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--projection", choices=["incremental", "legacy"], default="legacy")
+    parser.add_argument("--first-text", action="store_true", help="also measure first newline-free text under load")
     args = parser.parse_args()
-    benchmark(args.agentctl.resolve(), args.output, args.projection)
+    benchmark(args.agentctl.resolve(), args.output, args.projection, args.first_text)
 
 
 if __name__ == "__main__":
