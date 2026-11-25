@@ -58,6 +58,7 @@ def approve():
 def main():
     turn = None
     for line in sys.stdin:
+        received_ns = time.monotonic_ns()
         frame = json.loads(line)
         method = frame.get("method")
         if method == "initialize":
@@ -77,7 +78,7 @@ def main():
             turn = None
         elif not method and str(frame.get("id", "")).startswith("approval-"):
             outcome = frame.get("result", {}).get("outcome", {})
-            update(f"ACK:{frame['id']}:{outcome.get('optionId', '(none)')}\n")
+            update(f"ACK:{frame['id']}:{outcome.get('optionId', '(none)')}:{received_ns}\n")
 
 
 if __name__ == "__main__":

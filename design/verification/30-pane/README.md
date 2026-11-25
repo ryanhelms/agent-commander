@@ -1,5 +1,7 @@
 # 30-pane workspace stream verification
 
+The current driver records peer receipt separately from workspace acknowledgement visibility. The disposable peer stamps each incoming decision using the same host's monotonic clock before decoding the decision or emitting its acknowledgement. `reply_observed_at_adapter` uses that stamp, `reply_ack_visible` measures when the workspace subscriber sees the ACK, and `reply_visible` measures when it sees the owner's answer. The archived reports below measured the console ACK under the peer receipt field name.
+
 ## Installed macOS backend with SDK 0.1.14
 
 The installed backend repeated the incremental 30-pane workload. All six idle and six loaded approvals reached the selected adapter. The reconnect restored the pending request in 32.89 ms in one sample. After restart, the worker's history returned all 420,000 attachment bytes while the workspace snapshot kept the attachment payload out of the feed. [Raw samples](sdk-0.1.14-incremental.json)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure a pinned Commander service with 30 disposable tmux panes."""
 import argparse
+import math
 import base64
 import contextlib
 import hashlib
@@ -150,7 +151,10 @@ def elapsed(start):
 
 
 def metrics(samples):
-    return {"median_ms": round(statistics.median(samples), 2), "max_ms": max(samples), "samples_ms": samples}
+    ordered = sorted(samples)
+    return {"n": len(samples), "median_ms": round(statistics.median(samples), 2),
+            "p95_ms": ordered[math.ceil(0.95 * len(samples)) - 1],
+            "max_ms": max(samples), "samples_ms": samples}
 
 
 def phase(root, path, approval, feed, pid, load):
@@ -158,6 +162,7 @@ def phase(root, path, approval, feed, pid, load):
     command = []
     projection = []
     delivery = []
+    delivery_view = []
     memory = [rss(pid)]
     start_ticket = SAMPLES if load else 0
     before = feed.payload_bytes
@@ -181,19 +186,29 @@ def phase(root, path, approval, feed, pid, load):
                                   "the same approval after reconnect")
             assert restored
             reconnect = elapsed(feed.requested)
-        started = time.monotonic()
+        started_ns = time.monotonic_ns()
+        started = started_ns / 1e9
         reply = api(path, "POST", "/v1/requests/" + pending["id"] + "/reply", {"answer": "allow_once"})
         assert reply["status"] == "answered" and reply["answer"] == "allow_once"
         command.append(elapsed(started))
         feed.until(lambda runs: question(runs, approval, ticket).get("status") == "answered", "answered approval")
         projection.append(elapsed(started))
-        marker = f"ACK:approval-{ticket}:allow_once"
-        feed.until(lambda runs: marker in output_text(worker(runs, approval)), "ACP reply acknowledgement")
-        delivery.append(elapsed(started))
+        marker = f"ACK:approval-{ticket}:allow_once:"
+
+        def peer_timestamp(runs):
+            text = output_text(worker(runs, approval))
+            _, found, tail = text.partition(marker)
+            stamp, newline, _ = tail.partition("\n")
+            return int(stamp) if found and newline and stamp.isdecimal() else 0
+
+        received_ns = feed.until(peer_timestamp, "timestamped ACP peer acknowledgement")
+        delivery_view.append(elapsed(started))
+        delivery.append(round((received_ns - started_ns) / 1e6, 2))
         memory.append(rss(pid))
     result = {
         "approval_visible": metrics(shown), "reply_http": metrics(command), "reply_visible": metrics(projection),
-        "reply_observed_at_adapter": metrics(delivery), "service_rss_peak_sampled_mib": max(memory),
+        "reply_observed_at_adapter": metrics(delivery),
+        "reply_ack_visible": metrics(delivery_view), "service_rss_peak_sampled_mib": max(memory),
         "workspace_payload_bytes": previous_subscription_bytes + feed.payload_bytes - before,
     }
     if load:
@@ -254,6 +269,7 @@ def wait_for_service(process, path):
 
 
 def benchmark(binary, output, projection):
+    start_load_average = os.getloadavg()
     stream_route = "/v1/ag-ui/events" + ("?projection=incremental" if projection == "incremental" else "")
     with tempfile.TemporaryDirectory(prefix="ac-30-", dir="/tmp") as name:
         root = Path(name).resolve()
@@ -318,7 +334,10 @@ def benchmark(binary, output, projection):
                 feed.until(restored, "cold restoration of the original tool result")
                 result = {"projection": projection, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                           "host": {"system": platform.system(), "version": platform.mac_ver()[0],
-                                   "arch": platform.machine()}, "panes": PANES, "idle": baseline,
+                                   "arch": platform.machine(), "logical_cpus": os.cpu_count(),
+                                   "start_load_average_1m_5m_15m": start_load_average,
+                                   "end_load_average_1m_5m_15m": os.getloadavg()},
+                          "panes": PANES, "idle": baseline,
                           "loaded": loaded, "attachment_bytes_retrieved": bytes_read,
                           "cold_snapshot_contains_attachment_bytes": feed.leaked}
                 output.write_text(json.dumps(result, indent=2) + "\n")
