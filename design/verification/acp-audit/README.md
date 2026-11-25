@@ -12,11 +12,14 @@ Runs used Go 1.27.4 on an Apple silicon host with 10 logical CPUs. Short series 
 | Loaded owner reply to Console projection, 30 panes | 257.33 ms median, 422.47 ms p95 | 46.22 ms median, 72.09 ms p95 | Same 24-decision paired series using the terminal-text projection. |
 | First newline-free chunk without a message ID | 2,008–2,040 ms | 1.53–6.43 ms | Single-worker structured subscriber, three samples per variant. The later matched 30-pane test measured 2,020.40/2,050.13 ms median/p95 before and 4.02/9.26 ms after. All 12 candidate chunks arrived before terminal completion, compared with zero baseline chunks. A repeat after the publication deadline change measured 2,016.61/2,097.66 ms median/p95 before and 7.78/64.61 ms after, with all six candidate chunks arriving before terminal completion. |
 | Unrelated read during a 500 ms credential check | 512.35–524.56 ms | 0.52–0.66 ms | Three samples per variant. |
+| Unrelated read during a 1 s credential check | 960.40 ms median, 967.72 ms p95 | 0.96 ms median, 1.83 ms p95 | Six samples per variant. The injected check reached the configured deadline in both versions. |
 | Stopped transcript with 2,048 records, paced | 16 loads, 32,768 updates, 1,545.6 ms median | One load, 2,048 updates, 89.4 ms median | Six samples per variant. Baseline unpaced replay failed. All three candidate burst runs completed. |
 | Scoped live originals at 500 updates per second | Private polling received 1,158 and 1,626 of 2,000 | Continuous private streaming received 2,000 of 2,000 in each run | Both modes exercised on the same binary. The public feed stayed complete and attachment bytes stayed in the owner feed. |
-| SSH, 512 KiB with 50 ms simulated RTT | About 0.60 MB/s | About 5.08 MB/s | Separate OpenSSH loopback run sent exactly 524,288 identical bytes in 294.34 ms legacy and 166.69 ms negotiated. |
+| SSH, 512 KiB with 50 ms simulated RTT | 0.57 MB/s median | 4.90 MB/s median | Separate OpenSSH loopback run sent exactly 524,288 identical bytes in 294.34 ms legacy and 166.69 ms negotiated. |
 | Idle transport receive allocation | About 1.08 MB/op | About 0.095 MB/op | Go microbenchmark. |
 | Two workers through a compatible local peer | 203.9 ms median with isolated processes, 161.25 MiB adapter RSS | Shared 492.6 ms and 107.55 MiB. Isolated prewarm 494.3 ms and 161.09 MiB. | Five matched fixture runs. Both alternatives missed the startup latency gate. |
+
+For 1, 10, 50 and 100 ms simulated RTT, legacy medians were 5.15, 2.03, 0.57 and 0.30 MB/s. Windowed medians were 26.31, 15.36, 4.90 and 2.55 MB/s. Each mode and RTT has three samples with allocations in the raw benchmark.
 
 The paired incremental capacity test used 256-byte updates and a tool every fourth record. At 500 updates/s, both variants delivered every record. Median public SSE bytes increased by 4.3%, from 1.83 MB to 1.90 MB, with sampled service plus runner CPU of 0.100 and 0.090 seconds. At 50 updates/s, the 25 ms batching deadline increased median wire bytes by 43.8%, from 262,316 to 377,313, while delivering all 200 updates. Sampled CPU increased from 0.055 to 0.125 seconds at that rate. Each CPU sample had 10 ms granularity. Earlier candidates with the longer publication wait did not show the low-rate byte increase.
 
@@ -56,9 +59,19 @@ AGENT_COMMANDER_TEST_TMUX=1 AGENT_COMMANDER_TEST_INTEGRATION=1 \
   python3 -B packaging/go-with-sdk.py test -race -count=1 ./...
 python3 -B design/verification/30-pane/measure.py \
   --agentctl /tmp/agentctl-candidate --projection incremental --output /tmp/candidate-30-pane.json
+python3 -B design/verification/acp-audit/measure-admission.py /tmp/agentctl-candidate
 python3 -B packaging/go-with-sdk.py test ./internal/sshlink -run '^$' -bench . -benchmem
 python3 -B design/verification/sdk-release/verify.py --consumer-only dist/sdk/agent-acp-0.1.19
 make test-native
 ```
 
 Use the repository's capacity, transcript, and CopilotKit fixtures for additional comparisons. Run the native app against a disposable local service when comparing the Pretty and Console states, coordinator wall, and PiP.
+
+## Verification of the integrated candidate
+
+- The final Commander race run passed every package except a checkout branch-metadata test that hit the existing 350 ms Git probe timeout under host load. The entire service package passed its isolated release-pinned race rerun. The earlier serial Commander run with SDK 0.1.18 also passed all packages. The final local-disconnect test reproduced lost uncertainty on the old code and passed repeated race runs with the fix.
+- The final SDK and transport race suites, generated-binding drift check, independent released Go/npm/Python consumer suites, and multiplayer race suite passed. The Go transport build used the checksummed 0.1.3 archive. The Swift suite passed 404 tests in 47 suites. The independent CopilotKit connector replayed a scoped Pi tool interaction after reconnect with the 0.1.16 workstream candidate.
+- Computer Use checked the candidate's worker wall, focused Pretty and Console views, and approval PiP against the repository's coordinator wall, focused Pretty and attention concepts. The disposable PiP approval reached the peer. The first form popover clipped its controls. Claude Opus repaired the layout and the corrected build showed the whole form with its selection and submit controls. The same tested session accepted a typed multi-select form after a follow-up, displayed the full URL and host for a separate request, and received a decline. The app also showed the provider's unavailable resume/history states and limited the file composer to supported context modes. Attachment selection and reattachment were exercised by scoped API and native model tests. The original local cockpit was restored afterward.
+- The local distribution app is ad hoc signed. The tested native binary SHA-256 is `efda5f52b67415df063e272e0723e9e6e1f2cbf48abbc8fa33ac9525325d3a2e`. Its signed bundled `agentctl` SHA-256 is `6b0e9378d52c081f336a44feba92f0ad999fbec3686d0926bea6ac33a1d4fc1c`. The build-inputs archive SHA-256 is `8d66143c8e6824741c447479c06e35889b05d3b2cdfc4c589143217ef4c9f75a`.
+
+Full installed-peer permission, interruption, reconnect and history parity for ACP v2 and the draft MCP tool transport remain open. Full process-tree RSS and rendering-only latency were outside the completed comparisons. Shared-peer metrics measure the adapter process and startup through completed fixture output. CLI and cockpit surfaces do not yet invoke SDK child-session cancellation.
