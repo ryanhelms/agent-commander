@@ -33,6 +33,7 @@ type job struct {
 	BuiltinInstance                   string `json:",omitempty"`
 	ProviderBinding                   string `json:",omitempty"`
 	FocusedProof                      bool   `json:",omitempty"`
+	ACPElicitation                    bool   `json:",omitempty"`
 	Companions                        []toolregistry.CompanionBinding
 	DevflowUI                         string            `json:",omitempty"` // pending launch records from before the registry
 	SSH                               *sshProfile       `json:",omitempty"`
@@ -277,6 +278,7 @@ func (l *Local) prepareLaunch(w service.LaunchSpec) (job, error) {
 		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath, SSH: remote,
 		RegisteredACP: registered, RegisteredEnv: registeredEnv, Codex: codex,
 		BuiltinInstance: builtinInstance,
+		ACPElicitation:  os.Getenv("AGENT_COMMANDER_ACP_ELICITATION") == "1",
 	}
 	return launch, nil
 }

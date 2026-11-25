@@ -91,6 +91,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			config.ProtocolVersion = resume.ProtocolVersion
 		}
 	}
+	configureACPElicitation(j, &config, a, s)
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
 	config.OnACPUpdate = source.capture

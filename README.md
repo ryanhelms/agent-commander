@@ -283,6 +283,10 @@ Add `source=live` to inspect recently received ACP details, including tool argum
 
 For a continuous private view on the local owner socket, subscribe to `GET /v1/workers/WORKER_ID/live-source/events`. Each SSE `page` carries the SDK history page and an event ID. Keep that ID after consuming the page and pass it in `Last-Event-ID` (or the initial `after` query parameter) to resume. When a checkpoint expires, the next page includes a gap before remaining records. The shared workspace subscription does not carry these source frames.
 
+Opt in to session-scoped ACP form and URL requests by starting the service with `AGENT_COMMANDER_ACP_ELICITATION=1`. On the local owner socket, use `agentctl api GET /v1/workers/WORKER_ID/elicitations` to review the requesting worker, provider session, and pending interactions. Submit a form response with `agentctl api POST /v1/workers/WORKER_ID/elicitations/INTERACTION_ID/reply` and a JSON body such as `{"action":"accept","content":{"label":"release"}}` on stdin. Use `{"action":"decline"}` or `{"action":"cancel"}` to dismiss a request.
+
+For URL mode, review the displayed host and full URL. Submit `{"action":"accept"}` only if you consent to opening that destination, then open it in your browser. Commander records external completion separately when the provider reports it.
+
 The default data directory is `~/Library/Application Support/Agent Commander`. It contains the private API socket, persisted run state, recent console output and private provider launch configuration. A detached service writes its startup errors to `service.log`. Treat the directory as private, since transcripts can contain sensitive project content.
 
 - `AGENT_COMMANDER_HOME` selects a separate data directory for development. Its default socket is `service.sock` inside that directory.

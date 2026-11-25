@@ -87,6 +87,14 @@ func (c *Client) WaitWorkerControl(ctx context.Context, path string) (json.RawMe
 	return c.exchange(&client, ctx, http.MethodGet, path, nil, nil)
 }
 
+// AwaitElicitation lets the service hold the addressed interaction until the
+// user resolves it, the caller cancels it, or the service deadline expires.
+func (c *Client) AwaitElicitation(ctx context.Context, path string, input any) (json.RawMessage, error) {
+	client := *c.http
+	client.Timeout = 0
+	return c.exchange(&client, ctx, http.MethodPost, path, input, nil)
+}
+
 // Coordinator sends the actor binding to the local multiplayer device process.
 // The daemon independently verifies it with the active Commander's private API.
 func (c *Client) Coordinator(ctx context.Context, op, run, worker string, input any) (json.RawMessage, error) {
