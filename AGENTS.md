@@ -2,7 +2,17 @@
 
 ## Ownership
 
-Use Claude Opus for every new Commander-managed Claude session and project Claude agent. Leave provider-internal model routing to Claude. Claude Opus owns the native interface design and its Swift implementation. Give Opus the relevant original Agent Commander screenshots and component contracts when assigning interface work. Codex owns the service, API, MCP, CLI, tmux providers and backend tests. Codex independently verifies the running native app through Computer Use, exercises the real workflow, and compares captures with the approved screenshot for each implemented state. Send visual defects back to Opus for correction.
+Use Claude Opus for every new Commander-managed Claude session and project Claude agent. Leave provider-internal model routing to Claude.
+
+- **Frontend** (native interface design, Swift UI code, mockups and design artifacts): Claude only, never Codex. Use the latest Fable model (currently Fable 5.2). Use the latest Opus model (currently Opus 5.5) only when usage limits prevent Fable. Every frontend task loads the `frontend-design` skill first. Give the frontend agent the relevant original Agent Commander screenshots and component contracts.
+- **Backend** (service, API, MCP, CLI, tmux providers, the Go relay, and backend tests): Codex or Claude.
+- **Verification**: Codex independently verifies the running native app through Computer Use, exercises the real workflow, and compares captures with the approved screenshot for each implemented state. Send visual defects back to the frontend agent for correction.
+
+## Working style
+
+- Run independent pieces in parallel subagents, split between Codex and Claude, whenever the work allows it. Maximize throughput and completed work.
+- Ship visible progress quickly. Cover the main path first; don't hold a working increment back to fix every edge case.
+- Build only what the plans describe ([MVP plan](MVP-PLAN.md), the design documents under `design/`). Don't invent functionality that isn't in a plan; propose it first.
 
 Keep all design tokens, components, fixtures and assets in this repository. The repository named `design-system` is a separate project.
 
