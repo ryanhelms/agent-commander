@@ -23,8 +23,7 @@ type networkReceipt struct {
 	ID string `json:"id" jsonschema:"original operation ID"`
 }
 
-func registerNetworkTools(s *mcp.Server, run, actor string) error {
-	path := os.Getenv("COMMANDER_NETWORK_SOCKET")
+func registerNetworkTools(s *mcp.Server, run, actor, token, path string) error {
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -32,7 +31,7 @@ func registerNetworkTools(s *mcp.Server, run, actor string) error {
 		}
 		path = filepath.Join(home, ".agent-commander", "network.sock")
 	}
-	c := localapi.New(path, os.Getenv("AGENT_COMMANDER_TOKEN"))
+	c := localapi.New(path, token)
 	register(s, "commander_network_inbox", "Read recent private messages addressed to this coordinator. A paired coordinator can reply with agent.message on a peer resource that grants it.", func(ctx context.Context, in struct{}) (json.RawMessage, error) {
 		return c.Coordinator(ctx, "inbox", run, actor, in)
 	})

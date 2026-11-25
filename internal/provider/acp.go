@@ -91,6 +91,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			config.ProtocolVersion = resume.ProtocolVersion
 		}
 	}
+	configureACPToolTransport(ctx, j, &config, a)
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
 	config.OnACPUpdate = source.capture
