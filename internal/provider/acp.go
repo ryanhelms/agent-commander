@@ -259,7 +259,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 		}
 		if turnErr != nil {
 			outcome["error"] = turnErr.Error()
-			if errors.Is(turnErr, errACPObservationGap) {
+			if !observedTurnEnd && (errors.Is(turnErr, errACPObservationGap) || errors.Is(turnErr, errACPDisconnected)) {
 				outcome["delivery_unknown"] = true
 			}
 		}
