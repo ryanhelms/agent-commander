@@ -35,7 +35,12 @@ type Config struct {
 	Roots                       *x509.CertPool
 	OpenBrowser                 func(string) error
 	OIDCHTTP                    *http.Client
-	configureActions            func(actions.Config) actions.Config
+	// Pin, when set, replaces chain verification with a SubjectPublicKeyInfo
+	// SHA-256 match ("sha256/<base64>"). OnPinMismatch runs when it fails.
+	Pin                 string
+	OnPinMismatch       func()
+	GoogleDesktopConfig string
+	configureActions    func(actions.Config) actions.Config
 }
 type credentials struct {
 	Keys    *devicekeys.Keys
@@ -61,6 +66,10 @@ type Agent struct {
 	lease        control.Lease
 	loginPending bool
 	problem      string
+	handle       string
+	friendsOn    int
+	incoming     int
+	lastOnline   time.Time
 	ctx          context.Context
 	stop         context.CancelFunc
 	loginStop    context.CancelFunc
@@ -144,11 +153,24 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 	if e != nil {
 		return nil, e
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, RootCAs: c.Roots}, ForceAttemptHTTP2: true}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, RootCAs: c.Roots}
+	if c.Pin != "" {
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 || SPKIPin(cs.PeerCertificates[0]) != c.Pin {
+				if c.OnPinMismatch != nil {
+					c.OnPinMismatch()
+				}
+				return ErrPinMismatch
+			}
+			return nil
+		}
+	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}
 	a.http = &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	a.identity = identity.Client{
 		BaseURL: c.Relay, HTTP: a.http, OIDCHTTP: c.OIDCHTTP,
-		GoogleDesktopConfig: filepath.Join(c.Dir, "google-desktop-client.json"),
+		GoogleDesktopConfig: googleConfig(c),
 	}
 	a.ctx, a.stop = context.WithCancel(ctx)
 	if e = a.loadPolicy(a.creds.Session.User); e != nil {

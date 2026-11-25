@@ -29,6 +29,7 @@ type input struct {
 	MaxUses    int       `json:"maxUses"`
 	ExpiresAt  time.Time `json:"expiresAt"`
 	Token      string    `json:"token"`
+	Server     string    `json:"server"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -67,6 +68,9 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		return result, nil
 	}
 	result["handle"] = profile.Handle
+	a.mu.Lock()
+	a.handle = profile.Handle
+	a.mu.Unlock()
 	var social struct{ Friends []control.User }
 	if e = a.remote(ctx, s, "GET", "/v1/friends", nil, &social); e != nil {
 		return nil, e
@@ -84,6 +88,15 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		}
 	}
 	result["friends"], result["incoming"], result["outgoing"] = friends, incoming, outgoing
+	on := 0
+	for _, f := range friends {
+		if f["online"] == true {
+			on++
+		}
+	}
+	a.mu.Lock()
+	a.friendsOn, a.incoming = on, len(incoming)
+	a.mu.Unlock()
 	rr, e := a.resources(ctx, s)
 	if e != nil {
 		return nil, e

@@ -153,7 +153,6 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 	if e = os.Chmod(socket, 0600); e != nil {
 		return e
 	}
-	relay := setting("COMMANDER_NETWORK_RELAY", device.DefaultRelay)
 	roots, e := trustRoots("COMMANDER_NETWORK_CA")
 	if e != nil {
 		return e
@@ -165,13 +164,13 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 	if issuer != nil {
 		defer issuer.CloseIdleConnections()
 	}
-	sum := sha256.Sum256([]byte(relay))
-	secrets, e := devicekeys.Keychain("device-" + hex.EncodeToString(sum[:]))
-	if e != nil {
-		return e
-	}
-	a, e := device.New(ctx, device.Config{
-		Relay: relay, Dir: dir, CommanderSocket: commander, Secrets: secrets, Roots: roots, OIDCHTTP: issuer,
+	a, e := device.NewManager(ctx, device.ManagerConfig{
+		Dir: dir, CommanderSocket: commander, Roots: roots, OIDCHTTP: issuer,
+		SeedRelay: os.Getenv("COMMANDER_NETWORK_RELAY"),
+		Secrets: func(relay string) (devicekeys.Store, error) {
+			sum := sha256.Sum256([]byte(relay))
+			return devicekeys.Keychain("device-" + hex.EncodeToString(sum[:]))
+		},
 		OpenBrowser: func(u string) error { return exec.Command("/usr/bin/open", u).Run() },
 	})
 	if e != nil {
