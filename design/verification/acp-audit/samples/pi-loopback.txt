@@ -1,0 +1,18 @@
+[pi-acp] Started
+[pi-acp] Connection closed
+[pi-acp] Started
+[pi-acp] Started
+[pi-acp] Started
+[pi-acp] Connection closed
+[pi-acp] Started
+[pi-acp] Connection closed
+[pi-acp] Started
+[pi-acp] Connection closed
+[pi-acp] Connection closed
+[pi-acp] Connection closed
+[pi-acp] Started
+Adapter conformance passed.
+[pi-acp] Connection closed
+Both original Pi peers exited. A new process resumed the second session ID, received the follow-up and canceled its addressed turn.
+Commander verified Pi native identity, addressed approval and AG-UI tool result.
+Stock ACP, live AG-UI and cold Pi history matched all three tool results, including the PNG. Restart and history reads preserved the native journals.

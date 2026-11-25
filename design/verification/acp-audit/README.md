@@ -1,6 +1,6 @@
 # ACP audit candidate
 
-Baseline Commander is `a4663f1`, SDK `0.1.14`, and transport `0.1.0`. The integrated release pins are SDK `0.1.18` and transport `0.1.3`. Commander verifies the Go module archives against `go.sum`. The SDK distribution includes its own manifest and the Go, npm, and Python artifacts. The neighboring development checkouts were preserved.
+Baseline Commander is `a4663f1`, SDK `0.1.14`, and transport `0.1.0`. The integrated release pins are SDK `0.1.19` and transport `0.1.3`. Commander verifies the Go module archives against `go.sum`. The SDK distribution includes its own manifest and the Go, npm, and Python artifacts. The neighboring development checkouts were preserved.
 
 ## Matched workloads
 
@@ -8,9 +8,9 @@ Runs used Go 1.27.4 on an Apple silicon host with 10 logical CPUs. Short series 
 
 | Workload | Baseline | Candidate | Evidence |
 | --- | --- | --- | --- |
-| Loaded owner reply to ACP peer receipt, 30 panes | 229.94 ms median, 305.62 ms p95 | 11.64 ms median, 21.32 ms p95 | Two alternating runs, 12 decisions per variant. All 12 delivered. The peer stamps the receipt using the host monotonic clock. |
-| Loaded owner reply to Console projection, 30 panes | 257.38 ms median, 422.96 ms p95 | 105.16 ms median, 122.10 ms p95 | Same paired runs. This observes the terminal-text projection. |
-| First newline-free chunk without a message ID | 2,008–2,040 ms | 1.53–6.43 ms | Single-worker structured subscriber, three samples per variant. The later matched 30-pane test measured 2,020.40/2,050.13 ms median/p95 before and 4.02/9.26 ms after. All 12 candidate chunks arrived before terminal completion, compared with zero baseline chunks. |
+| Loaded owner reply to ACP peer receipt, 30 panes | 226.84 ms median, 288.73 ms p95 | 15.95 ms median, 39.53 ms p95 | Four alternating runs, 24 decisions per variant. All 24 delivered. The peer stamps the receipt using the host monotonic clock. |
+| Loaded owner reply to Console projection, 30 panes | 257.33 ms median, 422.47 ms p95 | 46.22 ms median, 72.09 ms p95 | Same 24-decision paired series using the terminal-text projection. |
+| First newline-free chunk without a message ID | 2,008–2,040 ms | 1.53–6.43 ms | Single-worker structured subscriber, three samples per variant. The later matched 30-pane test measured 2,020.40/2,050.13 ms median/p95 before and 4.02/9.26 ms after. All 12 candidate chunks arrived before terminal completion, compared with zero baseline chunks. A repeat after the publication deadline change measured 2,016.61/2,097.66 ms median/p95 before and 7.78/64.61 ms after, with all six candidate chunks arriving before terminal completion. |
 | Unrelated read during a 500 ms credential check | 512.35–524.56 ms | 0.52–0.66 ms | Three samples per variant. |
 | Stopped transcript with 2,048 records, paced | 16 loads, 32,768 updates, 1,545.6 ms median | One load, 2,048 updates, 89.4 ms median | Six samples per variant. Baseline unpaced replay failed. All three candidate burst runs completed. |
 | Scoped live originals at 500 updates per second | Private polling received 1,158 and 1,626 of 2,000 | Continuous private streaming received 2,000 of 2,000 in each run | Both modes exercised on the same binary. The public feed stayed complete and attachment bytes stayed in the owner feed. |
@@ -20,6 +20,8 @@ Runs used Go 1.27.4 on an Apple silicon host with 10 logical CPUs. Short series 
 
 The paired incremental capacity test used 256-byte updates and a tool every fourth record. At 500 updates/s, both variants delivered every record. Median public SSE bytes increased by 4.3%, from 1.83 MB to 1.90 MB, with sampled service plus runner CPU of 0.100 and 0.090 seconds. At 50 updates/s, the 25 ms batching deadline increased median wire bytes by 43.8%, from 262,316 to 377,313, while delivering all 200 updates. Sampled CPU increased from 0.055 to 0.125 seconds at that rate. Each CPU sample had 10 ms granularity. Earlier candidates with the longer publication wait did not show the low-rate byte increase.
 
+One six-decision candidate run recorded 78.36 ms p95 for peer receipt. That sample followed reconnect. The two reconnect samples in the larger 24-decision series were 62.18 and 23.05 ms. The performance trials used Commander `12b8f4c` with SDK `0.1.18` after the publication deadline change. SDK `0.1.19` adds a narrow explicit v1 resume fix with separate lifecycle regression coverage.
+
 These comparisons include workstream builds. The sampled service and adapter RSS figures cover the indicated processes. Model inference, AppKit rendering, and full process-tree peak RSS need separate instrumentation. The [raw samples](samples/) preserve host load and binary digests where collected.
 
 ## Capability qualification
@@ -28,7 +30,7 @@ These comparisons include workstream builds. The sampled service and adapter RSS
 | --- | --- | --- |
 | Claude managed Opus, ACP adapter 0.109.1 | The installed account completed a synthetic v1 turn with Opus. The first v2 run found a configuration-ID mismatch. A managed Opus prompt passed over v2 with SDK 0.1.18. | v1 by default. Full v2 parity requires installed permissions, cancellation, reconnect, and history. |
 | Codex ACP adapter 2.9.0 | The installed adapter returned the synthetic marker in both v1 and v2. | v1 by default while v2 parity and performance remain open. |
-| Antigravity 1.5.13 | The installed adapter returned the marker in v1 even when offered v2. | v1. |
+| Antigravity 1.5.13 | The installed adapter selected v1 when offered v2. The delegated worker read the fixture marker and replayed the same value in eight stopped-session records. | v1. |
 | Pi ACP translator 0.2.0 | The installed loopback fixture exercised addressed approval, original tool results, and reattachment. | v1. |
 
 The existing SSH path remains available through `AGENT_COMMANDER_SSH_LINK=legacy`. The windowed link requires explicit negotiation by the endpoint. New local sessions accept these independent overrides:
@@ -40,7 +42,9 @@ The existing SSH path remains available through `AGENT_COMMANDER_SSH_LINK=legacy
 - `AGENT_COMMANDER_ACP_ELICITATION=1`
 - `AGENT_COMMANDER_ACP_SESSION_ACTIVITY=on`
 
-The MCP draft pin is `d1585b5932ec5ed2f7b02e298be92afae9462194`. Scoped draft invocation, cancellation, and rejection paths have deterministic coverage. An installed managed Claude Opus v2 run selected the standard system prompt and `acp` for Commander tools. It exchanged six `mcp/message` frames and completed a read-only `commander_status` call. Production MCP-over-ACP activation still requires installed-peer cancellation, revocation, and result parity. Receipt expiration was left open. Existing receipts continue to preserve duplicate-request safety.
+The MCP draft pin is `d1585b5932ec5ed2f7b02e298be92afae9462194`. Scoped draft invocation, cancellation, and rejection paths have deterministic coverage. An installed managed Claude Opus v2 run selected the standard system prompt and `acp` for Commander tools. It exchanged six `mcp/message` frames and completed a read-only `commander_status` call. Production MCP-over-ACP activation still requires installed-peer cancellation, revocation, and result parity. Receipt expiration was left open. Existing receipts continue to preserve duplicate-request safety. An operator who explicitly resubmits an uncertain prompt after restart needs to choose its attachments again.
+
+The upstream ACP Test Compatibility Kit at `7c71c4d1af0994e73bdc100c9f7f6b98f2319cda` passed all four selected v1 cases against the installed Pi translator using the loopback model. The subset exercised unauthenticated session creation and cancellation, and produced no full conformance verdict. [Upstream test kit](https://github.com/agentclientprotocol/acp-tck/tree/7c71c4d1af0994e73bdc100c9f7f6b98f2319cda)
 
 ## Reproduce
 
@@ -53,7 +57,7 @@ AGENT_COMMANDER_TEST_TMUX=1 AGENT_COMMANDER_TEST_INTEGRATION=1 \
 python3 -B design/verification/30-pane/measure.py \
   --agentctl /tmp/agentctl-candidate --projection incremental --output /tmp/candidate-30-pane.json
 python3 -B packaging/go-with-sdk.py test ./internal/sshlink -run '^$' -bench . -benchmem
-python3 -B design/verification/sdk-release/verify.py --consumer-only dist/sdk/agent-acp-0.1.18
+python3 -B design/verification/sdk-release/verify.py --consumer-only dist/sdk/agent-acp-0.1.19
 make test-native
 ```
 
