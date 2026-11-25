@@ -428,8 +428,20 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// Every pending request from this worker, in the service's order, each by its own ID. The
     /// first is `request`. Empty where a fixture sets only `request`; see `allRequests`.
     var pendingRequests: [RequestPresentation] = []
+    /// The worker's checkout as the service reports it. A file link is offered only inside it.
+    var checkout: String = ""
+    /// The prompt content the session accepts beyond text, from the service's control record.
+    /// Nil from an older service, and the follow-up then offers no file context.
+    var promptCapabilities: WorkerPromptCapabilities? = nil
 
     var isDisconnected: Bool { state == .disconnected }
+
+    /// The scope a follow-up's file context is prepared in. Nil when the session accepts neither a
+    /// file link nor a snapshot.
+    var followUpContextScope: FollowUpContextScope? {
+        guard let promptCapabilities, promptCapabilities.acceptsFileContext else { return nil }
+        return FollowUpContextScope(workerID: id, host: host, checkout: checkout, capabilities: promptCapabilities)
+    }
 
     /// An interrupt of this worker's current turn is waiting: the legacy flag, or an unresolved
     /// receipt for the turn the worker is in now. The action list shows it as requested.
@@ -515,6 +527,17 @@ struct CockpitActions {
     /// Sends a follow-up message to one worker the developer controls. The text is passed exactly
     /// as written. Returns true once the service accepts it; false leaves the draft in place.
     var sendFollowUp: (@MainActor (_ workerID: String, _ text: String) async -> Bool)? = nil
+    /// Sends a follow-up whose content carries file context: the text exactly as written, then
+    /// each file in order. Nil where the service has no content route; the composer then offers
+    /// no file context. A draft without files always uses `sendFollowUp`.
+    var sendFollowUpWithContext: (@MainActor (_ workerID: String, _ text: String,
+                                              _ context: [FollowUpContextItem]) async -> Bool)? = nil
+    /// Prepares a chosen file for one worker's follow-up. The feature layer reads the file.
+    var prepareFollowUpContext: (@MainActor (_ url: URL, _ kind: FollowUpContextKind,
+                                             _ scope: FollowUpContextScope) -> Result<FollowUpContextItem, FollowUpContextError>)? = nil
+    /// A worker's provider session: status, discovery and reattach. Nil where the service offers
+    /// none, and no console offers the panel.
+    var providerSession: ProviderSessionIntents? = nil
     // Feature capabilities drawn in the concepts. Each control appears only when its action exists,
     // so the live app offers none of them until the service supports the operation.
     var messageCoordinator: (@MainActor (_ runID: String, _ text: String) -> Void)? = nil
@@ -1036,7 +1059,9 @@ extension RunContent {
                 telemetry: telemetry,
                 claudeProgress: claudeProgress,
                 providerAvailability: isCoordinator ? nil : ProviderAvailability(worker: worker),
-                pendingRequests: requests)
+                pendingRequests: requests,
+                checkout: worker.worktree,
+                promptCapabilities: isCoordinator ? nil : worker.control?.promptCapabilities)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

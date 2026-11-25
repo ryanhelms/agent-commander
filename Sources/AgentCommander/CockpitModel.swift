@@ -25,10 +25,13 @@ final class CockpitModel {
     /// Staged adapter updates, followed on their own subscription. A change of the set never
     /// touches `runs`.
     let adapterUpdates: AdapterUpdateFeed
+    /// The provider session of the one worker whose panel is open, and the developer's reattach.
+    let providerSessions: ProviderSessionModel
 
     init() {
         let reader = ServiceClient()
         attachments = .live(reader: reader)
+        providerSessions = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
@@ -198,6 +201,40 @@ final class CockpitModel {
         followUpAttempts[id] = (text, control.generation, operationID)
         let accepted = await performWorkerAction(id, label: "Send follow-up") {
             try await api.sendFollowUp(to: id, text: text, generation: control.generation, operationID: operationID)
+        }
+        if accepted { followUpAttempts[id] = nil }
+        return accepted
+    }
+
+    /// Sends a follow-up with file context: the text exactly as written, then each file in the
+    /// order it was attached. A draft without files is the text request above. The same draft
+    /// retried under the same generation carries the same idempotency key. The whole request is
+    /// checked against the service's bound before it is sent; an oversized draft stays in place.
+    func sendFollowUp(to id: String, text: String, context: [FollowUpContextItem]) async -> Bool {
+        guard !context.isEmpty else { return await sendFollowUp(to: id, text: text) }
+        guard canControlWorker(id), let control = workerTarget(id)?.1.control, control.held,
+              !workerActions.contains(id) else { return false }
+        let capabilities = control.promptCapabilities ?? WorkerPromptCapabilities()
+        if context.contains(where: { $0.kind == .link }) && !capabilities.resourceLink
+            || context.contains(where: { $0.kind == .snapshot }) && !capabilities.embeddedContext {
+            notice = "Send follow-up: this session no longer accepts that file context. Remove it and send again."
+            return false
+        }
+        let body: Data
+        do {
+            body = try FollowUpContent.requestBody(text: text, context: context, generation: control.generation)
+        } catch {
+            notice = "Send follow-up: \(error.localizedDescription)"
+            return false
+        }
+        let fingerprint = FollowUpContent.fingerprint(text: text, context: context)
+        let prior = followUpAttempts[id]
+        let operationID = prior.flatMap { attempt in
+            attempt.text == fingerprint && attempt.generation == control.generation ? attempt.id : nil
+        } ?? UUID().uuidString
+        followUpAttempts[id] = (fingerprint, control.generation, operationID)
+        let accepted = await performWorkerAction(id, label: "Send follow-up") {
+            try await api.sendFollowUp(to: id, body: body, operationID: operationID)
         }
         if accepted { followUpAttempts[id] = nil }
         return accepted

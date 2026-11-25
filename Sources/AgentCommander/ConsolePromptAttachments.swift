@@ -219,6 +219,14 @@ struct PromptAttachmentItem: Identifiable, Equatable, Sendable {
             return
         }
         let text = String(decoding: data, as: UTF8.self)
+        // A file the prompt linked or embedded: named and typed. Its contents stay out of the
+        // decoded fields; the original record holds them.
+        if let resource = (try? AGUIValue(json: text)).flatMap(PromptResourceSummary.init(part:)) {
+            decoded = resource.redactedJSON
+            decodedTitle = PromptResourceSummary.fieldsTitle
+            body = .unavailable(type: resource.title, mimeType: resource.mimeType, reason: resource.statement)
+            return
+        }
         decoded = text
         guard let part = try? AGUIValue(json: text),
               let type = part["type"]?.stringValue, type == "image" || type == "audio",
@@ -541,7 +549,9 @@ struct PromptAttachmentRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 heading(glyph: "◇", ink: Term.amber, title: title(type),
                         detail: [mimeType.isEmpty ? "type not stated" : mimeType, "not shown"].joined(separator: " · "))
-                Text(verbatim: reason + " Its fields show the part as recorded.")
+                Text(verbatim: reason + (item.decodedTitle == PromptResourceSummary.fieldsTitle
+                                         ? " Its fields name the file without its contents."
+                                         : " Its fields show the part as recorded."))
                     .font(Term.font(size - 0.5)).foregroundStyle(.inkTermDim)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -594,7 +604,10 @@ struct PromptAttachmentRow: View {
             if let decoded = item.decoded {
                 PromptAttachmentFields(title: item.decodedTitle, json: decoded, size: size - 0.5, copy: copy)
             }
-            PromptAttachmentFields(title: recordCaption, json: item.observation.record, size: size - 0.5, copy: copy)
+            // An attached file's record carries its contents, so it stays in the Source inspector.
+            if item.decodedTitle != PromptResourceSummary.fieldsTitle {
+                PromptAttachmentFields(title: recordCaption, json: item.observation.record, size: size - 0.5, copy: copy)
+            }
         }
         .padding(.top, 2)
     }
