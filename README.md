@@ -281,6 +281,8 @@ When a recovered user message has `metadata.acp.kind=provider_prompt_media`, use
 
 Add `source=live` to inspect recently received ACP details, including tool arguments, results, embedded content and unfamiliar fields. Commander keeps a bounded in-memory window for each worker and marks evicted source records with a gap. The default provider-history pages and journal pages remain available after a restart if the harness retained them. The reference console opens these live records under **Live ACP source**. [ACP source coverage](design/verification/transcript-coverage/README.md)
 
+Set `AGENT_COMMANDER_MCP_OVER_ACP=1` in the local service environment to try the pinned draft with newly launched local ACP peers. Commander declares its scoped tools over ACP only when the peer advertises that transport. The existing stdio server remains the fallback. The draft uses stateless MCP 2026-07-28 with per-request metadata and an independent logical request ID. Commander still validates each tool against the worker's assigned scope. [Pinned draft](https://github.com/agentclientprotocol/agent-client-protocol/blob/d1585b5932ec5ed2f7b02e298be92afae9462194/docs/rfds/mcp-over-acp.mdx)
+
 The default data directory is `~/Library/Application Support/Agent Commander`. It contains the private API socket, persisted run state, recent console output and private provider launch configuration. A detached service writes its startup errors to `service.log`. Treat the directory as private, since transcripts can contain sensitive project content.
 
 - `AGENT_COMMANDER_HOME` selects a separate data directory for development. Its default socket is `service.sock` inside that directory.

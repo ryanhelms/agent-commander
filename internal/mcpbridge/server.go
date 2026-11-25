@@ -80,17 +80,30 @@ func register[T any](s *mcp.Server, name, desc string, handle func(context.Conte
 }
 
 func Run(ctx context.Context, c *localapi.Client) error {
-	actor, err := localapi.Segment(os.Getenv("AGENT_COMMANDER_WORKER_ID"))
-	if err != nil {
-		return errors.New("start MCP from a Commander-managed session with a worker identity")
+	env := make(map[string]string)
+	for _, key := range []string{"AGENT_COMMANDER_WORKER_ID", "AGENT_COMMANDER_RUN_ID", "AGENT_COMMANDER_TOKEN",
+		"AGENT_COMMANDER_ROLE", "AGENT_COMMANDER_PERSISTENT_SSH_WAIT", "COMMANDER_NETWORK_SOCKET"} {
+		env[key] = os.Getenv(key)
 	}
-	run, err := localapi.Segment(os.Getenv("AGENT_COMMANDER_RUN_ID"))
-	if err != nil || os.Getenv("AGENT_COMMANDER_TOKEN") == "" {
-		return errors.New("missing Commander run identity or scoped credential")
+	server, err := buildServer(ctx, c, env, nil)
+	if err != nil {
+		return err
+	}
+	return server.Run(ctx, &mcp.StdioTransport{})
+}
+
+func buildServer(ctx context.Context, c *localapi.Client, env map[string]string, options *mcp.ServerOptions) (*mcp.Server, error) {
+	actor, err := localapi.Segment(env["AGENT_COMMANDER_WORKER_ID"])
+	if err != nil {
+		return nil, errors.New("start MCP from a Commander-managed session with a worker identity")
+	}
+	run, err := localapi.Segment(env["AGENT_COMMANDER_RUN_ID"])
+	if err != nil || env["AGENT_COMMANDER_TOKEN"] == "" {
+		return nil, errors.New("missing Commander run identity or scoped credential")
 	}
 	runPath := "/v1/runs/" + run
 	workerPath := "/v1/workers/" + actor
-	s := mcp.NewServer(&mcp.Implementation{Name: "agent-commander", Version: "0.1.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "agent-commander", Version: "0.1.0"}, options)
 	register(s, "commander_delegate", "Launch a managed worker under your assignment in this run.", func(ctx context.Context, in delegate) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "client": in.Client, "host": in.Host, "kind": in.Kind, "idempotency_key": in.Key})
 	})
@@ -113,7 +126,7 @@ func Run(ctx context.Context, c *localapi.Client) error {
 		defer deadline.Stop()
 		ticker := time.NewTicker(450 * time.Millisecond)
 		defer ticker.Stop()
-		persistent := os.Getenv("AGENT_COMMANDER_PERSISTENT_SSH_WAIT") == "1"
+		persistent := env["AGENT_COMMANDER_PERSISTENT_SSH_WAIT"] == "1"
 		var last json.RawMessage
 		for {
 			b, err := c.Do(ctx, "GET", workerPath+"/questions/"+id, nil)
@@ -181,14 +194,14 @@ func Run(ctx context.Context, c *localapi.Client) error {
 	register(s, "commander_status", "Read worker assignments, findings and questions. While waiting on workers, set wait_seconds to 30 to return on a status change or timeout.", func(ctx context.Context, in statusInput) (json.RawMessage, error) {
 		return runStatus(ctx, c, runPath, in.Seconds)
 	})
-	if os.Getenv("AGENT_COMMANDER_ROLE") == "coordinator" {
+	if env["AGENT_COMMANDER_ROLE"] == "coordinator" {
 		registerScopedTools(s, c, runPath+"/workers/"+actor+"/tools")
-		if err := registerNetworkTools(s, run, actor); err != nil {
-			return err
+		if err := registerNetworkTools(s, run, actor, env["AGENT_COMMANDER_TOKEN"], env["COMMANDER_NETWORK_SOCKET"]); err != nil {
+			return nil, err
 		}
 	}
 	registerFrontendTools(ctx, s, c, workerPath)
-	return s.Run(ctx, &mcp.StdioTransport{})
+	return s, nil
 }
 
 func workerCommand(c *localapi.Client, action string) func(context.Context, workerTarget) (json.RawMessage, error) {

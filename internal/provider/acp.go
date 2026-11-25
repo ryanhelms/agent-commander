@@ -85,6 +85,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	if j.Worker.Reattach != nil {
 		config.ModelOnResume = acpOpenRequest(j, config.HarnessInstance, cwd).GetModel()
 	}
+	configureACPToolTransport(ctx, j, &config, a)
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
 	config.OnACPUpdate = source.capture

@@ -80,6 +80,10 @@ The cockpit keys persistent accent preferences by harness identity. A color chan
 
 Devflow is a first-party companion in the scoped tool registry. At launch, the registry probes for exactly `devflow_ui_open` in the checkout of an interactive local Claude coordinator. The probe has a deadline and receives neither actor credentials nor the auto-open flag. The private launch record carries the versioned selection and the resolved executable path. The live harness attaches the UI-only MCP server with `--auto-open` and the coordinator's scoped credential. It can also call `devflow_ui_open` explicitly to open or navigate the console. An incompatible or missing companion leaves the planning run available. A pending job from an earlier build can use its previously verified Devflow path.
 
+## MCP tools over ACP
+
+The optional stateless binding adds an Adapter around the same scoped Commander tool server. Its logical request ID is independent of ACP transport correlation. The registration owns its per-request authorization, concurrency limit and cancellation. The binding replaces the local Commander MCP subprocess only when explicitly enabled and advertised by the connected peer. [Draft revision](https://github.com/agentclientprotocol/agent-client-protocol/blob/d1585b5932ec5ed2f7b02e298be92afae9462194/docs/rfds/mcp-over-acp.mdx)
+
 ## Scoped coordinator tools
 
 The Commander API remains the Facade for brokered read tools. First-party Go code registers versioned tool descriptors and handlers at startup. An optional private `tool-grants.json` in the service state directory selects registered tool versions for an exact project path, for example `{"projects":[{"path":"/absolute/project","tools":{"connector.read":1}}]}`. A grant binds that path to its resolved directory at startup. Configuration changes take effect when the service restarts.
