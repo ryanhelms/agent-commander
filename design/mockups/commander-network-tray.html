@@ -1,0 +1,570 @@
+<title>Commander network: relay and tray</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: left-aligned spec sheet. Command-center tray leads beside the summary; the other states sit in a two-up grid of
+   menu-bar stages; diagram and increment map follow. Page chrome follows the viewer theme; trays follow the skin switcher. */
+:root{
+  --pg-bg:#0C0D11; --pg-surface:#15171C; --pg-fg:#F2F3F7; --pg-muted:#A9ADBA; --pg-line:#343741;
+  --pg-accent:#B5D6FF; --pg-local:#1D2A22; --pg-cross:#2A2418; --pg-on-accent:#101825;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --pg-bg:#F1F2F5; --pg-surface:#FFFFFF; --pg-fg:#14161B; --pg-muted:#535966; --pg-line:#C6CAD3;
+  --pg-accent:#1456B8; --pg-local:#E2F1E8; --pg-cross:#F6ECD6; --pg-on-accent:#FFFFFF; color-scheme:light } }
+:root[data-theme="light"]{
+  --pg-bg:#F1F2F5; --pg-surface:#FFFFFF; --pg-fg:#14161B; --pg-muted:#535966; --pg-line:#C6CAD3;
+  --pg-accent:#1456B8; --pg-local:#E2F1E8; --pg-cross:#F6ECD6; --pg-on-accent:#FFFFFF; color-scheme:light }
+
+/* ---- Tray token layer, mapped from design/system/tokens.json. A skin only redefines these. ---- */
+.skin-scope{
+  --ac-window:#090A0D; --ac-panel:#14151A; --ac-well:#0B0C10; --ac-border:#383B44; --ac-hair:#26282F;
+  --ac-fg:#F5F5F9; --ac-secondary:#B7BAC6; --ac-focus:#B5D6FF; --ac-working:#A8E0C0; --ac-attention:#F1C587;
+  --ac-failure:#EC9B92; --ac-selection:#283344; --ac-on-accent:#101825; --ac-overlay:#1A1D24;
+  --ac-claude:#D97757; --ac-codex:#629FFF; --ac-mcp:#B596EF;
+  --ac-sw-mint:#4ADE80; --ac-sw-sky:#38BDF8; --ac-sw-pink:#F472B6; --ac-sw-lime:#A3E635;
+  --ac-r-overlay:17px; --ac-r-tile:13px; --ac-r-ctl:7px; --ac-line:1px;
+  --ac-desktop:linear-gradient(160deg,#2B3140,#161A22 70%); --ac-menubar:rgba(10,11,14,.72); --ac-menubar-fg:#E8E9EE;
+  --ac-shadow:0 18px 40px rgba(0,0,0,.5);
+}
+.skin-scope[data-skin="contrast"]{
+  --ac-secondary:#E3E5EC; --ac-border:#A6A8B2; --ac-hair:#6B6E78; --ac-line:1.5px; --ac-panel:#0E0F13; --ac-well:#000000;
+  --ac-working:#BDF2D3; --ac-attention:#FFD79A; --ac-failure:#FFB3AA;
+}
+.skin-scope[data-skin="daylight"]{
+  --ac-window:#E9ECF1; --ac-panel:#FBFCFD; --ac-well:#E8EBF0; --ac-border:#8E95A3; --ac-hair:#CDD2DB;
+  --ac-fg:#10131A; --ac-secondary:#454B58; --ac-focus:#0B4FB3; --ac-working:#0B6B41; --ac-attention:#8A4F00;
+  --ac-failure:#B0231B; --ac-selection:#D5E3F8; --ac-on-accent:#FFFFFF; --ac-overlay:#FFFFFF;
+  --ac-claude:#B5502F; --ac-codex:#1F5FD1; --ac-mcp:#6B45C4;
+  --ac-sw-mint:#15803D; --ac-sw-sky:#0369A1; --ac-sw-pink:#BE185D; --ac-sw-lime:#4D7C0F;
+  --ac-r-overlay:10px; --ac-r-tile:6px; --ac-r-ctl:4px;
+  --ac-desktop:linear-gradient(160deg,#C9D5E6,#E6EAF0 70%); --ac-menubar:rgba(250,251,253,.8); --ac-menubar-fg:#1B1E25;
+  --ac-shadow:0 14px 32px rgba(30,40,60,.22);
+}
+
+*{box-sizing:border-box}
+body{background:var(--pg-bg);color:var(--pg-fg);font:15px/1.5 var(--sans);margin:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--pg-bg)}
+.wrap{max-width:1120px;margin:0 auto;padding-block:0 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font:600 32px/1.15 var(--sans);letter-spacing:-.01em;margin:0 0 12px;text-wrap:balance}
+h2{font:600 20px/1.25 var(--sans);margin:56px 0 6px;text-wrap:balance}
+h3{font:600 14px/1.3 var(--sans);margin:0}
+p{margin:0 0 10px;max-width:68ch}
+.muted{color:var(--pg-muted)}
+code,.m{font-family:var(--mono);font-size:.9em}
+a{color:var(--pg-accent)}
+:focus-visible{outline:2px solid var(--pg-accent);outline-offset:2px}
+
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--pg-bg);border-bottom:1px solid var(--pg-line);
+  display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;padding:10px 0;margin-bottom:28px;font-size:13px}
+.bar .lab{color:var(--pg-muted)}
+.seg{display:inline-flex;border:1px solid var(--pg-line);border-radius:8px;overflow:hidden}
+.seg button{font:500 13px var(--sans);background:transparent;color:var(--pg-fg);border:0;padding:6px 12px;cursor:pointer;border-right:1px solid var(--pg-line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--pg-accent);color:var(--pg-on-accent)}
+.bar label{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+
+.lead{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,424px);gap:40px;align-items:start}
+.changes{list-style:none;padding:0;margin:16px 0 24px;display:grid;gap:10px;max-width:60ch}
+.changes li{padding-left:14px;border-left:2px solid var(--pg-line)}
+.changes b{font-weight:600}
+.notes{margin:0;padding:0;list-style:none;display:grid;gap:6px;font-size:13.5px;max-width:60ch}
+.notes li{display:grid;grid-template-columns:52px minmax(0,1fr);gap:8px;align-items:baseline}
+.tag{font:600 11px var(--sans);border:1px solid currentColor;border-radius:4px;padding:1px 5px;white-space:nowrap;justify-self:start}
+.tag.i1{color:var(--pg-accent)} .tag.later{color:var(--pg-muted)}
+.states{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:40px 32px;margin-top:20px}
+figure{margin:0;min-width:0}
+figcaption{margin-top:12px;font-size:13.5px;color:var(--pg-muted);max-width:52ch}
+figcaption h3{color:var(--pg-fg);margin-bottom:4px}
+
+/* ---- Menu-bar stage ---- */
+.stage{background:var(--ac-desktop);border-radius:12px;padding:0 12px 18px;max-width:424px;font-family:var(--sans)}
+.menubar{margin:0 -12px 6px;height:26px;padding:0 12px;display:flex;justify-content:flex-end;align-items:center;gap:12px;
+  background:var(--ac-menubar);color:var(--ac-menubar-fg);font:500 12px var(--sans);border-radius:12px 12px 0 0}
+.menubar .ico{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--ac-menubar-fg) 18%,transparent)}
+.menubar svg{display:block}
+
+/* ---- Tray components (atoms and molecules), tokens only ---- */
+.tray{background:var(--ac-panel);color:var(--ac-fg);border:var(--ac-line) solid var(--ac-border);border-radius:var(--ac-r-overlay);
+  box-shadow:var(--ac-shadow);font:13px/1.35 var(--sans);overflow:hidden;font-variant-numeric:tabular-nums}
+.tray .sec{padding:10px 14px 12px;border-bottom:var(--ac-line) solid var(--ac-hair)}
+.tray .sec:last-child{border-bottom:0}
+.t-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:var(--ac-line) solid var(--ac-hair)}
+.t-head .ttl{font-weight:600;font-size:14px}
+.t-head .grow,.grow{flex:1;min-width:0}
+.sh{display:flex;align-items:center;gap:6px;margin:0 0 6px;font:600 12px var(--sans);color:var(--ac-secondary)}
+.sh .n{color:var(--ac-fg)}
+.sub{font-size:11px;color:var(--ac-secondary);overflow-wrap:anywhere}
+.mono{font-family:var(--mono);font-size:11px}
+.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;min-height:30px;padding:2px 0}
+.row.top{align-items:start}
+.row .nm{font-weight:500;overflow-wrap:anywhere}
+.acts{display:flex;gap:6px;align-items:center}
+.lamp{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none;border:1.5px solid var(--ac-secondary)}
+.lamp.on{background:var(--ac-working);border-color:var(--ac-working)}
+.lamp.busy{background:var(--ac-attention);border-color:var(--ac-attention);border-radius:2px}
+.lamp.away{border-color:var(--ac-attention);background:linear-gradient(90deg,var(--ac-attention) 50%,transparent 50%)}
+.lamp.dnd{border-color:var(--ac-failure);background:linear-gradient(var(--ac-failure),var(--ac-failure)) center/100% 2px no-repeat}
+.lamp.err{background:var(--ac-failure);border-color:var(--ac-failure);border-radius:1px;transform:rotate(45deg)}
+.lamp.wait{border-color:var(--ac-focus);border-right-color:transparent}
+.sw{width:10px;height:10px;border-radius:3px;flex:none;display:inline-block}
+.sw.a{background:var(--ac-sw-mint)} .sw.b{background:var(--ac-sw-sky)} .sw.c{background:var(--ac-sw-pink)} .sw.d{background:var(--ac-sw-lime)}
+.hz{width:8px;height:8px;border-radius:50%;display:inline-block}
+.hz.claude{background:var(--ac-claude)} .hz.codex{background:var(--ac-codex)}
+.st{font-size:11px;font-weight:600;white-space:nowrap}
+.st.ok{color:var(--ac-working)} .st.warn{color:var(--ac-attention)} .st.bad{color:var(--ac-failure)} .st.dim{color:var(--ac-secondary)}
+.badge{font:500 10.5px var(--sans);border:var(--ac-line) solid var(--ac-border);color:var(--ac-secondary);border-radius:999px;padding:0 6px;white-space:nowrap;display:inline-flex;gap:4px;align-items:center}
+.btn{font:500 12px var(--sans);min-height:24px;padding:3px 10px;border-radius:var(--ac-r-ctl);border:var(--ac-line) solid var(--ac-border);
+  background:transparent;color:var(--ac-fg);white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+.btn.pri{background:var(--ac-focus);border-color:var(--ac-focus);color:var(--ac-on-accent);font-weight:600}
+.btn.bad{color:var(--ac-failure);border-color:var(--ac-failure)}
+.btn.big{min-height:28px;padding:5px 14px;font-size:13px}
+.btn[aria-disabled="true"]{opacity:.45}
+.star{color:var(--ac-attention);font-size:12px;width:12px;text-align:center}
+.star.off{color:var(--ac-border)}
+.well{background:var(--ac-well);border-radius:var(--ac-r-tile);padding:8px 10px}
+.tally{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--ac-hair);border-radius:var(--ac-r-tile);overflow:hidden;border:var(--ac-line) solid var(--ac-hair)}
+.tally div{background:var(--ac-well);padding:7px 8px}
+.tally b{display:block;font:600 16px/1.1 var(--sans)}
+.tally span{font-size:10.5px;color:var(--ac-secondary)}
+.tally .hot b{color:var(--ac-attention)}
+.grp{display:flex;align-items:center;gap:6px;font:600 11.5px var(--sans);margin:8px 0 2px}
+.grp:first-of-type{margin-top:0}
+.grp .cnt{color:var(--ac-secondary);font-weight:500}
+.log{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 10px;font-size:12px}
+.log time{font-family:var(--mono);font-size:11px;color:var(--ac-secondary);padding-top:1px}
+.field{background:var(--ac-well);border:var(--ac-line) solid var(--ac-border);border-radius:var(--ac-r-ctl);padding:6px 9px;min-height:30px;font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+.field.focus{border-color:var(--ac-focus);box-shadow:0 0 0 2px color-mix(in srgb,var(--ac-focus) 35%,transparent)}
+.step{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;padding:6px 0;border-top:var(--ac-line) solid var(--ac-hair)}
+.step:first-child{border-top:0}
+.mark{width:16px;height:16px;border-radius:50%;font:700 10px/16px var(--sans);text-align:center;margin-top:1px}
+.mark.ok{background:var(--ac-working);color:var(--ac-panel)} .mark.no{background:var(--ac-failure);color:var(--ac-panel);border-radius:3px}
+.fp{font-family:var(--mono);font-size:10.5px;line-height:1.5;overflow-wrap:anywhere}
+.alert{border:var(--ac-line) solid var(--ac-failure);border-radius:var(--ac-r-tile);padding:10px 12px;background:color-mix(in srgb,var(--ac-failure) 10%,var(--ac-panel))}
+.alert h5{margin:0 0 4px;font:600 13px var(--sans);color:var(--ac-failure)}
+.segc{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;border:var(--ac-line) solid var(--ac-border);border-radius:var(--ac-r-ctl);overflow:hidden;font-size:12px;text-align:center}
+.segc span{padding:4px 6px;border-right:var(--ac-line) solid var(--ac-border)}
+.segc span:last-child{border-right:0}
+.segc .sel{background:var(--ac-selection);font-weight:600}
+.tog{width:28px;height:16px;border-radius:999px;background:var(--ac-working);position:relative;display:inline-block;flex:none}
+.tog::after{content:"";position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:50%;background:var(--ac-panel)}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;font-size:12px}
+.kv dt{color:var(--ac-secondary)} .kv dd{margin:0;overflow-wrap:anywhere}
+.foot{display:flex;gap:8px;align-items:center;padding:9px 14px;background:var(--ac-well)}
+.back{font:600 12px var(--sans);color:var(--ac-focus)}
+.inc{font:600 10px var(--sans);color:var(--ac-focus);border:1px dashed var(--ac-focus);border-radius:4px;padding:0 4px;white-space:nowrap;margin-left:auto}
+.inc.inl{margin-left:0}
+.hide-inc .inc{display:none}
+.banner{background:var(--ac-overlay);color:var(--ac-fg);border:var(--ac-line) solid var(--ac-border);border-radius:var(--ac-r-tile);box-shadow:var(--ac-shadow);padding:10px 12px;margin-bottom:10px;font-size:12px}
+.today{opacity:.92}
+
+/* ---- Diagram ---- */
+.diagram{overflow-x:auto;border:1px solid var(--pg-line);border-radius:10px;background:var(--pg-surface);margin-top:14px}
+.diagram svg{display:block;min-width:860px;width:100%;height:auto;color:var(--pg-fg);font-family:var(--sans)}
+.d-box{fill:var(--pg-bg);stroke:var(--pg-line)} .d-host{fill:none;stroke:var(--pg-muted);stroke-dasharray:5 4}
+.d-local{fill:var(--pg-local);stroke:var(--pg-line)} .d-cross{fill:var(--pg-cross);stroke:var(--pg-line)}
+.d-t{fill:currentColor;font-size:12.5px;font-weight:600} .d-s{fill:var(--pg-muted);font-size:11.5px}
+.d-a{stroke:currentColor;stroke-width:1.4;fill:none}
+
+/* ---- Increment map ---- */
+.incmap{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:1px;background:var(--pg-line);border:1px solid var(--pg-line);border-radius:10px;overflow:hidden;margin-top:14px}
+.incmap section{background:var(--pg-surface);padding:14px 16px}
+.incmap h3 span{color:var(--pg-muted);font-weight:500}
+.incmap ul{margin:8px 0 0;padding-left:18px;font-size:13.5px;display:grid;gap:3px}
+.incmap .now{box-shadow:inset 0 3px 0 var(--pg-accent)}
+@media (max-width:860px){ .lead{grid-template-columns:minmax(0,1fr)} h1{font-size:26px} }
+@media (max-width:440px){ .stage{padding:0 6px 12px} .menubar{margin:0 -6px 6px} }
+</style>
+
+<div class="wrap skin-scope" id="scope" data-skin="commander">
+
+<div class="bar">
+  <span class="lab" id="skinlab">Tray theme</span>
+  <span class="seg" role="group" aria-labelledby="skinlab">
+    <button type="button" data-skin="commander" aria-pressed="true">Commander black glass</button>
+    <button type="button" data-skin="contrast" aria-pressed="false">Increased contrast</button>
+    <button type="button" data-skin="daylight" aria-pressed="false">Daylight ops</button>
+  </span>
+  <label><input type="checkbox" id="inc-toggle" checked> Show increment labels</label>
+</div>
+
+<div class="lead">
+  <div>
+    <h1>Commander network: relay servers and the command-center tray</h1>
+    <p class="muted">Design proposal, 25 November 2026. Source of truth: <code>design/COMMANDER-NETWORK-SERVERS.md</code>. All names and data below are fictional.</p>
+    <ul class="changes">
+      <li><b>You enter the relay servers.</b> Type a host or URL once. Commander saves it. The build-time relay address goes away.</li>
+      <li><b>Several connections stay live.</b> The device agent holds one connection per enabled server, and friends are grouped by server.</li>
+      <li><b>Trust is pinned on first use.</b> You confirm the certificate fingerprint when you add a server. A changed certificate blocks that server and asks you.</li>
+      <li><b>This Mac can host a relay natively.</b> One relay process, bundled PostgreSQL and embedded NATS run under launchd. Friends reach it over Headscale or any network that resolves the host.</li>
+    </ul>
+    <h3 style="margin-bottom:8px">c. Command-center home: what each band shows</h3>
+    <ul class="notes">
+      <li><span class="tag i1">Inc 1</span><span>Tally row and server list: status per server, favorites first, server colour, last seen when offline.</span></li>
+      <li><span class="tag i1">Inc 1</span><span>Friends grouped by server, friend requests, and the existing Share action.</span></li>
+      <li><span class="tag later">Inc 2</span><span>My presence set automatically (busy while agents run), linked-contact badges, activity feed with filters.</span></li>
+      <li><span class="tag later">Inc 3</span><span>Approval prompts and access requests in “Needs you”. Hand-off rows in live remote work.</span></li>
+      <li><span class="tag later">Inc 4</span><span>Watch rows in live remote work.</span></li>
+    </ul>
+    <p class="muted" style="margin-top:16px;font-size:13.5px">The tray grows from 360 pt to 400 pt wide and scrolls past the height of the screen. Every status has a shape and a word as well as a colour. The main cockpit redesign is out of scope here and comes later.</p>
+  </div>
+
+  <!-- (c) COMMAND CENTER -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="currentColor"/><path d="M2.5 6 11.5 2.5M2.5 6l9 3.5" stroke="currentColor" fill="none"/></svg>2</span><span>Wed 25 Nov 14:42</span></div>
+      <div class="tray">
+        <div class="t-head">
+          <span class="grow"><span class="ttl">Commander network</span><br><span class="sub">2 of 3 servers online</span></span>
+          <span class="badge"><span class="lamp busy"></span>Busy, 3 agents running ▾</span>
+          <span class="inc inl">Inc 2</span>
+        </div>
+        <div class="sec">
+          <div class="tally">
+            <div><b>2/3</b><span>servers online</span></div>
+            <div><b>5</b><span>friends online</span></div>
+            <div class="hot"><b>3</b><span>need you</span></div>
+            <div><b>3</b><span>remote runs</span></div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sh">Servers <span class="grow"></span><span class="btn">+ Add server</span></div>
+          <div class="row"><span class="star">★</span><span><span class="nm"><span class="sw a"></span> ryan-mac</span> <span class="badge">Hosted here</span><br><span class="sub mono">ryan-mac.tail.internal</span></span><span class="st ok"><span class="lamp on"></span> Online</span></div>
+          <div class="row"><span class="star">★</span><span><span class="nm"><span class="sw b"></span> team-relay</span><br><span class="sub mono">relay.team.example</span></span><span class="st ok"><span class="lamp on"></span> Online</span></div>
+          <div class="row"><span class="star off">☆</span><span><span class="nm"><span class="sw c"></span> lab-relay</span><br><span class="sub mono">lab.example:8443</span></span><span class="st dim"><span class="lamp"></span> Offline, seen 2 h ago</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Needs you <span class="n">3</span></div>
+          <div class="row top"><span class="sw b" style="margin-top:5px"></span><span><span class="nm">priya’s run wants to push</span> <span class="inc inl">Inc 3</span><br><span class="sub">Branch <span class="mono">fix/session-restore</span> on agent-commander. Grant is set to Ask each time.</span></span><span class="acts"><span class="btn">Deny</span><span class="btn pri">Approve</span></span></div>
+          <div class="row top"><span class="sw a" style="margin-top:5px"></span><span><span class="nm">sam asks for access</span> <span class="inc inl">Inc 3</span><br><span class="sub">Run tests on the repository relay.</span></span><span class="acts"><span class="btn">Review</span></span></div>
+          <div class="row top"><span class="sw a" style="margin-top:5px"></span><span><span class="nm">mei sent a friend request</span><br><span class="sub">“We met at the Swift meetup.”</span></span><span class="acts"><span class="btn">Accept</span></span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Live remote work <span class="n">3</span><span class="inc">Inc 3</span></div>
+          <div class="row"><span title="Sent to a friend">↗</span><span><span class="nm">Fix flaky reconnect test</span><br><span class="sub"><span class="hz codex"></span> Handed to priya’s agent on <span class="sw b"></span> team-relay</span></span><span class="st ok">Working 12 m</span></div>
+          <div class="row"><span title="Running on this Mac">↙</span><span><span class="nm">sam: run tests on relay</span><br><span class="sub"><span class="hz claude"></span> On this Mac, worktree only, use 4 of 10</span></span><span class="st warn">Waiting on you</span></div>
+          <div class="row"><span title="Watching">◉</span><span><span class="nm">jonas: ios-build worker</span> <span class="inc inl">Inc 4</span><br><span class="sub"><span class="hz claude"></span> Watching, read-only, on <span class="sw a"></span> ryan-mac</span></span><span class="st ok">Working 3 m</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Friends <span class="n">5 online</span> <span class="grow"></span><span class="btn">+ Add friend</span></div>
+          <div class="grp"><span class="sw a"></span> ryan-mac <span class="cnt">3 of 4 online</span></div>
+          <div class="row"><span class="lamp busy"></span><span><span class="nm">sam</span> <span class="badge">⛓ also on team-relay</span> <span class="inc inl">Inc 2</span><br><span class="sub">Busy, 2 agents running</span></span><span class="btn">Share</span></div>
+          <div class="row"><span class="lamp on"></span><span><span class="nm">jonas</span><br><span class="sub">Online</span></span><span class="btn">Share</span></div>
+          <div class="row"><span class="lamp away"></span><span><span class="nm">mei</span> <span class="badge">Request pending</span><br><span class="sub">Away</span></span><span></span></div>
+          <div class="grp"><span class="sw b"></span> team-relay <span class="cnt">2 of 5 online</span></div>
+          <div class="row"><span class="lamp on"></span><span><span class="nm">priya</span><br><span class="sub">Online</span></span><span class="btn">Share</span></div>
+          <div class="row"><span class="lamp busy"></span><span><span class="nm">sam</span> <span class="badge">⛓ also on ryan-mac</span><br><span class="sub">Busy, 2 agents running</span></span><span class="btn">Share</span></div>
+          <div class="row"><span class="lamp dnd"></span><span><span class="nm">dev</span><br><span class="sub">Do not disturb</span></span><span class="btn">Share</span></div>
+          <div class="sub" style="padding:2px 0 0 17px">2 offline ›</div>
+          <div class="grp"><span class="sw c"></span> lab-relay <span class="cnt">offline, 2 friends not shown</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Activity <span class="grow"></span><span class="badge">All servers ▾</span><span class="badge">All friends ▾</span><span class="inc inl">Inc 2</span></div>
+          <div class="log">
+            <time>14:41</time><span>mei sent a friend request on ryan-mac</span>
+            <time>14:32</time><span>You granted sam “Run tests” on relay: 10 uses, until 18:00</span>
+            <time>14:07</time><span>team-relay reconnected</span>
+            <time>12:15</time><span>lab-relay went offline</span>
+          </div>
+        </div>
+        <div class="foot"><span class="sub grow">Updates while this panel is open</span><span class="btn">Hosting</span><span class="btn">Sign out ▾</span></div>
+      </div>
+    </div>
+  </figure>
+</div>
+
+<h2>The other tray states</h2>
+<p class="muted">Each state is the same 400 pt menu-bar popover. Switch the tray theme above: every mockup is drawn from the same tokens.</p>
+
+<div class="states">
+
+  <!-- TODAY -->
+  <figure class="today">
+    <div class="stage">
+      <div class="menubar"><span class="ico"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="none" stroke="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="none" stroke="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="none" stroke="currentColor"/></svg></span><span>Wed 25 Nov 14:42</span></div>
+      <div class="tray" style="max-width:360px;margin-left:auto">
+        <div class="t-head"><span class="grow"><span class="ttl">Commander network</span><br><span class="sub">Signed out</span></span><span class="lamp"></span></div>
+        <div class="sec">
+          <div class="row"><span></span><span><span class="nm">Sign in to find friends</span><br><span class="sub">One relay, fixed when the app is built. Its host has no DNS record, so sign-in cannot finish.</span></span><span></span></div>
+          <div style="margin-top:8px;text-align:right"><span class="btn pri big">Sign in with browser</span></div>
+        </div>
+      </div>
+    </div>
+    <figcaption><h3>Today, for comparison</h3>One fixed relay, one sign-in button, 360 pt wide. Nothing to do when that relay is unreachable.</figcaption>
+  </figure>
+
+  <!-- (a) FIRST RUN -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="none" stroke="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="none" stroke="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="none" stroke="currentColor"/></svg></span><span>Wed 25 Nov 09:02</span></div>
+      <div class="tray">
+        <div class="t-head"><span class="grow"><span class="ttl">Commander network</span><br><span class="sub">No servers yet</span></span></div>
+        <div class="sec">
+          <div class="tally">
+            <div><b>0</b><span>servers</span></div><div><b>0</b><span>friends online</span></div><div><b>0</b><span>need you</span></div><div><b>0</b><span>remote runs</span></div>
+          </div>
+        </div>
+        <div class="sec">
+          <p style="margin:2px 0 4px;font-weight:600">Add a relay server to start</p>
+          <p class="sub" style="font-size:12px;margin:0 0 12px;max-width:none">A relay connects you to friends and their agents. Type the host of a relay someone runs, or host one on this Mac. Commander remembers every server you add.</p>
+          <div class="acts"><span class="btn pri big">Add server</span><span class="btn big">Host a relay on this Mac</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Found on this network <span class="inc">Proposed, no increment yet</span></div>
+          <div class="row"><span class="lamp wait"></span><span><span class="nm">studio-mini</span><br><span class="sub mono">studio-mini.local</span></span><span class="btn">Add</span></div>
+        </div>
+      </div>
+    </div>
+    <figcaption><h3>a. First run, no servers</h3>The same frame as the home state, with zeros, so the layout does not jump after the first server. Bonjour suggestions are a proposal in the spec and have no increment yet.</figcaption>
+  </figure>
+
+  <!-- (b) ADD SERVER -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="currentColor"/><path d="M2.5 6 11.5 2.5M2.5 6l9 3.5" stroke="currentColor" fill="none"/></svg></span><span>Wed 25 Nov 09:06</span></div>
+      <div class="tray">
+        <div class="t-head"><span class="back">‹ Back</span><span class="grow ttl" style="text-align:center">Add server</span><span style="width:40px"></span></div>
+        <div class="sec">
+          <div class="sub" style="margin-bottom:4px">Server address</div>
+          <div class="field focus">relay.team.example</div>
+          <div class="sub" style="margin-top:4px">Use host, host:port or https://host:port. The port is 443 unless you give one.</div>
+        </div>
+        <div class="sec">
+          <div class="sh">Health check <span class="grow"></span><span class="st bad">Stopped at step 5 of 5</span></div>
+          <div class="step"><span class="mark ok">✓</span><span><span class="nm">Name resolution</span><br><span class="sub">relay.team.example resolves to <span class="mono">100.64.0.12</span></span></span></div>
+          <div class="step"><span class="mark ok">✓</span><span><span class="nm">TCP connect</span><br><span class="sub">Port 443 answered</span></span></div>
+          <div class="step"><span class="mark ok">✓</span><span><span class="nm">TLS and certificate</span><br><span class="sub">Issued by the relay’s own CA. macOS does not already trust it, so you pin it.</span>
+            <div class="well" style="margin-top:6px"><div class="sub">SHA-256 fingerprint to pin</div><div class="fp">7A:3F:91:C2:0E:5B:D4:18:66:AF:20:9C:E1:47:B8:03:<br>5D:F2:8A:6E:11:C9:74:30:BE:95:0A:D7:4C:E8:21:F6</div>
+            <div class="row" style="min-height:0;margin-top:6px"><span class="tog"></span><span class="sub" style="color:var(--ac-fg)">I checked this with the relay admin. Pin it.</span><span></span></div></div></span></div>
+          <div class="step"><span class="mark ok">✓</span><span><span class="nm">Relay version</span><br><span class="sub">commander-relay 0.4.0, compatible</span></span></div>
+          <div class="step"><span class="mark no">✕</span><span><span class="nm" style="color:var(--ac-failure)">Sign-in provider</span><br><span class="sub">The relay signs in with Google, but this Mac has no Desktop OAuth client file for this relay’s client ID. Ask the admin for the file, add it, then check again.</span>
+            <div style="margin-top:6px"><span class="btn">Choose client file…</span></div></span></div>
+        </div>
+        <div class="sec">
+          <dl class="kv" style="margin:0;align-items:center">
+            <dt>Nickname</dt><dd><span class="field" style="display:block;font-family:var(--sans)">team-relay</span></dd>
+            <dt>Colour</dt><dd><span class="sw a"></span> <span class="sw b" style="outline:2px solid var(--ac-focus);outline-offset:2px"></span> <span class="sw c"></span> <span class="sw d"></span></dd>
+            <dt>Connect automatically</dt><dd><span class="tog"></span></dd>
+          </dl>
+        </div>
+        <div class="foot"><span class="sub grow">Fix step 5 to finish.</span><span class="btn">Check again</span><span class="btn pri" aria-disabled="true">Save server</span></div>
+      </div>
+    </div>
+    <figcaption><h3>b. Add server, health check with a failed step</h3>Five steps in order: name resolution, TCP, TLS with the fingerprint to pin, relay version, sign-in provider. The failed step says what is wrong and what to do. Open question for the spec: may you save a server while a step fails? Increment 1.</figcaption>
+  </figure>
+
+  <!-- (d) CERT CHANGED -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico" style="color:var(--ac-failure)"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="currentColor"/><path d="M2.5 6 11.5 2.5M2.5 6l9 3.5" stroke="currentColor" fill="none"/></svg>!</span><span>Thu 3 Dec 10:18</span></div>
+      <div class="tray">
+        <div class="t-head"><span class="back">‹ Servers</span><span class="grow" style="text-align:right"><span class="ttl"><span class="sw b"></span> team-relay</span><br><span class="st bad"><span class="lamp err"></span>&nbsp; Certificate changed</span></span></div>
+        <div class="sec">
+          <div class="alert">
+            <h5>Commander blocked this connection</h5>
+            <div style="font-size:12px">team-relay presented a certificate that does not match the one you pinned. Either the admin replaced it, or something between you and the relay is intercepting the connection. Compare the new fingerprint with the admin before you trust it.</div>
+          </div>
+        </div>
+        <div class="sec">
+          <div class="sub">Pinned on 25 Nov 2026</div>
+          <div class="fp">7A:3F:91:C2:0E:5B:D4:18:66:AF:20:9C:E1:47:B8:03:<br>5D:F2:8A:6E:11:C9:74:30:BE:95:0A:D7:4C:E8:21:F6</div>
+          <div class="sub" style="margin-top:8px;color:var(--ac-failure)">Presented now</div>
+          <div class="fp well" style="border:var(--ac-line) solid var(--ac-failure)">C4:09:E7:5A:B1:3D:82:F0:1E:66:9B:27:D5:4A:0C:93:<br>A8:71:3F:EC:58:02:BD:16:E9:40:7C:D3:25:8F:6A:1B</div>
+        </div>
+        <div class="sec">
+          <div class="sh">While blocked</div>
+          <div class="sub" style="font-size:12px">5 friends on team-relay are hidden. 1 hand-off to priya’s agent keeps waiting at the relay. ryan-mac stays online.</div>
+        </div>
+        <div class="foot"><span class="btn bad">Remove server</span><span class="grow"></span><span class="btn">Trust new certificate…</span><span class="btn pri">Keep blocked</span></div>
+      </div>
+    </div>
+    <figcaption><h3>d. Certificate changed, blocking</h3>Only this server stops. The safe choice is the default button. Trusting the new certificate takes a second confirmation. Increment 1.</figcaption>
+  </figure>
+
+  <!-- (e) HOSTING -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="currentColor"/><path d="M2.5 6 11.5 2.5M2.5 6l9 3.5" stroke="currentColor" fill="none"/></svg></span><span>Wed 25 Nov 14:50</span></div>
+      <div class="tray">
+        <div class="t-head"><span class="back">‹ Back</span><span class="grow" style="text-align:right"><span class="ttl">Hosting on this Mac</span><br><span class="st ok"><span class="lamp on"></span> Running</span></span></div>
+        <div class="sec">
+          <div class="row"><span class="lamp on"></span><span><span class="nm">Relay</span><br><span class="sub">commander-relay in host mode, started by launchd</span></span><span class="btn bad">Stop</span></div>
+          <div class="row"><span class="lamp on"></span><span><span class="nm">PostgreSQL</span><br><span class="sub">Bundled, on a Unix socket in the app’s support folder</span></span><span class="st ok">Running</span></div>
+          <div class="row"><span class="lamp on"></span><span><span class="nm">NATS JetStream</span><br><span class="sub">Embedded in the relay process</span></span><span class="st ok">Running</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Reachable at</div>
+          <div class="field">https://ryan-mac.tail.internal</div>
+          <div class="sub" style="margin:8px 0 4px">Listen on</div>
+          <div class="segc"><span class="sel">Tailnet only</span><span>LAN</span><span>All interfaces</span></div>
+          <div class="sub" style="margin-top:6px">The relay made its own certificate for this name and its tailnet IP. Friends pin it when they add the server.</div>
+        </div>
+        <div class="sec">
+          <div class="sh">Members <span class="n">4</span></div>
+          <div class="row"><span class="lamp busy"></span><span class="nm">ryan <span class="badge">First admin</span></span><span class="sub">This Mac</span></div>
+          <div class="row"><span class="lamp busy"></span><span class="nm">sam</span><span class="sub">2 devices</span></div>
+          <div class="row"><span class="lamp on"></span><span class="nm">jonas</span><span class="sub">1 device</span></div>
+          <div class="row"><span class="lamp away"></span><span class="nm">mei</span><span class="sub">1 device</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Allowed emails <span class="n">4</span><span class="inc">Inc 2</span></div>
+          <div class="sub mono">sam@example.test, jonas@example.test, mei@example.test, ryan@example.test</div>
+          <div style="margin-top:6px"><span class="btn">Edit list</span></div>
+        </div>
+        <div class="sec">
+          <div class="sh">Invite link <span class="inc">Inc 2</span></div>
+          <div class="field">agentcommander://join?server=ryan-mac.tail.internal&amp;pin=7A3F…21F6&amp;from=ryan</div>
+          <div class="acts" style="margin-top:6px"><span class="btn">Copy link</span><span class="btn">Show code</span><span class="btn">Show QR</span></div>
+        </div>
+        <div class="foot"><span class="sub grow">Backup and restore</span><span class="inc inl">No increment yet</span><span class="btn">Back up now</span></div>
+      </div>
+    </div>
+    <figcaption><h3>e. Hosting this Mac’s relay</h3>Three process lamps show the native stack with no Docker. Start and stop, bind address and the member list are assumed for increment 1 with host mode; the spec does not split the Hosting controls by increment. Allowed emails and invite links are increment 2.</figcaption>
+  </figure>
+
+  <!-- (f) APPROVAL -->
+  <figure>
+    <div class="stage">
+      <div class="menubar"><span class="ico" style="color:var(--ac-attention)"><svg width="14" height="12" viewBox="0 0 14 12" aria-hidden="true"><circle cx="2.5" cy="6" r="2" fill="currentColor"/><circle cx="11.5" cy="2.5" r="2" fill="currentColor"/><circle cx="11.5" cy="9.5" r="2" fill="currentColor"/><path d="M2.5 6 11.5 2.5M2.5 6l9 3.5" stroke="currentColor" fill="none"/></svg>1</span><span>Wed 25 Nov 14:42</span></div>
+      <div class="banner">
+        <div class="row top" style="min-height:0"><span class="sw b" style="margin-top:4px"></span><span><b>priya’s run wants to push a branch</b><br><span class="sub">agent-commander, via team-relay. Agent Commander</span></span><span class="acts"><span class="btn">Deny</span><span class="btn pri">Approve</span></span></div>
+      </div>
+      <div class="tray">
+        <div class="t-head"><span class="back">‹ Needs you</span><span class="grow ttl" style="text-align:right">Approve this action?</span></div>
+        <div class="sec">
+          <dl class="kv" style="margin:0">
+            <dt>Who</dt><dd><span class="lamp on"></span> priya, on <span class="sw b"></span> team-relay</dd>
+            <dt>Run</dt><dd><span class="hz claude"></span> “Fix session restore”, running on this Mac</dd>
+            <dt>Wants to</dt><dd>Push a branch</dd>
+          </dl>
+          <div class="well mono" style="margin-top:8px">git push origin fix/session-restore</div>
+        </div>
+        <div class="sec">
+          <div class="sh">Grant</div>
+          <dl class="kv" style="margin:0">
+            <dt>Resource</dt><dd>Repository agent-commander</dd>
+            <dt>Approval</dt><dd><span class="badge">Ask each time</span></dd>
+            <dt>Sandbox</dt><dd>Worktree only</dd>
+            <dt>Limits</dt><dd>Use 2 of 5, expires today 18:00</dd>
+            <dt>Cost</dt><dd>You pay, within this grant’s budget</dd>
+          </dl>
+          <div class="sub" style="margin-top:8px">Your provider credentials and checkout stay on this Mac. priya sees the result, not your files.</div>
+        </div>
+        <div class="foot"><span class="btn">Change to Auto within limits…</span><span class="grow"></span><span class="btn">Deny</span><span class="btn pri">Approve</span></div>
+      </div>
+    </div>
+    <figcaption><h3>f. Approval prompt for “Ask each time”</h3>The macOS notification carries Approve and Deny. The tray shows the exact command and the grant it runs under. Increment 3; the notification channel itself arrives in increment 2.</figcaption>
+  </figure>
+</div>
+
+<h2>How the pieces connect</h2>
+<p class="muted">Every Mac dials out to each relay on port 443. A relay routes sealed envelopes and cannot read them.</p>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 1100 440" role="img" aria-label="The tray talks to a device agent on this Mac. The agent holds one pinned TLS connection per relay: the host-mode relay on this Mac and other relays. Friends' Macs dial the same relays. Only sealed envelopes and routing metadata cross a relay; provider credentials and code checkouts never leave a host.">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="currentColor"/></marker></defs>
+  <rect class="d-host" x="10" y="16" width="640" height="410" rx="12"/>
+  <text class="d-t" x="26" y="38">This Mac</text>
+
+  <rect class="d-box" x="30" y="76" width="120" height="74" rx="8"/>
+  <text class="d-t" x="90" y="106" text-anchor="middle">Menu bar tray</text>
+  <text class="d-s" x="90" y="126" text-anchor="middle">SwiftUI panel</text>
+
+  <path class="d-a" d="M150 113H238" marker-end="url(#ah)"/>
+  <text class="d-s" x="195" y="100" text-anchor="middle">verbs with</text>
+  <text class="d-s" x="195" y="132" text-anchor="middle">a server ID</text>
+
+  <rect class="d-box" x="240" y="60" width="160" height="106" rx="8"/>
+  <text class="d-t" x="320" y="88" text-anchor="middle">Device agent</text>
+  <text class="d-s" x="320" y="108" text-anchor="middle">commander-network</text>
+  <text class="d-s" x="320" y="126" text-anchor="middle">daemon, one connection</text>
+  <text class="d-s" x="320" y="144" text-anchor="middle">per enabled server</text>
+
+  <path class="d-a" d="M320 166V204" marker-end="url(#ah)"/>
+  <text class="d-s" x="330" y="190">reads</text>
+  <rect class="d-box" x="240" y="206" width="160" height="58" rx="8"/>
+  <text class="d-t" x="320" y="230" text-anchor="middle">Keychain</text>
+  <text class="d-s" x="320" y="250" text-anchor="middle">device keys and pins, per server</text>
+
+  <path class="d-a" d="M400 92H478" marker-end="url(#ah)"/>
+  <text class="d-s" x="440" y="82" text-anchor="middle">pinned TLS</text>
+  <rect class="d-box" x="480" y="48" width="154" height="104" rx="8"/>
+  <text class="d-t" x="557" y="72" text-anchor="middle">Relay, host mode</text>
+  <text class="d-s" x="557" y="92" text-anchor="middle">commander-relay</text>
+  <text class="d-s" x="557" y="110" text-anchor="middle">embedded NATS JetStream</text>
+  <text class="d-s" x="557" y="128" text-anchor="middle">bundled PostgreSQL</text>
+  <text class="d-s" x="557" y="146" text-anchor="middle">all under launchd</text>
+
+  <path class="d-a" d="M400 150H440V180H672V296H708" marker-end="url(#ah)"/>
+  <text class="d-s" x="556" y="198" text-anchor="middle">pinned TLS, port 443</text>
+
+  <rect class="d-local" x="30" y="318" width="604" height="90" rx="8"/>
+  <text class="d-t" x="48" y="346">Never leaves this Mac</text>
+  <text class="d-s" x="48" y="368">Provider credentials, code checkouts, raw tmux control and command output.</text>
+  <text class="d-s" x="48" y="388">A friend’s request is decrypted here, checked against the grant, then run by a scoped local worker.</text>
+
+  <rect class="d-box" x="710" y="262" width="140" height="68" rx="8"/>
+  <text class="d-t" x="780" y="290" text-anchor="middle">team-relay</text>
+  <text class="d-s" x="780" y="310" text-anchor="middle">another relay</text>
+
+  <rect class="d-box" x="930" y="62" width="156" height="62" rx="8"/>
+  <text class="d-t" x="1008" y="88" text-anchor="middle">sam’s Mac</text>
+  <text class="d-s" x="1008" y="108" text-anchor="middle">tray and device agent</text>
+  <path class="d-a" d="M930 92H636" marker-end="url(#ah)"/>
+  <text class="d-s" x="790" y="82" text-anchor="middle">dials out on 443, over Headscale</text>
+
+  <rect class="d-box" x="930" y="264" width="156" height="62" rx="8"/>
+  <text class="d-t" x="1008" y="290" text-anchor="middle">priya’s Mac</text>
+  <text class="d-s" x="1008" y="310" text-anchor="middle">tray and device agent</text>
+  <path class="d-a" d="M930 296H852" marker-end="url(#ah)"/>
+  <text class="d-s" x="891" y="286" text-anchor="middle">dials 443</text>
+
+  <rect class="d-cross" x="700" y="142" width="386" height="84" rx="8"/>
+  <text class="d-t" x="716" y="168">What crosses a relay</text>
+  <text class="d-s" x="716" y="188">Sealed envelopes, encrypted end to end between devices.</text>
+  <text class="d-s" x="716" y="208">Routing metadata: recipient, operation ID, expiry.</text>
+
+  <rect class="d-box" x="710" y="356" width="140" height="52" rx="8" stroke-dasharray="4 3"/>
+  <text class="d-t" x="780" y="378" text-anchor="middle">lab-relay</text>
+  <text class="d-s" x="780" y="396" text-anchor="middle">offline, agent retries</text>
+</svg>
+</div>
+<figcaption>Network reach is not Commander’s job. Headscale, a LAN or the public internet all work when the host name resolves and the relay answers. Requests for an offline friend wait at the relay as sealed envelopes.</figcaption>
+</figure>
+
+<h2>What ships when</h2>
+<p class="muted">From the spec’s delivery order. Each increment ends verified on this Mac and a second Mac over Headscale.</p>
+<div class="incmap">
+  <section class="now"><h3>1. Connect <span>(a, b, c, d, e)</span></h3><ul>
+    <li>Add server and the five-step health check</li><li>Pin on first use, certificate-changed block</li>
+    <li>Server list: favorites, recents, status per server</li><li>Friends grouped by server</li>
+    <li>Native host mode with a first admin; Hosting start and stop, bind address, members (assumed)</li><li>Sign-in verified end to end</li></ul></section>
+  <section><h3>2. Social <span>(c, e, f)</span></h3><ul>
+    <li>Automatic presence in the header</li><li>Linked-contact badges</li><li>Activity feed and its filters</li>
+    <li>macOS notifications</li><li>Invite links, allowed emails and other membership settings</li><li>Per-server profiles</li></ul></section>
+  <section><h3>3. Share and consult <span>(c, f)</span></h3><ul>
+    <li>Approval prompts, Ask each time or Auto within limits</li><li>Access requests from the shared directory</li>
+    <li>Hand-off rows in live remote work</li><li>Budgets, cost attribution and audit on a grant</li></ul></section>
+  <section><h3>4. Live work <span>(c)</span></h3><ul>
+    <li>Watch rows in live remote work</li><li>Co-pilot, review exchange and fan-out: not drawn yet</li></ul></section>
+  <section><h3>5. Teams</h3><ul>
+    <li>Groups under each server, shared workspaces, task board: not drawn yet</li></ul></section>
+  <section><h3>6. Remote</h3><ul>
+    <li>Tailnet web view for approvals and watching. No tray change.</li></ul></section>
+</div>
+<p class="muted" style="margin-top:14px;font-size:13.5px">Not placed in any increment by the spec, so labelled as such in the mockups: Bonjour discovery (proposed) and backup and restore.</p>
+
+<h2>How the theme plugs in</h2>
+<p>Every tray component reads only <code>--ac-*</code> custom properties: colour roles, harness colours, server swatches, radii and line weight. The default values come from <code>design/system/tokens.json</code>. “Increased contrast” applies that file’s <code>increaseContrast</code> overrides. “Daylight ops” is a new light skin that redefines the same names and nothing else. In Swift, the same split is one token struct in the environment, with the existing components unchanged.</p>
+
+</div>
+<script>
+(function(){
+  var scope=document.getElementById('scope'), btns=document.querySelectorAll('.seg button'), tog=document.getElementById('inc-toggle');
+  function setSkin(s){ scope.setAttribute('data-skin',s); btns.forEach(function(b){b.setAttribute('aria-pressed', b.dataset.skin===s?'true':'false')}); try{localStorage.setItem('ac-skin',s)}catch(e){} }
+  btns.forEach(function(b){ b.addEventListener('click',function(){setSkin(b.dataset.skin)}) });
+  tog.addEventListener('change',function(){ scope.classList.toggle('hide-inc',!tog.checked) });
+  try{ var s=localStorage.getItem('ac-skin'); if(s&&/^(commander|contrast|daylight)$/.test(s)) setSkin(s) }catch(e){}
+})();
+</script>
