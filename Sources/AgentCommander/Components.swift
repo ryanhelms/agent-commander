@@ -164,6 +164,93 @@ enum HostPlatform: Equatable {
     }
 }
 
+/// What a tool call returned: its output and, when it did not succeed, the service's error. Either
+/// can be empty without the other.
+struct ToolResult: Equatable {
+    let output: String
+    /// The service's reason the call ended without succeeding, trimmed. Nil on success.
+    let error: String?
+
+    init(output: String, error: String? = nil) {
+        self.output = output
+        let reason = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.error = reason.isEmpty ? nil : reason
+    }
+
+    /// The error, when the output does not already state it. The service can include its error in
+    /// the output; it is then shown once, as output. The match is on whole lines.
+    var separateError: String? {
+        guard let error else { return nil }
+        let wanted = Self.lines(error), present = Self.lines(output)
+        guard present.count >= wanted.count else { return error }
+        let found = (0...(present.count - wanted.count)).contains { start in
+            Array(present[start..<(start + wanted.count)]) == wanted
+        }
+        return found ? nil : error
+    }
+
+    /// True when there is an error or any output to read.
+    var hasText: Bool { error != nil || output.contains { !$0.isWhitespace } }
+
+    private static func lines(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+/// Where a tool call stands. This is the one mapping from a result to a status; the Console and
+/// Pretty transcripts, the focused worker and the PiP all read it through `TranscriptToolRow`.
+enum ToolStatus: Equatable {
+    case running, done, failed, declined, cancelled, interrupted
+
+    /// No result yet is running, and a result without an error is done. The service's fixed
+    /// reasons name their own status, and any other error is a failure.
+    init(result: ToolResult?) {
+        guard let result else { self = .running; return }
+        guard let error = result.error else { self = .done; return }
+        var reason = error.lowercased()
+        while reason.hasSuffix(".") { reason.removeLast() }
+        switch reason {
+        case "tool declined": self = .declined
+        case "tool cancelled", "tool canceled": self = .cancelled
+        case "tool interrupted": self = .interrupted
+        default: self = .failed
+        }
+    }
+
+    var word: String {
+        switch self {
+        case .running: "running"
+        case .done: "done"
+        case .failed: "failed"
+        case .declined: "declined"
+        case .cancelled: "cancelled"
+        case .interrupted: "interrupted"
+        }
+    }
+
+    /// The terminal mark ahead of the word, so the status never rests on colour alone.
+    var mark: String {
+        switch self {
+        case .running: "…"
+        case .done: "✓"
+        case .failed: "✗"
+        case .declined, .cancelled, .interrupted: "!"
+        }
+    }
+
+    /// Green for success and red for failure. Amber for a call still running and for one that was
+    /// stopped before it could finish, which is neither.
+    var ink: Color {
+        switch self {
+        case .done: Term.green
+        case .failed: Term.red
+        case .running, .declined, .cancelled, .interrupted: Term.amber
+        }
+    }
+}
+
 /// One entry of a console's structured transcript, built from the service's AG-UI messages. A
 /// tool call and its result are one entry, so showing a window of entries never leaves a result
 /// without its call. IDs are the service's message and tool-call IDs and stay stable as the
@@ -174,9 +261,9 @@ struct TranscriptEntry: Identifiable, Equatable {
         case prose(String, fromUser: Bool)
         /// A tool call. `detail` is the call's own summary when it has one. `result` is nil while
         /// the call is still running.
-        case tool(name: String, detail: String?, result: String?)
+        case tool(name: String, detail: String?, result: ToolResult?)
         /// A tool result whose call the service did not send.
-        case output(String)
+        case output(ToolResult)
     }
 
     let id: String
@@ -219,6 +306,9 @@ struct RequestPresentation: Identifiable, Equatable {
     /// on that host and the request can be answered: Commander keeps one answer and the worker
     /// reads it when the link comes back. Never set together with `disconnectReason`.
     var hostIsReconnecting = false
+    /// The asking worker's provider session, when the service has bound one. A request surface
+    /// uses it to point to that worker's source inspector.
+    var workerSession: NativeSession? = nil
 
     /// What happens to a reply sent while the host reconnects, in full. Nil otherwise.
     var replyHeldStatement: String? {
@@ -273,6 +363,9 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// The persistent SSH link to this worker's host is reconnecting. `state` is still the
     /// worker's own turn state, and a pending request can still be answered.
     var hostIsReconnecting = false
+    /// The provider session the service has bound this worker to. Nil for a legacy or unbound
+    /// worker, which has no source inspector and shows its console as before.
+    var session: NativeSession? = nil
 
     var isDisconnected: Bool { state == .disconnected }
 }
@@ -324,6 +417,8 @@ struct CockpitContent {
     /// Pending requests across every run, oldest first.
     var pending: [RequestPresentation]
     var sending: Set<String>
+    /// The open source inspection, for the one worker whose source is being read.
+    var sourceInspection: SourceInspection? = nil
 }
 
 /// Targeted intents emitted by the cockpit. Each names its run or request by stable ID.
@@ -355,6 +450,9 @@ struct CockpitActions {
     var canStopWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
     /// True while a control, interrupt or stop request for the worker is still in flight.
     var workerIsBusy: (@MainActor (_ workerID: String) -> Bool)? = nil
+    /// Reads a worker's provider source. Nil where no source can be read, and then no console
+    /// offers the inspector.
+    var source: ConsoleSourceIntents? = nil
 
     /// True when a worker's action list carries more than zoom, reply and copy.
     var offersWorkerOperations: Bool { takeControl != nil || interruptWorker != nil || stopWorker != nil }
@@ -664,10 +762,12 @@ extension TranscriptEntry {
     /// Builds transcript entries from AG-UI messages. Each tool call is paired with the `tool`
     /// message that answers it by tool-call ID. Roles other than `user` and `tool` read as the agent.
     static func entries(from messages: [AGUIMessage]) -> [TranscriptEntry] {
-        var results: [String: String] = [:]
+        var results: [String: ToolResult] = [:]
         var callIDs = Set<String>()
         for message in messages {
-            if message.role == "tool", let callID = message.toolCallID { results[callID] = message.content ?? "" }
+            if message.role == "tool", let callID = message.toolCallID {
+                results[callID] = ToolResult(output: message.content ?? "", error: message.error)
+            }
             for call in message.toolCalls ?? [] { callIDs.insert(call.id) }
         }
         var entries: [TranscriptEntry] = []
@@ -675,8 +775,10 @@ extension TranscriptEntry {
             if message.role == "tool" {
                 // A result with a known call is shown inside that call's entry.
                 if let callID = message.toolCallID, callIDs.contains(callID) { continue }
-                if let text = message.content, !text.isEmpty {
-                    entries.append(TranscriptEntry(id: message.id, kind: .output(text)))
+                // A result without its call stays readable, including a failure with no output.
+                let result = ToolResult(output: message.content ?? "", error: message.error)
+                if !result.output.isEmpty || result.error != nil {
+                    entries.append(TranscriptEntry(id: message.id, kind: .output(result)))
                 }
                 continue
             }
@@ -758,7 +860,8 @@ extension RunContent {
                     contextTail: Self.tail(of: worker.output),
                     contextEntries: Array(transcript.suffix(TranscriptEntry.recentWindow)),
                     disconnectReason: disconnectReason,
-                    hostIsReconnecting: reconnecting)
+                    hostIsReconnecting: reconnecting,
+                    workerSession: worker.boundSession)
             }
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
@@ -779,7 +882,8 @@ extension RunContent {
                 queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
                 interruptRequested: worker.control?.interruptRequested == true,
                 unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) },
-                hostIsReconnecting: reconnecting)
+                hostIsReconnecting: reconnecting,
+                session: worker.boundSession)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.
@@ -838,6 +942,7 @@ extension CockpitContent {
                   runs: model.runs.map(RunSummary.init(run:)),
                   selected: contents.first { $0.id == model.selectedID },
                   pending: contents.flatMap(\.awaiting),
-                  sending: model.sending)
+                  sending: model.sending,
+                  sourceInspection: model.source.inspection)
     }
 }

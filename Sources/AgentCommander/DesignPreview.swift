@@ -29,6 +29,12 @@ import SwiftUI
 //                                           PREVIEW_DISCONNECT wins for the same worker
 //   AGENT_COMMANDER_PREVIEW_DELIVERY_UNKNOWN=<worker ID>  show that sample worker with an accepted
 //                                           answer whose delivery is unknown
+//   AGENT_COMMANDER_PREVIEW_SOURCE=<worker ID>            open that sample worker's source inspector
+//                                           once the window is up. Claude Code and Codex samples
+//                                           have a provider session; the MCP sample (W-045) has
+//                                           none and offers no inspector. Provider has two pages,
+//                                           a gap and an inline image; Live is empty except for
+//                                           W-047; Journal fails
 //
 // Preview mode asks for a 1600 x 1000 window frame placed 62 pt below the top of the screen, as in
 // the concept captures. Production windows get no special sizing.
@@ -233,6 +239,11 @@ final class PreviewStore {
 
     var liveTick: Int { liveActivity ? tick : 0 }
 
+    /// Sample source records, read through the production model and the production envelope reader.
+    let source = ConsoleSourceModel { workerID, kind, cursor in
+        try await SourceFixture.page(workerID: workerID, source: kind, cursor: cursor)
+    }
+
     init(scenario: DesignPreviewScenario) {
         self.scenario = scenario
         self.ui = DesignFixture.state(for: scenario)
@@ -250,6 +261,7 @@ final class PreviewStore {
         interrupted = []
         stopped = []
         tick = 0
+        source.inspect(nil)
         agentProject = project ?? "All projects"
         self.scenario = scenario
         selectedRunID = run ?? (scenario == .attentionSwitch ? "R-039" : "R-042")
@@ -336,9 +348,12 @@ final class PreviewStore {
 
     /// Presentation that can only be applied once the view is in the window.
     func settle(visit: Int) async {
-        guard scenario == .tileControls else { return }
+        let inspected = scenario.isCockpit ? SourceFixture.inspectedWorkerID : nil
+        guard scenario == .tileControls || inspected != nil else { return }
         try? await Task.sleep(for: .milliseconds(700))
-        if !Task.isCancelled, self.visit == visit { ui.actionMenuWorkerID = "W-043" }
+        guard !Task.isCancelled, self.visit == visit else { return }
+        if scenario == .tileControls { ui.actionMenuWorkerID = "W-043" }
+        if let inspected { ui.sourceInspectorWorkerID = inspected }
     }
 }
 
@@ -561,6 +576,88 @@ private struct PreviewWindowFrame: NSViewRepresentable {
     func updateNSView(_ view: Probe, context: Context) {}
 }
 
+// MARK: - Source fixtures
+
+/// Sample source pages for the inspector. Each page is written as the service's JSON envelope and
+/// read by the production reader, so the preview shows what a real response would.
+enum SourceFixture {
+    /// The sample worker whose inspector opens with the window, when a capture asks for one.
+    static let inspectedWorkerID = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_SOURCE"]
+
+    /// Claude Code and Codex samples are bound to a provider session. The MCP sample is not, as a
+    /// legacy worker would be.
+    static func session(workerID: String, client: AgentClient) -> NativeSession? {
+        switch client {
+        case .claude: NativeSession(harnessInstance: "claude-code-acp", sessionID: "sess-\(workerID.lowercased())-7f3a91c2")
+        case .codex: NativeSession(harnessInstance: "codex-acp", sessionID: "sess-\(workerID.lowercased())-0b54de18")
+        default: nil
+        }
+    }
+
+    static func page(workerID: String, source: ConsoleSourceKind, cursor: String?) async throws -> SourcePage {
+        try await Task.sleep(for: .milliseconds(450))
+        let session = #"{"harnessInstance":"codex-acp","sessionId":"sess-\#(workerID.lowercased())-0b54de18"}"#
+        let json: String
+        switch (source, cursor) {
+        case (.provider, nil):
+            json = """
+            {"observations":[
+              {"session":\(session),"cursor":"c-001","turnId":"turn-4c1d92aa","text":{"speaker":"user","text":"Cover timeout behavior before headers, after headers, and after the first body chunk."}},
+              {"session":\(session),"cursor":"c-002","turnId":"turn-4c1d92aa","text":{"speaker":"assistant","text":"Pre-header retry is covered. Checking the streaming path against the public client contract in src/client/stream.ts. See https://example.invalid/contract for the published text."}},
+              {"session":\(session),"cursor":"c-003","turnId":"turn-4c1d92aa","tool":{"callId":"call_81f2","name":"shell","phase":"completed","summary":"$ pnpm test timeout --reporter=spec\\n✓ connect timeout retries inside the request budget\\n✓ exhausted retries return the upstream timeout\\nsrc/client/timeout.test.ts  3 passed"}},
+              {"cursor":"c-004","gap":{"reason":"provider compacted 14 earlier records"}},
+              {"session":\(session),"cursor":"c-005","turnId":"turn-4c1d92aa","extension":{"type":"codex/screenshot","mediaType":"image/png","data":"\(sampleImage)"}},
+              {"session":\(session),"cursor":"c-006","turnId":"turn-4c1d92aa","input":{"prompt":"Should the client retry after response body bytes have already been delivered?","choices":["Retry only idempotent requests","Never retry after the first byte",{"id":"ask","label":"Ask the coordinator"}]}},
+              {"session":\(session),"cursor":"c-007","turnId":"turn-4c1d92aa","turnEnded":{"reason":"awaiting_input"}}
+            ],"nextCursor":"page-2"}
+            """
+        case (.provider, _):
+            json = """
+            {"observations":[
+              {"session":\(session),"cursor":"c-008","turnId":"turn-2e07b6f1","tool":{"callId":"call_81f3","name":"apply_patch","phase":"started","summary":"src/client/retry.ts"}},
+              {"session":\(session),"cursor":"c-009","turnId":"turn-2e07b6f1","extension":{"type":"codex/plan","mediaType":"application/json","data":"eyJzdGVwcyI6WyJtYXAgdGltZW91dHMiLCJ3cml0ZSB0ZXN0cyIsInJlcG9ydCBhbWJpZ3VvdXMgY2FzZXMiXX0="}},
+              {"session":{"harnessInstance":"codex-acp","sessionId":"sess-earlier-55aa01"},"cursor":"c-010","turnId":"turn-09aa3c5d","text":{"speaker":"assistant","text":"Carried over from the session this worker resumed."}},
+              {"cursor":"c-011","vendorNote":{"kind":"unmapped"}}
+            ]}
+            """
+        case (.live, _) where workerID == "W-047":
+            json = """
+            {"observations":[
+              {"session":\(session),"turnId":"turn-4c1d92aa","text":{"speaker":"assistant","text":"? partial response body · policy decision required"}},
+              {"session":\(session),"turnId":"turn-4c1d92aa","turnEnded":{}}
+            ]}
+            """
+        case (.live, _):
+            json = #"{"observations":[]}"#
+        case (.journal, _):
+            throw ServiceError.rejected("No version-tested journal reader matches this session's records.")
+        }
+        return try SourcePage(envelope: Data(json.utf8))
+    }
+
+    /// A small PNG drawn here and carried as base64, the way a provider would send one inline.
+    private static let sampleImage: String = {
+        let width = 320, height = 120
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return "" }
+        context.setFillColor(CGColor(red: 0.07, green: 0.08, blue: 0.11, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let bars: [(CGFloat, CGColor)] = [
+            (0.86, CGColor(red: 0.66, green: 0.88, blue: 0.75, alpha: 1)),
+            (0.62, CGColor(red: 0.66, green: 0.88, blue: 0.75, alpha: 1)),
+            (0.34, CGColor(red: 0.95, green: 0.77, blue: 0.53, alpha: 1))
+        ]
+        for (index, bar) in bars.enumerated() {
+            context.setFillColor(bar.1)
+            context.fill(CGRect(x: 20, y: height - 34 - index * 30, width: Int(CGFloat(width - 40) * bar.0), height: 16))
+        }
+        guard let image = context.makeImage(),
+              let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return "" }
+        return data.base64EncodedString()
+    }()
+}
+
 // MARK: - Cockpit fixtures
 
 @MainActor
@@ -669,7 +766,8 @@ enum DesignFixture {
             ],
             selected: all.first { $0.id == store.selectedRunID } ?? all.first,
             pending: pending(for: store),
-            sending: [])
+            sending: [],
+            sourceInspection: store.source.inspection)
     }
 
     /// In-memory intents. Each changes the sample workspace the way the service would report it.
@@ -698,7 +796,12 @@ enum DesignFixture {
             chooseWallGrouping: {},
             takeControl: { workerID in store.take(workerID) },
             interruptWorker: { workerID in store.interrupted.insert(workerID) },
-            stopWorker: { workerID in store.stopped.insert(workerID) })
+            stopWorker: { workerID in store.stopped.insert(workerID) },
+            source: ConsoleSourceIntents(
+                inspect: { workerID in store.source.inspect(workerID) },
+                select: { source in store.source.select(source) },
+                loadMore: { store.source.loadMore() },
+                retry: { store.source.retry() }))
     }
 
     /// The whole navigation model of the concepts. Every row opens the matching preview view.
@@ -865,7 +968,8 @@ enum DesignFixture {
             control: control, request: pending, startedAt: started,
             unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil,
             // Only the link changed: status, output and the pending request are as they were.
-            hostIsReconnecting: id == reconnectingWorkerID && state != .stopped)
+            hostIsReconnecting: id == reconnectingWorkerID && state != .stopped,
+            session: SourceFixture.session(workerID: id, client: client))
     }
 
     private static func coordinator(_ store: PreviewStore, runID: String, id: String, name: String,
@@ -878,7 +982,8 @@ enum DesignFixture {
             host: SampleHost.macStudio.name, platform: SampleHost.macStudio.platform,
             location: "main", locationIsBranch: true, task: task, output: output, error: nil,
             state: .working, isCoordinator: true, lineage: [run],
-            control: .observing(holder: name), request: nil, startedAt: started)
+            control: .observing(holder: name), request: nil, startedAt: started,
+            session: SourceFixture.session(workerID: id, client: client))
     }
 
     /// Lines that arrive one at a time on working tiles while live activity is on.
@@ -899,7 +1004,8 @@ enum DesignFixture {
         runID: "R-042", runTitle: "Retry policy", project: "Relay",
         host: SampleHost.build01.name, platform: SampleHost.build01.platform,
         inputHolder: "Failure paths",
-        contextTail: ["$ pnpm test timeout", "✓ connection can retry"])
+        contextTail: ["$ pnpm test timeout", "✓ connection can retry"],
+        workerSession: SourceFixture.session(workerID: "W-047", client: .codex))
 
     private static let fieldOwnershipRequest = RequestPresentation(
         id: "Q-021", shortID: "Q-021",
@@ -908,7 +1014,8 @@ enum DesignFixture {
         runID: "R-039", runTitle: "Event schema", project: "Relay",
         host: SampleHost.macStudio.name, platform: SampleHost.macStudio.platform,
         inputHolder: "Event schema",
-        contextTail: ["$ rg 'source_name' packages/events", "emit.ts:42 · source_name"])
+        contextTail: ["$ rg 'source_name' packages/events", "emit.ts:42 · source_name"],
+        workerSession: SourceFixture.session(workerID: "W-052", client: .claude))
 
     private static let coordinatorOutput = """
     14:08:07 CLAUDE CODE

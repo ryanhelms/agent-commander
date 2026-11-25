@@ -16,9 +16,12 @@ struct AGUIMessage: Decodable, Identifiable, Equatable, Sendable {
     let content: String?
     let toolCalls: [AGUIToolCall]?
     let toolCallID: String?
+    /// On a `tool` message: why the call ended without succeeding. Absent or empty on success and
+    /// in projections that predate it. It is independent of `content`.
+    let error: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, toolCalls, toolCallID = "toolCallId"
+        case id, role, content, toolCalls, toolCallID = "toolCallId", error
     }
 }
 

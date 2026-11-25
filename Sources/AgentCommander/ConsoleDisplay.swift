@@ -135,7 +135,7 @@ enum PrettyContent {
         switch entry.kind {
         case .prose(let text, _): return !isBlank(text)
         case .tool: return true
-        case .output(let text): return !isBlank(text)
+        case .output(let result): return result.hasText
         }
     }
 
@@ -196,8 +196,14 @@ struct PrettyConsoleView: View {
                 fontSize: metrics.toolSize,
                 toggle: { toggle(entry.id) }
             )
-        case .output(let text):
-            PrettyRawBlock(text: text, metrics: metrics, showsCaption: false)
+        case .output(let result):
+            // A failed result without its call: the shared status line, then any output.
+            if result.error != nil {
+                ToolResultStatusLine(result: result, fontSize: metrics.toolSize)
+            }
+            if result.output.contains(where: { !$0.isWhitespace }) {
+                PrettyRawBlock(text: result.output, metrics: metrics, showsCaption: false)
+            }
         }
     }
 
@@ -704,6 +710,9 @@ struct ConsoleModeTitlebarControl: View {
     let consoleName: String
     let client: AgentClient
     var showsTitle = false
+    /// Present when this console's worker has a provider source. The menu then offers the source
+    /// inspector, in either display mode, and a console that hosts the inspector presents it here.
+    var source: ConsoleSourceAccess? = nil
 
     var body: some View {
         let mode = modes?.mode(for: consoleID) ?? .console
@@ -716,6 +725,10 @@ struct ConsoleModeTitlebarControl: View {
 
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
+            if let source {
+                Divider()
+                ConsoleSourceMenuItems(source: source)
+            }
             Divider()
             HarnessAccentMenu(client: client)
         } label: {
@@ -742,9 +755,11 @@ struct ConsoleModeTitlebarControl: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(modes == nil)
-        .help("Display: \(mode.title) — \(scope). Change the display mode or \(client.displayName) accent.")
+        .help("Display: \(mode.title) — \(scope). Change the display mode or \(client.displayName) accent"
+              + (source == nil ? "." : ", or inspect this console's source."))
         .accessibilityLabel("Display mode, \(consoleName)")
         .accessibilityValue("\(mode.title), \(scope)")
+        .modifier(ConsoleSourcePresentation(source: source))
     }
 }
 

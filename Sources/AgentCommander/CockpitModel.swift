@@ -17,6 +17,16 @@ final class CockpitModel {
     private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
     private var receivedStreamState = false
     private var usingLegacyService = false
+    /// Source records for the one console being inspected. A read runs beside the client's other
+    /// requests, so a slow provider history never waits in front of a reply or a control change.
+    let source: ConsoleSourceModel
+
+    init() {
+        let reader = ServiceClient()
+        source = ConsoleSourceModel { workerID, kind, cursor in
+            try await reader.workerHistory(workerID, source: kind, cursor: cursor)
+        }
+    }
 
     var selected: Run? { runs.first { $0.id == selectedID } }
 

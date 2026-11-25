@@ -49,6 +49,9 @@ struct WorkerTile: View {
     /// When present, the tile's actions open as an anchored list (WorkerActionMenu) whose
     /// presentation the page controls. Without it the tile uses the native menu.
     var menuPresented: Binding<Bool>? = nil
+    /// This worker's provider source, when it has one. Both variants offer the same inspector
+    /// from the title bar's display menu and from the action list.
+    var source: ConsoleSourceAccess? = nil
 
     /// Laid-out height of the focused transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -89,7 +92,8 @@ struct WorkerTile: View {
                     .lineLimit(1).fixedSize()
                     .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
             }
-            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client)
+            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
+                                       source: source)
             actionMenu
         }
     }
@@ -216,6 +220,7 @@ struct WorkerTile: View {
             .foregroundStyle(.consoleHeaderControlInk(active: menuPresented.wrappedValue ? Palette.focus : nil))
             .popover(isPresented: menuPresented, arrowEdge: .bottom) {
                 WorkerActionMenu(worker: worker, isFocused: isFocusedVariant, actions: actions,
+                                 inspectSource: source?.open,
                                  dismiss: { menuPresented.wrappedValue = false })
             }
             .help("Actions for \(worker.name)")
@@ -233,6 +238,7 @@ struct WorkerTile: View {
             if let openRequest = actions.openRequest {
                 Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
+            if let source { Button("Inspect source…", action: source.open) }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
         } label: {
@@ -281,6 +287,8 @@ struct WorkerActionMenu: View {
     let worker: WorkerPresentation
     let isFocused: Bool
     let actions: WorkerTileActions
+    /// Opens this worker's source inspector. Present only for a worker with a provider source.
+    var inspectSource: (() -> Void)? = nil
     let dismiss: () -> Void
 
     var body: some View {
@@ -301,6 +309,10 @@ struct WorkerActionMenu: View {
             }
             if let reply = actions.openRequest {
                 row("bell", worker.isDisconnected ? "View request" : "Reply to request", action: reply)
+            }
+            if let inspectSource {
+                row("doc.text.magnifyingglass", "Inspect source…", label: "Inspect the source of \(worker.name)",
+                    action: inspectSource)
             }
             if worker.control != .held, let take = actions.takeControl {
                 row("hand.raised", "Take control", label: "Take control of \(worker.name)",
@@ -531,6 +543,8 @@ struct CoordinatorConsole: View {
     var isKeyFocused = false
     /// Sends a message to the coordinator. Present only where the service supports it.
     var sendMessage: ((String) -> Void)? = nil
+    /// The coordinator's provider source, when it has one.
+    var source: ConsoleSourceAccess? = nil
     let openRequest: (RequestPresentation) -> Void
     /// Laid-out height of the transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -541,7 +555,8 @@ struct CoordinatorConsole: View {
             ConsoleTitleBar(title: coordinator.name, client: coordinator.client, host: coordinator.host,
                             platform: coordinator.platform, location: coordinator.location,
                             locationIsBranch: coordinator.locationIsBranch, density: .console) {
-                ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name, client: coordinator.client)
+                ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name,
+                                           client: coordinator.client, source: source)
             }
             // One scrollback: the assignment, the transcript, then any waiting request directly
             // after it. A long transcript scrolls in place while the notices stay visible beneath it.
@@ -622,6 +637,9 @@ struct AttentionStack: View {
     /// Laid over the header's title area when the stack is the content of its own window, so that
     /// area moves the window. The in-window PiP has none.
     var dragHandle: AnyView? = nil
+    /// The asking worker's provider source, when it has one. The stack stays compact: its action
+    /// opens the source inspector on that worker's own console.
+    var source: ConsoleSourceAccess? = nil
     /// Laid-out height of the context tail, reported by the terminal well.
     @State private var tailHeight: CGFloat = 44
 
@@ -699,7 +717,8 @@ struct AttentionStack: View {
                 VStack(spacing: 0) {
                     ConsoleTitleBar(title: current.workerName, client: current.client, host: current.host,
                                     platform: current.platform, lineage: [current.runTitle], density: .pip) {
-                        ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName, client: current.client)
+                        ConsoleModeTitlebarControl(consoleID: current.workerID, consoleName: current.workerName,
+                                                   client: current.client, source: source)
                     }
                     if !current.contextEntries.isEmpty || !current.contextTail.isEmpty {
                         ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,

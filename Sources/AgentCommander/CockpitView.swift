@@ -79,6 +79,30 @@ final class CockpitPresentationState {
     /// Requests the developer asked for by View request or Next request. They are shown even
     /// while their console is in view, until answered or closed.
     var surfacedRequests = Set<String>()
+    /// Worker whose source inspector is open. The console showing that worker presents it; the
+    /// cockpit page starts and abandons the reading as this changes.
+    var sourceInspectorWorkerID: String?
+
+    /// Opens a worker's source inspector on its console, once the menu or list that asked for it
+    /// has closed and, after a reveal, once that console is in place.
+    func presentSource(of workerID: String, after delay: Duration = .milliseconds(120)) {
+        Task {
+            try? await Task.sleep(for: delay)
+            sourceInspectorWorkerID = workerID
+        }
+    }
+
+    /// Source access for a compact request surface (the PiP, in the window or floating). Its
+    /// action shows the asking worker's console and opens the inspector there.
+    func sourcePointer(for request: RequestPresentation, intents: ConsoleSourceIntents?,
+                       reveal: @escaping () -> Void) -> ConsoleSourceAccess? {
+        guard let session = request.workerSession, intents != nil else { return nil }
+        return ConsoleSourceAccess(workerName: request.workerName, client: request.client, session: session,
+                                   open: { [weak self] in
+                                       reveal()
+                                       self?.presentSource(of: request.workerID, after: .milliseconds(400))
+                                   })
+    }
 
     /// Shows the worker that raised a request: zooms it in the selected run, or selects its run
     /// and zooms it there. The in-window surfaces and the floating window both use this.
@@ -315,6 +339,9 @@ struct CockpitScreen: View {
             .onChange(of: content.pending.map(\.id)) { old, new in pendingChanged(from: old, to: new) }
             .onChange(of: disconnectedRequestIDs) { old, new in disconnectedRequestsChanged(from: old, to: new) }
             .onChange(of: heldReplyRequestIDs) { old, new in heldReplyRequestsChanged(from: old, to: new) }
+            // One inspector at a time. Opening it on a worker starts that worker's reading, and
+            // closing it or moving to another worker abandons the one in flight.
+            .onChange(of: ui.sourceInspectorWorkerID) { _, workerID in actions.source?.inspect(workerID) }
             .onAppear { seedFocus() }
     }
 
@@ -499,7 +526,7 @@ struct CockpitScreen: View {
                 let sendMessage: ((String) -> Void)? = actions.messageCoordinator.map { send in { text in send(run.id, text) } }
                 CoordinatorConsole(coordinator: coordinator, assignment: run.task, startedAt: run.startedAt,
                                    awaiting: run.awaiting, isKeyFocused: paneFocus == coordinator.id,
-                                   sendMessage: sendMessage) { request in
+                                   sendMessage: sendMessage, source: sourceAccess(coordinator)) { request in
                     open(request)
                 }
                 .focusable()
@@ -667,7 +694,7 @@ struct CockpitScreen: View {
             }) : nil
         return WorkerTile(worker: worker, variant: variant, isKeyFocused: paneFocus == worker.id,
                           reply: variant == .focused ? replyContext : nil, actions: tileActions,
-                          menuPresented: menuPresented)
+                          menuPresented: menuPresented, source: sourceAccess(worker))
             .focusable()
             .focusEffectDisabled()
             .focused($paneFocus, equals: worker.id)
@@ -685,8 +712,34 @@ struct CockpitScreen: View {
                            reply: replyContext,
                            showNext: { showNext(after: current) },
                            expand: { expand(current) },
-                           close: { close(current) })
+                           close: { close(current) },
+                           source: ui.sourcePointer(for: current, intents: actions.source,
+                                                    reveal: { expand(current) }))
         }
+    }
+
+    /// Source access for a console that hosts the inspector: a wall tile, the focused worker or
+    /// the coordinator. Nil for a worker without a provider session, and where no source can be
+    /// read, so those consoles are unchanged. The inspection is handed over only when it is this
+    /// worker's, so another worker's records are never drawn here.
+    private func sourceAccess(_ worker: WorkerPresentation) -> ConsoleSourceAccess? {
+        guard let session = worker.session, let intents = actions.source else { return nil }
+        let id = worker.id
+        let isPresented = Binding(
+            get: { ui.sourceInspectorWorkerID == id },
+            set: { shown in
+                if shown { ui.sourceInspectorWorkerID = id }
+                else if ui.sourceInspectorWorkerID == id { ui.sourceInspectorWorkerID = nil }
+            })
+        let panel = ConsoleSourceAccess.Panel(
+            isPresented: isPresented,
+            inspection: content.sourceInspection.flatMap { $0.workerID == id ? $0 : nil },
+            select: { source in intents.select(source) },
+            loadMore: { intents.loadMore() },
+            retry: { intents.retry() },
+            copy: { text in copy(text) })
+        return ConsoleSourceAccess(workerName: worker.name, client: worker.client, session: session,
+                                   open: { ui.presentSource(of: id) }, panel: panel)
     }
 
     // MARK: Intents
@@ -863,6 +916,7 @@ struct CockpitScreen: View {
         ui.zoomAfterSelection = nil
         ui.collapsedGroups.removeAll()
         ui.showingRunDetails = false
+        ui.sourceInspectorWorkerID = nil
         ui.returnFocusWorkerID = ui.zoomedWorkerID ?? run?.coordinator?.id
     }
 
@@ -1068,6 +1122,12 @@ struct CockpitView: View {
             canControlWorker: { workerID in model.canControlWorker(workerID) },
             canInterruptWorker: { workerID in model.canInterruptWorker(workerID) },
             canStopWorker: { workerID in model.canStopWorker(workerID) },
-            workerIsBusy: { workerID in model.workerActions.contains(workerID) })
+            workerIsBusy: { workerID in model.workerActions.contains(workerID) },
+            // Source reads name only the worker. The service resolves its bound session.
+            source: ConsoleSourceIntents(
+                inspect: { workerID in model.source.inspect(workerID) },
+                select: { source in model.source.select(source) },
+                loadMore: { model.source.loadMore() },
+                retry: { model.source.retry() }))
     }
 }

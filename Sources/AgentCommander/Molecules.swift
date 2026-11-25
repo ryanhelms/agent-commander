@@ -705,18 +705,20 @@ extension TerminalStatusLine where Trailing == EmptyView {
 
 /// One tool call in a transcript: a disclosure row with the tool's name, its summary and its
 /// state, and the result beneath when open. The row is a real button, so Tab reaches it and Space
-/// opens it. A call with no result text yet has nothing to open and is not a button target.
+/// opens it. A call with no result text yet has nothing to open and is not a button target. The
+/// state is the call's `ToolStatus`. An error the output does not already state is shown above the
+/// output in the status ink, so a failure with no output still opens.
 struct TranscriptToolRow: View {
     let name: String
     let detail: String?
     /// Nil while the call is still running.
-    let result: String?
+    let result: ToolResult?
     let isExpanded: Bool
     var fontSize: CGFloat = TypeRole.wallTerminalSize
     let toggle: () -> Void
 
-    private var canExpand: Bool { !(result ?? "").isEmpty }
-    private var stateWord: String { result == nil ? "running" : "done" }
+    private var status: ToolStatus { ToolStatus(result: result) }
+    private var canExpand: Bool { result?.error != nil || !(result?.output ?? "").isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: fontSize * 0.25) {
@@ -729,8 +731,8 @@ struct TranscriptToolRow: View {
                             .foregroundStyle(detail.hasPrefix("$") ? Term.cyan : Term.text)
                             .lineLimit(isExpanded ? 4 : 1).truncationMode(.tail)
                     }
-                    Text(result == nil ? "  … running" : "  ✓ done")
-                        .foregroundStyle(result == nil ? Term.amber : Term.green)
+                    Text("  \(status.mark) \(status.word)")
+                        .foregroundStyle(status.ink)
                         .lineLimit(1).fixedSize()
                     Spacer(minLength: 0)
                 }
@@ -739,21 +741,53 @@ struct TranscriptToolRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!canExpand)
-            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(stateWord)")
+            .accessibilityLabel("Tool \(name)\(detail.map { ", \($0)" } ?? ""), \(status.word)")
             .accessibilityValue(canExpand ? (isExpanded ? "Expanded" : "Collapsed") : "")
             .accessibilityHint(canExpand ? "Shows or hides the tool's result" : "")
             if isExpanded, let result, canExpand {
-                Text(result)
-                    .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
-                    .foregroundStyle(Term.text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, fontSize * 0.9)
-                    .overlay(alignment: .leading) { Rectangle().fill(Term.dim).frame(width: 1) }
-                    .padding(.leading, fontSize * 0.3)
-                    .accessibilityLabel("Result of \(name): \(result)")
+                VStack(alignment: .leading, spacing: fontSize * 0.2) {
+                    if let error = result.separateError {
+                        Text(error)
+                            .foregroundStyle(status.ink)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("\(name) \(status.word): \(error)")
+                    }
+                    if !result.output.isEmpty {
+                        Text(result.output)
+                            .foregroundStyle(Term.text)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityLabel("Result of \(name): \(result.output)")
+                    }
+                }
+                .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+                .padding(.leading, fontSize * 0.9)
+                .overlay(alignment: .leading) { Rectangle().fill(Term.dim).frame(width: 1) }
+                .padding(.leading, fontSize * 0.3)
             }
         }
+    }
+}
+
+/// The status of a tool result whose call the service did not send, when that result carries an
+/// error: the mark and word of its `ToolStatus`, then the error unless the output already states
+/// it. Console and Pretty both place it above the orphan's output.
+struct ToolResultStatusLine: View {
+    let result: ToolResult
+    var fontSize: CGFloat = TypeRole.wallTerminalSize
+
+    var body: some View {
+        let status = ToolStatus(result: result)
+        let error = result.separateError
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text("\(status.mark) \(status.word)").fontWeight(.semibold).fixedSize()
+            if let error { Text("  " + error).textSelection(.enabled) }
+        }
+        .font(Term.font(fontSize)).foregroundStyle(status.ink)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Tool result \(status.word)" + (error.map { ": \($0)" } ?? ""))
     }
 }
 
@@ -817,12 +851,15 @@ struct TranscriptView: View {
                               isExpanded: expanded.contains(entry.id), fontSize: fontSize) {
                 if expanded.contains(entry.id) { expanded.remove(entry.id) } else { expanded.insert(entry.id) }
             }
-        case .output(let text):
-            Text(text)
-                .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
-                .foregroundStyle(.inkTermDim)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        case .output(let result):
+            if result.error != nil { ToolResultStatusLine(result: result, fontSize: fontSize) }
+            if !result.output.isEmpty {
+                Text(result.output)
+                    .font(Term.font(fontSize - 0.5)).lineSpacing(fontSize * 0.2)
+                    .foregroundStyle(.inkTermDim)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
