@@ -144,7 +144,9 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("POST /v1/runs/{run}/integrations", s.handle(s.beginIntegration))
 	mux.HandleFunc("POST /v1/workers/{worker}/coding/commit", s.handle(s.codingCommit))
 	mux.HandleFunc("GET /v1/workers/{worker}/control", s.waitWorkerControl)
-	mux.HandleFunc("POST /v1/workers/{worker}/messages", s.handlePreparedJSON(s.sendWorkerMessage, 1<<20, s.prepareWorkerPrompt))
+	mux.HandleFunc("POST /v1/workers/{worker}/messages", s.handlePreparedJSON(func(req *http.Request, actor string) (outcome, error) {
+		return s.applyEndpoint(req, actor, s.sendWorkerMessage)
+	}, 1<<20, s.prepareWorkerPrompt))
 	mux.HandleFunc("POST /v1/workers/{worker}/elicitations/await", s.awaitElicitation)
 	mux.HandleFunc("GET /v1/workers/{worker}/elicitations", s.handleJSON(s.listElicitations))
 	mux.HandleFunc("POST /v1/workers/{worker}/elicitations/{elicitation}/reply", s.handleJSONLimit(s.answerElicitation, elicitationPayloadLimit))
