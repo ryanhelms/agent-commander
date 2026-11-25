@@ -590,16 +590,29 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	var textDeadline <-chan time.Time
 	firstText := true
 	flushText := func() {
-		if textDeadline != nil {
-			textTimer.Stop()
-			textDeadline = nil
-		}
 		if text.Len() > 0 {
 			s.event("text", "", "", text.String())
 			text.Reset()
 		}
 	}
-	defer flushText()
+	scheduleText := func() {
+		if textDeadline != nil {
+			return
+		}
+		const maxCoalescing = 25 * time.Millisecond
+		if textTimer == nil {
+			textTimer = time.NewTimer(maxCoalescing)
+		} else {
+			textTimer.Reset(maxCoalescing)
+		}
+		textDeadline = textTimer.C
+	}
+	defer func() {
+		if textTimer != nil {
+			textTimer.Stop()
+		}
+		flushText()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -607,6 +620,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 		case err := <-controlErrors:
 			return "failed", false, err
 		case <-textDeadline:
+			textDeadline = nil
 			flushText()
 			s.publishAvailable()
 		case update, ok := <-updates:
@@ -644,9 +658,13 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					flushText()
 					s.write(entry.Text)
 					s.recordEvent(entry)
-					if firstText && entry.Kind == "text" && entry.Text != "" {
-						firstText = false
-						s.publishAvailable()
+					if entry.Kind == "text" && entry.Text != "" {
+						if firstText {
+							firstText = false
+							s.publishAvailable()
+						} else {
+							scheduleText()
+						}
 					}
 					continue
 				}
@@ -664,20 +682,17 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					if firstText && value != "" {
 						firstText = false
 						s.publishAvailable()
+					} else {
+						scheduleText()
 					}
 					continue
 				}
-				text.WriteString(value)
-				if strings.HasSuffix(value, "\n") || text.Len() >= 8192 {
-					flushText()
-				} else if text.Len() > 0 && textDeadline == nil {
-					const maxCoalescing = 25 * time.Millisecond
-					if textTimer == nil {
-						textTimer = time.NewTimer(maxCoalescing)
-					} else {
-						textTimer.Reset(maxCoalescing)
+				if value != "" {
+					scheduleText()
+					text.WriteString(value)
+					if strings.HasSuffix(value, "\n") || text.Len() >= 8192 {
+						flushText()
 					}
-					textDeadline = textTimer.C
 				}
 			case e.GetTool() != nil:
 				flushText()
