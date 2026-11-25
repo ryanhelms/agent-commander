@@ -377,6 +377,13 @@ struct SourceRecordRow: View {
         return false
     }
 
+    /// A prompt's file link or snapshot, when the record's extension is one: read for its name,
+    /// address and type, without its contents.
+    private var resource: PromptResourceSummary? {
+        guard case .attachment(_, let mediaType, let data) = observation.body else { return nil }
+        return PromptResourceSummary(mediaType: mediaType, data: data)
+    }
+
     // MARK: Heading
 
     @ViewBuilder private var heading: some View {
@@ -426,6 +433,21 @@ struct SourceRecordRow: View {
             .help("The source reports that records are missing at this point.")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Gap in this source: \(reason.isEmpty ? "reason not reported" : reason)")
+        case .attachment(_, let mediaType, let data) where resource != nil:
+            // A file attached to a prompt: named and typed, its contents not drawn.
+            let file = self.resource!
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("◇ ").foregroundStyle(Term.cyan).accessibilityHidden(true)
+                Text(verbatim: file.title).fontWeight(.semibold).foregroundStyle(Term.cyan)
+                if !file.name.isEmpty {
+                    Text(verbatim: "  " + file.name).foregroundStyle(Term.bright).textSelection(.enabled)
+                }
+                Text(verbatim: "  " + file.detail).foregroundStyle(.inkTermDim)
+                meta
+            }
+            .font(Term.font(size)).lineLimit(1).truncationMode(.middle)
+            .help("\(mediaType), \(data.map(SourceAttachment.size) ?? "unreadable data") in the record")
+            .accessibilityElement(children: .combine)
         case .attachment(let type, let mediaType, let data):
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text("◆ ").foregroundStyle(Term.violet).accessibilityHidden(true)
@@ -509,6 +531,15 @@ struct SourceRecordRow: View {
                 }
             }
             .padding(.leading, size * 1.2)
+        case .attachment where resource != nil:
+            // The file's address and a statement, never its embedded contents. The original
+            // record stays behind its own action.
+            Text(verbatim: resource!.statement)
+                .font(Term.font(size - 0.5)).foregroundStyle(.inkTermDim)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, size * 1.2)
         case .attachment(_, let mediaType, let data):
             SourceAttachmentView(mediaType: mediaType, data: data, size: size, copy: copy)
                 .padding(.leading, size * 1.2)
