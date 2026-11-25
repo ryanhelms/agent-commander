@@ -145,6 +145,7 @@ type service struct {
 	stoppedHistoryReads map[string]int
 	frontendRounds      map[string][]*frontendRound
 	liveSource          liveSourceStore
+	elicitations        map[string]*activeElicitation
 }
 
 func randomID(prefix string) string {

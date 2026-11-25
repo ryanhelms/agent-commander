@@ -590,6 +590,7 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 
 func (s *service) stopWorkerInbox(run *Run, w *Worker) {
 	s.retireProviderPermissions(run, w.ID)
+	s.retireElicitations(w.ID)
 	if w.Control == nil {
 		return
 	}

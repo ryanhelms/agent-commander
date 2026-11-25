@@ -287,21 +287,7 @@ Add `source=live` to inspect recently received ACP details, including tool argum
 
 For a continuous private view on the local owner socket, subscribe to `GET /v1/workers/WORKER_ID/live-source/events`. Each SSE `page` carries the SDK history page and an event ID. Keep that ID after consuming the page and pass it in `Last-Event-ID` (or the initial `after` query parameter) to resume. When a checkpoint expires, the next page includes a gap before remaining records. The shared workspace subscription does not carry these source frames.
 
-Set `AGENT_COMMANDER_MCP_OVER_ACP=1` in the local service environment to try the pinned draft with newly launched local ACP peers. Commander declares its scoped tools over ACP only when the peer advertises that transport. The existing stdio server remains the fallback. The draft uses stateless MCP 2026-07-28 with per-request metadata and an independent logical request ID. Commander still validates each tool against the worker's assigned scope. [Pinned draft](https://github.com/agentclientprotocol/agent-client-protocol/blob/d1585b5932ec5ed2f7b02e298be92afae9462194/docs/rfds/mcp-over-acp.mdx)
 
-The default data directory is `~/Library/Application Support/Agent Commander`. It contains the private API socket, persisted run state, recent console output and private provider launch configuration. A detached service writes its startup errors to `service.log`. Treat the directory as private, since transcripts can contain sensitive project content.
+Opt in to session-scoped ACP form and URL requests by starting the service with `AGENT_COMMANDER_ACP_ELICITATION=1`. On the local owner socket, use `agentctl api GET /v1/workers/WORKER_ID/elicitations` to review the requesting worker, provider session, and pending interactions. Submit a form response with `agentctl api POST /v1/workers/WORKER_ID/elicitations/INTERACTION_ID/reply` and a JSON body such as `{"action":"accept","content":{"label":"release"}}` on stdin. Use `{"action":"decline"}` or `{"action":"cancel"}` to dismiss a request.
 
-- `AGENT_COMMANDER_HOME` selects a separate data directory for development. Its default socket is `service.sock` inside that directory.
-- `AGENT_COMMANDER_SOCKET` overrides the socket path for both server and clients. Use a short path for Unix sockets.
-- `AGENT_COMMANDER_CLAUDE` and `AGENT_COMMANDER_TMUX` select absolute executable paths when they are installed in a custom location. Start the service with these variables set. Standard Homebrew and user-local locations are checked automatically.
-- If Claude asks for authentication, run `claude auth login` in a terminal. Reopen the app or inspect the worker’s launch error. To retry a failed planning task, start a new run.
-
-## Verify changes and publish
-
-Run `make test` for the Go tests. Run `make smoke` where local Unix sockets are permitted to exercise scoped MCP clients, the API and a disposable tmux worker with a deterministic model fixture. Both commands use local test data. Build the native cockpit with `make app`.
-
-On macOS, run `make test-native` for the Swift console and incremental feed tests. It uses Swift Testing from Xcode or the selected Command Line Tools. To run the private capture replay, set `COMMANDER_AGUI_REPLAY` to a local JSONL file with an AG-UI `event` and its independently computed `expected` workspace state on each line.
-
-Run `make test-multiplayer-docker` for the isolated three-user relay rehearsal. It covers enrollment, presence, sharing, Git pushes, and relay failover using disposable identities and repositories. [Docker rehearsal instructions](multiplayer/deploy/rehearsal/README.md)
-
-Record user-facing changes in [CHANGELOG.md](CHANGELOG.md). [RELEASING.md](RELEASING.md) documents the build inputs, version tags, CI checks, and downloadable assets. See the [MVP plan](MVP-PLAN.md) for remaining work and [AGENTS.md](AGENTS.md) for implementation and verification conventions.
+For URL mode, review the displayed host and full URL. Submit `{"action":"accept"}` only if you consent to opening that destination, then open it in your browser. Commander records external completion separately when the provider reports it.
