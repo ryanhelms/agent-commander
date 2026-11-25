@@ -264,3 +264,8 @@ For an open local Claude turn, Commander persists the expected turn ID with work
 ## Multiplayer coordinator authorization
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.
+
+
+### Reattaching an existing provider session
+
+An owner command reserves a new control generation and a fresh worker credential after the service verifies that the original worker is inactive. The provider adapter verifies the saved checkout and executable identity before bringing up a replacement runner. The runner reports the same native session identity before the service accepts follow-ups. Discovery uses the saved provider and checkout without establishing a new conversation. The Idempotent Receiver reuses the original reservation on command retry. An unresolved earlier operation keeps its delivery receipt and requires the owner's explicit acknowledgement before reattachment. A stopped-history load and reattachment for the same worker cannot overlap.

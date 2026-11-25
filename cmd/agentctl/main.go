@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -45,6 +46,9 @@ const usage = `Agent Commander
   agentctl catalog refresh ID             Check and stage a verified update
   agentctl list                          List runs
   agentctl show RUN                      Inspect a run and its consoles
+  agentctl session status WORKER            Read negotiated and usable provider capabilities
+  agentctl session list WORKER [CURSOR]     Discover provider sessions in this worker's checkout
+  agentctl session reattach WORKER GENERATION OPERATION_ID [--acknowledge-unknown]
   agentctl terminal observe WORKER       Watch a managed worker’s tmux terminal read-only
   agentctl delegate RUN PARENT NAME TASK Create a worker under PARENT
   agentctl delegate-coding RUN PARENT NAME TASK
@@ -343,6 +347,41 @@ func operation(args []string) (method, path string, input any, err error) {
 			}
 			return "POST", "/v1/runs/" + id + "/workers", input, nil
 		}
+	case "session":
+		if len(args) < 3 {
+			return invalid()
+		}
+		id, err := localapi.Segment(args[2])
+		if err != nil {
+			return "", "", nil, err
+		}
+		path := "/v1/workers/" + id
+		switch args[1] {
+		case "status":
+			if len(args) == 3 {
+				return "GET", path + "/session", nil, nil
+			}
+		case "list":
+			switch len(args) {
+			case 3:
+				return "GET", path + "/provider-sessions", nil, nil
+			case 4:
+				return "GET", path + "/provider-sessions?cursor=" + url.QueryEscape(args[3]), nil, nil
+			}
+		case "reattach":
+			if len(args) != 5 && (len(args) != 6 || args[5] != "--acknowledge-unknown") {
+				return invalid()
+			}
+			generation, err := strconv.Atoi(args[3])
+			if err != nil || generation <= 0 || strings.TrimSpace(args[4]) == "" {
+				return invalid()
+			}
+			return "POST", path + "/reattach", map[string]any{
+				"generation": generation, "idempotency_key": args[4],
+				"acknowledge_delivery_unknown": len(args) == 6,
+			}, nil
+		}
+		return invalid()
 	case "take", "hand-back", "follow-up", "interrupt", "stop-worker":
 		if len(args) < 2 {
 			return invalid()

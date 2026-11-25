@@ -81,5 +81,5 @@ func (s *service) reconcileWorkerProvider(req *http.Request, actor string) (outc
 }
 
 func (w *Worker) providerBlocksControl() bool {
-	return w.ProviderAvailability == providerExited || w.ProviderAvailability == providerChecking
+	return w.ProviderAvailability == providerExited || w.ProviderAvailability == providerChecking || w.ProviderAvailability == providerReattaching
 }

@@ -82,6 +82,9 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	stderr := &lineWriter{s: s}
 	config.Stderr = stderr
+	if j.Worker.Reattach != nil {
+		config.ModelOnResume = acpOpenRequest(j, config.HarnessInstance, cwd).GetModel()
+	}
 	source := newACPSourcePublisher()
 	source.portable = j.BuiltinInstance != ""
 	config.OnACPUpdate = source.capture
@@ -99,47 +102,81 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}()
 	client := agentacp.New(rt)
 	openCtx, cancelOpen := context.WithTimeout(ctx, 30*time.Second)
-	opened, err := client.Open(openCtx, acpOpenRequest(j, config.HarnessInstance, cwd))
-	cancelOpen()
-	if err != nil {
-		return fmt.Errorf("open %s session: %w", j.Harness, err)
+	var session *model.Session
+	if resume := j.Worker.Reattach; resume != nil {
+		opened, err := client.Resume(openCtx, &model.ResumeRequest{Session: &model.SessionRef{
+			HarnessInstance: resume.Ref.HarnessInstance, SessionId: resume.Ref.SessionID,
+		}})
+		cancelOpen()
+		if err != nil {
+			return fmt.Errorf("reattach %s session: %w", j.Harness, err)
+		}
+		session = opened.GetSession()
+	} else {
+		opened, err := client.Open(openCtx, acpOpenRequest(j, config.HarnessInstance, cwd))
+		cancelOpen()
+		if err != nil {
+			return fmt.Errorf("open %s session: %w", j.Harness, err)
+		}
+		session = opened.GetSession()
 	}
-	ref := opened.GetSession().GetRef()
+	ref := session.GetRef()
 	if ref.GetSessionId() == "" || ref.GetHarnessInstance() != config.HarnessInstance {
 		return errors.New("harness returned an invalid session identity")
 	}
 	path := "/v1/workers/" + j.Worker.ID
-	owner := &api{localapi.New(j.Socket, "")}
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
-	if err := owner.request("POST", path+"/native-session", nativeSession, nil); err != nil {
-		return fmt.Errorf("bind provider session: %w", err)
+	managed := j.Worker.Role == "worker"
+	capabilities := session.GetCapabilities()
+	promptCaps := service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio()}
+	sessionCaps := service.SessionCapabilities{
+		CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
+		CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
+	}
+	if resume := j.Worker.Reattach; resume != nil {
+		if nativeSession != resume.Ref || !managed {
+			return errors.New("harness did not reattach the original worker session")
+		}
+	} else {
+		binding := struct {
+			service.NativeSession
+			ProviderBinding  string                      `json:"provider_binding,omitempty"`
+			PeerCapabilities service.SessionCapabilities `json:"peer_capabilities"`
+		}{NativeSession: nativeSession, ProviderBinding: j.ProviderBinding, PeerCapabilities: sessionCaps}
+		owner := &api{localapi.New(j.Socket, "")}
+		if err := owner.request("POST", path+"/native-session", binding, nil); err != nil {
+			return fmt.Errorf("bind provider session: %w", err)
+		}
 	}
 	finishSource = source.publish(ctx, a, path, ref, s)
-	showAssignment(s, j)
-	s.event("user", "", "", j.Worker.Task)
-	go terminalInput(j, a, s)
-
-	managed := j.Worker.Role == "worker"
-	capabilities := opened.GetSession().GetCapabilities()
-	if managed {
+	if resume := j.Worker.Reattach; resume != nil {
 		registration := struct {
+			service.ReattachSpec
 			PromptCapabilities  service.PromptCapabilities
 			SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
-			ProviderSession     *service.NativeSession      `json:"provider_session,omitempty"`
-		}{
-			PromptCapabilities: service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio()},
-			SessionCapabilities: service.SessionCapabilities{
-				CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
-				CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
-			},
-		}
-		if ref.GetHarnessInstance() == service.LocalClaudeHarness {
-			registration.ProviderSession = &nativeSession
-		}
-		if err := a.request("POST", path+"/control/ready", registration, nil); err != nil {
+		}{*resume, promptCaps, sessionCaps}
+		if err := publishWorkerControl(ctx, a, path+"/control/reattached", registration); err != nil {
 			return err
 		}
+		s.line("Reattached to the original provider session.")
+	} else {
+		showAssignment(s, j)
+		s.event("user", "", "", j.Worker.Task)
+		if managed {
+			registration := struct {
+				PromptCapabilities  service.PromptCapabilities
+				SessionCapabilities service.SessionCapabilities `json:"session_capabilities"`
+				ProviderSession     *service.NativeSession      `json:"provider_session,omitempty"`
+			}{PromptCapabilities: promptCaps, SessionCapabilities: sessionCaps}
+			if ref.GetHarnessInstance() == service.LocalClaudeHarness {
+				registration.ProviderSession = &nativeSession
+			}
+			if err := a.request("POST", path+"/control/ready", registration, nil); err != nil {
+				return err
+			}
+		}
 	}
+	go terminalInput(j, a, s)
 	observeCtx, stopObserve := context.WithCancel(ctx)
 	updates, observeDone, streamLife := workerObservations(observeCtx, client, ref, source, s)
 	defer func() { stopObserve(); <-observeDone }()
@@ -147,6 +184,21 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	turnID, prompt, messageID := "initial-"+j.Worker.ID, j.Worker.Task, ""
 	var parts []service.PromptPart
 	var lastFinishedState string
+	if j.Worker.Reattach != nil {
+		next, ok := waitForFollowUp(streamLife, a, path)
+		if !ok {
+			cause := context.Cause(streamLife)
+			if ref.GetHarnessInstance() == service.LocalClaudeHarness && ctx.Err() == nil && errors.Is(cause, errACPDisconnected) {
+				return publishClaudeProviderExit(ctx, a, path, ref, "idle")
+			}
+			return cause
+		}
+		lastFinishedState = "idle"
+		turnID, prompt, messageID, parts = next.ID, next.Text, next.ID, next.Parts
+		entry := acpFollowUpEvent(next)
+		s.line("You: " + entry.Text)
+		s.recordEvent(entry)
+	}
 	for {
 		request := acpPromptRequest(ref, turnID, prompt, parts)
 		state, observedTurnEnd, turnErr := "failed", false, context.Cause(streamLife)
