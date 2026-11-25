@@ -9,8 +9,8 @@ Runs used an Apple silicon host with 10 logical CPUs. Short series use nearest-r
 | Workload | Baseline | Candidate | Evidence |
 | --- | --- | --- | --- |
 | Loaded owner reply to ACP peer receipt, 30 panes | 229.94 ms median, 305.62 ms p95 | 11.64 ms median, 21.32 ms p95 | Two alternating runs, 12 decisions per variant. All 12 delivered. The peer stamps the receipt using the host monotonic clock. |
-| Loaded owner reply to Console projection, 30 panes | 257.38 ms median, 422.96 ms p95 | 105.16 ms median, 122.10 ms p95 | Same paired runs. This observes the structured projection. |
-| First newline-free chunk without a message ID | 2,008–2,040 ms | 1.53–6.43 ms | Single-worker structured subscriber, three samples per variant. |
+| Loaded owner reply to Console projection, 30 panes | 257.38 ms median, 422.96 ms p95 | 105.16 ms median, 122.10 ms p95 | Same paired runs. This observes the terminal-text projection. |
+| First newline-free chunk without a message ID | 2,008–2,040 ms | 1.53–6.43 ms | Single-worker structured subscriber, three samples per variant. The later matched 30-pane test measured 2,020.40/2,050.13 ms median/p95 before and 4.02/9.26 ms after. All 12 candidate chunks arrived before terminal completion, compared with zero baseline chunks. |
 | Unrelated read during a 500 ms credential check | 512.35–524.56 ms | 0.52–0.66 ms | Three samples per variant. |
 | Stopped transcript with 2,048 records, paced | 16 loads, 32,768 updates, 1,545.6 ms median | One load, 2,048 updates, 89.4 ms median | Six samples per variant. Baseline unpaced replay failed. All three candidate burst runs completed. |
 | Scoped live originals at 500 updates per second | Private polling received 1,158 and 1,626 of 2,000 | Continuous private streaming received 2,000 of 2,000 in each run | Both modes exercised on the same binary. The public feed stayed complete and attachment bytes stayed in the owner feed. |
@@ -38,7 +38,7 @@ The existing SSH path remains available through `AGENT_COMMANDER_SSH_LINK=legacy
 - `AGENT_COMMANDER_ACP_ELICITATION=1`
 - `AGENT_COMMANDER_ACP_SESSION_ACTIVITY=on`
 
-The MCP draft pin is `d1585b5932ec5ed2f7b02e298be92afae9462194`. Scoped draft invocation, cancellation, and rejection paths have deterministic coverage. Production MCP-over-ACP activation requires installed-peer request and result parity. Receipt expiration was left open. Existing receipts continue to preserve duplicate-request safety.
+The MCP draft pin is `d1585b5932ec5ed2f7b02e298be92afae9462194`. Scoped draft invocation, cancellation, and rejection paths have deterministic coverage. An installed managed Claude Opus v2 run selected the standard system prompt and `acp` for Commander tools. It exchanged six `mcp/message` frames and completed a read-only `commander_status` call. Production MCP-over-ACP activation still requires installed-peer cancellation, revocation, and result parity. Receipt expiration was left open. Existing receipts continue to preserve duplicate-request safety.
 
 ## Reproduce
 

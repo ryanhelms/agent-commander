@@ -1,0 +1,210 @@
+{
+  "projection": "incremental",
+  "binary_sha256": "67a5ef60c238443d6d86db694efb43545a2603b566e4dc45dc996ee9ca5a67e6",
+  "host": {
+    "system": "Darwin",
+    "version": "26.7.3",
+    "arch": "arm64",
+    "logical_cpus": 10,
+    "start_load_average_1m_5m_15m": [
+      47.60205078125,
+      62.013671875,
+      50.54443359375
+    ],
+    "end_load_average_1m_5m_15m": [
+      42.5634765625,
+      59.03955078125,
+      49.9140625
+    ]
+  },
+  "panes": 30,
+  "idle": {
+    "approval_visible": {
+      "n": 6,
+      "median_ms": 26.86,
+      "p95_ms": 34.48,
+      "max_ms": 34.48,
+      "samples_ms": [
+        29.84,
+        32.4,
+        34.48,
+        19.56,
+        23.88,
+        19.22
+      ]
+    },
+    "reply_http": {
+      "n": 6,
+      "median_ms": 8.47,
+      "p95_ms": 9.87,
+      "max_ms": 9.87,
+      "samples_ms": [
+        9.87,
+        7.27,
+        8.76,
+        8.33,
+        8.62,
+        6.23
+      ]
+    },
+    "reply_visible": {
+      "n": 6,
+      "median_ms": 8.65,
+      "p95_ms": 10.37,
+      "max_ms": 10.37,
+      "samples_ms": [
+        10.37,
+        7.53,
+        9.17,
+        8.44,
+        8.86,
+        6.25
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 6,
+      "median_ms": 221.46,
+      "p95_ms": 284.99,
+      "max_ms": 284.99,
+      "samples_ms": [
+        209.57,
+        149.42,
+        233.35,
+        284.99,
+        180.44,
+        257.41
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 6,
+      "median_ms": 255.88,
+      "p95_ms": 395.51,
+      "max_ms": 395.51,
+      "samples_ms": [
+        319.95,
+        214.28,
+        245.2,
+        395.51,
+        239.73,
+        266.57
+      ]
+    },
+    "service_rss_peak_sampled_mib": 24.5,
+    "workspace_payload_bytes": 19519
+  },
+  "loaded": {
+    "approval_visible": {
+      "n": 6,
+      "median_ms": 42.63,
+      "p95_ms": 66.42,
+      "max_ms": 66.42,
+      "samples_ms": [
+        65.74,
+        33.22,
+        19.54,
+        51.5,
+        66.42,
+        33.76
+      ]
+    },
+    "reply_http": {
+      "n": 6,
+      "median_ms": 22.2,
+      "p95_ms": 66.81,
+      "max_ms": 66.81,
+      "samples_ms": [
+        14.27,
+        10.17,
+        20.72,
+        23.69,
+        60.98,
+        66.81
+      ]
+    },
+    "reply_visible": {
+      "n": 6,
+      "median_ms": 22.82,
+      "p95_ms": 78.13,
+      "max_ms": 78.13,
+      "samples_ms": [
+        14.75,
+        10.19,
+        21.92,
+        23.72,
+        78.13,
+        66.87
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 6,
+      "median_ms": 215.08,
+      "p95_ms": 286.28,
+      "max_ms": 286.28,
+      "samples_ms": [
+        195.27,
+        234.89,
+        286.28,
+        65.7,
+        180.61,
+        276.94
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 6,
+      "median_ms": 246.48,
+      "p95_ms": 397.43,
+      "max_ms": 397.43,
+      "samples_ms": [
+        250.28,
+        242.68,
+        397.43,
+        132.04,
+        185.56,
+        386.52
+      ]
+    },
+    "service_rss_peak_sampled_mib": 54.27,
+    "workspace_payload_bytes": 3515992,
+    "reconnect_with_pending_approval_ms": 87.5,
+    "first_structured_text": {
+      "subscriber": {
+        "n": 6,
+        "median_ms": 2016.64,
+        "p95_ms": 2026.55,
+        "max_ms": 2026.55,
+        "samples_ms": [
+          2010.26,
+          2005.25,
+          2020.1,
+          2024.44,
+          2013.19,
+          2026.55
+        ]
+      },
+      "arrived_before_peer_terminal": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "peer_terminal_delay": {
+        "n": 6,
+        "median_ms": 2002.73,
+        "p95_ms": 2017.01,
+        "max_ms": 2017.01,
+        "samples_ms": [
+          2000.79,
+          2001.85,
+          2003.61,
+          2008.68,
+          2000.21,
+          2017.01
+        ]
+      }
+    }
+  },
+  "attachment_bytes_retrieved": 420000,
+  "cold_snapshot_contains_attachment_bytes": false
+}
