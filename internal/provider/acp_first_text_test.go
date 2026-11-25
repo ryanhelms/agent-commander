@@ -59,4 +59,9 @@ func TestACPFirstStructuredTextPrecedesPromptCompletion(t *testing.T) {
 	nextText("first token")
 	sendText(" later token")
 	nextText(" later token")
+	sendText(" complete line\n")
+	nextText(" complete line\n")
+	sendText(" one")
+	sendText(" two")
+	nextText(" one two")
 }
