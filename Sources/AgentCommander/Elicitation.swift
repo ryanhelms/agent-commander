@@ -14,7 +14,8 @@ import SwiftUI
 //                   ElicitationInspection        what the panel draws for the one open worker
 //   Feature layer   ElicitationModel             scope, reads while open, drafts, replies, open
 //                   ElicitationIntents           the operations the cockpit emits
-//   Molecules       ElicitationFieldControl      one typed form field: text, number, switch, menu
+//   Molecules       ElicitationFieldControl      one typed form field: text, number, switch, menu,
+//                                                checkboxes for a list of choices
 //                   ElicitationLinkView          the full address with its host marked
 //                   ElicitationDecisionBar       accept, decline and cancel for one request
 //   Organisms       ElicitationCard              one request
@@ -191,6 +192,8 @@ enum ElicitationValue: Equatable, Sendable {
     case text(String)
     case flag(Bool)
     case choice(String)
+    /// The chosen values of a list of text choices, in the order chosen, each exactly as listed.
+    case list([String])
 }
 
 /// The owner's values for one form, by field name. A field without a value is left out.
@@ -221,8 +224,8 @@ struct ElicitationFormError: LocalizedError, Equatable {
 }
 
 /// The typed fields of a form request. Commander answers a flat object of text, number, integer,
-/// boolean and text-choice fields. Anything else is explained and never guessed at; the service
-/// validates the answer against the schema.
+/// boolean, text-choice and list-of-text-choice fields. Anything else is explained and never
+/// guessed at; the service validates the answer against the schema.
 struct ElicitationSchema: Equatable, Sendable {
     struct Option: Identifiable, Equatable, Sendable {
         let value: String
@@ -237,6 +240,9 @@ struct ElicitationSchema: Equatable, Sendable {
         case number(integer: Bool)
         /// One of the listed text values.
         case choice([Option])
+        /// Any number of the listed text values, each at most once, within the schema's
+        /// `minItems` and `maxItems` when it sets them.
+        case multiChoice([Option], minItems: Int?, maxItems: Int?)
         /// A shape Commander does not answer, with the reason in words.
         case unsupported(String)
     }
@@ -328,6 +334,23 @@ struct ElicitationSchema: Equatable, Sendable {
                     continue
                 }
                 content[field.name] = .string(choice)
+            case .multiChoice(let options, let minItems, let maxItems):
+                // A required list with nothing chosen is the empty list the owner sees; an optional
+                // one without a value is left out.
+                let selections: [String]
+                if case .list(let list)? = value {
+                    selections = list
+                } else if value == nil && field.isRequired {
+                    selections = []
+                } else {
+                    if field.isRequired { problems[field.name] = "Choose from the list." }
+                    continue
+                }
+                if let problem = Self.listProblem(selections, options: options, minItems: minItems, maxItems: maxItems) {
+                    problems[field.name] = problem
+                    continue
+                }
+                content[field.name] = .array(selections.map(AGUIValue.string))
             }
         }
         return problems.isEmpty ? .success(.object(content)) : .failure(ElicitationFormError(problems: problems))
@@ -339,6 +362,17 @@ struct ElicitationSchema: Equatable, Sendable {
         if digits.first == "-" { digits = digits.dropFirst() }
         guard let first = digits.first, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
         return first != "0" || digits.count == 1
+    }
+
+    /// Why a list's selections cannot be sent: an unlisted or repeated value, or a count outside
+    /// the schema's bounds. Nil when they can.
+    static func listProblem(_ selections: [String], options: [Option], minItems: Int?, maxItems: Int?) -> String? {
+        let known = Set(options.map(\.value))
+        if selections.contains(where: { !known.contains($0) }) { return "Choose only the listed options." }
+        if Set(selections).count != selections.count { return "Choose each option once." }
+        if let minItems, selections.count < minItems { return "Choose at least \(minItems)." }
+        if let maxItems, selections.count > maxItems { return "Choose at most \(maxItems)." }
+        return nil
     }
 
     // MARK: Parsing
@@ -403,7 +437,7 @@ struct ElicitationSchema: Equatable, Sendable {
         case "boolean"?: return .boolean
         case "number"?: return .number(integer: false)
         case "integer"?: return .number(integer: true)
-        case "array"?: return .unsupported("A list of several choices cannot be answered here.")
+        case "array"?: return Self.list(spec)
         case "object"?: return .unsupported("Nested fields cannot be answered here.")
         case let other?: return .unsupported("A “\(other)” field cannot be answered here.")
         case nil: return .unsupported("This field does not say what kind of value it takes.")
@@ -413,6 +447,48 @@ struct ElicitationSchema: Equatable, Sendable {
     private static func choice(_ options: [Option]) -> Kind {
         Set(options.map(\.value)).count == options.count
             ? .choice(options) : .unsupported("This choice repeats an option.")
+    }
+
+    /// A list whose `items` enumerate text values: `enum` with an optional `"type": "string"`, or
+    /// MCP's titled `anyOf` of `const` and `title` without an item type. Any other item shape is
+    /// explained, as are bounds that are not whole numbers or cannot be met.
+    private static func list(_ spec: AGUIValue) -> Kind {
+        let textOnly = Kind.unsupported("Only a list of text choices can be answered here.")
+        guard let items = spec["items"], items.objectValue != nil else {
+            return .unsupported("A list of several choices cannot be answered here.")
+        }
+        guard items["oneOf"] == nil, (items["enum"] == nil) != (items["anyOf"] == nil) else { return textOnly }
+        var options = [Option]()
+        if let values = items["enum"] {
+            if let type = items["type"], type.stringValue != "string" { return textOnly }
+            guard let array = values.arrayValue, !array.isEmpty else { return .unsupported("This list offers no options.") }
+            let strings = array.compactMap(\.stringValue)
+            guard strings.count == array.count else { return textOnly }
+            let names = items["enumNames"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            let titles = names.count == strings.count ? names : strings
+            options = zip(strings, titles).map { Option(value: $0, title: $1) }
+        } else if let alternatives = items["anyOf"] {
+            guard items["type"] == nil, let array = alternatives.arrayValue, !array.isEmpty else { return textOnly }
+            options = array.compactMap { item -> Option? in
+                guard let value = item["const"]?.stringValue else { return nil }
+                return Option(value: value, title: item["title"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } ?? value)
+            }
+            guard options.count == array.count else { return textOnly }
+        }
+        guard Set(options.map(\.value)).count == options.count else { return .unsupported("This list repeats an option.") }
+        let unreadable = Kind.unsupported("This list's size limits cannot be read.")
+        func bound(_ key: String) -> Int?? {
+            guard let value = spec[key] else { return .some(nil) }
+            guard let literal = value.numberValue?.literal, isIntegerLiteral(literal),
+                  let count = Int(literal), count >= 0 else { return nil }
+            return .some(count)
+        }
+        guard let minItems = bound("minItems"), let maxItems = bound("maxItems") else { return unreadable }
+        if let minItems, let maxItems, minItems > maxItems { return unreadable }
+        if let minItems, minItems > options.count {
+            return .unsupported("This list asks for more choices than it offers.")
+        }
+        return .multiChoice(options, minItems: minItems, maxItems: maxItems)
     }
 
     private static func defaultValue(_ value: AGUIValue?, kind: Kind) -> ElicitationValue? {
@@ -426,6 +502,12 @@ struct ElicitationSchema: Equatable, Sendable {
             return .flag(flag)
         case (.choice(let options), .string(let choice)):
             return options.contains(where: { $0.value == choice }) ? .choice(choice) : nil
+        case (.multiChoice(let options, let minItems, let maxItems), .array(let items)):
+            // Kept exactly and in order, and only when it could be sent as it stands.
+            let strings = items.compactMap(\.stringValue)
+            guard strings.count == items.count,
+                  listProblem(strings, options: options, minItems: minItems, maxItems: maxItems) == nil else { return nil }
+            return .list(strings)
         default:
             return nil
         }
@@ -452,6 +534,14 @@ struct ElicitationSchema: Equatable, Sendable {
             default: break
             }
             return parts.joined(separator: " · ")
+        case .multiChoice(_, let low, let high):
+            switch (low, high) {
+            case let (low?, high?) where low == high: return "choose \(low)"
+            case let (low?, high?) where low > 0: return "choose \(low)–\(high)"
+            case let (low?, nil) where low > 0: return "choose at least \(low)"
+            case let (_, high?): return "choose up to \(high)"
+            default: return "choose any"
+            }
         case .boolean, .choice, .unsupported:
             return nil
         }
@@ -924,6 +1014,24 @@ struct ElicitationFieldControl: View {
             .labelsHidden().pickerStyle(.menu).controlSize(.small).fixedSize()
             .disabled(!isEnabled)
             .accessibilityLabel(field.title)
+        case .multiChoice(let options, _, let maxItems):
+            // At the maximum, the unchosen options wait until one is cleared.
+            let full = maxItems.map { selections.count >= $0 } ?? false
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(options) { option in
+                    let isChosen = selections.contains(option.value)
+                    Toggle(isOn: memberBinding(option.value)) {
+                        Text(verbatim: option.title).font(TypeRole.body).foregroundStyle(Palette.foreground)
+                    }
+                    .toggleStyle(.checkbox).controlSize(.small)
+                    .disabled(!isEnabled || (full && !isChosen))
+                    .accessibilityLabel("\(field.title): \(option.title)")
+                }
+            }
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(field.title)
+            .accessibilityHint(field.hint ?? "")
         case .unsupported(let reason):
             Label {
                 Text(verbatim: reason + (field.isRequired ? "" : " It is left out of your answer."))
@@ -961,6 +1069,23 @@ struct ElicitationFieldControl: View {
                 return nil
             },
             set: { change($0.map(ElicitationValue.choice)) })
+    }
+
+    private var selections: [String] {
+        if case .list(let list)? = value { return list }
+        return []
+    }
+
+    /// Chooses or clears one option. A new choice goes last; the others keep their order and text.
+    private func memberBinding(_ option: String) -> Binding<Bool> {
+        Binding(
+            get: { selections.contains(option) },
+            set: { isOn in
+                var list = selections.filter { $0 != option }
+                if isOn { list.append(option) }
+                // Clearing the last choice of an optional list leaves it out of the answer.
+                change(list.isEmpty && !field.isRequired ? nil : .list(list))
+            })
     }
 
     private var flagStatement: String {
