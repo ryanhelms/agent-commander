@@ -564,6 +564,17 @@ enum ServiceError: LocalizedError {
     }
 }
 
+/// A refusal with its HTTP status, for a caller that acts on the status itself.
+struct ServiceStatusError: LocalizedError, Equatable {
+    let status: Int
+    let message: String
+
+    var errorDescription: String? { message }
+
+    /// The service no longer holds the addressed item in a state that takes this request.
+    var isWithdrawn: Bool { status == 404 || status == 409 }
+}
+
 // All GUI operations use the local HTTP API. The serialized client keeps short
 // requests off the UI thread and sends project paths and prompt text as JSON data.
 actor ServiceClient {
@@ -663,6 +674,33 @@ actor ServiceClient {
         var query = "limit=\(min(max(limit, 1), 128))"
         if let cursor, !cursor.isEmpty { query += "&cursor=\(percentEncoded(cursor))" }
         return "/v1/workers/\(percentEncoded(workerID))/provider-sessions?\(query)"
+    }
+
+    // MARK: Elicitation
+
+    /// The structured requests the worker's agent has put to its owner. Not queued behind this
+    /// client's other requests, and cancellable.
+    nonisolated func elicitations(_ workerID: String) async throws -> [Elicitation] {
+        try Elicitation.list(json: await read(Self.elicitationsPath(workerID), timeout: 6))
+    }
+
+    /// Sends the owner's decision on one request. `body` is the whole JSON request from
+    /// `ElicitationReply.body`. A refusal carries its status, so a 404 or 409 reads as withdrawn.
+    /// Off the request queue and off the main actor; it is not cancelled with the panel.
+    nonisolated func replyToElicitation(_ workerID: String, id: String, body: Data) async throws {
+        let socket = socket
+        let path = Self.elicitationReplyPath(workerID, id: id)
+        _ = try await Task.detached(priority: .userInitiated) {
+            try Self.send(socket: socket, path: path, body: body, operationID: nil, reportsStatus: true)
+        }.value
+    }
+
+    nonisolated static func elicitationsPath(_ workerID: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/elicitations"
+    }
+
+    nonisolated static func elicitationReplyPath(_ workerID: String, id: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/elicitations/\(percentEncoded(id))/reply"
     }
 
     /// Reads one GET answer at `path`, off the request queue and cancellable.
@@ -811,8 +849,9 @@ actor ServiceClient {
     }
 
     /// One request over the owner socket. `transfer`, when given, lets the caller end it early.
+    /// With `reportsStatus`, a refusal is a `ServiceStatusError` carrying its HTTP status.
     private static func send(socket: String, path: String, body: Data?, operationID: String?,
-                             timeout: Int = 6, transfer: Transfer? = nil) throws -> Data {
+                             timeout: Int = 6, transfer: Transfer? = nil, reportsStatus: Bool = false) throws -> Data {
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/curl")
         var args = ["--disable", "--silent", "--show-error", "--max-time", String(timeout), "--noproxy", "*",
@@ -845,6 +884,7 @@ actor ServiceClient {
         guard (200..<300).contains(status) else {
             let info = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
             let message = info?["error"] as? String ?? info?["message"] as? String ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            if reportsStatus { throw ServiceStatusError(status: status, message: message) }
             throw ServiceError.rejected(message)
         }
         return Data(payload)

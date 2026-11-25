@@ -27,11 +27,14 @@ final class CockpitModel {
     let adapterUpdates: AdapterUpdateFeed
     /// The provider session of the one worker whose panel is open, and the developer's reattach.
     let providerSessions: ProviderSessionModel
+    /// The structured requests of the one worker whose panel is open, and the owner's replies.
+    let elicitations: ElicitationModel
 
     init() {
         let reader = ServiceClient()
         attachments = .live(reader: reader)
         providerSessions = .live(reader: reader)
+        elicitations = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
@@ -149,6 +152,13 @@ final class CockpitModel {
               id != run.coordinatorID, let worker = run.workers?.first(where: { $0.id == id })
         else { return nil }
         return (run, worker)
+    }
+
+    /// The scope a worker's structured requests are read and answered in: a delegated worker the
+    /// cockpit holds, and the provider session the service has bound it to. Nil otherwise.
+    func elicitationScope(_ id: String) -> ElicitationScope? {
+        guard let (_, worker) = workerTarget(id), let session = worker.boundSession else { return nil }
+        return ElicitationScope(workerID: id, session: session)
     }
 
     /// The one gate for taking and handing back control, and through it interrupting and sending a
