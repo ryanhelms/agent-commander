@@ -258,7 +258,9 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 				continue
 			}
 			if cursor := obs.GetSourceCursor(); cursor != "" {
-				if ext := paramsSource(obs); ext.GetType() == runtime.ACPUpdateParamsSource {
+				if event.ACP != nil && event.ACP.MessageOp != "" {
+					event.ACP.Cursor = cursor
+				} else if ext := paramsSource(obs); ext.GetType() == runtime.ACPUpdateParamsSource {
 					inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())
 					if err != nil {
 						return nil, err

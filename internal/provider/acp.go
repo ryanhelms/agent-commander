@@ -81,6 +81,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	if err := configureACPProtocol(&config); err != nil {
 		return err
 	}
+	configureACPActivity(&config)
 	if resume := j.Worker.Reattach; resume != nil {
 		config.ModelOnResume = acpOpenRequest(j, config.HarnessInstance, cwd).GetModel()
 		if resume.ProtocolVersion != 0 {

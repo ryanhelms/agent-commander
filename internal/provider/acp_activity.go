@@ -2,14 +2,24 @@ package provider
 
 import (
 	"agent-acp.local/sdks/go/runtime"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	model "agent-acp.local/sdks/go/model"
 	"agentcommander/internal/acpprocessor"
 	"agentcommander/internal/service"
 )
+
+func configureACPActivity(config *runtime.Config) {
+	enabled := os.Getenv("AGENT_COMMANDER_ACP_SESSION_ACTIVITY") == "on"
+	config.ChildSessions = enabled
+	config.NoticeUpdates = enabled
+	config.CompactionUpdates = enabled
+}
 
 // The public preview can carry bounded activity facts. Complete typed update
 // properties and open values are addressable in the worker's scoped history.
@@ -59,12 +69,20 @@ func acpActivityEvent(update *acpprocessor.Update, source, cursor string) servic
 		value += " " + *v.SessionInfoUpdate.Title.Ptr()
 	case v.Notice != nil:
 		value += " " + v.Notice.Title
+	case v.SubagentUpdate != nil:
+		value = "Provider child session"
+		if title := v.SubagentUpdate.Title.Ptr(); title != nil {
+			value += " · " + previewPrefix(consoleText(*title), 256)
+		}
 	}
 	return service.ConsoleEvent{Kind: kind, Text: previewText(value), ACP: a}
 }
 
 func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEvent {
 	ext := obs.GetExtension()
+	if event, ok := acpScopedActivity(obs, source); ok {
+		return event
+	}
 	if source == "provider" && ext.GetType() == "codex.history.thread" {
 		// Workspace paths and other thread properties belong in the selected
 		// worker's source inspector. The shared conversation carries its link.
@@ -91,6 +109,39 @@ func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEve
 		}
 	}
 	return service.ConsoleEvent{Kind: "output", Text: extensionText(ext)}
+}
+
+// Private summaries, child transcripts and declined tool requests stay behind
+// the original cursor. Repeated compaction snapshots update one timeline row.
+func acpScopedActivity(obs *model.Observation, source string) (service.ConsoleEvent, bool) {
+	ext := obs.GetExtension()
+	event := service.ConsoleEvent{Kind: "output"}
+	switch ext.GetType() {
+	case runtime.ACPChildUpdateSource:
+		event.Text = "Provider child session activity"
+		event.ACP = acpprocessor.Reference(source, obs.GetCursor(), "subagent_update", "")
+	case runtime.ACPChildPermissionSource:
+		event.Text = "Provider child permission declined by Commander policy"
+		event.ACP = acpprocessor.Reference(source, obs.GetCursor(), "child_permission", "")
+	case runtime.ACPCompactionStateSource:
+		var snapshot struct{ CompactionID, Status string }
+		if json.Unmarshal(ext.GetData(), &snapshot) != nil || snapshot.CompactionID == "" {
+			return service.ConsoleEvent{Kind: "output", Text: "Provider context compaction"}, true
+		}
+		event.Text = "Provider context compaction"
+		switch snapshot.Status {
+		case "in_progress":
+			event.Text += " in progress"
+		case "completed", "failed", "cancelled":
+			event.Text += " " + snapshot.Status
+		}
+		id := sha256.Sum256([]byte(snapshot.CompactionID))
+		event.ACP = acpprocessor.Reference(source, obs.GetCursor(), "compaction_update", hex.EncodeToString(id[:]))
+		event.ACP.MessageOp = "replace"
+	default:
+		return service.ConsoleEvent{}, false
+	}
+	return event, true
 }
 
 func paramsSource(obs *model.Observation) *model.Extension {
@@ -154,7 +205,9 @@ func idleSourcedEvent(obs *model.Observation, ref *acpprocessor.Activity) servic
 		e = service.ConsoleEvent{Kind: "output", Text: "[Provider input request outside an active turn]"}
 	case obs.GetExtension() != nil:
 		ext := obs.GetExtension()
-		if decoded, ok := acpprocessor.ExtensionUpdate(ext); ok {
+		if activity, ok := acpScopedActivity(obs, "live"); ok {
+			e = activity
+		} else if decoded, ok := acpprocessor.ExtensionUpdate(ext); ok {
 			e = acpActivityEvent(&decoded, "live", obs.Cursor)
 		} else if ext.Type == "acp.source_omitted" || ext.Type == "acp.permission_request" {
 			e = acpExtensionEvent(obs, "live")

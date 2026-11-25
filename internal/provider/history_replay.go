@@ -105,10 +105,12 @@ func (l *Local) loadReplaySnapshot(ctx context.Context, native service.NativeSes
 		return snapshot, ctx.Err()
 	}
 
-	rt, err := runtime.New(runtime.Config{
+	config := runtime.Config{
 		HarnessInstance: native.HarnessInstance, WorkingDirectory: cwd,
 		Command: profile.Command, Args: profile.Args, ReplayHistory: true,
-	})
+	}
+	configureACPActivity(&config)
+	rt, err := runtime.New(config)
 	if err != nil {
 		return nil, err
 	}
