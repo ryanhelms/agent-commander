@@ -22,6 +22,7 @@ type Local struct {
 	stateDir, socket, executable, label string
 	acpProfiles                         map[string]acpProfile
 	replaySlot                          chan struct{}
+	replayCache                         replayCache
 	tools                               *toolregistry.Registry
 }
 

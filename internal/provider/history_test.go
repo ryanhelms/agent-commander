@@ -16,7 +16,7 @@ import (
 )
 
 func TestCancelledReplayWaitPreservesTheActiveReadersSlot(t *testing.T) {
-	profile := acpProfile{Command: "/fixture/adapter", History: &acpHistory{Format: acpReplayHistory}}
+	profile := acpProfile{Command: "/bin/echo", History: &acpHistory{Format: acpReplayHistory}}
 	ref := service.NativeSession{HarnessInstance: profile.instance("test"), SessionID: "retained"}
 	local := &Local{acpProfiles: map[string]acpProfile{"test": profile}, replaySlot: make(chan struct{}, 1)}
 	local.replaySlot <- struct{}{}
