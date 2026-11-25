@@ -128,6 +128,74 @@ private func model(_ service: ScriptedService, opened: Opened = Opened()) -> Eli
         #expect(error.problems["count"] == "Enter a whole number, such as 42.")
     }
 
+    @Test func typesListsOfTextChoices() throws {
+        let schema = ElicitationSchema(try object(#"{"type":"object","properties":{"plain":{"type":"array","items":{"type":"string","enum":["a","b","c"]},"minItems":1,"maxItems":2,"default":["c","a"]},"titled":{"type":"array","items":{"anyOf":[{"const":"x","title":"Ex"},{"const":"y","title":"Why"}]},"default":[]},"bare":{"type":"array","items":{"enum":["p","q"]},"default":["p","p"]}}}"#))
+        #expect(schema.fields.map(\.name) == ["bare", "plain", "titled"])
+        #expect(schema.fields[0].kind == .multiChoice([.init(value: "p", title: "p"), .init(value: "q", title: "q")],
+                                                      minItems: nil, maxItems: nil))
+        // A repeated default could not be sent, so it is not offered.
+        #expect(schema.fields[0].defaultValue == nil && schema.fields[0].hint == "choose any")
+        #expect(schema.fields[1].kind == .multiChoice([.init(value: "a", title: "a"), .init(value: "b", title: "b"),
+                                                       .init(value: "c", title: "c")], minItems: 1, maxItems: 2))
+        #expect(schema.fields[1].defaultValue == .list(["c", "a"]) && schema.fields[1].hint == "choose 1–2")
+        #expect(schema.fields[2].kind == .multiChoice([.init(value: "x", title: "Ex"), .init(value: "y", title: "Why")],
+                                                      minItems: nil, maxItems: nil))
+        #expect(schema.fields[2].defaultValue == .list([]))
+        #expect(ElicitationDraft(defaultsOf: schema).values == ["plain": .list(["c", "a"]), "titled": .list([])])
+        #expect(schema.acceptUnavailableReason == nil)
+        let bounds = ElicitationSchema(try object(#"{"properties":{"least":{"type":"array","items":{"enum":["a","b"]},"minItems":1},"most":{"type":"array","items":{"enum":["a","b"]},"maxItems":1},"exact":{"type":"array","items":{"enum":["a","b"]},"minItems":2,"maxItems":2}}}"#))
+        #expect(bounds.fields.map(\.hint) == ["choose 2", "choose at least 1", "choose up to 1"])
+    }
+
+    @Test func explainsListsItCannotAnswer() throws {
+        func reason(_ spec: String) throws -> String? {
+            try ElicitationSchema(object(#"{"properties":{"f":"# + spec + "}}")).fields[0].unsupportedReason
+        }
+        let textOnly = "Only a list of text choices can be answered here."
+        #expect(try reason(#"{"type":"array"}"#) == "A list of several choices cannot be answered here.")
+        #expect(try reason(#"{"type":"array","items":{"type":"string"}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"type":"object","properties":{}}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"type":"array","items":{"enum":["a"]}}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"type":"integer","enum":["a"]}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"enum":[1,2]}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"type":"string","anyOf":[{"const":"a","title":"A"}]}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"anyOf":[{"const":"a","title":"A"},{"type":"string"}]}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"enum":["a"],"anyOf":[{"const":"a"}]}}"#) == textOnly)
+        #expect(try reason(#"{"type":"array","items":{"enum":[]}}"#) == "This list offers no options.")
+        #expect(try reason(#"{"type":"array","items":{"enum":["a","a"]}}"#) == "This list repeats an option.")
+        #expect(try reason(#"{"type":"array","items":{"enum":["a"]},"minItems":2}"#) == "This list asks for more choices than it offers.")
+        for bounds in [#""minItems":2,"maxItems":1"#, #""minItems":1.5"#, #""maxItems":-1"#, #""maxItems":"2""#] {
+            #expect(try reason(#"{"type":"array","items":{"enum":["a","b"]},"# + bounds + "}") == "This list's size limits cannot be read.")
+        }
+        let required = ElicitationSchema(try object(#"{"required":["f"],"properties":{"f":{"type":"array","items":{"type":"object"}}}}"#))
+        #expect(required.acceptUnavailableReason?.contains("required") == true)
+    }
+
+    @Test func sendsListsLiterallyAndChecksSelections() throws {
+        let schema = ElicitationSchema(try object(#"{"type":"object","required":["must"],"properties":{"must":{"type":"array","items":{"enum":["a","b"]}},"pick":{"type":"array","items":{"anyOf":[{"const":" Ünï \"q\"","title":"Q"},{"const":"z","title":"Z"}]},"maxItems":2},"skip":{"type":"array","items":{"enum":["a"]},"minItems":1}}}"#))
+        // A required list with nothing chosen sends the empty list; an optional one is left out.
+        let empty = try schema.content(from: ElicitationDraft()).get()
+        #expect(String(decoding: ElicitationReply.body(action: .accept, content: empty), as: UTF8.self)
+                == #"{"action":"accept","content":{"must":[]}}"#)
+        let chosen = try schema.content(from: ElicitationDraft(values: ["must": .list(["b", "a"]),
+                                                                        "pick": .list(["z", " Ünï \"q\""])])).get()
+        #expect(chosen == .object(["must": .array([.string("b"), .string("a")]),
+                                   "pick": .array([.string("z"), .string(" Ünï \"q\"")])]))
+        func problems(_ values: [String: ElicitationValue]) -> [String: String] {
+            guard case .failure(let error) = schema.content(from: ElicitationDraft(values: values)) else { return [:] }
+            return error.problems
+        }
+        #expect(problems(["must": .list(["c"])]) == ["must": "Choose only the listed options."])
+        #expect(problems(["must": .list(["a", "a"])]) == ["must": "Choose each option once."])
+        #expect(problems(["pick": .list(["z", " Ünï \"q\"", "z"])]) == ["pick": "Choose each option once."])
+        #expect(problems(["skip": .list([])]) == ["skip": "Choose at least 1."])
+        #expect(problems(["must": .text("a")]) == ["must": "Choose from the list."])
+        #expect(ElicitationSchema.listProblem(["a", "b", "c"], options: [.init(value: "a", title: "a"),
+                                                                         .init(value: "b", title: "b"),
+                                                                         .init(value: "c", title: "c")],
+                                              minItems: nil, maxItems: 2) == "Choose at most 2.")
+    }
+
     @Test func declineCancelAndURLAcceptCarryNoContent() {
         #expect(String(decoding: ElicitationReply.body(action: .decline, content: nil), as: UTF8.self) == #"{"action":"decline"}"#)
         #expect(String(decoding: ElicitationReply.body(action: .cancel, content: nil), as: UTF8.self) == #"{"action":"cancel"}"#)
