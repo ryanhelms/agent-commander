@@ -281,6 +281,8 @@ When a recovered user message has `metadata.acp.kind=provider_prompt_media`, use
 
 Add `source=live` to inspect recently received ACP details, including tool arguments, results, embedded content and unfamiliar fields. Commander keeps a bounded in-memory window for each worker and marks evicted source records with a gap. The default provider-history pages and journal pages remain available after a restart if the harness retained them. The reference console opens these live records under **Live ACP source**. [ACP source coverage](design/verification/transcript-coverage/README.md)
 
+For a continuous private view on the local owner socket, subscribe to `GET /v1/workers/WORKER_ID/live-source/events`. Each SSE `page` carries the SDK history page and an event ID. Keep that ID after consuming the page and pass it in `Last-Event-ID` (or the initial `after` query parameter) to resume. When a checkpoint expires, the next page includes a gap before remaining records. The shared workspace subscription does not carry these source frames.
+
 The default data directory is `~/Library/Application Support/Agent Commander`. It contains the private API socket, persisted run state, recent console output and private provider launch configuration. A detached service writes its startup errors to `service.log`. Treat the directory as private, since transcripts can contain sensitive project content.
 
 - `AGENT_COMMANDER_HOME` selects a separate data directory for development. Its default socket is `service.sock` inside that directory.

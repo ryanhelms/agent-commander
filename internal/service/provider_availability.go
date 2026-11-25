@@ -20,6 +20,7 @@ func (s *service) reportWorkerProviderExit(req *http.Request, actor string) (out
 	var report struct {
 		NativeSession
 		LastState string `json:"last_state"`
+		Reason    string `json:"reason,omitempty"`
 	}
 	if err := decode(req, &report); err != nil {
 		return outcome{}, err
@@ -27,8 +28,12 @@ func (s *service) reportWorkerProviderExit(req *http.Request, actor string) (out
 	if report.LastState != "completed" && report.LastState != "idle" {
 		return outcome{}, bad("provider exit requires the last finished turn state")
 	}
-	if !w.isLocalClaudeWorker() || *w.NativeSession != report.NativeSession || w.Control == nil {
-		return outcome{}, conflict("provider exit does not match the original Claude session")
+	if report.Reason != "" && report.Reason != "observation_gap" {
+		return outcome{}, bad("invalid provider exit reason")
+	}
+	if w.Role != "worker" || w.NativeSession == nil || *w.NativeSession != report.NativeSession || w.Control == nil ||
+		(report.Reason == "" && !w.isLocalClaudeWorker()) {
+		return outcome{}, conflict("provider exit does not match the original managed session")
 	}
 	if w.ProviderAvailability == providerExited {
 		return read(w), nil
@@ -43,6 +48,9 @@ func (s *service) reportWorkerProviderExit(req *http.Request, actor string) (out
 		}
 	}
 	w.State, w.Error = report.LastState, ""
+	if report.Reason == "observation_gap" {
+		w.Error = "Provider observations expired without enough evidence to resume"
+	}
 	w.ProviderAvailability = providerExited
 	w.Control.ActiveTurnID = ""
 	s.stopWorkerInbox(r, w)
