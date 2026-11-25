@@ -171,6 +171,17 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 			})
 		}
 		outcome := map[string]any{"state": state, "message_id": messageID, "observed_turn_end": observedTurnEnd}
+		switch state {
+		case "max_tokens", "max_turn_requests", "refusal":
+			outcome["stop_reason"] = state
+			state, outcome["state"] = "idle", "idle"
+		case "completed":
+			outcome["stop_reason"] = "end_turn"
+		case "idle":
+			if observedTurnEnd {
+				outcome["stop_reason"] = "cancelled"
+			}
+		}
 		if turnErr != nil {
 			outcome["error"] = turnErr.Error()
 		}
@@ -432,13 +443,31 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 	if err = accepted(turnID, sent.GetReceipt(), err); err != nil {
 		return "failed", false, err
 	}
+	var controlErrors <-chan error
+	if a != nil && (managed || capabilities.GetCanAnswer()) {
+		errs := make(chan error, 1)
+		done := make(chan struct{})
+		defer func() { cancel(); <-done }()
+		go func() {
+			defer close(done)
+			controlCtx, stopControl := context.WithCancel(ctx)
+			defer stopControl()
+			if err := runACPControl(controlCtx, client, a, s, path, ref, turnID, managed, localClaude, capabilities); err != nil {
+				errs <- err
+			}
+		}()
+		controlErrors = errs
+	}
 	source.capturePrompt(ctx, request)
-	pending := map[string]*model.InputRequest{}
-	interruptAttempted := false
-	ticker := time.NewTicker(350 * time.Millisecond)
-	defer ticker.Stop()
 	var text strings.Builder
+	var textTimer *time.Timer
+	var textDeadline <-chan time.Time
+	firstText := true
 	flushText := func() {
+		if textDeadline != nil {
+			textTimer.Stop()
+			textDeadline = nil
+		}
 		if text.Len() > 0 {
 			s.event("text", "", "", text.String())
 			text.Reset()
@@ -449,6 +478,11 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 		select {
 		case <-ctx.Done():
 			return "idle", false, ctx.Err()
+		case err := <-controlErrors:
+			return "failed", false, err
+		case <-textDeadline:
+			flushText()
+			s.publishAvailable()
 		case update, ok := <-updates:
 			if update.err != nil {
 				return "failed", false, update.err
@@ -478,14 +512,29 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_ASSISTANT:
 				value := consoleText(e.GetText().Text)
 				s.write(value)
-				if ref := sourceReference(source.take(e.Cursor), portableRef); ref != nil {
+				if ref := sourceReference(source.take(e.Cursor), portableRef); ref != nil || firstText {
+					if value == "" && ref == nil {
+						continue
+					}
 					flushText()
 					s.recordEvent(service.ConsoleEvent{Kind: "text", Text: value, ACP: ref})
+					if firstText && value != "" {
+						firstText = false
+						s.publishAvailable()
+					}
 					continue
 				}
 				text.WriteString(value)
 				if strings.HasSuffix(value, "\n") || text.Len() >= 8192 {
 					flushText()
+				} else if text.Len() > 0 && textDeadline == nil {
+					const maxCoalescing = 25 * time.Millisecond
+					if textTimer == nil {
+						textTimer = time.NewTimer(maxCoalescing)
+					} else {
+						textTimer.Reset(maxCoalescing)
+					}
+					textDeadline = textTimer.C
 				}
 			case e.GetTool() != nil:
 				flushText()
@@ -547,10 +596,15 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					choices = append(choices, service.QuestionChoice{ID: option.Id, Label: option.Label})
 				}
 				var q service.Question
-				if err := a.request("POST", path+"/questions", map[string]any{"question": request.Prompt, "choices": choices, "idempotency_key": request.RequestId}, &q); err != nil {
+				if err := a.requestContext(ctx, "POST", path+"/questions", map[string]any{
+					"question": request.Prompt, "choices": choices,
+					"idempotency_key": request.RequestId, "provider_turn": turnID, "provider_request": request.RequestId,
+				}, &q); err != nil {
 					return "failed", false, err
 				}
-				pending[q.ID] = request
+				if q.Status == "cancelled" {
+					continue
+				}
 				s.line(q.ID + " · " + q.Question)
 				if portableRef != nil {
 					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Permission requested] " + q.Question, ACP: portableRef})
@@ -575,62 +629,78 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				case "cancelled":
 					s.line("Turn interrupted.")
 					return "idle", observedTurnEnd, nil
+				case "max_tokens", "max_turn_requests", "refusal":
+					s.line("Turn stopped: " + reason + ". This conversation is ready for a follow-up.")
+					return reason, observedTurnEnd, nil
 				default:
 					return "failed", observedTurnEnd, fmt.Errorf("provider stopped the turn: %s", reason)
 				}
 			}
-		case <-ticker.C:
-			if managed && (localClaude || capabilities.GetCanInterrupt() && !interruptAttempted) {
-				var feed controlFeed
-				err := a.request("GET", path+"/control", nil, &feed)
-				if err == nil && localClaude && feed.ProviderAvailability == "checking" {
-					_ = a.request("POST", path+"/control/reconcile", map[string]any{
-						"session": service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()},
-						"turn_id": turnID, "generation": feed.Generation,
-					}, nil)
-				} else if err == nil && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
-					claim := map[string]any{"generation": feed.Generation}
-					operationID := "interrupt-" + turnID
-					if feed.InterruptID != "" {
-						claim["id"], claim["turn_id"] = feed.InterruptID, turnID
-						operationID = feed.InterruptID
-					}
-					if a.request("POST", path+"/control/interrupt/claim", claim, nil) == nil {
-						interruptAttempted = true
-						result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: operationID, TurnId: turnID})
-						phase := "sent"
-						if err = accepted(operationID, result.GetReceipt(), err); err != nil {
-							phase = "unconfirmed"
-							s.line("Interrupt could not be confirmed: " + err.Error())
-						}
-						if feed.InterruptID != "" {
-							claim["phase"] = phase
-							if err := publishWorkerControl(ctx, a, path+"/control/interrupt/report", claim); err != nil {
-								s.line("Interrupt evidence could not be saved: " + err.Error())
-							}
-						}
-					}
-				}
-			}
-			for id, request := range pending {
-				var q service.Question
-				if a.request("GET", path+"/questions/"+id, nil, &q) != nil || q.Status != "answered" {
-					continue
-				}
-				if !slices.ContainsFunc(request.Choices, func(opt *model.Choice) bool { return opt.Id == q.Answer }) {
-					return "failed", false, errors.New("reply does not match an offered provider choice")
-				}
-				answer, err := client.Answer(ctx, &model.AnswerRequest{Session: ref, OperationId: "answer-" + id, RequestId: request.RequestId, Answer: &model.AnswerRequest_OptionId{OptionId: q.Answer}})
-				if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
-					return "failed", false, errACPDisconnected
-				}
-				if err = accepted("answer-"+id, answer.GetReceipt(), err); err != nil {
-					return "failed", false, err
-				}
-				delete(pending, id)
-			}
 		}
 	}
+}
+
+func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *screen, path string,
+	ref *model.SessionRef, turnID string, managed, localClaude bool, capabilities *model.Capabilities) error {
+	answered := make(map[string]bool)
+	interruptAttempted := false
+	for feed := range a.watchControl(ctx, path, turnID) {
+		if localClaude && feed.ProviderAvailability == "checking" {
+			_ = a.requestContext(ctx, "POST", path+"/control/reconcile", map[string]any{
+				"session": service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()},
+				"turn_id": turnID, "generation": feed.Generation,
+			}, nil)
+		} else if managed && capabilities.GetCanInterrupt() && !interruptAttempted && feed.InterruptRequested {
+			claim := map[string]any{"generation": feed.Generation, "permission_turn_id": turnID}
+			operationID := "interrupt-" + turnID
+			if feed.InterruptID != "" {
+				claim["id"], claim["turn_id"] = feed.InterruptID, turnID
+				operationID = feed.InterruptID
+			}
+			if a.requestContext(ctx, "POST", path+"/control/interrupt/claim", claim, nil) == nil {
+				interruptAttempted = true
+				result, err := client.Interrupt(ctx, &model.InterruptRequest{Session: ref, OperationId: operationID, TurnId: turnID})
+				phase := "sent"
+				if err = accepted(operationID, result.GetReceipt(), err); err != nil {
+					phase = "unconfirmed"
+					if ctx.Err() == nil {
+						s.line("Interrupt could not be confirmed: " + err.Error())
+					}
+				}
+				if feed.InterruptID != "" {
+					claim["phase"] = phase
+					delete(claim, "permission_turn_id")
+					reportCtx, cancelReport := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+					err := publishWorkerControl(reportCtx, a, path+"/control/interrupt/report", claim)
+					cancelReport()
+					if err != nil && ctx.Err() == nil {
+						s.line("Interrupt evidence could not be saved: " + err.Error())
+					}
+				}
+			}
+		}
+		if interruptAttempted {
+			continue
+		}
+		for _, q := range feed.Answers {
+			if answered[q.ID] {
+				continue
+			}
+			id := "answer-" + q.ID
+			answer, err := client.Answer(ctx, &model.AnswerRequest{
+				Session: ref, OperationId: id, RequestId: q.ProviderRequest,
+				Answer: &model.AnswerRequest_OptionId{OptionId: q.Choice},
+			})
+			if answer.GetReceipt().GetStatus() == model.DeliveryStatus_DELIVERY_STATUS_UNKNOWN {
+				return errACPDisconnected
+			}
+			if err = accepted(id, answer.GetReceipt(), err); err != nil {
+				return err
+			}
+			answered[q.ID] = true
+		}
+	}
+	return nil
 }
 
 func acpDisconnected(reason string) bool {

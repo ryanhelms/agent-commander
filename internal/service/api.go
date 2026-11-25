@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -142,6 +141,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("POST /v1/workers/{worker}/ssh-link", s.handle(s.workerSSHLink))
 	mux.HandleFunc("POST /v1/runs/{run}/integrations", s.handle(s.beginIntegration))
 	mux.HandleFunc("POST /v1/workers/{worker}/coding/commit", s.handle(s.codingCommit))
+	mux.HandleFunc("GET /v1/workers/{worker}/control", s.waitWorkerControl)
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -161,7 +161,6 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/frontend-tools/calls/{call}/cancel":               s.cancelFrontendCall,
 		"POST /v1/workers/{worker}/result":                                           s.workerResult,
 		"POST /v1/workers/{worker}/native-session":                                   s.bindNativeSession,
-		"GET /v1/workers/{worker}/control":                                           s.workerControlStatus,
 		"POST /v1/workers/{worker}/control":                                          s.setWorkerControl,
 		"POST /v1/workers/{worker}/control/ready":                                    s.workerControlReady,
 		"POST /v1/workers/{worker}/control/finish":                                   s.finishWorkerTurn,
@@ -201,28 +200,7 @@ func (s *service) handleJSONLimit(op endpoint, limit int64) http.HandlerFunc {
 			}
 			r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw))
 		}
-		s.mu.Lock()
-		actor := ""
-		if _, present := r.Header["Authorization"]; present {
-			bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-			actor = s.state.Tokens[digest(bearer)]
-			if !ok || bearer == "" || actor == "" {
-				s.mu.Unlock()
-				respondError(w, &apiError{401, "invalid worker credential"})
-				return
-			}
-		}
-		if access := hosted.From(r.Context()); access != nil && !access.Allowed() {
-			s.mu.Unlock()
-			respondError(w, denied())
-			return
-		}
-		res, err := op(r, actor)
-		var body []byte
-		if err == nil {
-			body, err = json.Marshal(res.body)
-		}
-		s.mu.Unlock()
+		res, body, err := s.dispatchJSON(r, op)
 		if err != nil {
 			respondError(w, err)
 			return
@@ -234,6 +212,49 @@ func (s *service) handleJSONLimit(op endpoint, limit int64) http.HandlerFunc {
 		w.WriteHeader(res.code)
 		_, _ = w.Write(append(body, '\n'))
 	}
+}
+
+// dispatchJSON keeps state validation and persistence in one transaction. A launch
+// can return an external check to run before any mutation, then reenter the
+// endpoint with fresh authorization and state.
+func (s *service) dispatchJSON(r *http.Request, op endpoint) (outcome, []byte, error) {
+	s.mu.Lock()
+	actor, err := s.requestActor(r)
+	var res outcome
+	if err == nil {
+		res, err = op(r, actor)
+	}
+	var check *launchCheck
+	if errors.As(err, &check) {
+		s.mu.Unlock()
+		prepared := check.prepare(r.Context())
+		if r.Context().Err() != nil {
+			return outcome{}, nil, r.Context().Err()
+		}
+		return s.dispatchJSON(r.WithContext(context.WithValue(r.Context(), launchCheckKey{}, prepared)), op)
+	}
+	var body []byte
+	if err == nil {
+		body, err = json.Marshal(res.body)
+	}
+	s.mu.Unlock()
+	return res, body, err
+}
+
+// requestActor requires the service lock.
+func (s *service) requestActor(r *http.Request) (string, error) {
+	var actor string
+	if _, present := r.Header["Authorization"]; present {
+		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		actor = s.state.Tokens[digest(bearer)]
+		if !ok || bearer == "" || actor == "" {
+			return "", &apiError{401, "invalid worker credential"}
+		}
+	}
+	if access := hosted.From(r.Context()); access != nil && !access.Allowed() {
+		return "", denied()
+	}
+	return actor, nil
 }
 
 // applyEndpoint runs with the service lock held. A streaming command shares
@@ -404,20 +425,15 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	if target != "" {
 		return read(s.run(target)), nil
 	}
-	info, err := os.Stat(in.Path)
-	if err != nil || !info.IsDir() {
-		return outcome{}, bad("project path must be an existing directory")
-	}
 	if in.Project == "" {
 		in.Project = filepath.Base(in.Path)
 	}
 	if in.Client == "" {
 		in.Client = "claude"
 	}
-	if launcher, ok := s.launcher.(interface{ CheckClient(string) error }); ok {
-		if err := launcher.CheckClient(in.Client); err != nil {
-			return outcome{}, conflict(err.Error())
-		}
+	prepared, err := s.prepareLaunch(req.Context(), launchPrerequisites{client: in.Client, path: in.Path})
+	if err != nil {
+		return outcome{}, err
 	}
 	title := displayTitle(in.Title)
 	if title == "" {
@@ -425,7 +441,7 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	}
 	r := &Run{
 		ID: randomID("r-"), Project: in.Project, Path: in.Path, Task: in.Task, Client: in.Client,
-		Title: title, CreatedAt: timestamp(), Branch: checkoutBranch(req.Context(), in.Path),
+		Title: title, CreatedAt: timestamp(), Branch: prepared.branch,
 		Status: "running", WorkerLimit: in.WorkerLimit, Requests: []*Question{}, TestCommand: in.TestCommand,
 	}
 	w, spec := s.newWorker(r, randomID("w-"), "Coordinator", in.Task, "", "coordinator", r.Client, "localhost", r.Path)
@@ -484,62 +500,19 @@ func (s *service) delegate(req *http.Request, actor string) (outcome, error) {
 	if client == "" {
 		client = r.Client
 	}
-	host, checkout := strings.TrimSpace(in.Host), r.Path
+	host := strings.TrimSpace(in.Host)
 	if host == "" {
 		host = "localhost"
 	}
-	if host == "localhost" {
-		if actor != "" {
-			if launcher, ok := s.launcher.(interface{ CheckAgentClient(string) error }); ok {
-				if err := launcher.CheckAgentClient(client); err != nil {
-					return outcome{}, conflict(err.Error())
-				}
-			}
-		}
-		if launcher, ok := s.launcher.(interface{ CheckClient(string) error }); ok {
-			if err := launcher.CheckClient(client); err != nil {
-				return outcome{}, conflict(err.Error())
-			}
-		}
-	} else {
-		placement, ok := s.launcher.(hostPlacement)
-		if !ok {
-			return outcome{}, conflict("SSH hosts are unavailable")
-		}
-		var err error
-		checkout, err = placement.WorkerCheckout(host, r.Path, client)
-		if err != nil {
-			return outcome{}, conflict(err.Error())
-		}
+	prepared, err := s.prepareLaunch(req.Context(), launchPrerequisites{
+		client: client, path: r.Path, host: host, kind: in.Kind, agent: actor != "",
+	})
+	if err != nil {
+		return outcome{}, err
 	}
-	id := randomID("w-")
-	var source, isolated *worktrees.Checkout
-	if in.Kind == "coding" {
-		if host != "localhost" {
-			return outcome{}, conflict("coding worktree placement currently requires the coordinator's host")
-		}
-		if checker, ok := s.launcher.(interface{ CheckCodingClient(string) error }); ok {
-			if err := checker.CheckCodingClient(client); err != nil {
-				return outcome{}, conflict(err.Error())
-			}
-		}
-		base, err := worktrees.Source(req.Context(), r.Path)
-		if err != nil {
-			return outcome{}, conflict(err.Error())
-		}
-		git, err := worktrees.New()
-		if err != nil {
-			return outcome{}, err
-		}
-		placement, err := git.Plan(req.Context(), base, id)
-		if err != nil {
-			return outcome{}, conflict(err.Error())
-		}
-		source, isolated, checkout = &base, &placement, placement.Path
-	}
-	w, spec := s.newWorker(r, id, in.Name, in.Task, p.ID, "worker", client, host, checkout)
-	if isolated != nil {
-		w.Branch, w.Coding, spec.CodingSource = isolated.Branch, isolated, source
+	w, spec := s.newWorker(r, prepared.id, in.Name, in.Task, p.ID, "worker", client, host, prepared.checkout)
+	if prepared.isolated != nil {
+		w.Branch, w.Coding, spec.CodingSource = prepared.isolated.Branch, prepared.isolated, prepared.source
 	}
 	s.remember(key, intent, w.ID)
 	return outcome{w, 201, true, func() { s.launch(spec) }}, nil
@@ -667,8 +640,10 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, err
 	}
 	var in struct {
-		Question string
-		Choices  []QuestionChoice `json:",omitempty"`
+		Question        string
+		Choices         []QuestionChoice `json:",omitempty"`
+		ProviderTurn    string           `json:"provider_turn,omitempty"`
+		ProviderRequest string           `json:"provider_request,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -687,6 +662,15 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		_, q := s.question(target)
 		return read(q), nil
 	}
+	if in.ProviderTurn != "" || in.ProviderRequest != "" {
+		if in.ProviderTurn == "" || in.ProviderTurn != activeProviderTurn(w) ||
+			in.ProviderRequest == "" || len(in.ProviderRequest) > 256 || len(in.Choices) == 0 {
+			return outcome{}, conflict("permission does not match the active provider turn")
+		}
+		if w.Control != nil && w.Control.InterruptClaimed {
+			return read(Question{Status: "cancelled"}), nil
+		}
+	}
 	if ended(w.State) {
 		return outcome{}, conflict("worker has ended")
 	}
@@ -694,6 +678,12 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, conflict("SSH worker disconnected; reconcile the original session first")
 	}
 	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: formatQuestion(in.Question, in.Choices), Status: "pending", Choices: in.Choices}
+	if in.ProviderTurn != "" {
+		if s.state.Permissions == nil {
+			s.state.Permissions = make(map[string]providerPermission)
+		}
+		s.state.Permissions[q.ID] = providerPermission{Turn: in.ProviderTurn, Request: in.ProviderRequest}
+	}
 	r.Requests = append(r.Requests, q)
 	s.remember(key, intent, q.ID)
 	return outcome{q, 201, true, nil}, nil
@@ -780,6 +770,7 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	w.State, w.Error = in.State, in.Error
 	if ended(in.State) {
 		r.cancelQuestions(w.ID)
+		s.retireProviderPermissions(r, w.ID)
 	}
 	r.refreshOutcome()
 	return changed(map[string]string{"id": w.ID, "state": w.State}), nil

@@ -194,6 +194,14 @@ func (s *screen) flush() {
 	<-done
 }
 
+func (s *screen) publishAvailable() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.batches != nil && !s.closed {
+		s.queueLocked(nil)
+	}
+}
+
 func (s *screen) queueLocked(done chan struct{}) {
 	if len(s.pending) == 0 && len(s.events) == 0 && s.claudeProgress == nil && done == nil {
 		return
