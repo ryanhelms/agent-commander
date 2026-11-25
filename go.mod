@@ -3,7 +3,7 @@ module agentcommander
 go 1.25.0
 
 require (
-	agent-acp.local/sdks/go v0.1.15
+	agent-acp.local/sdks/go v0.1.16
 	github.com/coder/acp-go-sdk v0.20.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
