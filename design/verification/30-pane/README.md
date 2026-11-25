@@ -2,7 +2,7 @@
 
 The current driver records peer receipt separately from workspace acknowledgement visibility. The disposable peer stamps each incoming decision using the same host's monotonic clock before decoding the decision or emitting its acknowledgement. `reply_observed_at_adapter` uses that stamp, `reply_ack_visible` measures when the workspace subscriber sees the ACK, and `reply_visible` measures when it sees the owner's answer. The archived reports below measured the console ACK under the peer receipt field name.
 
-Use `--first-text` to measure one newline-free chunk without a message ID on each of six explicit follow-up turns during the loaded phase. The peer holds each prompt open for two seconds after sending the chunk. The structured workspace subscriber records the first assistant message with the marker. The result includes the peer-to-subscriber time and whether the message reached the subscriber before the peer emitted the turn result. Run the two pinned binaries serially in alternating order.
+Use `--first-text` to measure one newline-free chunk without a message ID on each of six explicit follow-up turns during the loaded phase. The peer holds each prompt open for two seconds after sending the chunk. The structured workspace subscriber records the first assistant message with the marker. The result includes the peer-to-subscriber time and whether the message reached the subscriber before the peer emitted the turn result. Run the two pinned binaries serially in alternating order. Use `--samples` to select the sample count for each phase. Loaded reports record the index of the approval that was pending across reconnect.
 
 ## Installed macOS backend with SDK 0.1.14
 
