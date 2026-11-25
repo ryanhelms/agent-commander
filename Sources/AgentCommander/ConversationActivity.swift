@@ -50,11 +50,19 @@ struct ConversationActivity: Identifiable, Equatable {
     /// The entries Pretty lays out, in order. Each run of adjacent routine entries is one
     /// activity; every other entry is passed through as it is. Order is never changed, and an
     /// activity never reaches across an entry that is not routine.
-    static func items(_ entries: [TranscriptEntry]) -> [ConversationItem] {
+    /// Commander's own tool calls are first read into `CommanderWorkflow`s; a workflow is not
+    /// routine, so it ends a run like any other entry. `awaitingToolID` is the one open call a
+    /// provider permission holds, so its workflow reads as awaiting approval.
+    static func items(_ entries: [TranscriptEntry], awaitingToolID: String? = nil) -> [ConversationItem] {
         var items: [ConversationItem] = []
         items.reserveCapacity(entries.count)
         var open: ConversationActivity?
-        for entry in entries {
+        for commanderItem in CommanderActivity.items(entries, awaitingToolID: awaitingToolID) {
+            guard case .entry(let entry) = commanderItem else {
+                if let activity = open { items.append(.activity(activity)); open = nil }
+                if case .workflow(let workflow) = commanderItem { items.append(.commander(workflow)) }
+                continue
+            }
             if isRoutine(entry) {
                 if open == nil { open = ConversationActivity(first: entry) } else { open?.entries.append(entry) }
             } else {
@@ -91,11 +99,23 @@ struct ConversationActivity: Identifiable, Equatable {
 enum ConversationItem: Identifiable, Equatable {
     case entry(TranscriptEntry)
     case activity(ConversationActivity)
+    /// Commander calls linked by proof, or one Commander call; see `CommanderActivity`.
+    case commander(CommanderWorkflow)
 
     var id: String {
         switch self {
         case .entry(let entry): entry.id
         case .activity(let activity): activity.id
+        case .commander(let workflow): workflow.id
+        }
+    }
+
+    /// Every entry the item stands for, in order.
+    var entries: [TranscriptEntry] {
+        switch self {
+        case .entry(let entry): [entry]
+        case .activity(let activity): activity.entries
+        case .commander(let workflow): workflow.entries
         }
     }
 }

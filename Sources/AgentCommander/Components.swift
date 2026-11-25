@@ -280,6 +280,10 @@ struct TranscriptEntry: Identifiable, Equatable {
     /// What the service's ACP reference says about the entry's record. Nil without one. Pretty
     /// uses it to read a run of live chunks as one turn; see `ConversationChunks`.
     var origin: TranscriptOrigin? = nil
+    /// For a Commander tool call, the `commander` correlation object its arguments carried and
+    /// the live request state the projection matched to it. Nil for every other entry. Pretty
+    /// links Commander calls only through it and the calls' own exact IDs; see `CommanderActivity`.
+    var commander: CommanderCallFacts? = nil
 
     var isFromUser: Bool {
         if case .prose(_, let fromUser) = kind { return fromUser }
@@ -863,7 +867,8 @@ extension TranscriptEntry {
                 entries.append(TranscriptEntry(
                     id: call.id,
                     kind: .tool(name: call.function.name, detail: detail(of: call.function.arguments),
-                                result: results[call.id])))
+                                result: results[call.id]),
+                    commander: CommanderCallFacts(arguments: call.function.arguments)))
             }
         }
         return entries
@@ -896,6 +901,7 @@ extension RunContent {
         let runClient = run.client
         let runTitle = run.title
         let coordinatorID = run.coordinatorID
+        let live = CommanderLiveState(run: run)
 
         func parents(of worker: Worker) -> [String] {
             var names: [String] = []
@@ -915,7 +921,11 @@ extension RunContent {
             let client = AgentClient(worker.client, fallback: runClient)
             let branch = worker.branch?.trimmingCharacters(in: .whitespaces) ?? ""
             let platform = HostPlatform(serviceHost: worker.host)
-            let transcript = TranscriptEntry.entries(from: worker.messages ?? [])
+            // Commander calls carry the current state of their request, follow-up or integration
+            // from this run, by exact ID, so Pretty never shows a pending request as done or a
+            // finished follow-up as queued. No polling: the workspace projection holds it all.
+            let transcript = CommanderActivity.annotate(
+                TranscriptEntry.entries(from: worker.messages ?? []), live: live)
             let state = TaskState(api: worker.state, hasPendingRequest: requestByWorker[worker.id] != nil)
             // The service's own explanation, or a plain statement when it sent none.
             let explanation = worker.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

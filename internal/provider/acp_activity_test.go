@@ -138,3 +138,23 @@ func TestACPIdleContentUsesSpeakerAndScopedMedia(t *testing.T) {
 		}
 	}
 }
+
+func TestCommanderInputIsScopedAndKeepsOnlyTheRequestID(t *testing.T) {
+	const id = "q-0123456789abcdef0123456789abcdef"
+	const raw = `{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"poll","rawInput":{"request_id":"` + id + `","other":"private original field"}}}`
+	obs := &model.Observation{
+		Session:      &model.SessionRef{SessionId: "s"},
+		SourceRecord: &model.Extension{Type: runtime.ACPUpdateParamsSource, Data: []byte(raw)},
+		Event:        &model.Observation_Tool{Tool: &model.ToolActivity{CallId: "poll", Name: "mcp__commander__commander_wait"}},
+	}
+	if got := commanderInputFromACP(obs, obs.GetTool().Name); got != `{"request_id":"`+id+`"}` {
+		t.Fatalf("expected only the scoped request ID, got %s", got)
+	}
+	if got := commanderInputFromACP(obs, "mcp__other__commander_wait"); got != "" {
+		t.Fatalf("non-Commander record contributed correlation: %s", got)
+	}
+	obs.Session.SessionId = "other"
+	if got := commanderInputFromACP(obs, obs.GetTool().Name); got != "" {
+		t.Fatalf("record from another session contributed correlation: %s", got)
+	}
+}

@@ -328,7 +328,10 @@ struct PrettyRunningIndicator: View {
         let size: CGFloat = density == .regular ? 12 : 10.5
         HStack(spacing: density == .regular ? 8 : 6) {
             ProgressView().controlSize(.mini)
-            if case .runningTool(let name) = status.phase {
+            if case .runningTool(let name) = status.phase, let tool = CommanderTool(name: name) {
+                // A Commander call says what it is doing: a wait is waiting for a reply.
+                Text(verbatim: tool.runningPhrase)
+            } else if case .runningTool(let name) = status.phase {
                 Text("Running \(Text(verbatim: name).font(Term.font(size - 0.5)).foregroundStyle(Palette.foreground))")
             } else {
                 Text("\(workerName) is responding")

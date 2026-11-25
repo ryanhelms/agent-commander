@@ -42,9 +42,11 @@ type ConsoleEvent struct {
 	Sequence int                    `json:"sequence"`
 	Kind     string                 `json:"kind"`
 	ToolID   string                 `json:"tool_id,omitempty"`
-	Name     string                 `json:"name,omitempty"`
-	Phase    string                 `json:"phase,omitempty"`
-	Text     string                 `json:"text,omitempty"`
+	// Only the validated request or operation ID from a Commander call's ACP raw input.
+	CommanderInput string `json:"commander_input,omitempty"`
+	Name           string `json:"name,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	Text           string `json:"text,omitempty"`
 }
 
 type Worker struct {

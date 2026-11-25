@@ -142,7 +142,7 @@ func (s *screen) recordEvent(event service.ConsoleEvent) {
 		return
 	}
 	s.events = append(s.events, event)
-	s.eventBytes += len(event.Text) + len(event.ToolID) + len(event.Name) + len(event.Phase)
+	s.eventBytes += len(event.Text) + len(event.ToolID) + len(event.Name) + len(event.Phase) + len(event.CommanderInput)
 	// Leave room below the endpoint's 1 MiB request limit for worst-case
 	// JSON escaping, per-event structured metadata and a recovery notice.
 	if s.batches != nil && (len(s.events) >= 16 || s.eventBytes >= 48<<10) {

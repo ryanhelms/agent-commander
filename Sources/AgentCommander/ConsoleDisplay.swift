@@ -274,7 +274,10 @@ struct PrettyConsoleView: View {
         // A streamed reply is one turn, as it is in Console. Pretty then sets adjacent routine
         // entries (usage, session state, harness diagnostics) close together as activity lines in
         // their place, each visible; every other entry is laid out as it is, in order.
-        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty))
+        // Commander's own calls read as purposeful workflows, linked only by exact IDs; every
+        // other tool keeps its generic row.
+        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
+                                               awaitingToolID: awaitingToolID)
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
@@ -291,6 +294,18 @@ struct PrettyConsoleView: View {
                                 PrettyActivityRun(activity: activity, metrics: metrics) { entry in
                                     row(entry, metrics: metrics)
                                 }
+                            case .commander(let workflow):
+                                CommanderActivityCard(
+                                    workflow: workflow,
+                                    isExpanded: isExpanded(workflow.id),
+                                    fontSize: metrics.toolSize,
+                                    density: density,
+                                    toggle: { toggle(workflow.id) }
+                                ) { entry in
+                                    // The original call, exactly as Console's Pretty row draws it.
+                                    row(entry, metrics: metrics)
+                                }
+                                .frame(maxWidth: metrics.readingWidth, alignment: .leading)
                             }
                         }
                         .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))

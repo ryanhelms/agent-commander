@@ -490,6 +490,9 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetTool() != nil:
 				flushText()
 				event := consoleTool(e.GetTool())
+				if event.Kind == "tool_call" {
+					event.CommanderInput = commanderInputFromACP(e, event.Name)
+				}
 				event.ACP = sourceReference(source.take(e.Cursor), portableRef)
 				s.line(previewText(event.TerminalText()))
 				s.recordEvent(event)
