@@ -288,9 +288,31 @@ struct CockpitScreen: View {
             send: { request in send(request) })
     }
 
+    /// Pending requests whose worker is disconnected, across every run.
+    private var disconnectedRequestIDs: [String] {
+        content.pending.filter(\.isWorkerDisconnected).map(\.id)
+    }
+
+    private var stopWorkerTitle: String {
+        ui.stopWorkerCandidate.map { "Stop \($0.name)?" } ?? "Stop worker?"
+    }
+
     // MARK: Body
 
     var body: some View {
+        // Reactions to data sit apart from the window chrome, which keeps each expression small
+        // enough for the type checker.
+        chrome
+            .onChange(of: run?.id) { _, _ in runChanged() }
+            .onChange(of: paneFocus) { _, focus in
+                if let focus { ui.returnFocusWorkerID = focus }
+            }
+            .onChange(of: content.pending.map(\.id)) { old, new in pendingChanged(from: old, to: new) }
+            .onChange(of: disconnectedRequestIDs) { old, new in disconnectedRequestsChanged(from: old, to: new) }
+            .onAppear { seedFocus() }
+    }
+
+    private var chrome: some View {
         CockpitShell {
             navigation
         } banners: {
@@ -312,7 +334,7 @@ struct CockpitScreen: View {
         } message: { run in
             Text("Stop delegation and cancel the managed agents in “\(run.title)”.")
         }
-        .alert(ui.stopWorkerCandidate.map { "Stop \($0.name)?" } ?? "Stop worker?",
+        .alert(stopWorkerTitle,
                isPresented: Binding(get: { ui.stopWorkerCandidate != nil },
                                     set: { if !$0 { ui.stopWorkerCandidate = nil } }),
                presenting: ui.stopWorkerCandidate) { candidate in
@@ -321,12 +343,6 @@ struct CockpitScreen: View {
         } message: { candidate in
             Text("This stops only “\(candidate.name)”. The run, its coordinator and the other workers keep going.")
         }
-        .onChange(of: run?.id) { _, _ in runChanged() }
-        .onChange(of: paneFocus) { _, focus in
-            if let focus { ui.returnFocusWorkerID = focus }
-        }
-        .onChange(of: content.pending.map(\.id)) { old, new in pendingChanged(from: old, to: new) }
-        .onAppear { seedFocus() }
     }
 
     // MARK: Navigation
@@ -676,7 +692,8 @@ struct CockpitScreen: View {
 
     private func send(_ request: RequestPresentation) {
         let text = ui.drafts[request.id] ?? ""
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !request.isWorkerDisconnected,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let target = ui.returnFocusWorkerID ?? run?.coordinator?.id
         Task {
             if await actions.reply(request.id, text) {
@@ -857,6 +874,20 @@ struct CockpitScreen: View {
         ui.surfacedRequests.formIntersection(live)
         ui.drafts = ui.drafts.filter { live.contains($0.key) }
         if let active = ui.activeRequestID, !live.contains(active) { ui.activeRequestID = nil }
+    }
+
+    /// A worker that drops with a request waiting is announced once. A reply field that held the
+    /// keyboard is now closed, so focus goes back to the pane that had it. The draft is kept.
+    private func disconnectedRequestsChanged(from old: [String], to new: [String]) {
+        let known = Set(old)
+        for request in content.pending where request.isWorkerDisconnected && !known.contains(request.id) {
+            AccessibilityNotification.Announcement(
+                "\(request.workerName) in \(request.runTitle) is disconnected. Its request stays pending and cannot be answered until it reconnects.").post()
+            if replyFocus == request.id {
+                replyFocus = nil
+                restorePaneFocus(ui.returnFocusWorkerID ?? run?.coordinator?.id)
+            }
+        }
     }
 
     private func seedFocus() {

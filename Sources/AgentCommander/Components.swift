@@ -36,12 +36,19 @@ enum AgentClient: Equatable {
 }
 
 /// Task progress. Human attention (a pending request) is folded in only for the label; the request
-/// itself stays a separate value on the worker.
+/// itself stays a separate value on the worker. A lost connection is reported ahead of a pending
+/// request: the request is still shown beside it, but it cannot be answered until the service has
+/// reconciled the worker, so "Needs input" would promise an action that is not available.
 enum TaskState: Equatable {
     case running, working, idle, needsInput, starting, stopping, completed, failed, stopped
+    case disconnected
     case unknown(String)
 
+    /// The service's worker state for a lost connection. A contract value.
+    static let apiDisconnected = "disconnected"
+
     init(api: String, hasPendingRequest: Bool = false) {
+        if api.lowercased() == Self.apiDisconnected { self = .disconnected; return }
         if hasPendingRequest { self = .needsInput; return }
         switch api.lowercased() {
         case "running": self = .running
@@ -68,6 +75,7 @@ enum TaskState: Equatable {
         case .completed: "Completed"
         case .failed: "Failed"
         case .stopped: "Stopped"
+        case .disconnected: "Disconnected"
         case .unknown(let raw): raw.isEmpty ? "Unknown" : raw.capitalized
         }
     }
@@ -75,7 +83,7 @@ enum TaskState: Equatable {
     var tone: Tone {
         switch self {
         case .running, .working, .completed: .working
-        case .needsInput, .starting, .stopping: .attention
+        case .needsInput, .starting, .stopping, .disconnected: .attention
         case .failed: .failure
         case .idle, .stopped, .unknown: .neutral
         }
@@ -91,6 +99,7 @@ enum TaskState: Equatable {
         case .completed: "✓"
         case .failed: "✗"
         case .stopped: "■"
+        case .disconnected: "!"
         case .unknown: "·"
         }
     }
@@ -116,6 +125,7 @@ enum TaskState: Equatable {
         case .completed: "checkmark.circle.fill"
         case .failed: "exclamationmark.circle.fill"
         case .stopped: "stop.circle"
+        case .disconnected: "bolt.slash.fill"
         case .unknown: "questionmark.diamond"
         }
     }
@@ -198,6 +208,22 @@ struct RequestPresentation: Identifiable, Equatable {
     /// The worker's most recent structured transcript entries, when the service sends structured
     /// messages. Empty otherwise, and the surface shows `contextTail`.
     var contextEntries: [TranscriptEntry] = []
+    /// Set while the worker that asked is disconnected, with the service's explanation. The
+    /// request stays pending and readable. It cannot be answered until the service has reconciled
+    /// the worker, so every reply surface is closed and says why.
+    var disconnectReason: String? = nil
+
+    var isWorkerDisconnected: Bool { disconnectReason != nil }
+
+    /// Status of the asking worker as a request surface states it.
+    var workerState: TaskState { isWorkerDisconnected ? .disconnected : .needsInput }
+
+    /// Why the reply is closed, in full. Nil when the request can be answered.
+    var replyUnavailableStatement: String? {
+        guard let disconnectReason else { return nil }
+        return "\(workerName) is disconnected. Replying to request \(shortID) is unavailable until "
+            + "\(host) reconnects and Commander has reconciled this request. \(disconnectReason)"
+    }
 }
 
 struct WorkerPresentation: Identifiable, Equatable {
@@ -228,6 +254,11 @@ struct WorkerPresentation: Identifiable, Equatable {
     var queuedFollowUps = 0
     /// The service has been asked to interrupt this worker's current turn and has not done so yet.
     var interruptRequested = false
+    /// Short ID of this worker's most recent answered request whose delivery the service could not
+    /// confirm. The answer was accepted; whether the worker received it is unknown.
+    var unconfirmedReply: String? = nil
+
+    var isDisconnected: Bool { state == .disconnected }
 }
 
 struct WorkerGroup: Identifiable, Equatable {
@@ -668,6 +699,9 @@ extension RunContent {
         let byID = Dictionary(workers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let pending = (run.requests ?? []).filter { $0.status == "pending" }
         let requestByWorker = Dictionary(pending.map { ($0.workerID, $0) }, uniquingKeysWith: { first, _ in first })
+        // Answers the service accepted and could not confirm as delivered: the latest one per worker.
+        let unconfirmed = (run.requests ?? []).filter { $0.status != "pending" && $0.deliveryIsUnknown }
+        let unconfirmedByWorker = Dictionary(unconfirmed.map { ($0.workerID, $0) }, uniquingKeysWith: { _, last in last })
         let runClient = run.client
         let runTitle = run.title
         let coordinatorID = run.coordinatorID
@@ -691,6 +725,11 @@ extension RunContent {
             let branch = worker.branch?.trimmingCharacters(in: .whitespaces) ?? ""
             let platform = HostPlatform(serviceHost: worker.host)
             let transcript = TranscriptEntry.entries(from: worker.messages ?? [])
+            let state = TaskState(api: worker.state, hasPendingRequest: requestByWorker[worker.id] != nil)
+            // The service's own explanation, or a plain statement when it sent none.
+            let explanation = worker.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let disconnectReason: String? = state == .disconnected
+                ? (explanation.isEmpty ? "The connection to \(worker.host) was lost." : explanation) : nil
             let request = requestByWorker[worker.id].map { question in
                 RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
@@ -698,7 +737,8 @@ extension RunContent {
                     client: client, runID: run.id, runTitle: runTitle, project: run.project, host: worker.host,
                     platform: platform, inputHolder: isCoordinator ? worker.name : holder,
                     contextTail: Self.tail(of: worker.output),
-                    contextEntries: Array(transcript.suffix(TranscriptEntry.recentWindow)))
+                    contextEntries: Array(transcript.suffix(TranscriptEntry.recentWindow)),
+                    disconnectReason: disconnectReason)
             }
             return WorkerPresentation(
                 id: worker.id, shortID: Identifier.short(worker.id), name: worker.name, client: client,
@@ -706,7 +746,7 @@ extension RunContent {
                 location: branch.isEmpty ? URL(filePath: worker.worktree).lastPathComponent : branch,
                 locationIsBranch: !branch.isEmpty,
                 task: worker.task, output: worker.output, error: worker.error,
-                state: TaskState(api: worker.state, hasPendingRequest: request != nil),
+                state: state,
                 isCoordinator: isCoordinator,
                 lineage: isCoordinator ? [runTitle] : [runTitle] + ancestors + [worker.name],
                 // The service's control record is the authority on who directs a worker. The
@@ -717,7 +757,8 @@ extension RunContent {
                 startedAt: Timestamp.clock(worker.createdAt, seconds: true),
                 transcript: transcript,
                 queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
-                interruptRequested: worker.control?.interruptRequested == true)
+                interruptRequested: worker.control?.interruptRequested == true,
+                unconfirmedReply: unconfirmedByWorker[worker.id].map { Identifier.short($0.id) })
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

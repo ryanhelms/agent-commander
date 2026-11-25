@@ -142,7 +142,8 @@ struct AttentionQueuePage: View {
 
     private func send(_ request: RequestPresentation) {
         let text = drafts[request.id] ?? ""
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !request.isWorkerDisconnected,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         Task {
             if await reply(request.id, text) {
                 drafts[request.id] = nil

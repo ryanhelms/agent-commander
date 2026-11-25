@@ -340,6 +340,11 @@ struct ReplyContext {
 /// The one reply control. It answers exactly one request by ID and never touches terminal input.
 /// The PiP and the focused worker both render this view. The page shows a given request in only one
 /// of them at a time, so the request ID is a unique focus target.
+///
+/// While the asking worker is disconnected the reply is closed on every surface: the field and the
+/// send action are disabled, a draft written earlier stays in place, and one line above the prompt
+/// says why. The full reason, with the service's explanation, is the help tag and the accessible
+/// value of that line and of the closed controls.
 struct RequestReply: View {
     let request: RequestPresentation
     let context: ReplyContext
@@ -347,10 +352,26 @@ struct RequestReply: View {
     var body: some View {
         let draft = context.draft(request.id)
         let isSending = context.sending.contains(request.id)
-        let blocked = !context.isOnline || isSending
+        let unavailable = request.replyUnavailableStatement
+        let blocked = !context.isOnline || isSending || unavailable != nil
         let isEmpty = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let isFocused = context.focus.wrappedValue == request.id
+        let isFocused = context.focus.wrappedValue == request.id && unavailable == nil
+        let sendHelp = unavailable
+            ?? (context.isOnline ? "Send reply to \(request.workerName) (↩ or ⌘↩ while typing)" : "The local service is offline")
 
+        VStack(alignment: .leading, spacing: 4) {
+        if let unavailable {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("! ").accessibilityHidden(true)
+                Text("reply unavailable until \(request.host) reconnects").lineLimit(2)
+            }
+            .font(Term.font(11)).foregroundStyle(Term.amber)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(unavailable)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reply unavailable")
+            .accessibilityValue(unavailable)
+        }
         // A terminal prompt: an amber mark, a native multiline field in the terminal face, and an
         // explicit send action. Black behind bright text, with an amber outline while it has focus.
         HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -358,7 +379,9 @@ struct RequestReply: View {
                 .foregroundStyle(blocked ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.amber))
                 .accessibilityHidden(true)
             TextField("Reply to \(request.workerName)", text: draft,
-                      prompt: Text("reply to \(request.workerName.lowercased())"), axis: .vertical)
+                      prompt: Text(unavailable == nil ? "reply to \(request.workerName.lowercased())"
+                                                      : "\(request.workerName.lowercased()) is disconnected"),
+                      axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Term.font(12))
                 .foregroundStyle(Term.bright)
@@ -367,6 +390,7 @@ struct RequestReply: View {
                 .disabled(blocked)
                 .onSubmit { if !blocked && !isEmpty { context.send(request) } }
                 .accessibilityLabel("Reply to request \(request.shortID) from \(request.workerName)")
+                .accessibilityHint(unavailable ?? "")
             if isSending {
                 Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.amber)
                     .accessibilityLabel("Sending reply")
@@ -378,14 +402,38 @@ struct RequestReply: View {
                     // one must never receive the shortcut. A click still sends this button's own request.
                     .keyboardShortcut(isFocused ? KeyboardShortcut(.return, modifiers: [.command]) : nil)
                     .disabled(blocked || isEmpty)
-                    .help(context.isOnline ? "Send reply to \(request.workerName) (↩ or ⌘↩ while typing)" : "The local service is offline")
+                    .help(sendHelp)
                     .accessibilityLabel("Send reply to \(request.workerName)")
+                    .accessibilityHint(unavailable ?? "")
             }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
         .background(Term.background)
         .overlay { Rectangle().strokeBorder(isFocused ? Term.amber : Term.promptEdge, lineWidth: 1) }
+        }
+    }
+}
+
+/// What the service reports is wrong with a console, as lines in its scrollback: a failure in red
+/// behind `✗`, a lost connection in amber behind `!`. The coordinator console and the worker tile
+/// in both variants render this view, so a disconnect reads the same on each.
+struct ConsoleNotice: View {
+    let text: String
+    /// The console's status. A disconnected console's notice is its connection explanation.
+    let state: TaskState
+    var size: CGFloat = 11.5
+
+    private var isDisconnect: Bool { state == .disconnected }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(isDisconnect ? "! " : "✗ ").accessibilityHidden(true)
+            Text(text).lineLimit(4).textSelection(.enabled)
+        }
+        .font(Term.font(size)).foregroundStyle(isDisconnect ? Term.amber : Term.red)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isDisconnect ? "Disconnected: \(text)" : "Error: \(text)")
     }
 }
 
@@ -519,7 +567,8 @@ struct AttentionNotice: View {
                 Text("? ").fontWeight(.semibold)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(request.workerName) needs input").fontWeight(.semibold).lineLimit(1)
-                    Text(detail).foregroundStyle(.inkTermDim).lineLimit(1)
+                    Text(request.isWorkerDisconnected ? "\(detail) · disconnected" : detail)
+                        .foregroundStyle(.inkTermDim).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Text("[ view ]")
@@ -534,6 +583,7 @@ struct AttentionNotice: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(request.workerName) needs input. Show request \(request.shortID).")
+        .accessibilityHint(request.replyUnavailableStatement ?? "")
     }
 }
 
@@ -584,7 +634,8 @@ struct RequestPrompt: View {
 }
 
 /// The slim footer of a terminal surface. Leading: the live status as a glyph and a word. Then an
-/// amber `[ view request ]` action, only while a request waits and a way to reach it exists.
+/// amber `[ view request ]` action, only while a request waits and a way to reach it exists. It
+/// stays for a disconnected worker, whose request can still be read.
 /// Trailing: whatever is useful in the current state (input ownership, a key hint). It never carries
 /// run or worker IDs or an attach command.
 struct TerminalStatusLine<Trailing: View>: View {

@@ -61,19 +61,14 @@ struct WorkerTile: View {
             header
             if isFocusedVariant { conversation } else { well }
             if let error = worker.error, !error.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("✗ ").accessibilityHidden(true)
-                    Text(error).lineLimit(4).textSelection(.enabled)
-                }
-                .font(Term.font(11.5)).foregroundStyle(Term.red)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
-                .background(Term.background)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Error: \(error)")
+                ConsoleNotice(text: error, state: worker.state)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
+                    .background(Term.background)
             }
             footer
-            if isFocusedVariant, worker.control == .held, let sendInput = actions.sendInput {
+            // A follow-up cannot reach a disconnected worker, so its compose line waits with it.
+            if isFocusedVariant, worker.control == .held, !worker.isDisconnected, let sendInput = actions.sendInput {
                 TerminalComposer(workerName: worker.name, send: sendInput)
             }
         }
@@ -181,8 +176,15 @@ struct WorkerTile: View {
                                   inset: isFocusedVariant ? 21 : Metric.tileInset,
                                   request: worker.request,
                                   openRequest: isFocusedVariant ? nil : actions.openRequest) {
-            if isFocusedVariant, worker.request != nil, reply != nil {
+            if isFocusedVariant, let request = worker.request, !request.isWorkerDisconnected, reply != nil {
                 TermHint(keys: "↩", action: "send", size: size - 1)
+            }
+            // An answer the service accepted and could not confirm as delivered.
+            if isFocusedVariant, let unconfirmed = worker.unconfirmedReply {
+                Text("reply \(unconfirmed) delivery unknown").font(Term.font(size - 1)).foregroundStyle(Term.amber)
+                    .lineLimit(1).fixedSize()
+                    .help("Your reply to request \(unconfirmed) was accepted. Whether \(worker.name) received it is unknown.")
+                    .accessibilityLabel("Reply to request \(unconfirmed): delivery unknown")
             }
             // What the service reports about the developer's own requests to this worker.
             if isFocusedVariant, worker.interruptRequested {
@@ -228,7 +230,7 @@ struct WorkerTile: View {
                 Button(isFocusedVariant ? "Return to wall" : "Zoom worker", action: toggleZoom)
             }
             if let openRequest = actions.openRequest {
-                Button("Reply to request", action: openRequest)
+                Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
@@ -257,7 +259,12 @@ struct WorkerTile: View {
         }
         if worker.interruptRequested { parts.append("interrupt requested") }
         if worker.queuedFollowUps > 0 { parts.append("\(worker.queuedFollowUps) follow-ups queued") }
-        if let request = worker.request { parts.append("request \(request.shortID) waiting") }
+        if let request = worker.request {
+            parts.append(request.isWorkerDisconnected
+                ? "request \(request.shortID) waiting, reply unavailable until reconnected"
+                : "request \(request.shortID) waiting")
+        }
+        if let unconfirmed = worker.unconfirmedReply { parts.append("reply to request \(unconfirmed) delivery unknown") }
         return parts.joined(separator: ", ")
     }
 }
@@ -288,7 +295,9 @@ struct WorkerActionMenu: View {
                 row("arrow.up.left.and.arrow.down.right", isFocused ? "Return to wall" : "Zoom worker",
                     key: isFocused ? "⌘[" : "⌘]", action: zoom)
             }
-            if let reply = actions.openRequest { row("bell", "Reply to request", action: reply) }
+            if let reply = actions.openRequest {
+                row("bell", worker.isDisconnected ? "View request" : "Reply to request", action: reply)
+            }
             if worker.control != .held, let take = actions.takeControl {
                 row("hand.raised", "Take control", label: "Take control of \(worker.name)",
                     isEnabled: !actions.isBusy, action: take)
@@ -349,6 +358,8 @@ struct NestedWorkerGroup<Content: View>: View {
     let nestedCount: Int
     let collapsed: Bool
     var hasRequest = false
+    /// A worker in the group is disconnected. Shown on the collapsed header, where its tile is hidden.
+    var hasDisconnected = false
     let toggle: () -> Void
     @ViewBuilder let content: Content
 
@@ -364,6 +375,7 @@ struct NestedWorkerGroup<Content: View>: View {
                     Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
                         .font(.system(size: 10.5))
                     Spacer(minLength: 8)
+                    if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
                     if collapsed && hasRequest {
                         StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
                     }
@@ -373,7 +385,7 @@ struct NestedWorkerGroup<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(name), \(nestedCount) nested")
+            .accessibilityLabel("\(name), \(nestedCount) nested" + (hasDisconnected ? ", a worker is disconnected" : ""))
             .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
             .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
@@ -464,6 +476,7 @@ struct WorkerWall<Tile: View>: View {
             let isClosed = collapsed.contains(group.id)
             NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
                               hasRequest: group.all.contains { $0.request != nil },
+                              hasDisconnected: group.all.contains(where: \.isDisconnected),
                               toggle: { toggleGroup(group.id) }) {
                 VStack(spacing: 9) {
                     ForEach(Array(group.all.chunked(into: columns).enumerated()), id: \.offset) { _, chunk in
@@ -541,15 +554,9 @@ struct CoordinatorConsole: View {
                     }
                 }
                 if let error = coordinator.error, !error.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        Text("✗ ").accessibilityHidden(true)
-                        Text(error).lineLimit(4).textSelection(.enabled)
-                    }
-                    .font(Term.font(11.5)).foregroundStyle(Term.red)
-                    .padding(.top, 8)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Error: \(error)")
+                    ConsoleNotice(text: error, state: coordinator.state)
+                        .padding(.top, 8)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(awaiting) { request in
                     AttentionNotice(request: request, detail: detail(for: request)) { openRequest(request) }
@@ -637,7 +644,8 @@ struct AttentionStack: View {
         }
         .shadow(color: .black.opacity(0.62), radius: 22, y: 13)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Request from \(current.workerName) in \(current.runTitle)")
+        .accessibilityLabel("Request from \(current.workerName) in \(current.runTitle)"
+                            + (current.isWorkerDisconnected ? ". \(current.workerName) is disconnected." : ""))
     }
 
     private var front: some View {
@@ -696,7 +704,8 @@ struct AttentionStack: View {
                         .frame(maxHeight: 92)
                     }
                     RequestPrompt(request: current, reply: reply, density: .compact, inset: 11)
-                    TerminalStatusLine(state: .needsInput, size: 10.75, inset: 11) {
+                    // The asking worker's status: disconnected ahead of needs input, as on its tile.
+                    TerminalStatusLine(state: current.workerState, size: 10.75, inset: 11) {
                         // The shared ownership cue: its words whole, or the symbol alone with the
                         // full statement in its help tag and accessibility label.
                         InputOwnership(workerName: current.workerName,
@@ -751,7 +760,7 @@ struct AttentionDrawer: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        StatusLabel(.needsInput, size: 11.5)
+                        StatusLabel(current.workerState, size: 11.5)
                         Spacer(minLength: 8)
                         Text(current.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
                             .help("Request \(current.id)")

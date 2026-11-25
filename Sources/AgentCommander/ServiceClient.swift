@@ -34,9 +34,15 @@ struct Worker: Decodable, Identifiable, Equatable, Sendable {
 
 struct Question: Decodable, Identifiable, Equatable, Sendable {
     let id, workerID, question, status, answer: String
+    /// What the service knows about the answer reaching the worker. Absent on older records and on
+    /// requests that have no answer yet.
+    var delivery: String? = nil
     enum CodingKeys: String, CodingKey {
-        case id, workerID = "worker_id", question, status, answer
+        case id, workerID = "worker_id", question, status, answer, delivery
     }
+
+    /// The answer was accepted, and the service cannot say whether the worker received it.
+    var deliveryIsUnknown: Bool { delivery?.lowercased() == "unknown" }
 }
 
 struct Run: Decodable, Identifiable, Equatable, Sendable {

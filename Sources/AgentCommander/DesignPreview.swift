@@ -19,6 +19,11 @@ import SwiftUI
 //
 //   AGENT_COMMANDER_PREVIEW_STATIC=1        start with live sample activity off
 //   AGENT_COMMANDER_PREVIEW_GALLERY=hidden  leave the gallery control out of the title bar
+//   AGENT_COMMANDER_PREVIEW_DISCONNECT=<worker ID>        show that sample worker as disconnected,
+//                                           with its pending request kept and its reply closed
+//                                           (W-047 Timeout cases on build-01 carries Q-018)
+//   AGENT_COMMANDER_PREVIEW_DELIVERY_UNKNOWN=<worker ID>  show that sample worker with an accepted
+//                                           answer whose delivery is unknown
 //
 // Preview mode asks for a 1600 x 1000 window frame placed 62 pt below the top of the screen, as in
 // the concept captures. Production windows get no special sizing.
@@ -603,7 +608,24 @@ enum DesignFixture {
 
     // MARK: Content
 
-    static let requests: [RequestPresentation] = [fieldOwnershipRequest, timeoutRequest]
+    static let requests: [RequestPresentation] = [fieldOwnershipRequest, timeoutRequest].map { withSampleConnection($0) }
+
+    /// The sample worker shown as disconnected, when a capture asks for one. Its pending request
+    /// stays in place with the reply closed, on the wall, in the focused worker and in the PiP.
+    static let disconnectedWorkerID = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_DISCONNECT"]
+    /// The sample worker shown with an accepted answer whose delivery is unknown.
+    static let unconfirmedWorkerID = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_DELIVERY_UNKNOWN"]
+
+    static func disconnectReason(host: String) -> String {
+        "SSH connection to \(host) lost at 14:34:11. Last output is shown. Waiting to reconnect and reconcile."
+    }
+
+    private static func withSampleConnection(_ request: RequestPresentation) -> RequestPresentation {
+        guard request.workerID == disconnectedWorkerID else { return request }
+        var request = request
+        request.disconnectReason = disconnectReason(host: request.host)
+        return request
+    }
 
     /// Pending requests across both runs, in arrival order for the stack.
     static func pending(for store: PreviewStore) -> [RequestPresentation] {
@@ -631,7 +653,7 @@ enum DesignFixture {
                 RunSummary(id: "R-042", project: "Relay", path: relay, title: "Retry policy", status: .running),
                 RunSummary(id: "R-039", project: "Relay", path: relay, title: "Event schema", status: .running),
                 RunSummary(id: "R-038", project: "Beacon", path: NSHomeDirectory() + "/Developer/beacon",
-                           title: "Queue migration", status: .unknown("Disconnected"))
+                           title: "Queue migration", status: .disconnected)
             ],
             selected: all.first { $0.id == store.selectedRunID } ?? all.first,
             pending: pending(for: store),
@@ -645,6 +667,8 @@ enum DesignFixture {
                 if id == "R-038" { store.go(to: .allAgents, project: "Beacon") } else { store.selectedRunID = id }
             },
             reply: { requestID, answer in
+                // As in the service: a disconnected worker's request cannot be answered.
+                if requests.contains(where: { $0.id == requestID && $0.isWorkerDisconnected }) { return false }
                 store.resolve(requestID, answer: answer)
                 return true
             },
@@ -798,7 +822,8 @@ enum DesignFixture {
         let holder = parents.last ?? run
         var output = output
         var state = state
-        var pending = request
+        var pending = request.map { withSampleConnection($0) }
+        var error: String? = nil
         if let asked = request, let answer = store.answers[asked.id] {
             pending = nil
             state = .working
@@ -811,6 +836,10 @@ enum DesignFixture {
         } else if store.interrupted.contains(id) {
             state = .idle
             output += "\n\n^C Turn interrupted from Commander."
+        } else if id == disconnectedWorkerID {
+            // The worker keeps its last output and its pending request; only the connection changed.
+            state = .disconnected
+            error = disconnectReason(host: host.name)
         } else if state == .working, let script = liveScripts[id] {
             for line in script.prefix(store.liveTick % (script.count + 1)) { output += "\n" + line }
         }
@@ -819,9 +848,10 @@ enum DesignFixture {
         if store.released.contains(id) { control = .observing(holder: holder) }
         return WorkerPresentation(
             id: id, shortID: id, name: name, client: client, host: host.name, platform: host.platform,
-            location: branch, locationIsBranch: true, task: task, output: output, error: nil,
+            location: branch, locationIsBranch: true, task: task, output: output, error: error,
             state: state, isCoordinator: false, lineage: [run] + parents + [name],
-            control: control, request: pending, startedAt: started)
+            control: control, request: pending, startedAt: started,
+            unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil)
     }
 
     private static func coordinator(_ store: PreviewStore, runID: String, id: String, name: String,

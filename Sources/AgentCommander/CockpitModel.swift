@@ -93,6 +93,12 @@ final class CockpitModel {
 
     func reply(to item: PendingDecision, text: String) async -> Bool {
         guard !sending.contains(item.id) else { return false }
+        // Read from the current runs, so a worker that dropped after the surface was drawn is caught.
+        let worker = runs.lazy.compactMap { $0.workers?.first { $0.id == item.worker.id } }.first ?? item.worker
+        guard worker.state.lowercased() != TaskState.apiDisconnected else {
+            notice = "Reply to \(worker.name): the worker is disconnected. The request stays pending until it is reconciled."
+            return false
+        }
         let prior = replyAttempts[item.id]
         let key = prior?.text == text ? prior!.id : UUID().uuidString
         replyAttempts[item.id] = (text, key)
