@@ -30,10 +30,17 @@ type acpSourcePublisher struct {
 	// The SDK delivers text and tools as portable summaries. Join richer wire
 	// identities by cursor before their live projection. A bounded ring mirrors
 	// the pinned SDK's 512-observation window and holds descriptors only.
-	references map[string]*acpprocessor.Activity
+	references map[string]wireActivity
 	order      [512]string
 	next       int
 	idleWire   *idleWireCursors
+}
+
+// A wire update never copies raw tool arguments into its console reference.
+type wireActivity struct {
+	*acpprocessor.Activity
+	toolCallID     string
+	commanderInput string
 }
 
 // A compiler-provided ACP runtime can offer both a wire callback and an idle
@@ -255,23 +262,35 @@ func (p *acpSourcePublisher) capture(source runtime.ACPUpdate) {
 		p.rememberIdle(idleKey(source.Session, source.Cursor))
 	}
 	if source.TurnID != "" {
-		var header struct{ SessionUpdate, MessageID string }
+		var header struct {
+			SessionUpdate, MessageID, ToolCallID, Title, Name string
+			RawInput                                          json.RawMessage
+		}
 		if json.Unmarshal(source.Body, &header) == nil {
 			switch header.SessionUpdate {
 			case "user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update":
 				ref := acpprocessor.Reference("live", source.Cursor, header.SessionUpdate, header.MessageID)
 				ref.TurnID = source.TurnID
-				p.remember(ref)
+				wire := wireActivity{Activity: ref}
+				if header.ToolCallID != "" && len(header.RawInput) != 0 {
+					name := header.Title
+					if name == "" {
+						name = header.Name
+					}
+					wire.toolCallID = header.ToolCallID
+					wire.commanderInput = service.CommanderToolInput(name, header.RawInput)
+				}
+				p.remember(wire)
 			}
 		}
 	}
 }
 
-func (p *acpSourcePublisher) remember(a *acpprocessor.Activity) {
+func (p *acpSourcePublisher) remember(a wireActivity) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.references == nil {
-		p.references = make(map[string]*acpprocessor.Activity)
+		p.references = make(map[string]wireActivity)
 	}
 	delete(p.references, p.order[p.next])
 	p.order[p.next] = a.Cursor
@@ -280,6 +299,10 @@ func (p *acpSourcePublisher) remember(a *acpprocessor.Activity) {
 }
 
 func (p *acpSourcePublisher) take(cursor string) *acpprocessor.Activity {
+	return p.takeWire(cursor).Activity
+}
+
+func (p *acpSourcePublisher) takeWire(cursor string) wireActivity {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a := p.references[cursor]

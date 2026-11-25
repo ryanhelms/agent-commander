@@ -105,8 +105,9 @@ type aguiStateEvent struct {
 func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 	var messages []aguiMessage
 	type toolProjection struct {
-		call, result int
-		detail, text strings.Builder
+		call, result      int
+		detail, text      strings.Builder
+		arguments, output string
 	}
 	tools := make(map[string]*toolProjection)
 	for _, item := range events {
@@ -139,6 +140,11 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 			}
 			// Keep each progress message as detail. The result controls the
 			// row's status, and the chronological console keeps the phases.
+			if item.CommanderInput != "" {
+				tool.arguments = item.CommanderInput
+			} else if tool.arguments == "" && item.Name != "" {
+				tool.arguments = item.Text
+			}
 			appendToolText(&tool.detail, item.Text)
 			if tool.call >= 0 {
 				messages[tool.call].recordSource(item.ACP)
@@ -157,6 +163,9 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 				break
 			}
 			appendToolText(&tool.text, item.TerminalText())
+			if item.Text != "" {
+				tool.output = item.Text
+			}
 			if tool.result >= 0 {
 				messages[tool.result].recordSource(item.ACP)
 				if failure := item.ToolFailure(); failure != "" {
@@ -175,10 +184,14 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 	}
 	for _, tool := range tools {
 		if tool.call >= 0 {
+			function := &messages[tool.call].ToolCalls[0].Function
+			detail := tool.detail.String()
+			failed := tool.result >= 0 && messages[tool.result].Error != ""
 			args, _ := json.Marshal(struct {
-				Detail string `json:"detail,omitempty"`
-			}{tool.detail.String()})
-			messages[tool.call].ToolCalls[0].Function.Arguments = string(args)
+				Detail    string             `json:"detail,omitempty"`
+				Commander *commanderActivity `json:"commander,omitempty"`
+			}{detail, correlateCommanderTool(function.Name, tool.arguments, tool.output, failed)})
+			function.Arguments = string(args)
 		}
 		if tool.result >= 0 {
 			text := tool.text.String()

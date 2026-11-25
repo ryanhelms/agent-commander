@@ -280,6 +280,10 @@ struct TranscriptEntry: Identifiable, Equatable {
     /// What the service's ACP reference says about the entry's record. Nil without one. Pretty
     /// uses it to read a run of live chunks as one turn; see `ConversationChunks`.
     var origin: TranscriptOrigin? = nil
+    /// For a Commander tool call, the `commander` correlation object its arguments carried and
+    /// the live request state the projection matched to it. Nil for every other entry. Pretty
+    /// links Commander calls only through it and the calls' own exact IDs; see `CommanderActivity`.
+    var commander: CommanderCallFacts? = nil
 
     var isFromUser: Bool {
         if case .prose(_, let fromUser) = kind { return fromUser }
@@ -330,6 +334,10 @@ struct RequestPresentation: Identifiable, Equatable {
     /// its whole transcript before `contextEntries` is cut to a recent window. Nil unless the
     /// request offers choices and exactly one call is open; see `PrettyRunStatus.awaitingToolID`.
     var awaitingApprovalToolID: String? = nil
+    /// This request's Commander workflow (its ask, waits and linked result), linked over the
+    /// asking worker's whole transcript before `contextEntries` is cut to a recent window, so the
+    /// PiP reads the request as one story with its Ask. Nil when no Commander call names it.
+    var requestWorkflow: CommanderWorkflow? = nil
 
     /// The question without the choice list the service appends for text surfaces, when that
     /// list is exactly the one `choices` describes. Otherwise the question as sent.
@@ -898,7 +906,8 @@ extension TranscriptEntry {
                 entries.append(TranscriptEntry(
                     id: call.id,
                     kind: .tool(name: call.function.name, detail: detail(of: call.function.arguments),
-                                result: results[call.id])))
+                                result: results[call.id]),
+                    commander: CommanderCallFacts(arguments: call.function.arguments)))
             }
         }
         return entries
@@ -933,6 +942,7 @@ extension RunContent {
         let runClient = run.client
         let runTitle = run.title
         let coordinatorID = run.coordinatorID
+        let live = CommanderLiveState(run: run)
 
         func parents(of worker: Worker) -> [String] {
             var names: [String] = []
@@ -952,7 +962,11 @@ extension RunContent {
             let client = AgentClient(worker.client, fallback: runClient)
             let branch = worker.branch?.trimmingCharacters(in: .whitespaces) ?? ""
             let platform = HostPlatform(serviceHost: worker.host)
-            let transcript = TranscriptEntry.entries(from: worker.messages ?? [])
+            // Commander calls carry the current state of their request, follow-up or integration
+            // from this run, by exact ID, so Pretty never shows a pending request as done or a
+            // finished follow-up as queued. No polling: the workspace projection holds it all.
+            let transcript = CommanderActivity.annotate(
+                TranscriptEntry.entries(from: worker.messages ?? []), live: live)
             let questions = requestsByWorker[worker.id] ?? []
             let state = TaskState(api: worker.state, hasPendingRequest: !questions.isEmpty)
             // The service's own explanation, or a plain statement when it sent none.
@@ -966,7 +980,10 @@ extension RunContent {
                 ProviderTelemetry.reported(fields: worker.allFields, messages: worker.messages ?? [])
             }
             let requests = questions.map { question in
-                RequestPresentation(
+                // From the full transcript: the PiP's window could hide a competing open call.
+                let awaitingToolID = PrettyRunStatus(state: state, entries: transcript)
+                    .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty)
+                return RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
                     workerID: worker.id, workerName: worker.name, workerIsCoordinator: isCoordinator,
                     client: client, runID: run.id, runTitle: runTitle, project: run.project, host: worker.host,
@@ -978,9 +995,10 @@ extension RunContent {
                     workerSession: worker.boundSession,
                     choices: question.choices ?? [],
                     workerTelemetry: telemetry,
-                    // From the full transcript: the PiP's window could hide a competing open call.
-                    awaitingApprovalToolID: PrettyRunStatus(state: state, entries: transcript)
-                        .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty))
+                    awaitingApprovalToolID: awaitingToolID,
+                    // Also from the full transcript: the window could cut off the request's Ask.
+                    requestWorkflow: CommanderActivity.workflow(request: question.id, in: transcript,
+                                                                awaitingToolID: awaitingToolID))
             }
             let request = requests.first
             let claudeProgress = ClaudeProgressTrack.eligible(worker, isCoordinator: isCoordinator)

@@ -490,7 +490,16 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetTool() != nil:
 				flushText()
 				event := consoleTool(e.GetTool())
-				event.ACP = sourceReference(source.take(e.Cursor), portableRef)
+				wire := source.takeWire(e.Cursor)
+				if event.Kind == "tool_call" {
+					if wire.toolCallID == event.ToolID {
+						event.CommanderInput = wire.commanderInput
+					}
+					if event.CommanderInput == "" {
+						event.CommanderInput = commanderInputFromACP(e, event.Name)
+					}
+				}
+				event.ACP = sourceReference(wire.Activity, portableRef)
 				s.line(previewText(event.TerminalText()))
 				s.recordEvent(event)
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_USER:

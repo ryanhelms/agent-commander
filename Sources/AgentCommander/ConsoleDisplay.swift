@@ -268,13 +268,21 @@ struct PrettyConsoleView: View {
     /// The open tool call of a worker waiting for the developer's reply, which reads as awaiting
     /// approval. Nil everywhere else, so every call keeps the status its result gives it.
     var awaitingToolID: String? = nil
+    /// The requests the parent surface can act on and how, for activity story actions.
+    var stories = ActivityStoryContext()
+    /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
+    var anchor: CommanderWorkflow? = nil
 
     var body: some View {
         let metrics = PrettyMetrics(density)
+        let scope = stories.scope(canOpenSource: access?.openSource != nil)
         // A streamed reply is one turn, as it is in Console. Pretty then sets adjacent routine
         // entries (usage, session state, harness diagnostics) close together as activity lines in
         // their place, each visible; every other entry is laid out as it is, in order.
-        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty))
+        // Commander's own calls read as activity stories, linked only by exact IDs; a recognised
+        // provider tool reads as a one-call story; every other tool keeps its generic row.
+        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
+                                               awaitingToolID: awaitingToolID, anchor: anchor)
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
@@ -286,11 +294,17 @@ struct PrettyConsoleView: View {
                         Group {
                             switch item {
                             case .entry(let entry):
-                                row(entry, metrics: metrics)
+                                if let story = ActivityStories.story(for: entry, awaitingToolID: awaitingToolID, scope: scope) {
+                                    storyCard(story, scope: scope, metrics: metrics)
+                                } else {
+                                    row(entry, metrics: metrics)
+                                }
                             case .activity(let activity):
                                 PrettyActivityRun(activity: activity, metrics: metrics) { entry in
                                     row(entry, metrics: metrics)
                                 }
+                            case .commander(let workflow):
+                                storyCard(ActivityStories.story(for: workflow, scope: scope), scope: scope, metrics: metrics)
                             }
                         }
                         .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
@@ -387,6 +401,37 @@ struct PrettyConsoleView: View {
                 PrettyRoleNote(role: role, text: text, metrics: metrics)
                     .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             }
+        }
+    }
+
+    /// One activity story at this console's density and type, with the actions this console's
+    /// parent supplied. The story and its Tool details keep their open state by the story's ID,
+    /// which depends only on its first call, so they stay open as facts update.
+    private func storyCard(_ story: ActivityStory, scope: ActivityStoryScope, metrics: PrettyMetrics) -> some View {
+        ActivityStoryCard(
+            story: story,
+            actions: story.actions(in: scope),
+            isExpanded: isExpanded(story.id),
+            isShowingDetails: isExpanded(story.id + "#details"),
+            fontSize: metrics.toolSize,
+            density: density,
+            toggle: { toggle(story.id) },
+            toggleDetails: { toggle(story.id + "#details") },
+            perform: { perform($0) }
+        ) { entry in
+            // The original call, exactly as Console's Pretty row draws it.
+            row(entry, metrics: metrics)
+        }
+        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+    }
+
+    /// Performs a story's targeted action through the parent's own action. Nothing else navigates.
+    private func perform(_ intent: ActivityStoryIntent) {
+        switch intent {
+        case .focusRequest(let id): stories.focusRequest?(id)
+        case .openRequest(let id): stories.openRequest?(id)
+        case .copy(let text): (access?.copy ?? RecordPasteboard.copy)(text)
+        case .openSource: access?.openSource?(consoleID)
         }
     }
 

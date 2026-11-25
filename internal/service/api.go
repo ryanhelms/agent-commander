@@ -574,12 +574,19 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	if !in.ClaudeProgress.valid() {
 		return outcome{}, bad("invalid Claude progress observation")
 	}
-	for _, event := range in.Events {
+	for i := range in.Events {
+		event := &in.Events[i]
 		if !event.ACP.Valid() {
 			return outcome{}, bad("invalid ACP activity")
 		}
 		if len(event.Text) > 17<<10 || len(event.ToolID) > 256 || len(event.Name) > 256 || len(event.Phase) > 64 {
 			return outcome{}, bad("console event exceeds size limit")
+		}
+		if event.CommanderInput != "" {
+			if len(event.CommanderInput) > 160 {
+				return outcome{}, bad("invalid Commander tool correlation")
+			}
+			event.CommanderInput = CommanderToolInput(event.Name, json.RawMessage(event.CommanderInput))
 		}
 	}
 	previous, replay, err := s.checkOutputBatch(req, w, &in)

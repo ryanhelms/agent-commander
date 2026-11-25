@@ -47,14 +47,49 @@ struct ConversationActivity: Identifiable, Equatable {
         return operationalMarkers.contains { text.hasPrefix($0) }
     }
 
+    /// The items of a recent window, with `anchor` (a request's workflow linked over the whole
+    /// transcript) in place of that request's calls; see `anchored(_:_:)`.
+    static func items(_ entries: [TranscriptEntry], awaitingToolID: String? = nil,
+                      anchor: CommanderWorkflow?) -> [ConversationItem] {
+        let windowed = items(entries, awaitingToolID: awaitingToolID)
+        guard let anchor else { return windowed }
+        return anchored(windowed, anchor)
+    }
+
+    /// The window's items with the anchor's story in place of every window item that holds any of
+    /// its calls: once, where the first such item was, or first when the window holds none of
+    /// them. A window item's other calls, which the window alone might have linked with it, are
+    /// linked again on their own, so every entry is still shown exactly once.
+    static func anchored(_ items: [ConversationItem], _ anchor: CommanderWorkflow) -> [ConversationItem] {
+        let owned = Set(anchor.entries.map(\.id))
+        var result: [ConversationItem] = []
+        var placed = false
+        for item in items {
+            guard item.entries.contains(where: { owned.contains($0.id) }) else { result.append(item); continue }
+            if !placed { result.append(.commander(anchor)); placed = true }
+            let others = item.entries.filter { !owned.contains($0.id) }
+            if !others.isEmpty { result += Self.items(others) }
+        }
+        if !placed { result.insert(.commander(anchor), at: 0) }
+        return result
+    }
+
     /// The entries Pretty lays out, in order. Each run of adjacent routine entries is one
     /// activity; every other entry is passed through as it is. Order is never changed, and an
     /// activity never reaches across an entry that is not routine.
-    static func items(_ entries: [TranscriptEntry]) -> [ConversationItem] {
+    /// Commander's own tool calls are first read into `CommanderWorkflow`s; a workflow is not
+    /// routine, so it ends a run like any other entry. `awaitingToolID` is the one open call a
+    /// provider permission holds, so its workflow reads as awaiting approval.
+    static func items(_ entries: [TranscriptEntry], awaitingToolID: String? = nil) -> [ConversationItem] {
         var items: [ConversationItem] = []
         items.reserveCapacity(entries.count)
         var open: ConversationActivity?
-        for entry in entries {
+        for commanderItem in CommanderActivity.items(entries, awaitingToolID: awaitingToolID) {
+            guard case .entry(let entry) = commanderItem else {
+                if let activity = open { items.append(.activity(activity)); open = nil }
+                if case .workflow(let workflow) = commanderItem { items.append(.commander(workflow)) }
+                continue
+            }
             if isRoutine(entry) {
                 if open == nil { open = ConversationActivity(first: entry) } else { open?.entries.append(entry) }
             } else {
@@ -91,11 +126,23 @@ struct ConversationActivity: Identifiable, Equatable {
 enum ConversationItem: Identifiable, Equatable {
     case entry(TranscriptEntry)
     case activity(ConversationActivity)
+    /// Commander calls linked by proof, or one Commander call; see `CommanderActivity`.
+    case commander(CommanderWorkflow)
 
     var id: String {
         switch self {
         case .entry(let entry): entry.id
         case .activity(let activity): activity.id
+        case .commander(let workflow): workflow.id
+        }
+    }
+
+    /// Every entry the item stands for, in order.
+    var entries: [TranscriptEntry] {
+        switch self {
+        case .entry(let entry): [entry]
+        case .activity(let activity): activity.entries
+        case .commander(let workflow): workflow.entries
         }
     }
 }

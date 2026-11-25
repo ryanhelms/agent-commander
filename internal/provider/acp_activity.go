@@ -110,6 +110,32 @@ func paramsSource(obs *model.Observation) *model.Extension {
 	return nil
 }
 
+// The SDK's readable preview can omit rawInput. Retain the one safe ID needed
+// to link an in-flight Commander call while its MCP result is still pending.
+func commanderInputFromACP(obs *model.Observation, name string) string {
+	if !strings.Contains(name, "commander_") {
+		return ""
+	}
+	ext := paramsSource(obs)
+	if ext.GetType() != runtime.ACPUpdateParamsSource {
+		return ""
+	}
+	inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())
+	if err != nil {
+		return ""
+	}
+	var update struct {
+		SessionUpdate string
+		ToolCallID    string
+		RawInput      json.RawMessage
+	}
+	if json.Unmarshal(inner, &update) != nil || (update.SessionUpdate != "tool_call" && update.SessionUpdate != "tool_call_update") ||
+		update.ToolCallID == "" || update.ToolCallID != obs.GetTool().GetCallId() {
+		return ""
+	}
+	return service.CommanderToolInput(name, update.RawInput)
+}
+
 func idleSourcedEvent(obs *model.Observation, ref *acpprocessor.Activity) service.ConsoleEvent {
 	var e service.ConsoleEvent
 	switch {

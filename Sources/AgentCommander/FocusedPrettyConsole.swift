@@ -22,6 +22,9 @@ import SwiftUI
 // Densities: `.regular` for the focused worker and coordinator, `.compact` for a wall tile,
 // `.pip` for the attention stack. Only a surface that owns a request's reply passes `reply`, so a
 // request has one form: the focused worker or the PiP. A wall tile and the coordinator link to it.
+// Activity story cards take their actions from the same parent (`ActivityStoryContext`): Reply or
+// Review approval focuses this surface's one form; Open request uses the tile's or coordinator's
+// existing route. The PiP anchors its request's story from the whole transcript.
 // A console without a session, and Terminal and Console modes, keep `ConsoleScrollback`.
 
 enum PrettyACPScope {
@@ -194,6 +197,11 @@ struct PrettyACPConsole: View {
     /// Where the call awaiting approval comes from. A surface holding the whole transcript
     /// derives it; the PiP, which holds a window, takes the one its request resolved.
     var awaitingApproval: AwaitingApproval = .derived
+    /// The requests this surface can act on for activity story actions: its own form's request,
+    /// or the requests it routes to where they are answered. Empty offers no request action.
+    var stories = ActivityStoryContext()
+    /// The PiP's request workflow linked over the whole transcript, so its Ask stays in the window.
+    var anchor: CommanderWorkflow? = nil
 
     enum AwaitingApproval {
         /// From `entries` and `choiceRequestPending`, through `PrettyRunStatus.awaitingToolID`.
@@ -233,7 +241,7 @@ struct PrettyACPConsole: View {
         if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
-                              awaitingToolID: awaitingToolID(status))
+                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor)
         } else {
             PrettyEmptyConversation(status: status, workerName: name, hasEntries: !entries.isEmpty,
                                     density: density, inset: metrics.inset)
@@ -249,17 +257,21 @@ struct PrettyACPConsole: View {
 }
 
 extension PrettyACPConsole {
-    /// A worker's console: the focused worker, a wall tile or the coordinator.
+    /// A worker's console: the focused worker, a wall tile or the coordinator. With `reply`, its
+    /// stories focus the worker's one request form; otherwise `stories` names what the parent
+    /// routes (the wall tile's request, the coordinator's waiting requests), or nothing.
     init(worker: WorkerPresentation, session: NativeSession, reply: ReplyContext? = nil,
-         density: PrettyDensity = .regular, inset: CGFloat? = nil) {
+         density: PrettyDensity = .regular, inset: CGFloat? = nil, stories: ActivityStoryContext? = nil) {
         self.init(consoleID: worker.id, name: worker.name, client: worker.client, state: worker.state,
                   entries: worker.transcript, session: session,
                   request: reply == nil ? nil : worker.request, reply: reply, density: density, inset: inset,
                   choiceRequestPending: !(worker.request?.choices.isEmpty ?? true),
-                  reportsProgress: worker.claudeProgress != nil)
+                  reportsProgress: worker.claudeProgress != nil,
+                  stories: stories ?? .form(for: worker.request, reply: reply))
     }
 
-    /// The asking worker's console in the PiP: its recent window and the request it answers.
+    /// The asking worker's console in the PiP: its recent window and the request it answers. The
+    /// request's own story is anchored from the whole transcript, so the Ask is never cut off.
     init(request: RequestPresentation, session: NativeSession, reply: ReplyContext,
          inset: CGFloat? = nil, conversationHeight: CGFloat? = nil) {
         self.init(consoleID: request.workerID, name: request.workerName, client: request.client,
@@ -268,7 +280,9 @@ extension PrettyACPConsole {
                   conversationHeight: conversationHeight,
                   // The PiP holds a recent window, which cannot rule out an older open call, so
                   // it shows the call its request resolved from the whole transcript.
-                  awaitingApproval: .resolved(request.awaitingApprovalToolID))
+                  awaitingApproval: .resolved(request.awaitingApprovalToolID),
+                  stories: .form(for: request, reply: reply),
+                  anchor: request.requestWorkflow)
     }
 }
 
@@ -328,7 +342,10 @@ struct PrettyRunningIndicator: View {
         let size: CGFloat = density == .regular ? 12 : 10.5
         HStack(spacing: density == .regular ? 8 : 6) {
             ProgressView().controlSize(.mini)
-            if case .runningTool(let name) = status.phase {
+            if case .runningTool(let name) = status.phase, let tool = CommanderTool(name: name) {
+                // A Commander call says what it is doing: a wait is waiting for a reply.
+                Text(verbatim: tool.runningPhrase)
+            } else if case .runningTool(let name) = status.phase {
                 Text("Running \(Text(verbatim: name).font(Term.font(size - 0.5)).foregroundStyle(Palette.foreground))")
             } else {
                 Text("\(workerName) is responding")

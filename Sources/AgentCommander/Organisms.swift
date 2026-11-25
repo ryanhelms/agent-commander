@@ -139,7 +139,11 @@ struct WorkerTile: View {
     /// compact structured console; its request is answered in the PiP or the focused worker.
     @ViewBuilder private var well: some View {
         if let session = prettySession {
-            PrettyACPConsole(worker: worker, session: session, density: .compact)
+            // The tile's own Reply to request action routes the worker's request by exact ID.
+            PrettyACPConsole(worker: worker, session: session, density: .compact,
+                             stories: actions.openRequest.map { open in
+                                 ActivityStoryContext.opens(worker.request.map { [$0] } ?? []) { _ in open() }
+                             })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             terminalWell
@@ -835,7 +839,9 @@ struct CoordinatorConsole: View {
                     .padding(.horizontal, 17).padding(.top, 12).padding(.bottom, 9)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            PrettyACPConsole(worker: coordinator, session: session, density: .regular, inset: 17)
+            // Stories open each waiting request through the same route as its notice below.
+            PrettyACPConsole(worker: coordinator, session: session, density: .regular, inset: 17,
+                             stories: .opens(awaiting) { request in openRequest(request) })
             VStack(alignment: .leading, spacing: 8) {
                 if let error = coordinator.error, !error.isEmpty {
                     ConsoleNotice(text: error, state: coordinator.state)

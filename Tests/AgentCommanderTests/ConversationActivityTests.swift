@@ -65,12 +65,7 @@ private let imageACP = #"{"source":"live","kind":"acp.prompt_part","turnId":"op-
 
     @Test func nothingIsDroppedAndOrderIsKept() throws {
         let shown = TranscriptEntry.conversation(TranscriptEntry.entries(from: try run()))
-        let flattened = ConversationActivity.items(shown).flatMap { item -> [TranscriptEntry] in
-            switch item {
-            case .entry(let entry): [entry]
-            case .activity(let activity): activity.entries
-            }
-        }
+        let flattened = ConversationActivity.items(shown).flatMap(\.entries)
         // Opening every activity gives exactly the entries Pretty had, each with its own ID.
         #expect(flattened == shown)
     }
