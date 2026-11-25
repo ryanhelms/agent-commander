@@ -190,6 +190,11 @@ func run(args []string) error {
 		return provider.RunSSHHistory(ctx, os.Stdin, os.Stdout)
 	case "persistent-acp":
 		return provider.RunPersistentACP(ctx, args[1:], os.Stdin, os.Stdout)
+	case "acp-broker-proxy":
+		if len(args) != 1 {
+			return errors.New("ACP broker proxy takes no arguments")
+		}
+		return provider.RunACPBrokerProxy(ctx, os.Stdin, os.Stdout)
 	case "serve":
 		return serve(ctx, paths)
 	case "relay":
@@ -558,6 +563,11 @@ func serve(ctx context.Context, p localapi.Paths) error {
 	if err != nil {
 		return err
 	}
+	stopBroker, err := adapter.EnableACPBroker(ctx, os.Getenv("AGENT_COMMANDER_ACP_BROKER"))
+	if err != nil {
+		return err
+	}
+	defer stopBroker()
 	handler, err := service.NewWithToolRegistry(p.State, adapter, registry)
 	if err != nil {
 		return err

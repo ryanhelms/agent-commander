@@ -23,16 +23,18 @@ type Local struct {
 	acpProfiles                         map[string]acpProfile
 	replaySlot                          chan struct{}
 	replayCache                         replayCache
+	acpBroker                           *acpBrokerService
 	tools                               *toolregistry.Registry
 }
 
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
-	Adapter, Harness, NodePath        string `json:",omitempty"`
-	BuiltinInstance                   string `json:",omitempty"`
-	ProviderBinding                   string `json:",omitempty"`
-	FocusedProof                      bool   `json:",omitempty"`
+	Adapter, Harness, NodePath        string          `json:",omitempty"`
+	BuiltinInstance                   string          `json:",omitempty"`
+	ProviderBinding                   string          `json:",omitempty"`
+	ACPBroker                         *acpBrokerLease `json:",omitempty"`
+	FocusedProof                      bool            `json:",omitempty"`
 	Companions                        []toolregistry.CompanionBinding
 	DevflowUI                         string            `json:",omitempty"` // pending launch records from before the registry
 	SSH                               *sshProfile       `json:",omitempty"`
@@ -293,6 +295,10 @@ func (l *Local) startLaunch(ctx context.Context, launch job) error {
 	}
 	jobPath := filepath.Join(dir, "launch.json")
 	launch.Companions = l.tools.BindCompanions(ctx, launch.companionScope())
+	launch.ACPBroker, err = l.acpBroker.register(launch)
+	if err != nil {
+		return fmt.Errorf("register ACP adapter launch: %w", err)
+	}
 	// The prompt and scoped credential stay in a private file, outside shell argv.
 	contents, err := json.Marshal(launch)
 	if err != nil {

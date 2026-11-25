@@ -20,6 +20,13 @@ import (
 // The integration fixture uses the test binary as the real tmux runner. Only
 // the model executable is replaced, so this exercise never sends a paid prompt.
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "acp-broker-proxy" {
+		if err := RunACPBrokerProxy(context.Background(), os.Stdin, os.Stdout); err != nil {
+			os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) == 3 && os.Args[1] == "runner" {
 		if err := Runner(os.Args[2]); err != nil {
 			os.Stderr.WriteString(err.Error() + "\n")
