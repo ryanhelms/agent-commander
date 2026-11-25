@@ -110,12 +110,18 @@ type retryReceipt struct {
 	Target string `json:"target"`
 }
 
+type providerPermission struct {
+	Turn    string `json:"turn"`
+	Request string `json:"request"`
+}
+
 type database struct {
-	OutputBatches map[string]outputReceipt `json:"output_batches,omitempty"` // legacy workers persist their output
-	Runs          []*Run                   `json:"runs"`
-	Tokens        map[string]string        `json:"tokens"` // SHA-256(token) to worker ID
-	Receipts      map[string]retryReceipt  `json:"receipts"`
-	PromptParts   map[string][]PromptPart  `json:"prompt_parts,omitempty"`
+	Permissions   map[string]providerPermission `json:"provider_permissions,omitempty"`
+	OutputBatches map[string]outputReceipt      `json:"output_batches,omitempty"` // legacy workers persist their output
+	Runs          []*Run                        `json:"runs"`
+	Tokens        map[string]string             `json:"tokens"` // SHA-256(token) to worker ID
+	Receipts      map[string]retryReceipt       `json:"receipts"`
+	PromptParts   map[string][]PromptPart       `json:"prompt_parts,omitempty"`
 }
 
 type service struct {
@@ -131,6 +137,7 @@ type service struct {
 	operationObservers map[chan struct{}]string
 	workspace          *workspaceProjection // owner-only workspace cache, guarded by mu
 	consoleInstance    string
+	controlChanged     chan struct{}
 	readingHistory     map[string]bool
 	frontendRounds     map[string][]*frontendRound
 	liveSource         liveSourceStore
@@ -190,6 +197,10 @@ func (s *service) load(stateDir string) error {
 func (s *service) persist() error {
 	if err := writeStateJSON(s.path, s.durableState()); err != nil {
 		return err
+	}
+	if s.controlChanged != nil {
+		close(s.controlChanged)
+		s.controlChanged = nil
 	}
 	s.notifyConsole()
 	return nil

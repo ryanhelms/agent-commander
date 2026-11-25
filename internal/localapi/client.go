@@ -76,7 +76,15 @@ func (c *Client) Do(ctx context.Context, method, path string, input any) (json.R
 	if !strings.HasPrefix(path, "/v1/") {
 		return nil, errors.New("expected a /v1/ API path")
 	}
-	return c.exchange(ctx, method, path, input, nil)
+	return c.exchange(c.http, ctx, method, path, input, nil)
+}
+
+// WaitWorkerControl shares the client's transport but bounds a server-side wait
+// with its own timeout. Ordinary local API calls keep their shorter timeout.
+func (c *Client) WaitWorkerControl(ctx context.Context, path string) (json.RawMessage, error) {
+	client := *c.http
+	client.Timeout = 30 * time.Second
+	return c.exchange(&client, ctx, http.MethodGet, path, nil, nil)
 }
 
 // Coordinator sends the actor binding to the local multiplayer device process.
@@ -91,10 +99,10 @@ func (c *Client) Coordinator(ctx context.Context, op, run, worker string, input 
 		return nil, errors.New("managed coordinator credentials are required")
 	}
 	headers := http.Header{"X-Commander-Run": []string{run}, "X-Commander-Worker": []string{worker}}
-	return c.exchange(ctx, http.MethodPost, "/coordinator/"+op, input, headers)
+	return c.exchange(c.http, ctx, http.MethodPost, "/coordinator/"+op, input, headers)
 }
 
-func (c *Client) exchange(ctx context.Context, method, path string, input any, headers http.Header) (json.RawMessage, error) {
+func (c *Client) exchange(client *http.Client, ctx context.Context, method, path string, input any, headers http.Header) (json.RawMessage, error) {
 	var body io.Reader
 	if input != nil {
 		b, err := json.Marshal(input)
@@ -118,7 +126,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, input any, h
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("Commander service: %w", err)
 	}

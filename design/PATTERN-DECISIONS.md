@@ -63,6 +63,8 @@ The local cockpit feed uses a GoF Adapter and EIP Message Translator to project 
 
 The local Claude adapter uses a stable provider session ID and passes each follow-up through standard input. The service uses an addressed inbox as a Message Store. The receiver claims a follow-up by its Correlation Identifier under the current control generation. A caller-provided idempotency key returns the same acceptance receipt after a retry. Handoff cancels queued commands from the outgoing controller. A restart marks a claimed turn with an uncertain outcome until the original runner reports evidence. The original runner can report the outcome using the same message ID.
 
+The worker control API supports a bounded Publish-Subscribe wait on the authenticated worker's current revision. Committed mutations wake waiting readers, and each reader compares its own control snapshot. Claims, choices, and operation receipts still use addressed Request-Reply commands. Admission checks run outside the durable command transaction. The service rechecks authorization, idempotency, and capacity before launching.
+
 Console and Pretty share that feed. The cockpit keeps a display mode per worker ID so zoom, the wall and PiP agree even when a new snapshot replaces the worker object. Selecting a mode for all consoles sets the default and clears individual choices.
 
 The cockpit keys persistent accent preferences by harness identity. A color change follows that harness across workers, runs and windows. Attention and keyboard focus retain their own cues.

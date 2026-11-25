@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -11,14 +13,22 @@ import (
 	"agentcommander/internal/service"
 )
 
+type controlAnswer struct {
+	ID              string `json:"id"`
+	ProviderRequest string `json:"provider_request"`
+	Choice          string `json:"choice"`
+}
+
 type controlFeed struct {
-	Live                 bool   `json:"live"`
-	State                string `json:"state"`
-	NextMessageID        string `json:"next_message_id"`
-	InterruptRequested   bool   `json:"interrupt_requested"`
-	InterruptID          string `json:"interrupt_id"`
-	Generation           int    `json:"generation"`
-	ProviderAvailability string `json:"provider_availability"`
+	Revision             string          `json:"revision"`
+	Answers              []controlAnswer `json:"answers"`
+	Live                 bool            `json:"live"`
+	State                string          `json:"state"`
+	NextMessageID        string          `json:"next_message_id"`
+	InterruptRequested   bool            `json:"interrupt_requested"`
+	InterruptID          string          `json:"interrupt_id"`
+	Generation           int             `json:"generation"`
+	ProviderAvailability string          `json:"provider_availability"`
 }
 
 func newSessionID() string {
@@ -76,7 +86,7 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 func publishWorkerControl(ctx context.Context, a *api, path string, payload any) error {
 	var last error
 	for range 3 {
-		last = a.request("POST", path, payload, nil)
+		last = a.requestContext(ctx, "POST", path, payload, nil)
 		if last == nil || ctx.Err() != nil {
 			return last
 		}
@@ -105,8 +115,9 @@ func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, p
 	finished := make(chan error, 1)
 	go func() { finished <- runClaude(cmd, s) }()
 
-	tick := time.NewTicker(350 * time.Millisecond)
-	defer tick.Stop()
+	controlCtx, stopControl := context.WithCancel(ctx)
+	defer stopControl()
+	control := a.watchControl(controlCtx, path, "")
 	for {
 		select {
 		case err := <-finished:
@@ -118,9 +129,11 @@ func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, p
 			cancel()
 			<-finished
 			return "idle", nil
-		case <-tick.C:
-			var feed controlFeed
-			if a.request("GET", path+"/control", nil, &feed) != nil || !feed.InterruptRequested {
+		case feed, ok := <-control:
+			if !ok {
+				control = nil
+			}
+			if !feed.InterruptRequested {
 				continue
 			}
 			if a.request("POST", path+"/control/interrupt/claim", map[string]int{"generation": feed.Generation}, nil) != nil {
@@ -142,37 +155,68 @@ func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, p
 }
 
 func waitForFollowUp(ctx context.Context, a *api, path string) (service.ClaimedWorkerFollowUp, bool) {
-	for ctx.Err() == nil {
-		var feed controlFeed
-		if a.requestContext(ctx, "GET", path+"/control", nil, &feed) == nil {
-			if !feed.Live {
-				return service.ClaimedWorkerFollowUp{}, false
-			}
-			if feed.State == "unknown" {
-				_ = a.requestContext(ctx, "POST", path+"/control/ready", map[string]bool{"idle": true}, nil)
-			}
-			if feed.NextMessageID != "" {
-				// Retry the same claim only before any provider process starts.
-				claim := path + "/messages/" + feed.NextMessageID + "/claim"
-				for range 3 {
-					if ctx.Err() != nil {
-						return service.ClaimedWorkerFollowUp{}, false
-					}
-					var m service.ClaimedWorkerFollowUp
-					if err := a.requestContext(ctx, "POST", claim, struct{}{}, &m); err == nil {
-						return m, true
-					}
-					if !waitControlTick(ctx) {
-						return service.ClaimedWorkerFollowUp{}, false
-					}
+	watchCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	for feed := range a.watchControl(watchCtx, path, "") {
+		if !feed.Live {
+			break
+		}
+		if feed.State == "unknown" {
+			_ = a.requestContext(ctx, "POST", path+"/control/ready", map[string]bool{"idle": true}, nil)
+		}
+		if feed.NextMessageID != "" {
+			// Retry the same claim only before any provider process starts.
+			claim := path + "/messages/" + feed.NextMessageID + "/claim"
+			for range 3 {
+				if ctx.Err() != nil {
+					return service.ClaimedWorkerFollowUp{}, false
+				}
+				var m service.ClaimedWorkerFollowUp
+				if err := a.requestContext(ctx, "POST", claim, struct{}{}, &m); err == nil {
+					return m, true
+				}
+				if !waitControlTick(ctx) {
+					return service.ClaimedWorkerFollowUp{}, false
 				}
 			}
 		}
-		if !waitControlTick(ctx) {
-			break
-		}
 	}
 	return service.ClaimedWorkerFollowUp{}, false
+}
+
+func (a *api) watchControl(ctx context.Context, path, turn string) <-chan controlFeed {
+	updates := make(chan controlFeed)
+	go func() {
+		defer close(updates)
+		var revision string
+		for ctx.Err() == nil {
+			query := url.Values{"wait_seconds": {"25"}}
+			if turn != "" {
+				query.Set("turn", turn)
+			}
+			if revision != "" {
+				query.Set("after", revision)
+			}
+			data, err := a.client.WaitWorkerControl(ctx, path+"/control?"+query.Encode())
+			var feed controlFeed
+			if err != nil || json.Unmarshal(data, &feed) != nil {
+				if !waitControlTick(ctx) {
+					return
+				}
+				continue
+			}
+			select {
+			case updates <- feed:
+			case <-ctx.Done():
+				return
+			}
+			revision = feed.Revision
+			if revision == "" && !waitControlTick(ctx) {
+				return
+			}
+		}
+	}()
+	return updates
 }
 
 func waitControlTick(ctx context.Context) bool {
