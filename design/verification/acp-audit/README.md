@@ -4,7 +4,7 @@ Baseline Commander is `a4663f1`, SDK `0.1.14`, and transport `0.1.0`. The integr
 
 ## Matched workloads
 
-Runs used an Apple silicon host with 10 logical CPUs. Short series use nearest-rank p95, which is the maximum for the sample sizes shown. Reported timings cover local fixture work unless the table says otherwise.
+Runs used Go 1.27.4 on an Apple silicon host with 10 logical CPUs. Short series use nearest-rank p95, which is the maximum for the sample sizes shown. Reported timings cover local fixture work unless the table says otherwise.
 
 | Workload | Baseline | Candidate | Evidence |
 | --- | --- | --- | --- |
@@ -18,16 +18,18 @@ Runs used an Apple silicon host with 10 logical CPUs. Short series use nearest-r
 | Idle transport receive allocation | About 1.08 MB/op | About 0.095 MB/op | Go microbenchmark. |
 | Two workers through a compatible local peer | 203.9 ms median with isolated processes, 161.25 MiB adapter RSS | Shared 492.6 ms and 107.55 MiB. Isolated prewarm 494.3 ms and 161.09 MiB. | Five matched fixture runs. Both alternatives missed the startup latency gate. |
 
+The paired incremental capacity test used 256-byte updates and a tool every fourth record. At 500 updates/s, both variants delivered every record. Median public SSE bytes increased by 4.3%, from 1.83 MB to 1.90 MB, with sampled service plus runner CPU of 0.100 and 0.090 seconds. At 50 updates/s, the 25 ms batching deadline increased median wire bytes by 43.8%, from 262,316 to 377,313, while delivering all 200 updates. Sampled CPU increased from 0.055 to 0.125 seconds at that rate. Each CPU sample had 10 ms granularity. Earlier candidates with the longer publication wait did not show the low-rate byte increase.
+
 These comparisons include workstream builds. The sampled service and adapter RSS figures cover the indicated processes. Model inference, AppKit rendering, and full process-tree peak RSS need separate instrumentation. The [raw samples](samples/) preserve host load and binary digests where collected.
 
 ## Capability qualification
 
 | Harness | Observed workflow | Startup selection |
 | --- | --- | --- |
-| Claude managed Opus | The installed account completed a synthetic v1 turn with Opus. The first v2 run found a configuration-ID mismatch. A managed Opus prompt passed over v2 with SDK 0.1.18. | v1 by default. Full v2 parity requires installed permissions, cancellation, reconnect, and history. |
-| Codex | The installed adapter returned the synthetic marker in both v1 and v2. | v1 by default while v2 parity and performance remain open. |
-| Antigravity | The installed adapter returned the marker in v1 even when offered v2. | v1. |
-| Pi | The installed loopback fixture exercised addressed approval, original tool results, and reattachment. | v1. |
+| Claude managed Opus, ACP adapter 0.109.1 | The installed account completed a synthetic v1 turn with Opus. The first v2 run found a configuration-ID mismatch. A managed Opus prompt passed over v2 with SDK 0.1.18. | v1 by default. Full v2 parity requires installed permissions, cancellation, reconnect, and history. |
+| Codex ACP adapter 2.9.0 | The installed adapter returned the synthetic marker in both v1 and v2. | v1 by default while v2 parity and performance remain open. |
+| Antigravity 1.5.13 | The installed adapter returned the marker in v1 even when offered v2. | v1. |
+| Pi ACP translator 0.2.0 | The installed loopback fixture exercised addressed approval, original tool results, and reattachment. | v1. |
 
 The existing SSH path remains available through `AGENT_COMMANDER_SSH_LINK=legacy`. The windowed link requires explicit negotiation by the endpoint. New local sessions accept these independent overrides:
 
