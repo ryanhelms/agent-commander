@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"slices"
 	"time"
 
 	"agentcommander/internal/hosted"
@@ -111,6 +110,10 @@ func (s *service) streamWorkerRun(w http.ResponseWriter, r *http.Request) {
 	}
 	prompt, parts, err := aguiPrompt(input.Messages[len(input.Messages)-1].Content)
 	if err != nil {
+		respondError(w, err)
+		return
+	}
+	if err := s.checkPromptResourceScope(r, parts); err != nil {
 		respondError(w, err)
 		return
 	}

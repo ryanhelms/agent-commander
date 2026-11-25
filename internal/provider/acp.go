@@ -128,7 +128,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
 	managed := j.Worker.Role == "worker"
 	capabilities := session.GetCapabilities()
-	promptCaps := service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio()}
+	promptCaps := service.PromptCapabilities{Image: capabilities.GetCanPromptImage(), Audio: capabilities.GetCanPromptAudio(), ResourceLink: j.BuiltinInstance == "", EmbeddedContext: capabilities.GetCanPromptEmbeddedContext()}
 	sessionCaps := service.SessionCapabilities{
 		CanAnswer: capabilities.GetCanAnswer(), CanInterrupt: capabilities.GetCanInterrupt(),
 		CanResume: capabilities.GetCanResume(), CanListSessions: capabilities.GetCanListSessions(), CanReadHistory: capabilities.GetCanReadHistory(),
@@ -380,6 +380,16 @@ func acpPromptRequest(ref *model.SessionRef, turnID, text string, parts []servic
 			item.Content = &model.PromptPart_Image{Image: &model.PromptMedia{MimeType: part.MIMEType, Data: part.Data}}
 		case "audio":
 			item.Content = &model.PromptPart_Audio{Audio: &model.PromptMedia{MimeType: part.MIMEType, Data: part.Data}}
+		case "resource_link":
+			item.Content = &model.PromptPart_ResourceLink{ResourceLink: &model.PromptResourceLink{Uri: part.URI, Name: part.Name, MimeType: part.MIMEType}}
+		case "resource":
+			resource := &model.PromptResource{Uri: part.URI, MimeType: part.MIMEType}
+			if part.ResourceText != nil {
+				resource.Body = &model.PromptResource_Text{Text: *part.ResourceText}
+			} else {
+				resource.Body = &model.PromptResource_Blob{Blob: part.Data}
+			}
+			item.Content = &model.PromptPart_Resource{Resource: resource}
 		}
 		request.Parts = append(request.Parts, item)
 	}

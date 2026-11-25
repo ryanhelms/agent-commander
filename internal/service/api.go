@@ -144,6 +144,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("POST /v1/runs/{run}/integrations", s.handle(s.beginIntegration))
 	mux.HandleFunc("POST /v1/workers/{worker}/coding/commit", s.handle(s.codingCommit))
 	mux.HandleFunc("GET /v1/workers/{worker}/control", s.waitWorkerControl)
+	mux.HandleFunc("POST /v1/workers/{worker}/messages", s.handlePreparedJSON(s.sendWorkerMessage, 1<<20, s.prepareWorkerPrompt))
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
@@ -173,7 +174,6 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/control/reconcile":                                s.reconcileWorkerProvider,
 		"POST /v1/workers/{worker}/control/interrupt/claim":                          s.claimWorkerInterrupt,
 		"POST /v1/workers/{worker}/control/interrupt/report":                         s.reportWorkerInterrupt,
-		"POST /v1/workers/{worker}/messages":                                         s.sendWorkerMessage,
 		"POST /v1/workers/{worker}/messages/{message}/claim":                         s.claimWorkerMessage,
 		"POST /v1/workers/{worker}/interrupt":                                        s.interruptWorker,
 		"POST /v1/workers/{worker}/stop":                                             s.stopWorker,
@@ -194,6 +194,10 @@ func (s *service) handleJSON(op endpoint) http.HandlerFunc {
 }
 
 func (s *service) handleJSONLimit(op endpoint, limit int64) http.HandlerFunc {
+	return s.handlePreparedJSON(op, limit, nil)
+}
+
+func (s *service) handlePreparedJSON(op endpoint, limit int64, prepare func(*http.Request, []byte) (*http.Request, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		// Read the bounded body before taking the shared state lock.
@@ -204,6 +208,13 @@ func (s *service) handleJSONLimit(op endpoint, limit int64) http.HandlerFunc {
 				return
 			}
 			r = r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw))
+			if prepare != nil {
+				r, err = prepare(r, raw)
+				if err != nil {
+					respondError(w, err)
+					return
+				}
+			}
 		}
 		res, body, err := s.dispatchJSON(r, op)
 		if err != nil {

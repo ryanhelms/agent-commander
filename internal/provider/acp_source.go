@@ -333,7 +333,9 @@ func (p *acpSourcePublisher) capturePrompt(ctx context.Context, request *model.S
 	}
 	ref, turn := request.GetSession(), request.GetOperationId()
 	session := service.NativeSession{HarnessInstance: ref.GetHarnessInstance(), SessionID: ref.GetSessionId()}
-	if !slices.ContainsFunc(parts, func(part *model.PromptPart) bool { return part.GetImage() != nil || part.GetAudio() != nil }) {
+	if !slices.ContainsFunc(parts, func(part *model.PromptPart) bool {
+		return part.GetImage() != nil || part.GetAudio() != nil || part.GetResourceLink() != nil || part.GetResource() != nil
+	}) {
 		if len(parts) == 1 {
 			return
 		}
@@ -355,7 +357,14 @@ func (p *acpSourcePublisher) capturePrompt(ctx context.Context, request *model.S
 			kind, media = "audio", part.GetAudio()
 		}
 		update := service.LiveSourceUpdate{Session: session, Cursor: promptPartCursor(turn, index), TurnID: turn}
-		if media == nil {
+		if part.GetResourceLink() != nil || part.GetResource() != nil {
+			block, _, err := runtime.PromptResourceBlock(part, true)
+			if err != nil {
+				continue
+			}
+			update.Kind = service.LivePromptMediaPartKind
+			update.Body, _ = json.Marshal(block)
+		} else if media == nil {
 			update.Kind = service.LivePromptTextPartKind
 			update.Body, _ = json.Marshal(acp.TextBlock(part.GetText()))
 		} else {
