@@ -16,10 +16,11 @@ extension EnvironmentValues {
     }
 }
 
-/// The person's theme choice, kept in user defaults under `appearance.theme`.
+/// The person's theme choice, kept in user defaults under `appearance.theme`. Console until they
+/// choose; black glass stays on offer in Preferences.
 enum ThemeChoice {
     static let key = "appearance.theme"
-    static let fallback = ThemeID.blackGlass
+    static let fallback = ThemeID.console
 
     static func id(for stored: String?) -> ThemeID {
         stored.flatMap(ThemeID.init(rawValue:)) ?? fallback

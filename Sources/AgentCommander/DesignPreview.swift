@@ -9,8 +9,9 @@ import SwiftUI
 //
 //   open "dist/Agent Commander.app" --args --design-preview <state>
 //
-//   <state>: any slug in DesignPreviewScenario (coordinator-wall … accessible-worker), or "gallery"
-//            to start at the first view.
+//   <state>: any slug in DesignPreviewScenario (coordinator-wall … accessible-worker, then the
+//            redesigned shell: shell-a, shell-b, shell-c, needs-you), or "gallery" to start at the
+//            first view.
 //
 // Inside the window, the title-bar gallery control (and ⌥⌘← / ⌥⌘→) browses all states, and the
 // navigation rail moves between views. Interactions change in-memory sample state only; choosing a
@@ -67,6 +68,11 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case reducedTransparency = "reduced-transparency"
     case accessibleWall = "accessible-wall"
     case accessibleWorker = "accessible-worker"
+    // The redesigned main-window shell (ShellPreview.swift).
+    case shellA = "shell-a"
+    case shellB = "shell-b"
+    case shellC = "shell-c"
+    case needsYou = "needs-you"
 
     struct Info {
         let title: String
@@ -77,7 +83,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         let summary: String
     }
 
-    static let groups = ["Cockpit", "Workspace", "Delegation", "Setup & recovery"]
+    static let groups = ["Cockpit", "Workspace", "Delegation", "Setup & recovery", "Main window redesign"]
 
     var id: String { rawValue }
     var number: Int { (Self.allCases.firstIndex(of: self) ?? 0) + 1 }
@@ -93,6 +99,9 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
             false
         }
     }
+
+    /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -186,6 +195,18 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
             Info(title: "Reduced transparency · worker", group: "Setup & recovery",
                  crumbs: ["Relay", "Retry policy", "Timeout cases"], active: "Relay",
                  summary: "The focused worker under increased contrast, with its request and explicit handback.")
+        case .shellA:
+            Info(title: "Sidebar A · grouped", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "Every place in one grouped list. Presence and server health sit in the toolbar.")
+        case .shellB:
+            Info(title: "Sidebar B · mode rail", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "A narrow rail switches mode and a second column lists that mode's pages.")
+        case .shellC:
+            Info(title: "Sidebar C · Needs you first", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "The combined inbox is pinned at the top. Profile and presence sit in the sidebar footer.")
+        case .needsYou:
+            Info(title: "Needs you inbox", group: "Main window redesign", crumbs: ["Workspace", "Needs you"], active: "Needs you",
+                 summary: "One list of local and network requests in order of urgency, decided in place.")
         }
     }
 
@@ -384,7 +405,9 @@ struct DesignPreviewPage: View {
     }
 
     @ViewBuilder private var page: some View {
-        if store.scenario.isCockpit {
+        if store.scenario.isShell {
+            ShellPreviewPage(store: store, gallery: gallery)
+        } else if store.scenario.isCockpit {
             CockpitScreen(content: DesignFixture.content(for: store), ui: store.ui,
                           actions: DesignFixture.actions(for: store),
                           fixtureNavigation: DesignFixture.navigation(for: store),
@@ -564,8 +587,9 @@ struct PreviewCanvas: View {
                             choosePresentation: { mode in store.presentation = mode },
                             chooseTheme: { id in ThemeChoice.select(id) })
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
-             .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker:
-            // Drawn by CockpitScreen in DesignPreviewPage.
+             .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
+             .shellA, .shellB, .shellC, .needsYou:
+            // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }
     }
