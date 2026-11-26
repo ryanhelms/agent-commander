@@ -182,17 +182,63 @@ struct WorkspacePage<Header: View, Content: View>: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: theme.space.sectionGap) {
-                header
-                content
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: theme.space.sectionGap) {
+                    header
+                    content
+                }
+                .padding(.top, theme.space.pageInset - 6)
+                .padding(.horizontal, theme.space.pageInset)
+                .padding(.bottom, theme.space.pageInset - 8)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(.top, theme.space.pageInset - 6)
-            .padding(.horizontal, theme.space.pageInset)
-            .padding(.bottom, theme.space.pageInset - 8)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            // Something that opens below the fold asks the page to bring it into view (`shellRevealed`).
+            .environment(\.pageReveal, PageReveal { id, anchor, animation in
+                withAnimation(animation) { proxy.scrollTo(id, anchor: anchor) }
+            })
         }
     }
+}
+
+/// Brings a part of the page into view, by its ID.
+struct PageReveal {
+    /// With no anchor the page moves the least that shows the view.
+    var scroll: (_ id: String, _ anchor: UnitPoint?, _ animation: Animation?) -> Void = { _, _, _ in }
+}
+
+private struct PageRevealKey: EnvironmentKey {
+    static var defaultValue: PageReveal { PageReveal() }
+}
+
+extension EnvironmentValues {
+    /// The page's own scroll, for a view that opens in answer to a press and may be below the fold.
+    var pageReveal: PageReveal {
+        get { self[PageRevealKey.self] }
+        set { self[PageRevealKey.self] = newValue }
+    }
+}
+
+/// Scrolls the page until this view shows, once, when it appears: a confirmation or a form that
+/// opened in answer to a press. Eased, or at once with Reduce Motion.
+private struct ShellRevealed: ViewModifier {
+    @Environment(\.pageReveal) private var reveal
+    @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let id: String
+    var anchor: UnitPoint? = nil
+
+    func body(content: Content) -> some View {
+        content.id(id).onAppear {
+            // After this layout pass, so the view has its place in the page.
+            DispatchQueue.main.async { reveal.scroll(id, anchor, reduceMotion ? nil : theme.motion.animation(theme.motion.standard)) }
+        }
+    }
+}
+
+extension View {
+    /// `anchor` puts that edge of a view taller than the window at the same edge of the page.
+    func shellRevealed(_ id: String, anchor: UnitPoint? = nil) -> some View { modifier(ShellRevealed(id: id, anchor: anchor)) }
 }
 
 // MARK: - CollectionInspector

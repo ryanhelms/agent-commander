@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Foundations, atoms and molecules (main-window shell).
@@ -444,27 +445,74 @@ struct ShellPresenceMenu: View {
     let pick: (MultiplayerPresenceChoice) -> Void
 
     var body: some View {
-        Menu {
-            // A toggle is a menu item with a native check beside the choice in force.
-            ForEach(MultiplayerPresenceChoice.allCases) { option in
-                Toggle(option.title, isOn: Binding(get: { option == profile.choice }, set: { if $0 { pick(option) } }))
-            }
-        } label: {
-            ShellReadoutCell(readout: ShellReadout(id: "presence", label: "presence", value: profile.spokenPresence,
-                                                   lamp: profile.presence?.lamp ?? .off),
-                             opensMenu: true)
-                .accessibilityHidden(true)
+        // The readout is the picture. The control over it is AppKit's own pull-down button, which
+        // a window's toolbar exposes as a menu button; a SwiftUI menu there was drawn and worked by
+        // mouse but had no element of its own.
+        ShellReadoutCell(readout: ShellReadout(id: "presence", label: "presence", value: profile.spokenPresence,
+                                               lamp: profile.presence?.lamp ?? .off),
+                         opensMenu: true)
+            .accessibilityHidden(true)
+            .overlay { ShellPresencePullDown(profile: profile, pick: pick) }
+            .fixedSize()
+            .help("Choose the presence your friends see")
+    }
+}
+
+/// The presence choices as a native pull-down button with nothing drawn: one element named
+/// "Your presence" whose value is the presence in force ("Auto: Busy"), with a check beside the
+/// choice in force.
+struct ShellPresencePullDown: NSViewRepresentable {
+    static let label = "Your presence"
+
+    let profile: CommanderProfile
+    let pick: (MultiplayerPresenceChoice) -> Void
+
+    final class Coordinator: NSObject {
+        var pick: (MultiplayerPresenceChoice) -> Void = { _ in }
+
+        @MainActor @objc func choose(_ item: NSMenuItem) {
+            guard let raw = item.representedObject as? String, let choice = MultiplayerPresenceChoice(rawValue: raw) else { return }
+            pick(choice)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Choose the presence your friends see")
-        // The menu stays one pressable element: its name, then the presence in force as its value.
-        .accessibilityLabel("Your presence")
-        .accessibilityValue(profile.spokenPresence)
-        .accessibilityHint("Opens a list to choose from")
-        .accessibilityIdentifier("shell-presence")
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.isBordered = false
+        button.isTransparent = true
+        button.autoenablesItems = false
+        button.identifier = NSUserInterfaceItemIdentifier("shell-presence")
+        button.setAccessibilityIdentifier("shell-presence")
+        // An AppKit control's accessibility element is its cell, so the name goes on the cell.
+        button.cell?.setAccessibilityIdentifier("shell-presence")
+        button.cell?.setAccessibilityLabel(Self.label)
+        button.cell?.setAccessibilityHelp("Opens a list to choose from")
+        fill(button, context.coordinator)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) { fill(button, context.coordinator) }
+
+    /// The button takes the readout's size, whatever its own title would ask for.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    private func fill(_ button: NSPopUpButton, _ coordinator: Coordinator) {
+        coordinator.pick = pick
+        button.removeAllItems()
+        // A pull-down's first item is its title. It is what the button reports as its value.
+        button.addItem(withTitle: profile.spokenPresence)
+        for choice in MultiplayerPresenceChoice.allCases {
+            let item = NSMenuItem(title: choice.title, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
+            item.target = coordinator
+            item.representedObject = choice.rawValue
+            item.state = choice == profile.choice ? .on : .off
+            button.menu?.addItem(item)
+        }
+        button.cell?.setAccessibilityValue(profile.spokenPresence)
     }
 }
 

@@ -220,11 +220,13 @@ struct NetworkPagesContent {
         servers.flatMap { server in
             server.approvals.map { approval -> NetworkApprovalRow in
                 let key = NetworkActionResult.key(.approval, approval.id, on: server.id)
+                // An answered row no longer waits: its clock stops and it sorts after the ones that do.
+                let answer = answered[key]
                 return NetworkApprovalRow(server: server.id, serverName: server.name, approval: approval,
                                           resourceName: resourceName(approval.resource, on: server.id),
-                                          waiting: approval.arrived.map { max(0, now.timeIntervalSince($0)) },
-                                          expiresIn: approval.expires.map { max(0, $0.timeIntervalSince(now)) },
-                                          result: results[key], isRunning: running.contains(key), answer: answered[key])
+                                          waiting: answer == nil ? approval.arrived.map { max(0, now.timeIntervalSince($0)) } : nil,
+                                          expiresIn: answer == nil ? approval.expires.map { max(0, $0.timeIntervalSince(now)) } : nil,
+                                          result: results[key], isRunning: running.contains(key), answer: answer)
             }
         }
         .sorted { ($0.expiresIn ?? .infinity) < ($1.expiresIn ?? .infinity) }
@@ -414,8 +416,11 @@ struct NetworkPagesContent {
                     cell("waiting", "waiting", rows.filter { $0.tone == .attention }.count, tone: .attention),
                     cell("failed", "failed", rows.filter { $0.tone == .failure }.count, tone: .failure)]
         case NetworkPlace.threads:
+            // The comments the rows count, so the strip and the rows agree; then the open thread's own.
+            let listed = threads?.values.reduce(0) { $0 + $1.reduce(0) { $0 + ($1.comments ?? 0) } }
             return [cell("requests", "requests", threadRows.count),
-                    cell("comments", "comments", thread.value?.comments.count ?? 0),
+                    cell("comments", "comments", listed ?? thread.value?.comments.count ?? 0),
+                    cell("open", "in the open thread", thread.value?.comments.count ?? 0),
                     cell("agents", "from agents", thread.value?.comments.filter(\.isAgent).count ?? 0)]
         case NetworkPlace.audit:
             let entries = audit.value ?? []

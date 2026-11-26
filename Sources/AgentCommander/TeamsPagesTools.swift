@@ -212,7 +212,15 @@ struct TeamsHostsPage: View {
 
     @ViewBuilder private var inspector: some View {
         let state = pages.content
-        if let key = pages.selection.host, let found = state.offeredHost(key) {
+        if let key = pages.selection.host, let found = state.offeredHost(key), let host = pages.host {
+            // The network model's own host: it keeps the draft and shows the run's exit code and output.
+            NetworkInspector(title: "Run on \(found.entry.name.multiplayerDisplay)", serverID: found.server.id, serverName: found.server.name,
+                             state: found.entry.canRunOnHost ? (.on, "Granted", .working) : (.off, "Offered", .neutral),
+                             close: { pages.send(.openHost(nil)) }) {
+                host(.hostRun(resource: key))
+            }
+            .id(key)
+        } else if let key = pages.selection.host, let found = state.offeredHost(key) {
             let entry = found.entry, running = pages.isRunning("host", key)
             NetworkInspector(title: "Run on \(entry.name.multiplayerDisplay)", serverID: found.server.id, serverName: found.server.name,
                              state: entry.canRunOnHost ? (.on, "Granted", .working) : (.off, "Offered", .neutral),
@@ -318,7 +326,11 @@ struct TeamsKnowledgePage: View {
 
     @ViewBuilder private var inspector: some View {
         let state = pages.content
-        if case .knowledge(let server)? = pages.selection.composer, let found = state.server(server) {
+        if case .knowledge(let server)? = pages.selection.composer, let found = state.server(server), let host = pages.host {
+            NetworkInspector(title: "Share knowledge", serverID: server, serverName: found.name, close: { pages.send(.closeComposer) }) {
+                host(.knowledge(server: server))
+            }
+        } else if case .knowledge(let server)? = pages.selection.composer, let found = state.server(server) {
             let widest = state.widestScope(on: server)
             NetworkInspector(title: "Share knowledge", serverID: server, serverName: found.name,
                              note: widest == .server ? "\(found.name) lets knowledge reach everyone on it."
@@ -352,7 +364,7 @@ struct TeamsKnowledgePage: View {
                                          cancel: { pages.send(.cancelConfirmation) }, confirm: { pages.send(.confirm) })
                     }
                 }
-                MultiplayerKnowledgeItemPage(item: item, versions: state.versions[key].map { .loaded($0) } ?? .loaded([item]),
+                MultiplayerKnowledgeItemPage(item: item, versions: state.versions[key] ?? .loading,
                                              groupName: { state.groupName($0, on: found.server.id) }, now: state.now, onRetry: {})
             } footer: {
                 Button("\(MultiplayerKnowledgeKind(rawValue: item.kind)?.installTitle ?? "Copy")\(MultiplayerKnowledgeKind(rawValue: item.kind) == .mcp ? "" : "…")") {
@@ -473,7 +485,7 @@ struct TeamsDirectoryPage: View {
                     NetworkInspector(title: "Reputation", serverID: server, serverName: state.serverName(server),
                                      note: "An endorsement is listed with the resource.", close: { pages.send(.openHit(nil)) }) {
                         MultiplayerReputationPage(name: hit.name, owner: hit.handle, kind: hit.kind,
-                                                  state: .loaded(state.reputation[key] ?? MultiplayerReputation(resource: hit.id)),
+                                                  state: state.reputation[key] ?? .loading,
                                                   endorsements: hit.endorsements, judgeable: [], outcomes: [:],
                                                   skill: pages.drafts.skill,
                                                   canEndorse: !pages.drafts.wrappedValue.skill.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -604,13 +616,17 @@ struct TeamsAdminPage: View {
         let state = pages.content
         let server = pages.selection.adminServer.flatMap(state.server) ?? state.adminServers.first
         TeamsPageScaffold(place: TeamsPlace.admin, pages: pages) {
-            if let server, server.isAdmin, let saved = server.policy {
-                if state.adminServers.count > 1 {
-                    ShellSegments(options: state.adminServers.map { (value: $0.id, title: $0.name, help: "Administer \($0.name)") },
-                                  selection: server.id, choose: { pages.send(.chooseAdminServer($0)) })
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel("Server to administer")
+            if let server, server.isAdmin, let host = pages.host {
+                serverChoice(server)
+                // The network model's own host: the policy, then suspending a member or revoking a
+                // device, each after a second press that names its target.
+                NetworkInspector(title: "Policy, members and devices", serverID: server.id, serverName: server.name) {
+                    host(.policy(server: server.id))
                 }
+                .frame(maxWidth: TeamsLayout.rowPanel, alignment: .leading)
+                .id(server.id)
+            } else if let server, server.isAdmin, let saved = server.policy {
+                serverChoice(server)
                 NetworkSplit {
                     policy(server, saved: saved)
                 } inspector: {
@@ -621,6 +637,17 @@ struct TeamsAdminPage: View {
             } else {
                 ShellLoadNote(text: "You administer no server. A relay’s admin sets its policy and moderates its members here.")
             }
+        }
+    }
+
+    /// Which server is administered, when the person runs more than one.
+    @ViewBuilder private func serverChoice(_ server: TeamsPagesContent.Server) -> some View {
+        let servers = pages.content.adminServers
+        if servers.count > 1 {
+            ShellSegments(options: servers.map { (value: $0.id, title: $0.name, help: "Administer \($0.name)") },
+                          selection: server.id, choose: { pages.send(.chooseAdminServer($0)) })
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Server to administer")
         }
     }
 

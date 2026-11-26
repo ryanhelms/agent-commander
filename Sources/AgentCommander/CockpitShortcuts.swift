@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Values (the main window's keyboard shortcuts).
@@ -64,9 +65,69 @@ enum CockpitShortcuts {
     /// Every shortcut the cockpit's hidden buttons bind.
     static let all: [CockpitShortcut] = modes + [focusCoordinator, zoomWorker, returnToWall, nextRequest, newRun]
 
+    /// The key codes of the digit row's 1 to 5, for a layout whose digits need Shift.
+    private static let digitKeyCodes: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4]
+
+    /// The mode a key press asks for: ⌥⌘ and a digit from 1 to 5, and no other modifier.
+    /// `characters` is the key without its modifiers; the key code decides where that isn't a digit.
+    static func modeCommand(characters: String?, keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> CockpitCommand? {
+        guard modifiers.intersection([.command, .option, .control, .shift]) == [.command, .option] else { return nil }
+        if let digit = characters.flatMap({ Int($0) }), (1...modes.count).contains(digit) { return .mode(digit - 1) }
+        return digitKeyCodes[keyCode].map { .mode($0) }
+    }
+
     /// Chords bound more than once. Empty when the table is sound.
     static var collisions: [String] {
         let chords = all.map(\.chord) + ["\(search.modifiers.shellKeyCap)\(String(search.key).uppercased())"]
         return Dictionary(grouping: chords, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
     }
+}
+
+/// Hears the mode keys for the window it sits in, before the window looks for a key equivalent.
+/// The hidden buttons bind the same keys, but ⌥⌘3 stopped reaching its button in a running window
+/// while the other four still did (design/demos/main-window-4/verify/REPORT.md). The monitor takes
+/// the press first, so each mode key acts the same way whatever else in the window wants the chord.
+struct CockpitModeKeys: NSViewRepresentable {
+    let press: (CockpitCommand) -> Void
+
+    final class Listener: NSView {
+        var press: (CockpitCommand) -> Void = { _ in }
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                remove()
+            } else if monitor == nil {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+                    guard let self else { return event }
+                    // Local monitors run on the main thread. Only a Bool crosses the isolation boundary.
+                    nonisolated(unsafe) let key = event
+                    return MainActor.assumeIsolated { self.take(key) } ? nil : event
+                }
+            }
+        }
+
+        /// True when the press was a mode key for this window, and was taken.
+        private func take(_ event: NSEvent) -> Bool {
+            guard let window, event.window === window,
+                  let command = CockpitShortcuts.modeCommand(characters: event.charactersIgnoringModifiers, keyCode: event.keyCode,
+                                                             modifiers: event.modifierFlags) else { return false }
+            press(command)
+            return true
+        }
+
+        private func remove() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+    }
+
+    func makeNSView(context: Context) -> Listener {
+        let view = Listener()
+        view.press = press
+        return view
+    }
+
+    func updateNSView(_ view: Listener, context: Context) { view.press = press }
 }

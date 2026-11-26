@@ -203,18 +203,19 @@ enum TeamsSample {
             ]),
             TeamsMemberWork(handle: "ryan"), TeamsMemberWork(handle: "priya", isOnline: false)
         ]
-        content.versions[TeamsKey.make("k-1", on: studio)] = [
+        content.versions[TeamsKey.make("k-1", on: studio)] = .loaded([
             MultiplayerKnowledgeItem(id: "k-1", owner: "mira", kind: "skill", name: "relay-triage", content: "## Relay triage\n\nRead the failing test first.",
                                      visibility: "private", version: 1, createdAt: ago(604_800)),
             MultiplayerKnowledgeItem(id: "k-1", owner: "mira", kind: "skill", name: "relay-triage",
                                      content: "## Relay triage\n\nRead the failing test first, then check the lease timer.",
                                      visibility: "friend:ryan", version: 2, createdAt: ago(259_200)),
             studioServer.knowledge[0]
-        ]
+        ])
         content.reputation[TeamsKey.make("res-mira-claude", on: studio)] =
-            MultiplayerReputation(resource: "res-mira-claude", completed: 42, accepted: 37, rejected: 3, medianSeconds: 318)
+            .loaded(MultiplayerReputation(resource: "res-mira-claude", completed: 42, accepted: 37, rejected: 3, medianSeconds: 318))
         content.reputation[TeamsKey.make("host-build", on: studio)] =
-            MultiplayerReputation(resource: "host-build", completed: 118, accepted: 112, rejected: 1, medianSeconds: 47)
+            .loaded(MultiplayerReputation(resource: "host-build", completed: 118, accepted: 112, rejected: 1, medianSeconds: 47))
+        content.reputation[TeamsKey.make("host-rack", on: studio)] = .loaded(MultiplayerReputation(resource: "host-rack"))
         return content
     }
 
@@ -554,8 +555,9 @@ final class TeamsPreviewState {
             await pause()
             return .done(id: resource, server: server, message: "You endorsed it for \(skill) on \(content.serverName(server)).")
         }
-        actions.setPolicy = { [self] policy, server in
+        actions.setPolicy = { [self] draft, _, server in
             await pause()
+            guard let policy = draft.policy else { return .failed(id: "policy", server: server, reason: "Couldn’t save the policy.") }
             update(server) { $0.policy = policy }
             state.drafts.policy = MultiplayerPolicyDraft(policy)
             return .done(id: "policy", server: server, message: "Policy set on \(content.serverName(server)).")

@@ -51,6 +51,8 @@ final class CockpitPresentationState {
     var needsYouRunning = Set<String>()
     /// The network pages' own selections and each row's last result.
     let networkPages = NetworkPagesLiveState()
+    /// The window's own place, reads and drafts on the Teams pages.
+    let teamsPages = TeamsPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
     /// The last key command pressed and how many there have been. The page runs each one from
@@ -878,6 +880,8 @@ struct CockpitScreen: View {
                 ForEach(CockpitShortcuts.modes) { key in
                     Button(key.title) { ui.press(key.command) }.keyboardShortcut(key.shortcut)
                 }
+                // The window hears the mode keys itself too, before anything else can take one.
+                CockpitModeKeys { ui.press($0) }
             }
             Button(CockpitShortcuts.focusCoordinator.title) { ui.press(.focusCoordinator) }
                 .keyboardShortcut(CockpitShortcuts.focusCoordinator.shortcut)
@@ -1714,6 +1718,15 @@ struct CockpitView: View {
                                           networkPage: { place, go in
                                               AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
                                                                       openPanel: networkActions.openNetworkPanel))
+                                          },
+                                          teamsPage: { place, go in
+                                              AnyView(LiveTeamsPage(place: place, model: network, state: ui.teamsPages, go: go,
+                                                                    share: { resource, server in
+                                                                        // The grant sheet is the network pages' own, on Shared.
+                                                                        guard networkActions.answers.prepareGrant(server, nil, resource, []) else { return }
+                                                                        ui.networkPages.selection.grant = server
+                                                                        go(NetworkPlace.shared)
+                                                                    }))
                                           },
                                           // The wall's live work, read from the network model as values.
                                           wall: WallLiveWork(model: network),

@@ -101,7 +101,7 @@ import Testing
         navigation.apply(.toggleGroup("workspace"))
         #expect(navigation.collapsed == ["teams"], "the workspace group does not fold")
         // Selecting a place inside a folded group opens it.
-        navigation.apply(.select("team.infra-guild"))
+        navigation.apply(.select(TeamsSample.infraPlace))
         #expect(navigation.collapsed.isEmpty)
 
         navigation.apply(.setPresence(.busy))

@@ -24,8 +24,12 @@ struct ShellNetwork: Equatable {
     }
 
     var servers: [MultiplayerServerSummary] = []
+    /// Every approval and access request the network lists. One just answered stays listed for
+    /// the network's hold, and `answers` says how it came out.
     var approvals: [MultiplayerPending<MultiplayerApproval>] = []
     var access: [MultiplayerPending<MultiplayerAccessRequest>] = []
+    /// How a listed request was answered, by its inbox ID. A request without one still waits.
+    var answers: [String: MultiplayerAnswer] = [:]
     var friendRequests: [FriendRequest] = []
     var workspaces: [MultiplayerPending<MultiplayerWorkspace>] = []
     /// Resource names by `server/resource`, for the requests above.
@@ -48,10 +52,16 @@ struct ShellNetwork: Equatable {
     /// Reads the tray's model. Every property read here is observed by the view that calls it.
     @MainActor init(model: MultiplayerModel) {
         servers = model.servers
-        // What still waits. An answered row is held by the model for a moment to show its outcome,
-        // and no longer counts.
-        approvals = model.share.waitingApprovals
-        access = model.share.waitingAccess
+        // Every listed row, with the network's own word on the answered ones. The network holds an
+        // answered row for a moment so its outcome can be read; the window filters nothing out.
+        approvals = model.share.pendingApprovals
+        access = model.share.pendingAccess
+        for pending in approvals {
+            if let answer = model.share.answer(for: pending.item, on: pending.server) { answers[LiveShell.id(pending)] = answer }
+        }
+        for pending in access {
+            if let answer = model.share.answer(for: pending.item, on: pending.server) { answers[LiveShell.id(pending)] = answer }
+        }
         // The same rule as the tray's friend groups: a server's requests show only while its
         // session is online and its certificate is the pinned one.
         friendRequests = model.servers.flatMap { server -> [FriendRequest] in
@@ -73,6 +83,10 @@ struct ShellNetwork: Equatable {
         failure = model.failure
         isUnavailable = model.unavailable != nil
     }
+
+    /// The requests that still wait: the listed ones without an answer. Every count uses these.
+    var waitingApprovals: [MultiplayerPending<MultiplayerApproval>] { approvals.filter { answers[LiveShell.id($0)] == nil } }
+    var waitingAccess: [MultiplayerPending<MultiplayerAccessRequest>] { access.filter { answers[LiveShell.id($0)] == nil } }
 
     var health: CommanderServerHealth {
         CommanderServerHealth(online: servers.filter { $0.state == .online }.count, total: servers.count)
@@ -182,7 +196,7 @@ enum LiveShell {
         let networkPlaces = [
             row(servers, "Servers", "server.rack", figure: health.total > 0 ? health.figure : nil),
             row("network.directory", "Directory", "magnifyingglass"),
-            row(approvals, "Approvals", "checkmark.shield", count: network.approvals.count, hot: true),
+            row(approvals, "Approvals", "checkmark.shield", count: network.waitingApprovals.count, hot: true),
             row("network.handoffs", "Hand-offs", "arrow.up.right", count: network.handoffs, noun: "sent"),
             row("network.threads", "Threads", "bubble.left.and.bubble.right"),
             row("network.audit", "Audit", "list.bullet.rectangle"),
@@ -302,20 +316,27 @@ enum LiveShell {
             let detail = approval.isSuggestion
                 ? (approval.request.isEmpty ? "For \(name)." : "For \(name): \(approval.request)")
                 : (approval.request.isEmpty ? "\(name). Grant is set to Ask each time." : "\(name): \(approval.request)")
-            return NeedsYouItem(id: id(pending), kind: .networkApproval,
-                                origin: .friend(handle: handle(approval.peer), server: server, serverID: pending.server),
-                                title: approval.headline, detail: detail,
-                                waiting: approval.arrived.map { max(0, now.timeIntervalSince($0)) },
-                                expiresIn: approval.expires.map { max(0, $0.timeIntervalSince(now)) })
+            // An answered row keeps its place with its outcome, and its countdown stops.
+            let answer = network.answers[id(pending)]
+            var item = NeedsYouItem(id: id(pending), kind: .networkApproval,
+                                    origin: .friend(handle: handle(approval.peer), server: server, serverID: pending.server),
+                                    title: approval.headline, detail: detail,
+                                    waiting: answer == nil ? approval.arrived.map { max(0, now.timeIntervalSince($0)) } : nil,
+                                    expiresIn: answer == nil ? approval.expires.map { max(0, $0.timeIntervalSince(now)) } : nil)
+            item.decision = answer.map(decision)
+            return item
         }
         items += network.access.map { pending in
             let request = pending.item
             let server = network.serverName(pending.server)
-            return NeedsYouItem(id: id(pending), kind: .accessRequest,
-                                origin: .friend(handle: handle(request.requester), server: server, serverID: pending.server),
-                                title: "\(handle(request.requester)) asks for access",
-                                detail: "\(network.resourceName(request.resource, on: pending.server)) on \(server). \(MultiplayerAccessRequestsPage.detail(request))",
-                                waiting: request.createdAt.map { max(0, now.timeIntervalSince($0)) })
+            let answer = network.answers[id(pending)]
+            var item = NeedsYouItem(id: id(pending), kind: .accessRequest,
+                                    origin: .friend(handle: handle(request.requester), server: server, serverID: pending.server),
+                                    title: "\(handle(request.requester)) asks for access",
+                                    detail: "\(network.resourceName(request.resource, on: pending.server)) on \(server). \(MultiplayerAccessRequestsPage.detail(request))",
+                                    waiting: answer == nil ? request.createdAt.map { max(0, now.timeIntervalSince($0)) } : nil)
+            item.decision = answer.map(decision)
+            return item
         }
         items += network.friendRequests.map { friend in
             let server = network.serverName(friend.server)
@@ -334,6 +355,15 @@ enum LiveShell {
             return item
         }
         return NeedsYouInbox(items: shown + decided.filter { !live.contains($0.id) })
+    }
+
+    /// The network's word on an answered request, as the inbox's outcome.
+    private static func decision(_ answer: MultiplayerAnswer) -> NeedsYouDecision {
+        switch answer {
+        case .approved: .approved
+        case .denied: .denied
+        case .declined, .withdrawn: .declined
+        }
     }
 
     private static func handle(_ raw: String) -> String { raw.isEmpty ? "A friend" : raw.multiplayerDisplay }

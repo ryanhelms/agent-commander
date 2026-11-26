@@ -321,6 +321,7 @@ struct TeamsConfirmWell: View {
         .background(theme.color.well.color, in: shape)
         .overlay { shape.strokeBorder(theme.color.attention.opacity(0.6).color, lineWidth: theme.line.hairline) }
         .multiplayerArriving()
+        .shellRevealed("teams-confirmation")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Confirm")
         .accessibilityIdentifier("teams-confirmation")
@@ -395,6 +396,14 @@ struct TeamsPageScaffold<Actions: View, Content: View>: View {
                         ShellAlertBand(kind: .failure, text: failure, dismiss: { pages.send(.dismissFailure) })
                     } else if let notice = state.notice {
                         ShellAlertBand(kind: .success, text: notice, dismiss: { pages.send(.dismissNotice) })
+                    }
+                    if case .workspace(let server)? = pages.selection.composer, let host = pages.host {
+                        // The network model's own form, at its full height because the page scrolls.
+                        NetworkInspector(title: "New workspace", serverID: server, serverName: state.serverName(server),
+                                         close: { pages.send(.closeComposer) }) {
+                            host(.workspace(server: server))
+                        }
+                        .frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
                     }
                     ShellPageBands { content }
                 }

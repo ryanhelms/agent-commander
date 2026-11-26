@@ -199,10 +199,13 @@ struct TeamsPagesContent {
     var work: [String: [TeamsMemberWork]] = [:]
     /// Workspaces whose merge queue is running now.
     var merging: Set<String> = []
-    /// A knowledge item's versions, by item key.
-    var versions: [String: [MultiplayerKnowledgeItem]] = [:]
-    /// By resource key.
-    var reputation: [String: MultiplayerReputation] = [:]
+    /// A knowledge item's versions, by item key, and a resource's reputation, by resource key.
+    /// Each is the window's own read: missing while it hasn't been asked for.
+    var versions: [String: MultiplayerLoad<[MultiplayerKnowledgeItem]>] = [:]
+    var reputation: [String: MultiplayerLoad<MultiplayerReputation>] = [:]
+    /// Why a board couldn't be read, by workspace key, and the boards being read for the first time.
+    var cardProblems: [String: String] = [:]
+    var readingCards: Set<String> = []
     /// The window's own reads: the last directory search and the last run on each host.
     var search: MultiplayerLoad<MultiplayerDirectorySearch>? = nil
     var hostRuns: [String: MultiplayerSentRequest] = [:]
@@ -516,6 +519,7 @@ enum TeamsComposer: Hashable {
     case queue(workspace: String)
     case group(server: String)
     case knowledge(server: String)
+    case workspace(server: String)
 
     var title: String {
         switch self {
@@ -524,8 +528,21 @@ enum TeamsComposer: Hashable {
         case .queue: "Add a branch"
         case .group: "New group"
         case .knowledge: "Share knowledge"
+        case .workspace: "New workspace"
         }
     }
+}
+
+/// A composer or a detail the network model hosts itself. Where the window is given hosts, a page
+/// shows the host in place of its own form.
+enum TeamsHosted: Hashable {
+    case workspace(server: String)
+    case claim(workspace: String)
+    case card(String, workspace: String)
+    case queue(workspace: String)
+    case knowledge(server: String)
+    case hostRun(resource: String)
+    case policy(server: String)
 }
 
 /// A knowledge item and where installing it writes.
@@ -668,6 +685,7 @@ enum TeamsIntent {
     case cancelConfirmation, confirm
 
     // Workspace
+    case newWorkspace(server: String)
     case showBand(TeamsBand, workspace: String)
     case openCard(String?, workspace: String)
     case newCard(workspace: String), sendCard
@@ -782,8 +800,9 @@ struct TeamsPageActions {
     var requestAccess: (@MainActor (_ resource: String, _ server: String) -> Void)? = nil
 
     // Admin
-    var setPolicy: @MainActor (MultiplayerRelayPolicy, _ server: String) async -> Result
-        = { _, server in unavailable("policy", server) }
+    /// Saves what differs from `saved`.
+    var setPolicy: @MainActor (MultiplayerPolicyDraft, _ saved: MultiplayerRelayPolicy, _ server: String) async -> Result
+        = { _, _, server in unavailable("policy", server) }
     var setSuspended: @MainActor (_ handle: String, _ server: String, _ suspended: Bool) async -> Result
         = { handle, server, _ in unavailable(handle, server) }
     var revokeDevice: @MainActor (_ device: String, _ server: String) async -> Result
@@ -824,15 +843,39 @@ final class TeamsPagesState {
         return shown
     }
 
-    func pages(_ content: TeamsPagesContent, through actions: TeamsPageActions, go: @escaping (String) -> Void) -> TeamsPages {
+    func pages(_ content: TeamsPagesContent, through actions: TeamsPageActions, go: @escaping (String) -> Void,
+               host: ((TeamsHosted) -> AnyView)? = nil) -> TeamsPages {
         let laid = shown(content)
         return TeamsPages(content: laid, selection: selection,
                           drafts: Binding(get: { [self] in drafts }, set: { [self] in drafts = $0 }),
-                          send: { [self] intent in send(intent, in: laid, through: actions, go: go) })
+                          send: { [self] intent in send(intent, in: laid, through: actions, go: go) }, host: host)
+    }
+
+    /// A host put itself away.
+    func hostCancelled(_ hosted: TeamsHosted) {
+        switch hosted {
+        case .card: selection.card = nil
+        case .hostRun: selection.host = nil
+        case .policy: break
+        case .workspace, .claim, .queue, .knowledge:
+            selection.composer = nil
+            refusal = nil
+        }
+    }
+
+    /// A host finished a change. A form that went through is put away and its confirmation shows
+    /// across the page; a refusal stays on the host, which shows it itself.
+    func hostFinished(_ hosted: TeamsHosted, _ result: NetworkActionResult) {
+        guard result.isDone else { return }
+        switch hosted {
+        case .workspace, .claim, .queue, .knowledge: selection.composer = nil
+        case .card, .hostRun, .policy: break
+        }
+        report(result)
     }
 
     /// Says how an action ended across the page.
-    private func report(_ result: NetworkActionResult) {
+    func report(_ result: NetworkActionResult) {
         if result.isDone {
             failure = nil
             if let message = result.message { notice = message }
@@ -884,6 +927,8 @@ final class TeamsPagesState {
             confirm(in: content, through: actions)
 
         // Workspace
+        case .newWorkspace(let server):
+            open(.workspace(server: server))
         case .showBand(let band, let workspace):
             selection.band[workspace] = band
             selection.composer = nil
@@ -1108,8 +1153,9 @@ final class TeamsPagesState {
         case .install(let draft):
             run(TeamsKey.result("install", TeamsKey.make(draft.item, on: draft.server))) { await actions.installKnowledge(draft) }
         case .setPolicy(let server):
-            guard let policy = drafts.policy.policy else { return }
-            run(TeamsKey.result("policy", server)) { await actions.setPolicy(policy, server) }
+            guard let saved = content.server(server)?.policy else { return }
+            let draft = drafts.policy
+            run(TeamsKey.result("policy", server)) { await actions.setPolicy(draft, saved, server) }
         case .suspend(let handle, let server):
             run(TeamsKey.result("member", TeamsKey.make(handle, on: server))) { await actions.setSuspended(handle, server, true) }
         case .revokeDevice(let device, let server):
@@ -1124,6 +1170,8 @@ struct TeamsPages {
     var selection = TeamsPagesSelection()
     var drafts: Binding<TeamsPagesDrafts> = .constant(TeamsPagesDrafts())
     var send: (TeamsIntent) -> Void = { _ in }
+    /// The network model's own hosts, in the live window. Nil in a preview, which draws its own forms.
+    var host: ((TeamsHosted) -> AnyView)? = nil
 
     /// A page's result for a key, and whether it still runs.
     func result(_ subject: String, _ key: String) -> NetworkActionResult? { content.results[TeamsKey.result(subject, key)] }

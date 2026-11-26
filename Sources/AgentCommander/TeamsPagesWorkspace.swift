@@ -39,14 +39,27 @@ struct TeamsBoardBand: View {
                     Button("New card…") { pages.send(.newCard(workspace: key)) }.buttonStyle(ThemeButtonStyle(compact: true))
                         .accessibilityIdentifier("teams-new-card")
                 }
-                TeamsBoardColumns(columns: MultiplayerCard.State.allCases.map { ($0, state.boardCards($0, in: key)) },
-                                  selected: openID,
-                                  open: { pages.send(.openCard($0.id, workspace: key)) },
-                                  claim: { pages.send(.claimCard($0, workspace: key)) })
+                if let problem = state.cardProblems[key] {
+                    ShellNote(text: problem, lamp: .error).themePanel()
+                } else if total == 0, state.readingCards.contains(key) {
+                    ShellNote(text: "Reading the board…", lamp: .waiting).themePanel()
+                } else {
+                    TeamsBoardColumns(columns: MultiplayerCard.State.allCases.map { ($0, state.boardCards($0, in: key)) },
+                                      selected: openID,
+                                      open: { pages.send(.openCard($0.id, workspace: key)) },
+                                      claim: { pages.send(.claimCard($0, workspace: key)) })
+                }
             }
         } inspector: {
             if pages.selection.composer == .card(workspace: key) {
                 cardForm
+            } else if let openID, let host = pages.host {
+                // The network model's own card host: it reads the card and changes it itself.
+                NetworkInspector(title: "Card", serverID: context.server.id, serverName: context.name,
+                                 close: { pages.send(.openCard(nil, workspace: key)) }) {
+                    host(.card(openID, workspace: key))
+                }
+                .id(openID)
             } else if let openID, let card = state.card(openID, in: key) {
                 cardInspector(card)
             } else {
@@ -269,7 +282,12 @@ struct TeamsIntegrationBand: View {
                 }
             }
         } inspector: {
-            if pages.selection.composer == .queue(workspace: key) {
+            if pages.selection.composer == .queue(workspace: key), let host = pages.host {
+                NetworkInspector(title: "Add a branch", serverID: context.server.id, serverName: context.name,
+                                 close: { pages.send(.closeComposer) }) {
+                    host(.queue(workspace: key))
+                }
+            } else if pages.selection.composer == .queue(workspace: key) {
                 NetworkInspector(title: "Add a branch", serverID: context.server.id, serverName: context.name,
                                  note: "It joins the end of the queue.", close: { pages.send(.closeComposer) }) {
                     TeamsFormBand(refusal: state.refusal) {
@@ -366,7 +384,12 @@ struct TeamsClaimsBand: View {
                 }
             }
         } inspector: {
-            if pages.selection.composer == .claim(workspace: key) {
+            if pages.selection.composer == .claim(workspace: key), let host = pages.host {
+                NetworkInspector(title: "Claim", serverID: context.server.id, serverName: context.name,
+                                 close: { pages.send(.closeComposer) }) {
+                    host(.claim(workspace: key))
+                }
+            } else if pages.selection.composer == .claim(workspace: key) {
                 NetworkInspector(title: "Claim", serverID: context.server.id, serverName: context.name,
                                  note: "Others see it at once.", close: { pages.send(.closeComposer) }) {
                     TeamsFormBand(refusal: state.refusal) {
@@ -397,6 +420,8 @@ struct TeamsWorkspacePage: View {
             let context = TeamsWorkspaceContext(key: key, server: found.server, workspace: found.workspace, pages: pages)
             let band = pages.selection.band(of: key)
             TeamsPageScaffold(place: place, pages: pages) {
+                newWorkspace
+            } content: {
                 VStack(alignment: .leading, spacing: Space.m) {
                     TeamsFacts(facts: facts(context))
                     TeamsBandTabs(cells: cells(context), selection: band, choose: { pages.send(.showBand($0, workspace: key)) })
@@ -410,10 +435,20 @@ struct TeamsWorkspacePage: View {
             }
         } else {
             TeamsPageScaffold(place: place, pages: pages) {
+                newWorkspace
+            } content: {
                 ShellLoadNote(text: place == TeamsPlace.workspaces
                               ? "You work in no workspace yet. A workspace is a goal, a repository and a group; its owner adds your group to it."
                               : "This workspace is gone, or you are no longer in its group.")
             }
+        }
+    }
+
+    /// Starts a workspace. Offered where the network model hosts the form.
+    @ViewBuilder private var newWorkspace: some View {
+        if pages.host != nil, let server = TeamsPlace.workspaceKey(of: place).flatMap(TeamsKey.split)?.server ?? pages.content.servers.first?.id {
+            Button("New workspace…") { pages.send(.newWorkspace(server: server)) }.buttonStyle(ThemeButtonStyle())
+                .accessibilityIdentifier("teams-new-workspace")
         }
     }
 
