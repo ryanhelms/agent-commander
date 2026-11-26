@@ -5,7 +5,12 @@ import Observation
 final class CockpitModel {
     enum Connection: Equatable { case connecting, online, offline(String) }
 
-    private let api = ServiceClient()
+    /// Every request goes to the service the hosts model selected: this Mac's, or a headless host's.
+    private let api: ServiceClient
+    /// The headless hosts, the connection to the chosen one and the choice itself.
+    let hosts: CommanderHostsModel
+    /// Counts each change of service. The window restarts its subscriptions when it changes.
+    private(set) var serviceGeneration = 0
     var runs: [Run] = []
     var selectedID = UserDefaults.standard.string(forKey: "selectedRun")
     var connection: Connection = .connecting
@@ -30,8 +35,10 @@ final class CockpitModel {
     /// The structured requests of the one worker whose panel is open, and the owner's replies.
     let elicitations: ElicitationModel
 
-    init() {
-        let reader = ServiceClient()
+    init(endpoint: ServiceEndpoint = .live) {
+        api = ServiceClient(endpoint: endpoint)
+        hosts = .live(endpoint: endpoint)
+        let reader = ServiceClient(endpoint: endpoint)
         attachments = .live(reader: reader)
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
@@ -39,6 +46,49 @@ final class CockpitModel {
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
+        hosts.serviceChanged = { [weak self] in self?.serviceChanged() }
+        hosts.serviceInterrupted = { [weak self] in self?.serviceInterrupted(host: $0) }
+        hosts.serviceResumed = { [weak self] in self?.serviceResumed() }
+    }
+
+    /// The SSH connection to the host in use dropped. The service is offline until it answers
+    /// again; the runs stay as they were last sent.
+    func serviceInterrupted(host: String) {
+        connection = .offline(Self.interrupted(host))
+    }
+
+    static func interrupted(_ host: String) -> String { "The connection to \(host) dropped. Reconnecting." }
+
+    /// The service can't be reached. While the SSH connection to the host in use is down, that is
+    /// the reason shown, whatever the request or the feed said.
+    private func lose(_ reason: String) {
+        if case .disconnected = hosts.link, let host = hosts.inUse {
+            connection = .offline(Self.interrupted(host))
+        } else {
+            connection = .offline(reason)
+        }
+    }
+
+    /// The host in use answers again on the same socket. Both subscriptions start again at once
+    /// (`serviceGeneration`) instead of waiting out their retry pauses, and the first answer shows.
+    func serviceResumed() {
+        serviceGeneration += 1
+        connection = .connecting
+        receivedStreamState = false
+    }
+
+    /// The selected service changed. What the last one sent is dropped, and the window's
+    /// subscriptions start again on the new socket (`serviceGeneration`).
+    private func serviceChanged() {
+        serviceGeneration += 1
+        runs = []
+        connection = .connecting
+        notice = nil
+        receivedStreamState = false
+        usingLegacyService = false
+        sending = []
+        replyAttempts = [:]
+        followUpAttempts = [:]
     }
 
     var selected: Run? { runs.first { $0.id == selectedID } }
@@ -63,8 +113,9 @@ final class CockpitModel {
         await refresh(allowStart: true)
         while !Task.isCancelled {
             do {
+                let generation = serviceGeneration
                 for try await latest in await api.watchRuns() {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, generation == serviceGeneration else { return }
                     receivedStreamState = true
                     usingLegacyService = false
                     apply(latest)
@@ -74,7 +125,7 @@ final class CockpitModel {
                 await refresh()
             } catch {
                 guard !Task.isCancelled else { return }
-                connection = .offline(error.localizedDescription)
+                lose(error.localizedDescription)
             }
             do {
                 try await Task.sleep(for: usingLegacyService ? .seconds(2) : .seconds(1))
@@ -91,6 +142,7 @@ final class CockpitModel {
     }
 
     func refresh(allowStart: Bool = false) async {
+        let generation = serviceGeneration
         do {
             let latest: [Run]
             do {
@@ -99,11 +151,14 @@ final class CockpitModel {
                 try await api.startService()
                 latest = try await api.runs()
             }
+            // An answer from the service the window just left is not shown.
+            guard generation == serviceGeneration else { return }
             if !receivedStreamState || usingLegacyService {
                 apply(latest)
             }
         } catch {
-            connection = .offline(error.localizedDescription)
+            guard generation == serviceGeneration else { return }
+            lose(error.localizedDescription)
         }
     }
 

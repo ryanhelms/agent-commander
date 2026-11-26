@@ -65,6 +65,9 @@ struct ShellCount: View {
     var isHot = false
     /// The small form sits on the corner of a mode cell.
     var compact = false
+    /// A figure that is a name (the host in use) gives way when the row is narrow: it is cut in
+    /// the middle. A count never is.
+    var truncates = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: theme.radius.chip, style: .continuous)
@@ -74,10 +77,11 @@ struct ShellCount: View {
             .monospacedDigit()
             .foregroundStyle(.theme(isHot ? \.surface.highlightInk : \.color.foreground))
             .lineLimit(1)
+            .truncationMode(.middle)
             .padding(.horizontal, compact ? 3 : Space.xs + 1)
             .frame(minWidth: height, minHeight: height)
             .background((isHot ? theme.surface.highlightFill : theme.color.hair).color, in: shape)
-            .fixedSize()
+            .fixedSize(horizontal: !truncates, vertical: true)
             .accessibilityHidden(true)
     }
 }
@@ -226,9 +230,13 @@ struct ShellPlaceRow: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: Space.xs)
+                    // The title is laid out before the spacer and the figure, so a short title
+                    // stays on one line and a named figure is the part that gives way.
+                    .layoutPriority(1)
+                // The spacer takes only what the figure leaves.
+                Spacer(minLength: Space.xs).layoutPriority(-1)
                 if let badge = item.place.badge {
-                    ShellCount(text: badge, isHot: item.place.isHot)
+                    ShellCount(text: badge, isHot: item.place.isHot, truncates: item.place.figureIsName)
                 }
             }
             .padding(.horizontal, Space.s + 1)
@@ -239,7 +247,9 @@ struct ShellPlaceRow: View {
         .disabled(item.place.isDisabled)
         .opacity(item.place.isDisabled ? 0.45 : 1)
         .shellShortcut(item.shortcut)
-        .help(item.shortcut.map { "\(item.place.title) (⌘\($0))" } ?? item.place.title)
+        // A named figure can be cut in a narrow column, so the tooltip says it in full.
+        .help(item.shortcut.map { "\(item.place.title) (⌘\($0))" }
+            ?? (item.place.figureIsName ? "\(item.place.title): \(item.place.figure ?? "")" : item.place.title))
         .accessibilityLabel(item.place.spoken)
         .accessibilityValue(item.isSelected ? "Selected" : "")
         .accessibilityAddTraits(item.isSelected ? .isSelected : [])

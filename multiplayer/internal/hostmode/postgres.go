@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,8 @@ import (
 
 const homebrewPostgres = "/opt/homebrew/opt/postgresql@17/bin"
 
+// postgresBin finds the PostgreSQL server binaries: COMMANDER_PG_BIN, the
+// app bundle, then the platform's package locations and PATH.
 func postgresBin() string {
 	if bin := os.Getenv("COMMANDER_PG_BIN"); bin != "" {
 		return bin
@@ -27,7 +31,53 @@ func postgresBin() string {
 			return bin
 		}
 	}
-	return homebrewPostgres
+	if runtime.GOOS == "darwin" {
+		return homebrewPostgres
+	}
+	for _, bin := range packagedPostgres() {
+		if serverBinaries(bin) {
+			return bin
+		}
+	}
+	if initdb, err := exec.LookPath("initdb"); err == nil && serverBinaries(filepath.Dir(initdb)) {
+		return filepath.Dir(initdb)
+	}
+	return "/usr/lib/postgresql/17/bin"
+}
+
+func serverBinaries(bin string) bool {
+	for _, name := range []string{"postgres", "initdb"} {
+		if info, err := os.Stat(filepath.Join(bin, name)); err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// packagedPostgres lists Debian, Ubuntu and RHEL server directories, newest
+// major version first.
+func packagedPostgres() []string {
+	type candidate struct {
+		dir     string
+		version int
+	}
+	var found []candidate
+	for _, pattern := range []string{"/usr/lib/postgresql/*/bin", "/usr/pgsql-*/bin"} {
+		matches, _ := filepath.Glob(pattern)
+		for _, dir := range matches {
+			name := filepath.Base(filepath.Dir(dir))
+			version, err := strconv.Atoi(strings.TrimPrefix(name, "pgsql-"))
+			if err == nil {
+				found = append(found, candidate{dir, version})
+			}
+		}
+	}
+	slices.SortStableFunc(found, func(a, b candidate) int { return b.version - a.version })
+	dirs := make([]string, len(found))
+	for i, c := range found {
+		dirs[i] = c.dir
+	}
+	return dirs
 }
 
 func initCluster(ctx context.Context, bin, dataDir string, settings []string) error {
@@ -42,12 +92,32 @@ func initCluster(ctx context.Context, bin, dataDir string, settings []string) er
 	defer os.RemoveAll(stage)
 	cmd := exec.CommandContext(ctx, filepath.Join(bin, "initdb"), "-D", stage, "-U", "commander",
 		"--auth-local=trust", "--auth-host=reject", "--encoding=UTF8", "--no-locale")
-	cmd.Args = append(cmd.Args, settings...)
 	cmd.Env = postgresEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize host PostgreSQL: %w\n%s", err, output)
 	}
+	// initdb accepts -c only from PostgreSQL 16, so persist the settings in the
+	// cluster's configuration file, which every supported version reads.
+	conf, err := os.OpenFile(filepath.Join(stage, "postgresql.conf"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	_, err = conf.WriteString(configLines(settings))
+	if err = errors.Join(err, conf.Close()); err != nil {
+		return err
+	}
 	return os.Rename(stage, dataDir)
+}
+
+// configLines turns "-c name=value" arguments into postgresql.conf lines.
+func configLines(settings []string) string {
+	var lines strings.Builder
+	lines.WriteString("\n# Agent Commander host relay\n")
+	for i := 1; i < len(settings); i += 2 {
+		name, value, _ := strings.Cut(settings[i], "=")
+		lines.WriteString(name + " = '" + strings.ReplaceAll(value, "'", "''") + "'\n")
+	}
+	return lines.String()
 }
 
 // Postgres owns the host's postmaster and its private Unix-socket connection pool.
@@ -95,6 +165,9 @@ func StartPostgres(ctx context.Context, dir string) (*Postgres, error) {
 		return nil, err
 	}
 	bin := postgresBin()
+	if !serverBinaries(bin) {
+		return nil, fmt.Errorf("PostgreSQL server binaries not found in %s; install PostgreSQL 15 or newer, or set COMMANDER_PG_BIN to its bin directory", bin)
+	}
 	dataDir := filepath.Join(dir, "postgres")
 	socketDir := filepath.Join(dir, "run")
 	if err := os.MkdirAll(socketDir, 0700); err != nil {
@@ -151,11 +224,16 @@ func StartPostgres(ctx context.Context, dir string) (*Postgres, error) {
 
 // postgresEnv sets a valid locale. On macOS the postmaster refuses to start
 // ("postmaster became multithreaded during startup") without LC_ALL, which a
-// launchd agent does not provide.
+// launchd agent does not provide. Minimal Linux hosts and images often lack
+// en_US, but glibc and musl both provide C.UTF-8.
 func postgresEnv() []string {
 	env := os.Environ()
 	if os.Getenv("LC_ALL") == "" {
-		env = append(env, "LC_ALL=en_US.UTF-8")
+		locale := "C.UTF-8"
+		if runtime.GOOS == "darwin" {
+			locale = "en_US.UTF-8"
+		}
+		env = append(env, "LC_ALL="+locale)
 	}
 	return env
 }

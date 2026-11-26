@@ -151,10 +151,10 @@ struct MultiplayerServerList: View {
                     if server.state == .certChanged {
                         MultiplayerCertificateNotice(serverName: server.displayName) { onOpen(server.id) }
                             .padding(.bottom, Space.xs)
-                    } else if server.state == .error, !server.error.isEmpty {
-                        Text(MultiplayerModel.problemText(server.error))
+                    } else if let problem = server.shownProblem {
+                        Text(server.isReconnecting ? MultiplayerModel.reconnectText(problem) : MultiplayerModel.problemText(problem))
                             .font(MultiplayerTheme.sub)
-                            .foregroundStyle(MultiplayerTheme.failure)
+                            .foregroundStyle(server.state == .error ? MultiplayerTheme.failure : MultiplayerTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.leading, 28)
                             .padding(.bottom, Space.xs)
@@ -348,6 +348,12 @@ struct MultiplayerAddServerForm: View {
     var existing: MultiplayerServerSummary? = nil
     let onProbe: () -> Void
     var onOpenExisting: () -> Void = {}
+    /// The tailnet this Mac is on, when the form offers its relays. Nil for a form with none.
+    var tailnet: MultiplayerTailnetModel? = nil
+    /// The join form's values: the tray's own, or a host's.
+    var tailnetDraft: Binding<MultiplayerTailnetDraft>? = nil
+    var canChooseRelay = false
+    var onChooseRelay: (MultiplayerTailnetRelay) -> Void = { _ in }
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -374,6 +380,17 @@ struct MultiplayerAddServerForm: View {
                     }
                 }
             }
+        }
+        // An invite names its server, so the tailnet's relays are offered only without one.
+        if invite == nil, let tailnet, let tailnetDraft {
+            MultiplayerTailnetBand(phase: tailnet.phase, draft: tailnetDraft, address: draft.address,
+                                   isJoining: tailnet.isJoining, isReading: tailnet.isReading,
+                                   joinFailure: tailnet.joinFailure, canChoose: canChooseRelay,
+                                   onChoose: onChooseRelay,
+                                   onJoin: { tailnet.join(tailnetDraft.wrappedValue) },
+                                   onRefresh: { tailnet.refresh() })
+                .onAppear { tailnet.formAppeared() }
+                .onDisappear { tailnet.formDisappeared() }
         }
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.xs) {
@@ -925,7 +942,10 @@ private struct MultiplayerPanelContent: View {
                                      invite: model.activeInvite, inviteProblem: model.invitePinProblem,
                                      existing: model.existingServer,
                                      onProbe: { model.runProbe() },
-                                     onOpenExisting: { model.existingServer.map { model.openServer($0.id) } })
+                                     onOpenExisting: { model.existingServer.map { model.openServer($0.id) } },
+                                     tailnet: model.tailnet, tailnetDraft: Bindable(model.tailnet).draft,
+                                     canChooseRelay: model.canChooseRelay,
+                                     onChooseRelay: { model.chooseRelay($0) })
         case .hosting:
             MultiplayerHostingPage(host: model.host.summary, setup: Bindable(model.host).setupDraft,
                                    savedServer: model.hostedServer?.displayName,

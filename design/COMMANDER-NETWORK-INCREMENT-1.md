@@ -77,9 +77,12 @@ The relay answers `GET /v1/info` without a client certificate: `{"version": "...
 - **Broker:** NATS JetStream embedded in the process, with no network listener.
 - **TLS:** on first run it creates a private CA and a certificate for the host names and IP addresses it serves, such as the MagicDNS name and the tailnet IP. Clients pin it on first use.
 - **Config:** `<host>/host.json` holds the name, listen address (default `:443`), host names, issuer, client ID, allowed emails and admins. The first admin is the person who creates it.
-- **Paths:** `<host>` defaults to `~/Library/Application Support/Agent Commander/relay`.
+- **Paths:** `<host>` defaults to `~/Library/Application Support/Agent Commander/relay`. On Linux it defaults to `/var/lib/agent-commander/relay` for root and `~/.local/share/agent-commander/relay` otherwise.
 - **launchd:** `commander-relay host install` writes and loads `~/Library/LaunchAgents/local.agentcommander.relay.plist`; `commander-relay host uninstall` removes it.
 - **Tray:** `commander-relay host --json status|setup|install|uninstall` prints one line for the app: `{"ok": true, "host": {"state": "unconfigured|stopped|starting|running", "installed": bool, "name", "url", "pin", "dir", "log"}}`, or `{"ok": false, "error": "..."}` with a non-zero exit. `starting` means the launch agent is installed and the relay doesn't hold its lock yet. While `unconfigured`, `host.setup` suggests a first setup: the Mac's name, its addresses (Tailscale name first, then the `.local` name and tailnet IPs), Google as the issuer, and the client ID from the network helper's `google-desktop-client.json` when there is one. `setup` reads `{"admin", "name"?, "hostnames"?, "issuer"?, "clientId"?}` on stdin, writes `host.json` with those suggestions for empty fields and listen `:443`, then installs as `install` does. The tray's Hosting page and the main window's host menu run it to start, stop and read the relay.
+- **systemd:** on Linux, `host install` as root writes `/etc/systemd/system/agent-commander-relay.service`, which runs as the account that owns `<host>`; as another user it writes a user unit. PostgreSQL comes from `COMMANDER_PG_BIN`, the distribution's server directories or `PATH`.
+- **Remote hosts:** [the remote deployment guide](../multiplayer/deploy/remote/README.md) deploys host mode over SSH as one Docker container or one systemd service.
+- **Status:** `host status` prints the server pin that the tray shows when a person adds the relay.
 
 ## Tray (frontend)
 

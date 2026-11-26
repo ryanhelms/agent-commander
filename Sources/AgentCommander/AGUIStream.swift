@@ -349,15 +349,18 @@ enum AGUIStream {
         try await withTaskCancellationHandler {
             var parser = AGUIEventStreamParser()
             var reducer = AGUIWorkspaceReducer()
-            for try await byte in pipe.fileHandleForReading.bytes {
-                guard let output = try parser.consume(byte) else { continue }
-                try Task.checkCancellation()
-                switch output {
-                case .status(404): throw AGUIStreamError.unsupported
-                case .status: break
-                case .event(let frame):
-                    if let change = try reducer.apply(frame: frame) {
-                        yield(reducer.runs, change == .delta)
+            // Its own reader, so a quiet feed never holds up another (`FileHandle.ownChunks`).
+            for await chunk in pipe.fileHandleForReading.ownChunks {
+                for byte in chunk {
+                    guard let output = try parser.consume(byte) else { continue }
+                    try Task.checkCancellation()
+                    switch output {
+                    case .status(404): throw AGUIStreamError.unsupported
+                    case .status: break
+                    case .event(let frame):
+                        if let change = try reducer.apply(frame: frame) {
+                            yield(reducer.runs, change == .delta)
+                        }
                     }
                 }
             }

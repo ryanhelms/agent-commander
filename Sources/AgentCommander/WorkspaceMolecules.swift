@@ -329,6 +329,9 @@ struct FactColumn: View {
     let label: String
     let value: String
     var monospaced = false
+    /// A column for a short value (a number) is as wide as its content and leaves the room to
+    /// the columns beside it.
+    var hugs = false
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -339,7 +342,10 @@ struct FactColumn: View {
                 .foregroundStyle(.theme(\.color.foreground)).lineLimit(1).truncationMode(.middle)
                 .textSelection(.enabled)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: hugs, vertical: false)
+        .frame(maxWidth: hugs ? nil : .infinity, alignment: .leading)
+        // A value cut in a narrow window is still readable in full.
+        .help(value)
         .accessibilityElement(children: .combine)
     }
 }

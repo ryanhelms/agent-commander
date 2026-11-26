@@ -263,6 +263,8 @@ final class MultiplayerModel {
     let remote: MultiplayerRemoteModel
     /// Hosting: this Mac's own relay under launchd (MultiplayerHosting.swift).
     let host: MultiplayerHostModel
+    /// The tailnet this Mac is on and its relays, for the Add server form.
+    let tailnet: MultiplayerTailnetModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -286,7 +288,8 @@ final class MultiplayerModel {
          answeredHold: Duration = .zero,
          now: @escaping () -> Date = { Date() },
          holdTimer: MultiplayerHoldTimer = .clock,
-         relay: (any MultiplayerRelayControl)? = nil) {
+         relay: (any MultiplayerRelayControl)? = nil,
+         tailnetPoll: Duration = .seconds(2)) {
         self.client = client
         self.host = MultiplayerHostModel(control: relay)
         self.notifier = notifier
@@ -298,6 +301,7 @@ final class MultiplayerModel {
         self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
                                            answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
+        self.tailnet = MultiplayerTailnetModel(client: client, pollInterval: tailnetPoll)
         self.share.tray = self
         self.remote.tray = self
     }
@@ -362,6 +366,17 @@ final class MultiplayerModel {
     /// A server's own problem text, made safe to draw.
     nonisolated static func problemText(_ raw: String) -> String {
         MultiplayerSessionModel.serviceText(raw) ?? "This server reported a problem. Refresh to check again."
+    }
+
+    /// Why a reconnecting server has no session yet. A timeout or refused connection reads as the
+    /// relay not answering; anything else is the service's own text when it is safe to show.
+    nonisolated static func reconnectText(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        let unreachable = ["timeout", "deadline exceeded", "connection refused", "no such host", "network is unreachable", "eof"]
+        if unreachable.contains(where: lower.contains) {
+            return "The relay isn’t answering. Agent Commander keeps trying."
+        }
+        return MultiplayerSessionModel.serviceText(raw) ?? "The last attempt failed. Agent Commander keeps trying."
     }
 
     var menuSymbol: String {
@@ -709,6 +724,20 @@ final class MultiplayerModel {
         return startProbe(serverDraft.trimmedAddress)
     }
 
+    /// Whether a relay listed on the tailnet can be checked now.
+    var canChooseRelay: Bool { client != nil && !isBusy && route == .addServer }
+
+    /// A relay chosen from the tailnet list: its address goes in the field and the same check runs
+    /// as for a typed one. Nothing is pinned or saved here.
+    @discardableResult
+    func chooseRelay(_ relay: MultiplayerTailnetRelay) -> Task<Void, Never>? {
+        guard canChooseRelay, !relay.added,
+              MultiplayerServerAddress.problem(relay.url.trimmingCharacters(in: .whitespacesAndNewlines)) == nil else { return nil }
+        serverDraft.address = relay.url
+        serverDraft.pinConfirmed = false
+        return startProbe(serverDraft.trimmedAddress)
+    }
+
     /// Checks a blocked server again, to read the certificate it presents now.
     @discardableResult
     func checkCertificate(_ server: MultiplayerServerSummary) -> Task<Void, Never>? {
@@ -877,9 +906,14 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = tailnet.joinTask ?? tailnet.readTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, share.live.quietTask == nil,
+               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, tailnet.joinTask == nil, tailnet.readTask == nil,
+               share.live.quietTask == nil,
                share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
                share.teams.pullRequestTask == nil { return }
         }

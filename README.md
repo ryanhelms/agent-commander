@@ -26,7 +26,25 @@ make run
 
 **Agent Commander → Settings… → Allow only one instance** is on by default for each macOS user. Launching another copy brings the existing cockpit forward. To open a separate copy deliberately, turn the setting off and use `open -n "dist/Agent Commander.app"`. macOS remembers the preference between launches.
 
-To install source changes, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+### Reload after a change
+
+Two commands rebuild the app and reopen it, like hot reload for a web app.
+
+| Command | What it does |
+| --- | --- |
+| `make reload` | Builds once, quits the running app, then opens the new build. Add `SERVICE=1` to restart the local service (`agentctl serve`) too, and `RELAY=1` to restart the host-mode relay. |
+| `make dev` | Watches the Swift and Go sources and runs a reload after every change, until you press Ctrl-C. A change to the service code (`cmd/`, `internal/`, `harness/`) also restarts the service, and a change under `multiplayer/` also restarts the relay. |
+
+- **A failed build leaves your app alone.** The build runs before the app quits. If it fails, the previous build keeps running and a notification says so.
+- **Running work is kept.** Quitting the app doesn't stop running assignments.
+- **The service outlives the app.** A plain reload keeps the running `agentctl serve`, so Go service changes need `SERVICE=1`. Restarting the service keeps tmux workers running, but can interrupt work the service hosts itself, such as an ACP session.
+- **The relay restarts only if it is installed.** That means you ran `commander-relay host install` on this Mac.
+- **Output is saved.** Each reload adds its build output to `dist/dev-reload.log`.
+- **Install `fswatch` for faster reloads.** `make dev` reacts at once with `brew install fswatch`. Without it, it checks for changes every second.
+
+You can also restart the running app yourself: **Agent Commander → Restart Agent Commander**, just above Quit.
+
+To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
 
 With `gh` authenticated to the private repository, fetch the exact Go modules required by `go.mod` and build a release configuration without sibling checkouts.
 
@@ -93,6 +111,31 @@ export AGENT_COMMANDER_SSH_AGENTCTL=/absolute/remote/bin/agentctl
 ```
 
 Start a run in the configured local checkout and ask the coordinator to delegate one worker locally and one to `dev-linux`. The optional `host` field is available on `commander_delegate` and the worker creation API. The wall shows the SSH alias and remote checkout for the remote worker. Its conversation runs on the SSH host while its controlling tmux pane runs on this Mac. A disconnected SSH-only runtime may require a new assignment. [SSH verification](design/verification/ssh-worker.md)
+
+## Run Commander headless on a Linux server
+
+The headless service is the Commander service with no app, running on a Linux server under a systemd user unit. Deploy any release from this Mac over SSH:
+
+```sh
+agentctl host releases
+agentctl host deploy ops@server --version v0.2.0-pilot.4 --sudo-linger
+```
+
+`deploy` downloads the release for the server's architecture, checks it against `SHA256SUMS` and, when GitHub published one, its build attestation. It streams the archive over SSH and refuses a release whose API version differs from this Commander unless you pass `--force`. Then the server installs it and waits for it to report healthy. A new version that does not start rolls back to the previous one. Use `--version` to pick a release, or leave it out for the newest. `--sudo-linger` keeps the service running after you log out. `--install-prerequisites` installs git, tmux and curl with the server's package manager.
+
+```sh
+agentctl host status ops@server
+agentctl host rollback ops@server
+agentctl host remove ops@server
+```
+
+To install on the server itself, run the one-liner there. It needs `gh` signed in with access to this repository:
+
+```sh
+gh release download v0.2.0-pilot.4 -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- v0.2.0-pilot.4
+```
+
+The service also needs Node 24 or newer, Claude Code, the Claude ACP adapter and a Claude sign-in on the server. `agentctl host doctor` on the server lists what is missing. [Headless Commander](design/HEADLESS-COMMANDER.md)
 
 ## Try a planning run
 

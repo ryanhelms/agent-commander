@@ -125,8 +125,10 @@ struct NativeTerminalLaunch: Equatable, Sendable {
 
     /// The app's environment for the service socket settings, without a parent tmux, with a
     /// terminal type SwiftTerm renders and a UTF-8 locale so tmux draws box characters.
-    static func environment(from base: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        var values = base
+    /// With a headless host selected, the socket is that host's forwarded one.
+    static func environment(from base: [String: String] = ProcessInfo.processInfo.environment,
+                            endpoint: ServiceEndpoint = .live) -> [String] {
+        var values = endpoint.agentctlEnvironment(from: base)
         // The app accepts AC_SOCKET as an alias (ServiceClient); agentctl reads only the full name.
         // Hand agentctl the socket the app itself uses.
         if values["AGENT_COMMANDER_SOCKET"] == nil, let alias = values["AC_SOCKET"] {

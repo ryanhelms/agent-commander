@@ -3,7 +3,11 @@
 !go.sum
 !cmd/
 !cmd/commander-relay/
-!cmd/commander-relay/main.go
+!cmd/commander-relay/*.go
+cmd/commander-relay/*_test.go
+!hostkit/
+!hostkit/**
+hostkit/**/*_test.go
 !internal/
 !internal/**
 !vendor/

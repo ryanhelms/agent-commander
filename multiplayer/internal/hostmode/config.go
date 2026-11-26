@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -26,12 +27,24 @@ type Config struct {
 	Admins        []string `json:"admins"`
 }
 
+// DefaultDir is the host state directory: Application Support on macOS,
+// /var/lib for root on Linux and the XDG data directory otherwise.
 func DefaultDir() (string, error) {
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		return "/var/lib/agent-commander/relay", nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "Application Support", "Agent Commander", "relay"), nil
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Agent Commander", "relay"), nil
+	}
+	data := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(data) {
+		data = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(data, "agent-commander", "relay"), nil
 }
 
 var dnsLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
@@ -141,6 +154,32 @@ func InitConfig(dir string, cfg Config) error {
 	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), false)
 }
 
+// UpdateConfig adds certificate hostnames and, when listen is set, replaces the
+// listen address of an existing configuration. The relay reissues its leaf
+// certificate with the same key on the next start, so clients keep their pin.
+func UpdateConfig(dir string, hostnames []string, listen string) error {
+	cfg, err := ReadConfig(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range hostnames {
+		if !slices.ContainsFunc(cfg.Hostnames, func(have string) bool { return strings.EqualFold(have, name) }) {
+			cfg.Hostnames = append(cfg.Hostnames, name)
+		}
+	}
+	if listen != "" {
+		cfg.Listen = listen
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), true)
+}
+
 // Stage private files on the same volume so readers always see a complete record.
 func publishFile(path string, data []byte, replace bool) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".relay-*")
@@ -156,4 +195,34 @@ func publishFile(path string, data []byte, replace bool) error {
 		return os.Rename(file.Name(), path)
 	}
 	return os.Link(file.Name(), path)
+}
+
+// Locations of a relay provisioned as a Linux system service.
+const (
+	LinuxServiceAccount = "agent-commander"
+	LinuxServiceBase    = "/var/lib/agent-commander"
+	LinuxServiceDir     = LinuxServiceBase + "/relay"
+	LinuxServiceBinary  = "/usr/local/bin/commander-relay"
+)
+
+// InitFlags returns the `host init` flags that recreate cfg.
+func (c Config) InitFlags() []string {
+	var flags []string
+	if c.Name != "" {
+		flags = append(flags, "--name", c.Name)
+	}
+	if c.Listen != "" {
+		flags = append(flags, "--listen", c.Listen)
+	}
+	flags = append(flags, "--issuer", c.Issuer, "--client-id", c.ClientID)
+	for _, h := range c.Hostnames {
+		flags = append(flags, "--hostname", h)
+	}
+	for _, a := range c.Admins {
+		flags = append(flags, "--admin", a)
+	}
+	for _, e := range c.AllowedEmails {
+		flags = append(flags, "--allow-email", e)
+	}
+	return flags
 }

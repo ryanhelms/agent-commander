@@ -617,7 +617,7 @@ struct MultiplayerServerRow: View {
                     .disabled(isBusy)
                     .accessibilityLabel("Sign in to \(server.displayName)")
             } else {
-                MultiplayerStateLabel(lamp: server.state.lamp, text: server.stateTitle(now: now), tone: server.state.tone,
+                MultiplayerStateLabel(lamp: server.shownState.lamp, text: server.stateTitle(now: now), tone: server.shownState.tone,
                                       pulses: true)
             }
         }

@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	agentcommander.network/hostkit v0.0.0
 	github.com/antithesishq/antithesis-sdk-go v0.9.0-default-no-op // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -28,3 +29,5 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 )
+
+replace agentcommander.network/hostkit => ./hostkit

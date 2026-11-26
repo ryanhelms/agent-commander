@@ -1,0 +1,4 @@
+{
+  "tagOwners": {"tag:relay": ["rehearsal@"]},
+  "acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]
+}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"agentcommander/internal/buildinfo"
 	"agentcommander/internal/hosted"
 	"agentcommander/internal/toolregistry"
 	"agentcommander/internal/worktrees"
@@ -153,7 +154,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("POST /v1/workers/{worker}/elicitations/complete", s.handleJSONLimit(s.completeElicitation, 1024))
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "api": buildinfo.APIVersion, "version": buildinfo.Current()})
 	})
 	for pattern, op := range map[string]endpoint{
 		"GET /v1/runs": s.listRuns, "POST /v1/runs": s.createRun,

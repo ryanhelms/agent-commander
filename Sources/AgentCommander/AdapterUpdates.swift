@@ -138,12 +138,15 @@ enum AdapterUpdateStream {
         _ = try? pipe.fileHandleForWriting.close()
         try await withTaskCancellationHandler {
             var reader = Reader()
-            for try await byte in pipe.fileHandleForReading.bytes {
-                guard let output = try reader.consume(byte) else { continue }
-                try Task.checkCancellation()
-                switch output {
-                case .unsupported: throw Failure.unsupported
-                case .updates(let updates): yield(updates)
+            // Its own reader, so a quiet feed never holds up another (`FileHandle.ownChunks`).
+            for await chunk in pipe.fileHandleForReading.ownChunks {
+                for byte in chunk {
+                    guard let output = try reader.consume(byte) else { continue }
+                    try Task.checkCancellation()
+                    switch output {
+                    case .unsupported: throw Failure.unsupported
+                    case .updates(let updates): yield(updates)
+                    }
                 }
             }
             try Task.checkCancellation()
