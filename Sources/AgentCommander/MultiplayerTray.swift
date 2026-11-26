@@ -1080,7 +1080,8 @@ struct MultiplayerPanel: View {
         case .workspace(let workspaceID):
             if let workspace = teams.workspace(workspaceID, on: id) {
                 MultiplayerWorkspacePage(workspace: workspace, group: teams.group(workspace.group, on: id), handle: me,
-                                         cards: teams.cards, queue: teams.queue(for: workspaceID), cardDraft: $teams.cardDraft,
+                                         cards: teams.cards, queue: teams.queue(for: workspaceID), pullRequests: teams.pullRequests,
+                                         cardDraft: $teams.cardDraft,
                                          canAddCard: teams.canAddCard, now: now, isBusy: model.isBusy,
                                          confirming: teams.confirming,
                                          onClaim: { teams.startClaim(in: workspaceID, on: id) },
@@ -1094,7 +1095,8 @@ struct MultiplayerPanel: View {
                                          onClaimCard: { teams.move($0, in: workspaceID, on: id, to: .claimed) },
                                          onQueueAdd: { teams.startQueueAdd(for: workspaceID, on: id) },
                                          onRunQueue: { teams.runQueue(workspaceID, on: id) },
-                                         onRetryCards: { share.reloadPage() })
+                                         onRetryCards: { share.reloadPage() },
+                                         onRetryPullRequests: { share.reloadPage() })
             } else { gone("workspace") }
         case .claim(let workspaceID):
             if let workspace = teams.workspace(workspaceID, on: id) {

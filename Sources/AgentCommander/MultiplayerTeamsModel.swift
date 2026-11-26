@@ -41,6 +41,8 @@ final class MultiplayerTeamsModel {
     private(set) var queue: [MultiplayerQueueEntry] = []
 
     private(set) var cards: MultiplayerLoad<[MultiplayerCard]> = .loading
+    /// The open pull requests of the workspace page now open, when it lands work by pull request.
+    private(set) var pullRequests: MultiplayerLoad<MultiplayerPullRequestList> = .loading
     private(set) var versions: MultiplayerLoad<[MultiplayerKnowledgeItem]> = .loading
     private(set) var reputation: MultiplayerLoad<MultiplayerReputation> = .loading
     private(set) var search: MultiplayerLoad<MultiplayerDirectorySearch> = .loaded(MultiplayerDirectorySearch())
@@ -70,6 +72,9 @@ final class MultiplayerTeamsModel {
     @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
+    /// The workspace page reads its pull requests beside its board, so that read has its own task.
+    @ObservationIgnored private(set) var pullRequestTask: Task<Void, Never>?
+    @ObservationIgnored private var pullRequestToken = 0
 
     init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }) {
         self.client = client
@@ -113,6 +118,9 @@ final class MultiplayerTeamsModel {
         pageTask?.cancel()
         pageTask = nil
         pageToken &+= 1
+        pullRequestTask?.cancel()
+        pullRequestTask = nil
+        pullRequestToken &+= 1
         confirming = nil
         secretRefusal = nil
     }
@@ -128,7 +136,10 @@ final class MultiplayerTeamsModel {
         confirming = nil
         switch page {
         case .groups, .group, .workspaces, .hosts, .knowledge: refresh()
-        case .workspace(let id), .card(let id, _): loadCards(id, on: server)
+        case .workspace(let id):
+            loadCards(id, on: server)
+            loadPullRequests(id, on: server)
+        case .card(let id, _): loadCards(id, on: server)
         case .knowledgeItem(let id): loadVersions(id, on: server)
         case .reputation(let resource): loadReputation(resource, on: server)
         case .policy: loadPolicy(on: server)
@@ -340,6 +351,32 @@ final class MultiplayerTeamsModel {
     private func loadCards(_ workspace: String, on server: String) {
         refresh()
         read(\.cards, keeping: true) { try await $0.scoped(to: server).cards(in: workspace) }
+    }
+
+    /// Reads a pull-request workspace's open pull requests. Runs beside the board's read, only as the
+    /// workspace page opens or is refreshed; a merge-queue workspace asks for nothing.
+    private func loadPullRequests(_ workspace: String, on server: String) {
+        pullRequestTask?.cancel()
+        pullRequestTask = nil
+        pullRequestToken &+= 1
+        if self.workspace(workspace, on: server)?.usesQueue == true { return }
+        guard let client else { return }
+        let token = pullRequestToken
+        if pullRequests.value?.workspace != workspace { pullRequests = .loading }
+        pullRequestTask = Task {
+            let result: Result<MultiplayerPullRequestList, MultiplayerFailure>
+            do { result = .success(try await client.scoped(to: server).pullRequests(in: workspace)) }
+            catch { result = .failure(.from(error)) }
+            guard token == self.pullRequestToken else { return }
+            self.pullRequestTask = nil
+            switch result {
+            case .success(let list): self.pullRequests = .loaded(list)
+            case .failure(let failure):
+                self.pullRequests = .failed(failure == .cancelled
+                    ? "The read was stopped. Try again."
+                    : MultiplayerPullRequestList.problem(failure.message))
+            }
+        }
     }
 
     var canAddCard: Bool { tray?.isBusy == false && cardDraft.canSend }

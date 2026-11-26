@@ -204,6 +204,15 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         await model.settle()
         await teams.runQueue("ws-relay", on: home)?.value
         try await Self.write(model, "workspace-queue-merged", to: folder)
+        // A pull-request workspace with none open, then with `gh` signed out.
+        for (mode, name) in [("empty", "workspace-pull-requests-empty"), ("fail", "workspace-pull-requests-failed")] {
+            setenv("COMMANDER_NETWORK_FIXTURE_PRS", mode, 1)
+            model.go(.home)
+            share.open(.workspace("ws-ios"), on: home)
+            await model.settle()
+            try await Self.write(model, name, to: folder)
+        }
+        unsetenv("COMMANDER_NETWORK_FIXTURE_PRS")
         model.close()
         try? FileManager.default.removeItem(at: winners.file)
     }

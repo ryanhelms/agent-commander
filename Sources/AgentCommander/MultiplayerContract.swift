@@ -38,6 +38,8 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case queueAdd = "queue-add"
     case queueMerge = "queue-merge"
     case queueRemove = "queue-remove"
+    /// A pull-request workspace's open pull requests, read by `gh` with the person's own login.
+    case workspacePRs = "workspace-prs"
     case knowledgeShare = "knowledge-share"
     case knowledgeInstall = "knowledge-install"
     /// Remote (increment 6): the web view this Mac serves on the tailnet. These name no server.

@@ -305,6 +305,73 @@ struct MultiplayerQueueRow: View {
     }
 }
 
+/// One open pull request: its number and branch as data, its title, and who opened it. The row opens
+/// the pull request on its host.
+struct MultiplayerPullRequestRow: View {
+    let pullRequest: MultiplayerPullRequest
+    let onOpen: (URL) -> Void
+
+    var body: some View {
+        if let link = pullRequest.link {
+            Button { onOpen(link) } label: { content(opens: true) }
+                .buttonStyle(MultiplayerRowButtonStyle())
+                .help(link.absoluteString)
+                .accessibilityLabel(pullRequest.spoken)
+                .accessibilityHint("Opens the pull request in your browser")
+                .multiplayerArriving()
+        } else {
+            content(opens: false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel(pullRequest.spoken)
+                .multiplayerArriving()
+        }
+    }
+
+    private func content(opens: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            Text(pullRequest.reference)
+                .font(MultiplayerTheme.data)
+                .foregroundStyle(.inkSecondary)
+                .lineLimit(1)
+                .frame(minWidth: 44, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pullRequest.title.isEmpty ? "Untitled" : pullRequest.title.multiplayerDisplay)
+                    .font(MultiplayerTheme.name)
+                    .foregroundStyle(MultiplayerTheme.foreground)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 6) {
+                    if !pullRequest.branch.isEmpty {
+                        Text(pullRequest.branch.multiplayerDisplay)
+                            .font(MultiplayerTheme.fingerprint)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                    }
+                    if !pullRequest.author.isEmpty {
+                        Text(pullRequest.author.multiplayerDisplay)
+                            .font(MultiplayerTheme.sub)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if opens {
+                Image(systemName: "arrow.up.right")
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+}
+
 /// Skills people vouch for, each with how many did.
 struct MultiplayerEndorsementChips: View {
     let endorsements: [MultiplayerEndorsement]
@@ -796,6 +863,8 @@ struct MultiplayerWorkspacePage: View {
     let handle: String
     let cards: MultiplayerLoad<[MultiplayerCard]>
     let queue: [MultiplayerQueueEntry]
+    /// The repository's open pull requests, read while a pull-request workspace's page is open.
+    var pullRequests: MultiplayerLoad<MultiplayerPullRequestList> = .loading
     @Binding var cardDraft: MultiplayerCardDraft
     let canAddCard: Bool
     let now: Date
@@ -816,6 +885,8 @@ struct MultiplayerWorkspacePage: View {
     let onQueueAdd: () -> Void
     let onRunQueue: () -> Void
     let onRetryCards: () -> Void
+    var onRetryPullRequests: () -> Void = {}
+    var onOpenLink: (URL) -> Void = { NSWorkspace.shared.open($0) }
     @State private var filter = MultiplayerCard.State.open
     @FocusState private var cardFocused: Bool
 
@@ -967,18 +1038,43 @@ struct MultiplayerWorkspacePage: View {
         }
     }
 
+    /// The pull requests of this workspace, once they are read for it.
+    private var listed: MultiplayerPullRequestList? {
+        pullRequests.value.flatMap { $0.workspace == workspace.id ? $0 : nil }
+    }
+
     @ViewBuilder private var pullRequestBand: some View {
         Group {
             MultiplayerBand {
-                VStack(alignment: .leading, spacing: Space.s) {
-                    MultiplayerBandHeading(title: "Pull requests")
-                    teamsNote("Members open pull requests against \(workspace.base.multiplayerDisplay) themselves.")
-                    if let url = workspace.pullRequestsURL {
-                        Button { NSWorkspace.shared.open(url) } label: { Label("Open pull requests", systemImage: "arrow.up.right.square") }
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .help(url.absoluteString)
+                VStack(alignment: .leading, spacing: 2) {
+                    MultiplayerBandHeading(title: "Pull requests", count: listed.flatMap { $0.pullRequests.isEmpty ? nil : "\($0.pullRequests.count)" }) {
+                        if let url = workspace.pullRequestsURL {
+                            Button { onOpenLink(url) } label: { Label("Repository", systemImage: "arrow.up.right.square") }
+                                .buttonStyle(MultiplayerTrayButtonStyle())
+                                .help(url.absoluteString)
+                                .accessibilityLabel("Open the repository’s pull requests in your browser")
+                        }
+                    }
+                    if let listed {
+                        if listed.pullRequests.isEmpty {
+                            teamsNote("No pull request is open. Members open theirs against \(workspace.base.multiplayerDisplay).")
+                                .padding(.vertical, Space.xs)
+                        }
+                        ForEach(Array(listed.pullRequests.enumerated()), id: \.element.id) { index, pullRequest in
+                            if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
+                            MultiplayerPullRequestRow(pullRequest: pullRequest, onOpen: onOpenLink)
+                        }
+                        if listed.isCapped {
+                            teamsNote("These are the first \(MultiplayerPullRequestList.limit). Open the repository for the rest.")
+                                .padding(.top, 6)
+                        }
+                    } else {
+                        MultiplayerLoadNote(loading: "Reading the open pull requests…", failure: pullRequests.failure,
+                                            onRetry: onRetryPullRequests)
+                            .padding(.vertical, Space.xs)
                     }
                 }
+                .multiplayerStreaming(listed?.pullRequests.map(\.id) ?? [])
             }
         }
     }
