@@ -53,8 +53,13 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         setenv("COMMANDER_NETWORK_FIXTURE_STATE", state.path, 1)
         _ = NSApplication.shared
 
+        // The fan-out's winner goes to a scratch domain, not to anyone's preferences.
+        let suite = "multiplayer-render"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
         let model = MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: Self.fixture)),
-                                     usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600))
+                                     usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                     defaults: defaults)
         model.open()
         await model.settle()
         model.refresh()
@@ -67,7 +72,35 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         }
         let home = "s-fixture-home"
         let share = model.share
+        let live = model.share.live
         let pages: [(String, () -> Void)] = [
+            // Live work (increment 4).
+            ("suggestion", { share.open(.approval("ap-3"), on: home) }),
+            ("watch", {
+                live.startWatch("dir-sam-agent", on: home)
+                live.suggestDraft = "Pin the lease clock instead of sleeping."
+            }),
+            ("handover", { live.startControl("res-2", on: home) }),
+            ("review-request", {
+                live.startReview("dir-sam-agent", on: home)
+                live.reviewDraft.title = "Wait for lease renewal before dropping the link"
+                live.reviewDraft.pr = "https://github.com/example/relay/pull/212"
+                live.reviewDraft.diff = MultiplayerContextItem(name: "reconnect-wait.diff", content: String(repeating: "x", count: 6_200))
+            }),
+            ("review", { live.openReview("rq-review-1", on: home) }),
+            ("review-post", {
+                live.openReview("rq-review-1", on: home)
+                live.postDraft = "https://github.com/example/relay/pull/212"
+                live.askPost()
+            }),
+            ("fanout", {
+                live.startFanout(on: home)
+                live.fanoutDraft.prompt = "Where should the retry budget live: the client or the relay? Answer in two sentences."
+            }),
+            ("fanout-compare", {
+                share.open(.compare(request: "rq-fanout-1"), on: home)
+                live.chooseWinner("c-fan-2", of: "rq-fanout-1")
+            }),
             ("approval", { share.open(.approval("ap-1"), on: home) }),
             ("directory", { share.open(.directory, on: home) }),
             ("grant-sheet", {
@@ -98,5 +131,6 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         if let row = share.handoff("rq-handoff-1", on: home) { await share.check(row, on: home, result: true)?.value }
         try await Self.write(model, "handoff-result", to: folder)
         model.close()
+        defaults.removePersistentDomain(forName: suite)
     }
 }

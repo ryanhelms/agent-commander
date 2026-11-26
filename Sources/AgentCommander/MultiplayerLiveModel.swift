@@ -1,0 +1,572 @@
+import Foundation
+import Observation
+
+// FEATURE MODEL: live work (design/COMMANDER-NETWORK-INCREMENT-4.md).
+// MultiplayerShareModel owns one of these and routes its pages. Rules it keeps:
+// - A watch polls only while its page is open and a panel is visible, one call at a time. It reads
+//   and never writes: nothing here types into the worker.
+// - Handing control over, taking it back, sending a suggestion, a review request or a fan-out, and
+//   posting a review all go through the tray's one action at a time, so progress and refusal show
+//   in the tray's banner.
+// - A review is posted to a pull request only after the person names the URL and confirms it.
+// - A fan-out's winner is a note on this Mac. It is sent nowhere.
+
+enum MultiplayerWatchPhase: Equatable {
+    case connecting
+    case live
+    /// No answer yet; the next poll may bring one.
+    case waiting(String)
+    /// The owner refused or the grant ran out. Polling has stopped.
+    case stopped(String)
+    case failed(String)
+
+    var isPolling: Bool {
+        switch self {
+        case .connecting, .live, .waiting: true
+        case .stopped, .failed: false
+        }
+    }
+}
+
+/// The stream on the watch page.
+struct MultiplayerWatchState: Equatable {
+    static let eventLimit = 300
+
+    var server = ""
+    var resource = ""
+    var events: [MultiplayerWatchEvent] = []
+    var cursor = ""
+    /// The worker's run state, as the owner's Mac last reported it.
+    var state = ""
+    var phase = MultiplayerWatchPhase.connecting
+    var polls = 0
+    var lastAt: Date? = nil
+    /// Events ever read, which also numbers the next one.
+    var total = 0
+}
+
+/// Something you sent that is still worth following: a hand-off, a review or a fan-out.
+struct MultiplayerRemoteWork: Identifiable, Equatable {
+    enum Kind: Equatable { case handoff, review, fanout }
+
+    let kind: Kind
+    let server: String
+    let request: String
+    let title: String
+    let detail: String
+    let state: String
+    let tone: Tone
+    let at: Date?
+
+    var id: String { "\(server)/\(request)" }
+
+    var symbol: String {
+        switch kind {
+        case .handoff: "arrow.up.right"
+        case .review: "checklist"
+        case .fanout: "arrow.triangle.branch"
+        }
+    }
+
+    var kindTitle: String {
+        switch kind {
+        case .handoff: "Hand-off"
+        case .review: "Review"
+        case .fanout: "Fan-out"
+        }
+    }
+}
+
+@Observable @MainActor
+final class MultiplayerLiveModel {
+    @ObservationIgnored weak var share: MultiplayerShareModel?
+
+    private(set) var watch = MultiplayerWatchState()
+    var suggestDraft = ""
+    /// What came back from the suggestion just sent.
+    private(set) var suggestReply: MultiplayerSentRequest?
+
+    private(set) var handovers: [String: [MultiplayerHandover]] = [:]
+    var handoverDraft = MultiplayerHandoverDraft()
+
+    private(set) var reviews: [String: [MultiplayerSentRequest]] = [:]
+    var reviewDraft = MultiplayerReviewDraft()
+    private(set) var reviewProblem: String?
+    /// The pull request a review's findings go to.
+    var postDraft = ""
+    private(set) var confirmingPost = false
+    /// Reviews posted from this panel, by request, with the pull request they went to.
+    private(set) var posted: [String: String] = [:]
+    @ObservationIgnored private var reviewLinks: [String: String] = [:]
+
+    private(set) var fanouts: [String: [MultiplayerFanout]] = [:]
+    var fanoutDraft = MultiplayerFanoutDraft()
+    private(set) var winners: [String: String]
+
+    private let client: MultiplayerClient?
+    private let clock: () -> Date
+    private let store: MultiplayerWinnerStore
+    private let watchInterval: Duration
+    @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
+    /// A watch's first read.
+    @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
+    /// The poll that follows it. Never awaited by `settle`: it runs for as long as the page is open.
+    @ObservationIgnored private(set) var watchTask: Task<Void, Never>?
+    @ObservationIgnored private var watchToken = 0
+
+    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, winners: MultiplayerWinnerStore,
+         watchInterval: Duration = .seconds(2)) {
+        self.client = client
+        self.clock = now
+        self.store = winners
+        self.watchInterval = watchInterval
+        self.winners = winners.all
+    }
+
+    private var tray: MultiplayerModel? { share?.tray }
+
+    private func status(_ server: String) -> MultiplayerStatus? {
+        guard let session = tray?.session(server), session.isOnline else { return nil }
+        return session.status
+    }
+
+    // MARK: - Lifetime
+
+    /// Reads who holds control, and the reviews and fan-outs sent, for every signed-in server.
+    func refresh() {
+        guard let client, let tray, tray.viewers > 0, quietTask == nil else { return }
+        let ids = tray.servers.filter { $0.state == .online && $0.signedIn }.map(\.id)
+        let online = Set(ids)
+        handovers = handovers.filter { online.contains($0.key) }
+        reviews = reviews.filter { online.contains($0.key) }
+        fanouts = fanouts.filter { online.contains($0.key) }
+        guard !ids.isEmpty else { return }
+        quietTask = Task {
+            for id in ids where !Task.isCancelled {
+                let scoped = client.scoped(to: id)
+                if let listed = try? await scoped.handovers() { self.handovers[id] = self.merged(listed, on: id) }
+                if let rows = try? await scoped.sentRows() { self.take(sent: rows, on: id) }
+            }
+            self.quietTask = nil
+        }
+    }
+
+    /// The tray left the share pages, or the page changed.
+    func left() {
+        endWatch()
+        confirmingPost = false
+        reviewProblem = nil
+    }
+
+    func cancel() {
+        quietTask?.cancel()
+        quietTask = nil
+        endWatch()
+    }
+
+    // MARK: - Watch
+
+    func startWatch(_ resource: String, on server: String) {
+        suggestDraft = ""
+        suggestReply = nil
+        share?.open(.watch(resource: resource), on: server)
+    }
+
+    /// Starts reading a worker's output. Returning to a watch already running keeps its stream.
+    func beginWatch(_ resource: String, on server: String) {
+        if watch.server == server, watch.resource == resource, watch.phase.isPolling, pageTask != nil || watchTask != nil { return }
+        endWatch()
+        watch = MultiplayerWatchState(server: server, resource: resource)
+        guard client != nil else { return }
+        let token = watchToken
+        pageTask = Task {
+            await self.read(token)
+            guard token == self.watchToken else { return }
+            self.pageTask = nil
+            self.poll(token)
+        }
+    }
+
+    func retryWatch() {
+        let resource = watch.resource, server = watch.server
+        guard !resource.isEmpty else { return }
+        watch.phase = .stopped("")
+        beginWatch(resource, on: server)
+    }
+
+    func endWatch() {
+        watchToken &+= 1
+        pageTask?.cancel()
+        pageTask = nil
+        watchTask?.cancel()
+        watchTask = nil
+    }
+
+    private func isWatching(_ token: Int) -> Bool {
+        guard token == watchToken, let tray, tray.viewers > 0 else { return false }
+        return tray.route == .share(watch.server, .watch(resource: watch.resource))
+    }
+
+    private func poll(_ token: Int) {
+        let interval = watchInterval
+        watchTask = Task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: interval) } catch { return }
+                guard self.isWatching(token), self.watch.phase.isPolling else { break }
+                await self.read(token)
+            }
+            if token == self.watchToken { self.watchTask = nil }
+        }
+    }
+
+    private func read(_ token: Int) async {
+        guard let client else { return }
+        let result: Result<MultiplayerWatchReply, MultiplayerFailure>
+        do {
+            result = .success(try await client.scoped(to: watch.server).watch(resource: watch.resource, after: watch.cursor))
+        } catch {
+            result = .failure(.from(error))
+        }
+        guard token == watchToken else { return }
+        switch result {
+        case .success(let reply): take(reply)
+        case .failure(let failure):
+            if failure != .cancelled { watch.phase = .failed(failure.message) }
+        }
+    }
+
+    /// Adds what one call brought to the stream.
+    func take(_ reply: MultiplayerWatchReply) {
+        watch.polls += 1
+        watch.lastAt = clock()
+        if let refusal = reply.refusal {
+            watch.phase = reply.mayRecover ? .waiting(refusal) : .stopped(refusal)
+            return
+        }
+        watch.phase = .live
+        if !reply.state.isEmpty { watch.state = reply.state }
+        if !reply.cursor.isEmpty { watch.cursor = reply.cursor }
+        for var event in reply.events {
+            watch.total += 1
+            event.id = watch.total
+            watch.events.append(event)
+        }
+        if watch.events.count > MultiplayerWatchState.eventLimit {
+            watch.events.removeFirst(watch.events.count - MultiplayerWatchState.eventLimit)
+        }
+    }
+
+    // MARK: - Co-pilot
+
+    var canSuggest: Bool {
+        let text = suggestDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tray?.isBusy == false && !text.isEmpty && text.utf8.count <= 4096
+    }
+
+    /// Sends a suggestion for the watched worker. The owner approves it before the worker sees it.
+    @discardableResult
+    func sendSuggestion() -> Task<Void, Never>? {
+        guard canSuggest, let tray, let share, case .share(let server, .watch(let resource)) = tray.route else { return nil }
+        let text = suggestDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let owner = share.entry(resource, on: server)?.owner.multiplayerDisplay ?? "the owner"
+        return tray.act("Sending your suggestion…", failing: "Couldn’t send the suggestion.") { client in
+            let reply = try await client.scoped(to: server)
+                .send(resource: resource, action: MultiplayerSharePolicy.suggest, payload: .object(["text": .string(text)]),
+                      name: "Suggestion: \(MultiplayerText.clean(text, limit: 60))")
+            self.suggestReply = reply
+            self.suggestDraft = ""
+            self.tray?.post(notice: reply.succeeded ? "\(owner) approved it. The worker’s answer is below."
+                                                    : "Sent. \(owner) approves each suggestion before the worker sees it.")
+        }
+    }
+
+    // MARK: - Control
+
+    /// Friends who can be handed control of a worker: the ones who may prompt it or suggest to it.
+    func candidates(for resource: String, on server: String) -> [String] {
+        let actions = [MultiplayerSharePolicy.ask, MultiplayerSharePolicy.suggest]
+        return MultiplayerUnique.keep((status(server)?.grants ?? [])
+            .filter { $0.resource == resource && actions.contains($0.capability) }.map(\.handle)) { $0 }
+    }
+
+    /// Hand-overs still running, across servers, soonest to end first.
+    var activeHandovers: [MultiplayerPending<MultiplayerHandover>] {
+        let now = clock()
+        return (tray?.servers ?? []).flatMap { server in
+            (handovers[server.id] ?? []).filter { $0.isLive(now: now) }.map { MultiplayerPending(server: server.id, item: $0) }
+        }
+        .sorted { $0.item.until < $1.item.until }
+    }
+
+    func holders(of resource: String, on server: String) -> [MultiplayerHandover] {
+        let now = clock()
+        return (handovers[server] ?? []).filter { $0.resource == resource && $0.isLive(now: now) }
+    }
+
+    func startControl(_ resource: String, on server: String) {
+        let people = candidates(for: resource, on: server)
+        handoverDraft = MultiplayerHandoverDraft(handle: people.count == 1 ? people[0] : "")
+        share?.open(.control(resource: resource), on: server)
+    }
+
+    var canHandOver: Bool {
+        guard let tray, !tray.isBusy, case .share(let server, .control(let resource)) = tray.route else { return false }
+        return candidates(for: resource, on: server).contains(handoverDraft.handle)
+    }
+
+    @discardableResult
+    func handOver() -> Task<Void, Never>? {
+        guard canHandOver, let tray, let share, case .share(let server, .control(let resource)) = tray.route else { return nil }
+        let draft = handoverDraft
+        let who = draft.handle.multiplayerDisplay, what = share.resourceName(resource, on: server).multiplayerDisplay
+        let now = clock()
+        return tray.act("Handing control of \(what) to \(who)…", failing: "Couldn’t hand over control.",
+                        confirmation: "\(who) has control of \(what) for \(draft.length.spoken). Their prompts and suggestions run without asking.") { client in
+            let scoped = client.scoped(to: server)
+            var row = try await scoped.handover(resource: resource, handle: draft.handle, minutes: draft.length.rawValue)
+                ?? MultiplayerHandover(handle: draft.handle, resource: resource,
+                                       until: now.addingTimeInterval(Double(draft.length.rawValue) * 60))
+            row.handle = draft.handle
+            row.minutes = draft.length.rawValue
+            self.handovers[server] = [row] + (self.handovers[server] ?? []).filter { $0.resource != resource || $0.handle != draft.handle }
+            if let listed = try? await scoped.handovers() { self.handovers[server] = self.merged(listed, on: server) }
+        }
+    }
+
+    @discardableResult
+    func takeBack(_ handover: MultiplayerHandover, on server: String) -> Task<Void, Never>? {
+        guard let share else { return nil }
+        let who = handover.handle.multiplayerDisplay, what = share.resourceName(handover.resource, on: server).multiplayerDisplay
+        return tray?.act("Taking back control of \(what)…", failing: "Couldn’t take back control.",
+                         confirmation: "You have control of \(what) again. \(who)’s requests wait for your approval.") { client in
+            try await client.scoped(to: server).handback(resource: handover.resource, handle: handover.handle)
+            self.handovers[server]?.removeAll { $0.id == handover.id }
+        }
+    }
+
+    /// The device agent lists a hand-over by account. Names it from the one this panel started, or
+    /// from the friends list.
+    private func merged(_ listed: [MultiplayerHandover], on server: String) -> [MultiplayerHandover] {
+        let known = handovers[server] ?? []
+        let friends = status(server)?.friends ?? []
+        return listed.map { row in
+            var row = row
+            if let mine = known.first(where: { $0.resource == row.resource && abs($0.until.timeIntervalSince(row.until)) < 2 }) {
+                row.handle = mine.handle
+                row.minutes = mine.minutes
+            } else if let friend = friends.first(where: { !row.user.isEmpty && ($0.user == row.user || $0.id == row.user) }) {
+                row.handle = friend.handle
+            }
+            return row
+        }
+    }
+
+    // MARK: - Requests sent
+
+    private func take(sent rows: [MultiplayerJSON], on server: String) {
+        reviews[server] = rows.compactMap(MultiplayerSentRequest.init(json:)).filter { $0.action == MultiplayerSharePolicy.review }
+        let known = fanouts[server] ?? []
+        var listed: [MultiplayerFanout] = rows.compactMap { row in
+            guard row.firstText("action")?.hasPrefix(MultiplayerSharePolicy.fanoutPrefix) == true,
+                  var fanout = MultiplayerFanout(row) else { return nil }
+            if fanout.children.isEmpty {
+                // `sent` reports the first target only. Keep the others as this panel last knew them.
+                fanout.children = known.first { $0.request == fanout.request }?.children ?? []
+                let status = row.firstText("status") ?? ""
+                if let resource = row.firstText("resource"), !status.isEmpty {
+                    if let index = fanout.children.firstIndex(where: { $0.resource == resource }) {
+                        fanout.children[index].status = status
+                        fanout.children[index].value = row.outcome ?? fanout.children[index].value
+                    } else if fanout.children.isEmpty {
+                        fanout.children = [MultiplayerFanoutChild(id: row.firstText("child") ?? resource, resource: resource,
+                                                                  status: status, value: row.outcome)]
+                    }
+                }
+            }
+            return fanout
+        }
+        // One just sent may not be listed yet.
+        listed = known.filter { mine in !listed.contains { $0.request == mine.request } } + listed
+        fanouts[server] = listed
+    }
+
+    // MARK: - Review exchange
+
+    func startReview(_ resource: String, on server: String) {
+        reviewDraft = MultiplayerReviewDraft()
+        reviewProblem = nil
+        share?.open(.reviewRequest(resource: resource), on: server)
+    }
+
+    /// Attaches the diff to review: one text file.
+    func attachDiff(_ urls: [URL]) {
+        reviewProblem = nil
+        guard let url = urls.first(where: \.isFileURL) else { return }
+        switch MultiplayerContextBundle.read(url) {
+        case .success(let item): reviewDraft.diff = item
+        case .failure(let failure): reviewProblem = failure.message
+        }
+    }
+
+    func detachDiff() {
+        reviewDraft.diff = nil
+        reviewProblem = nil
+    }
+
+    var canSendReview: Bool { tray?.isBusy == false && reviewDraft.canSend }
+
+    @discardableResult
+    func sendReview() -> Task<Void, Never>? {
+        guard canSendReview, let tray, let share, case .share(let server, .reviewRequest(let resource)) = tray.route else { return nil }
+        let draft = reviewDraft
+        let name = share.resourceName(resource, on: server).multiplayerDisplay
+        return tray.act("Asking \(name) for a review…", failing: "Couldn’t send the review request.") { client in
+            let reply = try await client.scoped(to: server)
+                .send(resource: resource, action: MultiplayerSharePolicy.review, payload: draft.payload, name: draft.trimmedTitle)
+            let row = MultiplayerSentRequest(request: reply.request, resource: resource, action: MultiplayerSharePolicy.review,
+                                             title: draft.trimmedTitle, at: self.clock(), status: reply.status,
+                                             value: reply.value, failure: reply.failure)
+            self.reviews[server] = [row] + (self.reviews[server] ?? []).filter { $0.request != row.request }
+            self.reviewLinks[row.request] = draft.trimmedPR
+            self.reviewDraft = MultiplayerReviewDraft()
+            self.postDraft = draft.trimmedPR
+            self.confirmingPost = false
+            self.share?.replace(with: .review(request: row.request), on: server)
+            self.tray?.post(notice: reply.succeeded ? "\(name) finished the review." : (reply.refusal ?? "The review is waiting for the owner."))
+        }
+    }
+
+    func openReview(_ request: String, on server: String) {
+        postDraft = reviewLinks[request] ?? posted[request] ?? ""
+        confirmingPost = false
+        share?.open(.review(request: request), on: server)
+    }
+
+    func review(_ request: String, on server: String) -> MultiplayerSentRequest? {
+        reviews[server]?.first { $0.request == request }
+    }
+
+    /// Why the findings can't be posted yet, or nil when they can.
+    func postProblem(_ request: String, on server: String) -> String? {
+        guard let row = review(request, on: server), MultiplayerReview(row.value) != nil, row.succeeded else {
+            return "There is no review result to post yet."
+        }
+        let link = postDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if link.isEmpty { return "Name the pull request to post to." }
+        return MultiplayerReviewDraft.isPullRequest(link) ? nil : "A pull request URL starts with https://."
+    }
+
+    /// The first click: shows what will be posted and where. Nothing is sent.
+    func askPost() { confirmingPost = true }
+    func cancelPost() { confirmingPost = false }
+
+    @discardableResult
+    func confirmPost() -> Task<Void, Never>? {
+        guard confirmingPost, let tray, !tray.isBusy, case .share(let server, .review(let request)) = tray.route,
+              postProblem(request, on: server) == nil else { return nil }
+        let link = postDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        confirmingPost = false
+        return tray.act("Posting the review to the pull request…", failing: "Couldn’t post the review.",
+                        confirmation: "Posted to the pull request as a review comment from your GitHub login.") { client in
+            try await client.scoped(to: server).postReview(request: request, pr: link)
+            self.posted[request] = link
+        }
+    }
+
+    // MARK: - Fan-out
+
+    /// Friends' workers a fan-out can reach on a server: the ones you may prompt.
+    func fanoutTargets(on server: String) -> [MultiplayerDirectoryEntry] {
+        (share?.directory(server) ?? []).filter { $0.kind == MultiplayerResourceKind.agent.rawValue && $0.canConsult }
+    }
+
+    /// Servers with at least two workers to fan out to.
+    var fanoutServers: [String] {
+        (tray?.servers ?? []).map(\.id).filter { fanoutTargets(on: $0).count >= MultiplayerFanoutDraft.targetRange.lowerBound }
+    }
+
+    func startFanout(on server: String) {
+        let targets = fanoutTargets(on: server)
+        fanoutDraft = MultiplayerFanoutDraft(targets: targets.count == 2 ? Set(targets.map(\.id)) : [])
+        share?.open(.fanout, on: server)
+    }
+
+    func toggleFanoutTarget(_ resource: String) {
+        if fanoutDraft.targets.contains(resource) { fanoutDraft.targets.remove(resource) } else { fanoutDraft.targets.insert(resource) }
+    }
+
+    var canSendFanout: Bool { tray?.isBusy == false && fanoutDraft.canSend }
+
+    @discardableResult
+    func sendFanout() -> Task<Void, Never>? {
+        guard canSendFanout, let tray, case .share(let server, .fanout) = tray.route else { return nil }
+        let draft = fanoutDraft
+        // The directory's order, so the columns read the same every time.
+        let targets = fanoutTargets(on: server).filter { draft.targets.contains($0.id) }
+            .map { (resource: $0.id, action: MultiplayerSharePolicy.ask) }
+        guard targets.count >= MultiplayerFanoutDraft.targetRange.lowerBound else { return nil }
+        return tray.act("Sending to \(targets.count) workers…", failing: "Couldn’t send the fan-out.") { client in
+            var fanout = try await client.scoped(to: server).fanout(targets: targets, payload: draft.payload, name: draft.title)
+            fanout.at = fanout.at ?? self.clock()
+            self.fanouts[server] = [fanout] + (self.fanouts[server] ?? []).filter { $0.request != fanout.request }
+            self.fanoutDraft = MultiplayerFanoutDraft()
+            self.share?.replace(with: .compare(request: fanout.request), on: server)
+        }
+    }
+
+    func fanout(_ request: String, on server: String) -> MultiplayerFanout? {
+        fanouts[server]?.first { $0.request == request }
+    }
+
+    /// Marks one target's result as the winner, or clears the mark when it is chosen again.
+    func chooseWinner(_ child: String, of request: String) {
+        let next = winners[request] == child ? nil : child
+        store.choose(next, for: request)
+        winners = store.all
+    }
+
+    // MARK: - Remote work
+
+    /// Hand-offs, reviews and fan-outs you sent, newest first.
+    var remoteWork: [MultiplayerRemoteWork] {
+        guard let share, let tray else { return [] }
+        var items: [MultiplayerRemoteWork] = []
+        for server in tray.servers {
+            let on = "on \(server.displayName)"
+            for row in share.handoffs[server.id] ?? [] {
+                let state = share.handoffState(row)
+                items.append(MultiplayerRemoteWork(kind: .handoff, server: server.id, request: row.request,
+                                                   title: row.title.isEmpty ? "Untitled hand-off" : row.title.multiplayerDisplay,
+                                                   detail: "\(share.handoffTarget(row, on: server.id)) \(on)",
+                                                   state: state.title, tone: state.tone, at: row.at))
+            }
+            for row in reviews[server.id] ?? [] {
+                let review = MultiplayerReview(row.value)
+                items.append(MultiplayerRemoteWork(kind: .review, server: server.id, request: row.request,
+                                                   title: row.title.isEmpty ? "Untitled review" : row.title.multiplayerDisplay,
+                                                   detail: "\(share.handoffTarget(row, on: server.id)) \(on)",
+                                                   state: row.succeeded ? (review?.tally ?? "Done") : MultiplayerRequestState.title(row.status),
+                                                   tone: row.succeeded ? ((review?.important ?? 0) > 0 ? .attention : .working)
+                                                                       : MultiplayerRequestState.tone(row.status),
+                                                   at: row.at))
+            }
+            for fanout in fanouts[server.id] ?? [] {
+                let picked = winners[fanout.request] != nil
+                items.append(MultiplayerRemoteWork(kind: .fanout, server: server.id, request: fanout.request,
+                                                   title: fanout.title.isEmpty ? "Untitled fan-out" : fanout.title.multiplayerDisplay,
+                                                   detail: "\(fanout.children.count) workers \(on)",
+                                                   state: picked ? "Winner chosen" : fanout.progress,
+                                                   tone: picked || fanout.isSettled ? .working : .attention, at: fanout.at))
+            }
+        }
+        return items.sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
+    }
+
+    func open(_ work: MultiplayerRemoteWork) {
+        switch work.kind {
+        case .handoff: share?.open(.handoffDetail(request: work.request), on: work.server)
+        case .review: openReview(work.request, on: work.server)
+        case .fanout: share?.open(.compare(request: work.request), on: work.server)
+        }
+    }
+}

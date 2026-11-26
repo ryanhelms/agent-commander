@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review fixture for the Commander network tray (increments 1 to 3).
+"""Review fixture for the Commander network tray (increments 1 to 4).
 
 Stands in for `commander-network tray VERB` so the panel can be previewed without a relay:
 
@@ -22,6 +22,14 @@ offered, two hand-offs you sent (one done with a report, a patch and a branch; o
 owner), threads, and an audit log. Consult answers at once; a prompt containing "wait" stays pending
 and one containing "deny" is denied. Share, approve, deny, request access, withdraw, comment and
 apply are all kept in the scratch file. Apply writes nothing: it only checks the folder exists.
+
+Increment 4: relay-worker starts handed over to fixture-sam with about 24 minutes left, and a
+suggestion from fixture-sam waits in approvals. sam-agent offers Watch, Suggest and Review; its
+trace starts with a few lines and gains one on each `watch` call. "Live remote work" also has a
+finished review (two findings; `review-post` checks the URL and posts nothing) and a fan-out to
+sam-agent and mei-agent with both answers in. A suggestion stays pending unless its text contains
+"approve"; a review whose title contains "wait" stays pending; a fan-out prompt containing "wait"
+leaves its last worker pending. `sent` rows of a fan-out carry `children` here.
 
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
 already trusts. Any other address passes and asks for its fingerprint to be confirmed.
@@ -77,8 +85,16 @@ def seed():
             {"id": "g-1", "handle": "fixture-sam", "kind": "agent", "resource": "res-2", "capability": "agent.ask",
              "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
             {"id": "g-2", "handle": "fixture-sam", "kind": "agent", "resource": "res-2", "capability": "agent.handoff",
-             "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"}]},
+             "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
+            {"id": "g-3", "handle": "fixture-sam", "kind": "agent", "resource": "res-2", "capability": "agent.suggest",
+             "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
+            {"id": "g-4", "handle": "fixture-jonas", "kind": "agent", "resource": "res-2", "capability": "agent.ask",
+             "maxUses": 5, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 50000, "attribution": "owner"}]},
+        "handovers": {"s-fixture-home": [{"user": "u-sam", "resource": "res-2", "until": now(24)}]},
         "approvals": {"s-fixture-home": [
+            {"id": "ap-3", "peer": "fixture-sam", "resource": "res-2", "action": "agent.suggest",
+             "summary": json.dumps({"text": "Pin the lease clock in the test instead of sleeping for the renewal."}),
+             "arrived": now(-1), "expires": now(60 * 24 - 1)},
             {"id": "ap-1", "peer": "fixture-sam", "resource": "res-2", "action": "agent.ask",
              "summary": json.dumps({"text": "Why does the reconnect test flake on CI but pass locally?"}),
              "arrived": now(-3), "expires": now(60 * 24 - 3)},
@@ -93,6 +109,15 @@ def seed():
              "requesterHandle": "fixture-ryan", "actions": ["issue.read"], "note": "", "status": "pending",
              "createdAt": now(-600)}]},
         "sent": {"s-fixture-home": [
+            {"request": "rq-fanout-1", "child": "", "resource": "dir-sam-agent", "action": "fanout:agent.ask",
+             "title": "Where should the retry budget live?", "at": now(-21), "status": "ok",
+             "value": {"text": FANOUT_ANSWERS["dir-sam-agent"]},
+             "children": [{"id": "c-fan-1", "resource": "dir-sam-agent", "action": "agent.ask", "status": "ok",
+                           "value": {"text": FANOUT_ANSWERS["dir-sam-agent"]}},
+                          {"id": "c-fan-2", "resource": "dir-mei-agent", "action": "agent.ask", "status": "ok",
+                           "value": {"text": FANOUT_ANSWERS["dir-mei-agent"]}}]},
+            {"request": "rq-review-1", "child": "c-review-1", "resource": "dir-sam-agent", "action": "review.request",
+             "title": "Wait for lease renewal before dropping the link", "at": now(-33), "status": "ok", "value": REVIEW},
             {"request": "rq-handoff-2", "child": "c-2", "resource": "dir-sam-agent", "action": "agent.handoff",
              "title": "Add a retry to the avatar upload", "at": now(-8), "status": "pending", "value": None},
             {"request": "rq-handoff-1", "child": "c-1", "resource": "dir-sam-agent", "action": "agent.handoff",
@@ -128,13 +153,47 @@ def load():
 AVATAR = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGOw2Pvjv9e9hv8MMAYA"
           "YSsLJ1I7NOIAAAAASUVORK5CYII=")
 REPO_ACTIONS = ["git.commit", "git.head", "git.push", "issue.close", "issue.comment", "issue.read"]
-AGENT_ACTIONS = ["agent.ask", "agent.handoff", "agent.result", "agent.status", "thread.comment", "thread.read"]
+AGENT_ACTIONS = ["agent.ask", "agent.handoff", "agent.result", "agent.status", "agent.suggest", "agent.watch",
+                 "review.request", "thread.comment", "thread.read"]
+REVIEW = {"summary": "The wait fixes the race, but the test can now hang for the full default timeout when the renewal "
+                     "never arrives. Bound the wait and assert on the timeout path.",
+          "findings": [
+              {"file": "Tests/ReconnectTests.swift", "line": 43, "severity": "important",
+               "text": "relay.renewed() has no deadline. Pass a 2 second timeout so a lost renewal fails the test instead of hanging CI."},
+              {"file": "Sources/Relay/Lease.swift", "line": 118, "severity": "important",
+               "text": "renewed() resumes every waiter, including ones for an older lease. Key the continuation by lease ID."},
+              {"file": "Tests/ReconnectTests.swift", "line": 12, "severity": "nit",
+               "text": "The helper makeRelay() is now unused in this file."}]}
+FANOUT_ANSWERS = {
+    "dir-sam-agent": "Keep the budget in the client. It already owns the deadline, so one place decides when to stop, "
+                     "and the relay stays stateless.",
+    "dir-mei-agent": "Put it in the relay. Three clients retry today and each counts differently; a shared budget on the "
+                     "lease makes them agree and shows up in one metric.",
+}
+TRACE = [
+    (-190, "status", "Turn started"),
+    (-171, "message", "Reading the reconnect test and the relay client before touching anything."),
+    (-152, "tool", "rg -n \"renew\" Sources/Relay"),
+    (-118, "tool", "swift test --filter ReconnectTests"),
+    (-96, "message", "Reproduced: 1 of 5 runs fails. The link drops before the lease renewal lands."),
+    (-61, "tool", "apply_patch Tests/ReconnectTests.swift"),
+    (-40, "tool", "swift test --filter ReconnectTests  (40 runs)"),
+    (-22, "message", "40 of 40 pass with the wait in place. Checking the timeout path next."),
+    (-9, "tool", "rg -n \"timeout\" Tests/ReconnectTests.swift"),
+    (-2, "message", "The wait has no deadline. Adding one so a lost renewal fails fast."),
+    (0, "status", "Waiting for input"),
+]
+TRACE_START = 6
 DIRECTORY = {
     "s-fixture-home": [
         {"id": "dir-sam-agent", "owner": "u-sam", "handle": "fixture-sam", "device": "d-sam", "kind": "agent",
          "name": "sam-agent", "actions": AGENT_ACTIONS, "grantedActions": AGENT_ACTIONS,
          "capabilities": {"harness": "codex", "model": "gpt-5.2-codex", "slots": 3, "tools": ["gh", "docker"],
                           "environments": ["gpu", "linux"]}},
+        {"id": "dir-mei-agent", "owner": "u-mei", "handle": "fixture-mei", "device": "d-mei", "kind": "agent",
+         "name": "mei-agent", "actions": AGENT_ACTIONS,
+         "grantedActions": ["agent.ask", "agent.watch", "thread.comment", "thread.read"],
+         "capabilities": {"harness": "claude", "model": "fable", "slots": 2, "tools": ["gh"], "environments": ["linux"]}},
         {"id": "dir-jonas-ios", "owner": "u-jonas", "handle": "fixture-jonas", "device": "d-jonas", "kind": "agent",
          "name": "jonas-ios", "actions": AGENT_ACTIONS, "grantedActions": [],
          "capabilities": {"harness": "claude", "model": "opus", "slots": 1, "tools": ["xcodebuild"],
@@ -206,7 +265,7 @@ def status(state, server):
         "online": True, "signedIn": True, "handle": profile.get("handle") or server["handle"],
         "displayName": profile.get("displayName", ""), "statusMessage": profile.get("statusMessage", ""),
         "hasAvatar": bool(profile.get("avatar")),
-        "friends": [{"id": ident, "handle": handle, "online": presence != "offline"}
+        "friends": [{"id": ident, "user": "u-" + handle.split("-", 1)[-1], "handle": handle, "online": presence != "offline"}
                     for ident, handle, presence, _ in FRIENDS.get(server["id"], [])],
         "incoming": [{"id": "in-1", "handle": "fixture-priya"}] if home else [],
         "outgoing": [], "grants": share(state, "grants").get(server["id"], []),
@@ -239,6 +298,12 @@ def answer(request):
                               "the test drops the link before the renewal lands." % (" and %d file(s)" % files if files else "")}
     if action == "agent.handoff":
         return "ok", {"run": "run-fixture-%d" % (abs(hash(payload.get("title", ""))) % 900 + 100), "worker": "w-fixture"}
+    if action == "agent.suggest":
+        if "approve" in payload.get("text", ""):
+            return "ok", {"text": "Fixture answer. The owner approved it and the worker took the suggestion."}
+        return "pending", None
+    if action == "review.request":
+        return ("pending", None) if "wait" in payload.get("title", "") else ("ok", REVIEW)
     if action in ("agent.status", "agent.result"):
         done = payload.get("run") == "run-fixture-1"
         value = {"run": payload.get("run"), "state": "completed" if done else "running", "title": "Hand-off",
@@ -249,6 +314,79 @@ def answer(request):
                                   {"kind": "branch", "name": "handoff/fix-flaky-reconnect"}] if done else []
         return "ok", value
     return "ok", {}
+
+
+def seconds(delta):
+    moment = datetime.now(timezone.utc) + timedelta(seconds=delta)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def live(state, verb, request):
+    """Increment 4: watch, control hand-over, fan-out and posting a review."""
+    server = find(state, request)["id"]
+    if "handovers" not in state:
+        # Kept at once, so the countdown runs down instead of starting again on each call.
+        state["handovers"] = seed()["handovers"]
+        save(state)
+    held = state["handovers"].setdefault(server, [])
+    held[:] = [row for row in held if row["until"] > now()]
+    if verb == "handovers":
+        return {"handovers": held}
+    if verb in ("handover", "handback"):
+        handle, resource = request.get("handle") or "", request.get("resource") or ""
+        if not any(friend[1] == handle for friend in FRIENDS.get(server, [])):
+            raise ValueError("unknown friend")
+        user = "u-" + handle.split("-", 1)[-1]
+        held[:] = [row for row in held if not (row["user"] == user and row["resource"] == resource)]
+        if verb == "handback":
+            save(state)
+            return {}
+        minutes = request.get("minutes") or 0
+        if not resource or not 1 <= minutes <= 240:
+            raise ValueError("handover needs a friend, a resource and 1–240 minutes")
+        held.append({"user": user, "resource": resource, "until": now(minutes)})
+        save(state)
+        return {"handle": handle, "resource": resource, "until": now(minutes)}
+    if verb == "watch":
+        entry = [row for row in DIRECTORY.get(server, []) if row["id"] == request.get("resource")]
+        if not entry or "agent.watch" not in entry[0]["grantedActions"]:
+            return {"id": "c-watch", "resource": request.get("resource"), "action": "agent.watch", "status": "denied"}
+        after = request.get("after") or ""
+        start = int(after) if after.isdigit() else 0
+        end = TRACE_START if start == 0 else min(start + 1, len(TRACE))
+        # A line read live is stamped now; the first page keeps its history.
+        rows = [{"at": seconds(delta if start == 0 else 0), "kind": kind, "text": text} for delta, kind, text in TRACE[start:end]]
+        return {"id": "c-watch", "resource": request.get("resource"), "action": "agent.watch", "status": "ok",
+                "value": {"events": rows, "cursor": str(end), "state": "awaiting_input" if end == len(TRACE) else "running"}}
+    if verb == "fanout":
+        targets, payload = request.get("targets") or [], request.get("payload")
+        if not 2 <= len(targets) <= 32 or not isinstance(payload, dict):
+            raise ValueError("fan-out needs 2–32 targets and a JSON payload")
+        ident = "rq-%s" % hashlib.sha256(json.dumps(request, sort_keys=True).encode() + now().encode()).hexdigest()[:10]
+        children = []
+        for index, target in enumerate(targets):
+            waits = "wait" in payload.get("text", "") and index == len(targets) - 1
+            text = FANOUT_ANSWERS.get(target.get("resource"), "Fixture answer from %s." % target.get("resource"))
+            children.append({"id": "c-%s-%d" % (ident[3:], index), "resource": target.get("resource"),
+                             "action": target.get("action"), "status": "pending" if waits else "ok",
+                             "value": None if waits else {"text": text}})
+        share(state, "sent").setdefault(server, []).insert(0, {
+            "request": ident, "child": "", "resource": targets[0].get("resource"), "action": "fanout:" + (targets[0].get("action") or ""),
+            "title": request.get("name") or "Fan-out", "at": now(), "status": children[0]["status"],
+            "value": children[0]["value"], "children": children})
+        save(state)
+        # The device agent answers with the submission: its children carry `result`, not `value`.
+        return {"request": ident, "children": {"id": ident, "children": [
+            dict({key: child[key] for key in ("id", "resource", "action", "status")},
+                 **({"result": child["value"]} if child["value"] else {})) for child in children]}}
+    if verb == "review-post":
+        if not (request.get("pr") or "").startswith("https://"):
+            raise ValueError("name the pull request URL")
+        rows = [row for row in share(state, "sent").get(server, []) if row["request"] == request.get("request")]
+        if not rows or not (rows[0].get("value") or {}).get("summary"):
+            raise ValueError("that request has no review result yet")
+        return {"posted": request["pr"]}
+    raise ValueError("unknown tray operation")
 
 
 def sharing(state, verb, request):
@@ -542,6 +680,8 @@ def run(verb, request):
     if verb in ("approvals", "approve", "deny", "audit", "resource-add", "grant", "revoke", "send", "sent", "handoffs",
                 "thread", "comment", "apply-artifact", "relay"):
         return sharing(state, verb, request)
+    if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
+        return live(state, verb, request)
     return {}
 
 

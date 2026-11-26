@@ -189,9 +189,11 @@ struct MultiplayerNeedsYou: View {
                         let approval = pending.item
                         let name = resourceName(approval.resource, pending.server).multiplayerDisplay
                         MultiplayerDecisionRow(color: MultiplayerTheme.swatch(for: pending.server),
-                                               title: "\(approval.peer.isEmpty ? "A friend" : approval.peer.multiplayerDisplay) \(approval.wants)",
-                                               detail: approval.request.isEmpty ? "On \(name). Grant is set to Ask each time."
-                                                                                : "On \(name): \(approval.request)",
+                                               title: approval.headline,
+                                               detail: approval.isSuggestion
+                                                   ? (approval.request.isEmpty ? "For \(name)." : "For \(name): \(approval.request)")
+                                                   : approval.request.isEmpty ? "On \(name). Grant is set to Ask each time."
+                                                                              : "On \(name): \(approval.request)",
                                                isBusy: isBusy,
                                                onOpen: { onOpenApproval(pending) },
                                                onDecline: { onDecide(pending, false) },
@@ -813,10 +815,18 @@ struct MultiplayerPanel: View {
         case .profile: subpageHeader("Your profile")
         case .invite: subpageHeader("Invite")
         case .membership: subpageHeader("Membership")
-        case .share(_, let page):
-            MultiplayerTrayHeader(title: page.title, color: routedServer.map { MultiplayerTheme.swatch(for: $0.id) },
+        case .share(let id, let page):
+            MultiplayerTrayHeader(title: shareTitle(page, on: id), color: routedServer.map { MultiplayerTheme.swatch(for: $0.id) },
                                   back: model.share.backTitle, onBack: { model.share.back() }) { EmptyView() }
         }
+    }
+
+    /// A share page's title. A suggestion is named for who sent it.
+    private func shareTitle(_ page: MultiplayerSharePage, on id: String) -> String {
+        if case .approval(let approval) = page, let waiting = model.share.approval(approval, on: id), waiting.isSuggestion {
+            return waiting.headline
+        }
+        return page.title
     }
 
     /// Servers online, approvals waiting, unseen activity and the person's presence: always above the tabs.
@@ -1009,13 +1019,149 @@ struct MultiplayerPanel: View {
             case .audit:
                 MultiplayerAuditPage(state: share.audit, resourceName: { share.resourceName($0, on: id) }, now: now,
                                      onRetry: { share.reloadPage() })
+            case .watch, .control, .reviewRequest, .review, .fanout, .compare:
+                livePage(page, on: id, now: now)
             }
+        }
+    }
+
+    // MARK: Live work
+
+    @ViewBuilder private func livePage(_ page: MultiplayerSharePage, on id: String, now: Date) -> some View {
+        let share = model.share
+        @Bindable var live = model.share.live
+        let serverName = routedServer?.displayName ?? "this server"
+        switch page {
+        case .watch(let resource):
+            MultiplayerWatchView(watch: live.watch, entry: share.entry(resource, on: id), serverName: serverName,
+                                 color: MultiplayerTheme.swatch(for: id), interval: 2,
+                                 suggestion: $live.suggestDraft, reply: live.suggestReply,
+                                 onRetry: { live.retryWatch() })
+        case .control(let resource):
+            MultiplayerControlPage(resourceName: share.resourceName(resource, on: id).multiplayerDisplay,
+                                   holders: live.holders(of: resource, on: id),
+                                   candidates: live.candidates(for: resource, on: id),
+                                   draft: $live.handoverDraft, isBusy: model.isBusy,
+                                   onTakeBack: { live.takeBack($0, on: id) })
+        case .reviewRequest(let resource):
+            MultiplayerReviewComposer(draft: $live.reviewDraft, entry: share.entry(resource, on: id),
+                                      attachProblem: live.reviewProblem,
+                                      onChoose: { live.attachDiff(MultiplayerFilePanel.chooseFiles()) },
+                                      onDrop: { live.attachDiff($0) },
+                                      onDetach: { live.detachDiff() })
+        case .review(let request):
+            if let row = live.review(request, on: id) {
+                MultiplayerReviewPage(row: row, target: share.handoffTarget(row, on: id), review: MultiplayerReview(row.value),
+                                      now: now, link: $live.postDraft, posted: live.posted[request],
+                                      confirming: live.confirmingPost, problem: live.postProblem(request, on: id),
+                                      isBusy: model.isBusy,
+                                      onCancel: { live.cancelPost() }, onConfirm: { live.confirmPost() })
+            } else {
+                MultiplayerBand {
+                    Text("Commander can’t find this review any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                }
+            }
+        case .fanout:
+            MultiplayerFanoutComposer(draft: $live.fanoutDraft, targets: live.fanoutTargets(on: id),
+                                      onToggle: { live.toggleFanoutTarget($0) })
+        case .compare(let request):
+            if let fanout = live.fanout(request, on: id) {
+                MultiplayerComparePage(fanout: fanout,
+                                       columns: fanout.children.map { child in
+                                           let entry = share.entry(child.resource, on: id)
+                                           return MultiplayerComparePage.Column(child: child, name: entry?.name ?? child.resource,
+                                                                                owner: entry?.owner ?? "", capabilities: entry?.capabilities)
+                                       },
+                                       winner: live.winners[request], now: now,
+                                       onChoose: { live.chooseWinner($0.id, of: request) },
+                                       onThread: { child in
+                                           let name = share.entry(child.resource, on: id)?.name ?? child.resource
+                                           share.open(.thread(request: child.id, title: "\(name.multiplayerDisplay): \(fanout.title)"), on: id)
+                                       })
+            } else {
+                MultiplayerBand {
+                    Text("Commander can’t find this fan-out any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                }
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder private func liveFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
+        let share = model.share
+        let live = model.share.live
+        switch page {
+        case .watch(let resource):
+            MultiplayerTrayFooter(note: "Read-only. Reads while this page is open.") {
+                if share.entry(resource, on: id)?.canSuggest == true {
+                    Button("Send suggestion") { live.sendSuggestion() }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!live.canSuggest)
+                        .help("Send the suggestion to the owner (⌘Return)")
+                }
+            }
+        case .control(let resource):
+            MultiplayerTrayFooter(note: live.candidates(for: resource, on: id).isEmpty ? nil
+                                        : live.handoverDraft.handle.isEmpty ? "Choose a friend." : nil) {
+                Button("Share…") { share.startGrant(on: id, resourceID: resource) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(model.isBusy)
+                Button("Hand over") { live.handOver() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .disabled(!live.canHandOver)
+                    .help("Hand control to the chosen friend for the chosen time")
+            }
+        case .reviewRequest:
+            MultiplayerTrayFooter(note: "Uses one of your granted uses.") {
+                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Request review") { live.sendReview() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!live.canSendReview)
+                    .help("Request review (⌘Return)")
+            }
+        case .review(let request):
+            MultiplayerTrayFooter {
+                if let row = live.review(request, on: id) {
+                    Button("Thread") { share.open(.thread(request: row.request, title: row.title), on: id) }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                    Button("Refresh") { model.refresh() }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .disabled(!model.canRefresh)
+                    Spacer(minLength: 0)
+                    Button("Post to PR…") { live.askPost() }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .disabled(model.isBusy || live.confirmingPost || live.postProblem(request, on: id) != nil)
+                        .help(live.postProblem(request, on: id) ?? "Shows what will be posted, then asks you to confirm")
+                }
+            }
+        case .fanout:
+            MultiplayerTrayFooter(note: live.fanoutDraft.targets.count < 2 ? "Choose at least 2 workers." : nil) {
+                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Send to \(max(live.fanoutDraft.targets.count, 2))") { live.sendFanout() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!live.canSendFanout)
+                    .help("Send the prompt to every chosen worker (⌘Return)")
+            }
+        case .compare:
+            MultiplayerTrayFooter(note: "The winner is a note on this Mac. Nothing is sent.") {
+                Button("Refresh") { model.refresh() }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(!model.canRefresh)
+            }
+        default:
+            EmptyView()
         }
     }
 
     @ViewBuilder private func shareFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         switch page {
+        case .watch, .control, .reviewRequest, .review, .fanout, .compare:
+            liveFooter(page, on: id)
         case .directory:
             MultiplayerTrayFooter(note: "Granted actions work now. Ask the owner for the rest.") {
                 Button("Access requests") { share.open(.requests, on: id) }
@@ -1163,26 +1309,35 @@ struct MultiplayerPanel: View {
                             onDecide: { share.decide($0.item, on: $0.server, approve: $1) },
                             onReviewAccess: { share.review($0.item, on: $0.server) },
                             onDeclineAccess: { share.remove($0.item, on: $0.server, declining: true) })
-        MultiplayerRemoteWorkBand(items: share.allHandoffs.map { pending in
-            let state = share.handoffState(pending.item)
-            return MultiplayerRemoteWorkBand.Item(
-                id: pending.id,
-                title: pending.item.title.isEmpty ? "Untitled hand-off" : pending.item.title.multiplayerDisplay,
-                detail: "Handed to \(share.handoffTarget(pending.item, on: pending.server)) on \(model.server(pending.server)?.displayName ?? "a server")",
-                color: MultiplayerTheme.swatch(for: pending.server), state: state.title, tone: state.tone,
-                open: { share.open(.handoffDetail(request: pending.item.request), on: pending.server) })
+        let live = share.live
+        MultiplayerControlBand(items: live.activeHandovers,
+                               resourceName: { share.resourceName($0.item.resource, on: $0.server) },
+                               serverName: { model.server($0)?.displayName ?? "a server" },
+                               isBusy: model.isBusy,
+                               onOpen: { live.startControl($0.item.resource, on: $0.server) },
+                               onTakeBack: { live.takeBack($0.item, on: $0.server) })
+        MultiplayerRemoteWorkBand(items: live.remoteWork.map { work in
+            MultiplayerRemoteWorkBand.Item(id: work.id, symbol: work.symbol, kind: work.kindTitle, title: work.title,
+                                           detail: work.detail, color: MultiplayerTheme.swatch(for: work.server),
+                                           state: work.state, tone: work.tone, open: { live.open(work) })
         })
         MultiplayerAgentRoster(mine: share.myAgents, theirs: share.friendAgents,
                                serverName: { model.server($0)?.displayName ?? "a server" },
                                grantCount: { share.grantCount($0.item.id, on: $0.server) },
+                               holder: { live.holders(of: $0.item.id, on: $0.server).first?.handle },
                                isWaiting: { share.waitingRequest(for: $0.item.id, on: $0.server) != nil },
                                isBusy: model.isBusy,
+                               fanoutServers: live.fanoutServers,
                                onShare: { share.startGrant(on: $0.server, resourceID: $0.item.id) },
                                onAudit: { share.open(.audit(resource: $0.item.id), on: $0.server) },
+                               onControl: { live.startControl($0.item.id, on: $0.server) },
                                onConsult: { share.startConsult($0.item.id, on: $0.server) },
                                onHandOff: { share.startHandoff($0.item.id, on: $0.server) },
+                               onWatch: { live.startWatch($0.item.id, on: $0.server) },
+                               onReview: { live.startReview($0.item.id, on: $0.server) },
                                onRequest: { share.startRequestAccess($0.item, on: $0.server) },
-                               onDirectory: { share.open(.directory, on: $0) })
+                               onDirectory: { share.open(.directory, on: $0) },
+                               onFanout: { live.startFanout(on: $0) })
     }
 
     /// Network: the servers, their state and the keys they are known by.

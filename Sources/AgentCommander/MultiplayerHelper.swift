@@ -70,7 +70,7 @@ struct MultiplayerClient: Sendable {
     static func inputLimit(for verb: MultiplayerVerb) -> Int {
         switch verb {
         case .profile: profileInputLimit
-        case .send: sendInputLimit
+        case .send, .fanout: sendInputLimit
         default: inputLimit
         }
     }

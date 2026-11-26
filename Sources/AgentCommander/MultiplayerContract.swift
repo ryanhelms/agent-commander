@@ -29,6 +29,9 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     /// Share and consult (increment 3). `relay` reaches the relay's access-request routes.
     case approvals, approve, deny, audit, send, sent, handoffs, thread, comment, relay
     case applyArtifact = "apply-artifact"
+    /// Live work (increment 4). Review requests and suggestions travel through `send`.
+    case watch, handover, handback, handovers, fanout
+    case reviewPost = "review-post"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
@@ -42,13 +45,16 @@ struct MultiplayerFriend: Decodable, Equatable, Sendable, Identifiable {
     let id: String
     let handle: String
     let online: Bool?
+    /// The friend's account on the relay, when status names it. A control hand-over is listed by it.
+    let user: String
 
-    private enum CodingKeys: String, CodingKey { case id, handle, online }
+    private enum CodingKeys: String, CodingKey { case id, handle, online, user }
 
-    init(id: String? = nil, handle: String, online: Bool? = nil) {
+    init(id: String? = nil, handle: String, online: Bool? = nil, user: String = "") {
         self.id = id ?? handle
         self.handle = handle
         self.online = online
+        self.user = user
     }
 
     init(from decoder: any Decoder) throws {
@@ -56,7 +62,8 @@ struct MultiplayerFriend: Decodable, Equatable, Sendable, Identifiable {
         let handle = try container.decode(String.self, forKey: .handle)
         self.init(id: try container.decodeIfPresent(String.self, forKey: .id).flatMap { $0.isEmpty ? nil : $0 },
                   handle: handle,
-                  online: try container.decodeIfPresent(Bool.self, forKey: .online))
+                  online: try container.decodeIfPresent(Bool.self, forKey: .online),
+                  user: ((try? container.decodeIfPresent(String.self, forKey: .user)) ?? nil) ?? "")
     }
 
     /// Spoken and drawn presence, or nil when unknown.
@@ -276,6 +283,9 @@ enum MultiplayerCapability {
         case "agent.ask": "Send prompts to the worker"
         case "agent.message": "Send the coordinator a note"
         case "agent.handoff": "Hand off tasks to the agent"
+        case "agent.watch": "Watch the worker’s output"
+        case "agent.suggest": "Suggest messages to the worker"
+        case "review.request": "Request code reviews"
         case "agent.status": "Check a hand-off’s status"
         case "agent.result": "Read a hand-off’s result"
         case "thread.read": "Read request threads"
@@ -295,6 +305,9 @@ enum MultiplayerCapability {
         case "agent.ask": "questionmark.bubble"
         case "agent.message": "tray.and.arrow.down"
         case "agent.handoff": "arrow.up.forward.app"
+        case "agent.watch": "eye"
+        case "agent.suggest": "lightbulb"
+        case "review.request": "checklist"
         case "agent.status", "agent.result": "list.bullet.clipboard"
         case "thread.read", "thread.comment": "bubble.left.and.bubble.right"
         default: "key"
@@ -316,6 +329,12 @@ enum MultiplayerCapability {
             "Lets them send a note to the private inbox of the coordinator \(name). The coordinator decides whether to act on it; nothing runs automatically and nothing is typed into its terminal."
         case "agent.handoff":
             "Lets them hand a task to \(name). Your Commander starts a new run for it on this Mac, in the worker’s project, and uses your provider quota."
+        case "agent.watch":
+            "Lets them read the live output of \(name): its messages, tool calls and state. They can’t type into it."
+        case "agent.suggest":
+            "Lets them suggest a message for \(name). Every suggestion waits for your approval before the worker sees it."
+        case "review.request":
+            "Lets them send \(name) a diff or a pull request to review. The worker answers with a summary and findings, and uses your provider quota."
         case "agent.status", "agent.result": "Lets them follow the hand-offs they started on \(name) and read their results."
         case "thread.read", "thread.comment": "Lets them read and write the thread of each request they sent to \(name)."
         default: "Lets them use “\(capability)” on \(name), as the network service defines it."

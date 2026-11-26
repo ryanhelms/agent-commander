@@ -206,6 +206,8 @@ final class MultiplayerModel {
          steadyPoll: Duration = .seconds(15),
          fastPoll: Duration = .seconds(3),
          notifier: (any MultiplayerNotifying)? = nil,
+         defaults: UserDefaults = .standard,
+         watchInterval: Duration = .seconds(2),
          now: @escaping () -> Date = { Date() }) {
         self.client = client
         self.notifier = notifier
@@ -214,7 +216,7 @@ final class MultiplayerModel {
         self.steadyPoll = steadyPoll
         self.fastPoll = fastPoll
         self.clock = now
-        self.share = MultiplayerShareModel(client: client, now: now)
+        self.share = MultiplayerShareModel(client: client, now: now, defaults: defaults, watchInterval: watchInterval)
         self.share.tray = self
     }
 
@@ -735,9 +737,14 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = share.live.quietTask ?? share.live.pageTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil { return }
+               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, share.live.quietTask == nil,
+               share.live.pageTask == nil { return }
         }
     }
 }

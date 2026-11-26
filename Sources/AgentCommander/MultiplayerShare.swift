@@ -685,7 +685,7 @@ enum MultiplayerSharePolicy {
     /// before the resource is added; the grant sends what the device agent then lists.
     static func expected(kind: String) -> [String] {
         switch kind {
-        case "agent": [ask, handoff]
+        case "agent": [ask, handoff, watch, suggest, review]
         case "repo": ["issue.read", "issue.comment", "issue.close", "git.head", "git.commit", "git.push"]
         default: []
         }
