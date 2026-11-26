@@ -124,6 +124,8 @@ func registeredKind(r Resource) string {
 	switch r.Kind {
 	case "repo":
 		return "repo"
+	case "host":
+		return "host"
 	case "agent":
 		if !r.Coordinator {
 			return "agent"

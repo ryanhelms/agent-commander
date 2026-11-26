@@ -81,6 +81,11 @@ var registry = register(
 		payloadSchema: closedObject + `,"required":["title"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"diff":{"type":"string","maxLength":98304},"pr":{"type":"string","maxLength":2048},"instructions":{"type":"string","maxLength":4096}}}`,
 	},
 	descriptor{
+		kind: "host", name: "host.run", run: hostHandler,
+		description:   "Run one of the host's enrolled commands by name and return its exit code and the last 64 KiB of output. Extra args are appended only when the command allows them.",
+		payloadSchema: closedObject + `,"required":["command"],"properties":{"command":{"type":"string","minLength":1,"maxLength":128},"args":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":1024}}}}`,
+	},
+	descriptor{
 		kind: "agent", name: "thread.read", recoverable: true, run: threadHandler,
 		description:   "Read the comment thread of a request you sent to this agent.",
 		payloadSchema: closedObject + `,"required":["request"],"properties":{"request":{"type":"string","minLength":1,"maxLength":128}}}`,

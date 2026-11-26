@@ -52,6 +52,14 @@ type input struct {
 	After         string          `json:"after"`
 	PR            string          `json:"pr"`
 	Targets       []Target        `json:"targets"`
+	Method        string          `json:"method"`
+	Path          string          `json:"path"`
+	Body          json.RawMessage `json:"body"`
+	Workspace     string          `json:"workspace"`
+	Branch        string          `json:"branch"`
+	TestCommand   []string        `json:"testCommand"`
+	Item          json.RawMessage `json:"item"`
+	Destination   string          `json:"destination"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -312,6 +320,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
+	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge":
+		return a.teamVerb(ctx, s, verb, in)
 	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
 		return a.liveVerb(ctx, s, verb, in)
 	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
