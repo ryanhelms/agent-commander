@@ -9,9 +9,11 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
 - Provide a scoped live ACP source subscription with cursor expiration and recovery.
 - Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
+- Run the Commander service headless on a Linux server. `agentctl host install` installs it as a systemd user unit, keeps earlier versions and switches back when a new version does not report healthy. `agentctl host doctor` lists what the server still needs.
 
 ### Changed
 
+- `/v1/health` also reports the service's version and API version.
 - Publish first structured ACP text promptly, wake workers when owner controls change, and build a single replay index for stopped conversations.
 - Negotiate a windowed persistent SSH connection with compatible endpoints and preserve the legacy connection for older endpoints.
 

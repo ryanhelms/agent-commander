@@ -77,8 +77,9 @@ Each step reports a result, the same way the tray's **Add server** check reports
 
 ## On the server
 
-- **Unit.** A systemd user unit, `agent-commander.service`, runs `agentctl serve` as the SSH user. Claude's login, tmux sessions and project checkouts all belong to that user. Linger (`loginctl enable-linger`) keeps the service running after the user logs out. This needs `sudo` once, and `deploy` asks before it runs it.
-- **State.** `~/.local/share/agent-commander/`. Deploying, upgrading and rolling back never touch run state. Rollback keeps the old version's files, because running workers may still use them. This follows the ACP binary activation rule in [PATTERN-DECISIONS.md](PATTERN-DECISIONS.md).
+- **Unit.** A systemd user unit, `agent-commander.service`, runs `agentctl serve` as the SSH user. Claude's login, tmux sessions and project checkouts all belong to that user. `KillMode=process` makes a restart stop only `agentctl`, so tmux sessions and workers survive an upgrade. The unit records the installing shell's `PATH`, with `~/.local/bin` first, because noninteractive SSH sessions often leave it out. Linger (`loginctl enable-linger`) keeps the service running after the user logs out. It usually needs `sudo` once; `--sudo-linger` allows passwordless `sudo` for it.
+- **Versions.** `~/.local/share/agent-commander/versions/<version>/agentctl`, with `current` and `previous` links and `~/.local/bin/agentctl` pointing at the current one. The three newest versions, plus `current` and `previous`, stay on disk.
+- **State.** The normal Commander state directory, `~/.config/Agent Commander`, so `agentctl` on the server reaches the service with no settings. Deploying, upgrading and rolling back never touch run state. Rollback keeps the old version's files, because running workers may still use them. This follows the ACP binary activation rule in [PATTERN-DECISIONS.md](PATTERN-DECISIONS.md).
 - **Prerequisites.** tmux, Node 24, Claude Code and the pinned `claude-agent-acp` adapter. Codex is optional. The adapter installs through the existing ACP package adapter with hashed, pinned packages. The Claude sign-in stays manual: `doctor` says when it is missing, and the user runs `claude` once on the server.
 
 ## Connecting the Mac to a headless Commander

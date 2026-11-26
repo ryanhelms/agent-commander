@@ -64,6 +64,7 @@ const usage = `Agent Commander
   agentctl stop-worker WORKER            Stop one managed worker
   agentctl api METHOD /v1/PATH           Call the API with an optional JSON body on stdin
   agentctl mcp                           Serve MCP for a managed actor over stdio
+  agentctl host ...                      Install, check and deploy the headless service (see agentctl host)
   agentctl relay CONFIG.json             Serve the authenticated Commander relay
   agentctl relay --check CONFIG.json     Validate relay configuration without starting it
 
@@ -197,6 +198,8 @@ func run(args []string) error {
 		return provider.RunACPBrokerProxy(ctx, os.Stdin, os.Stdout)
 	case "serve":
 		return serve(ctx, paths)
+	case "host":
+		return hostCommand(ctx, args[1:])
 	case "relay":
 		if len(args) == 3 && args[1] == "--check" {
 			_, err := prepareRelay(args[2])
