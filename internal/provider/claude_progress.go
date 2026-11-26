@@ -55,6 +55,10 @@ func claudeProgressPhase(observation *model.Observation) string {
 				return "turn_ended"
 			}
 		}
+	case observation.GetContent() != nil:
+		if observation.GetContent().GetThought() {
+			return "thinking"
+		}
 	case observation.GetExtension() != nil:
 		if update, ok := acpprocessor.ExtensionUpdate(observation.GetExtension()); ok &&
 			update.Disposition == "decoded" && update.Value.AgentThoughtChunk != nil {

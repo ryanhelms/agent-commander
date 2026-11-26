@@ -61,6 +61,13 @@ func TestStoppedReplaySharesOneUnpacedLoadAcrossHistoryConsumers(t *testing.T) {
 			t.Fatal("replay ended before the last update")
 		}
 		for _, observation := range page.Observations {
+			// The SDK emits a typed plan record ahead of each replay original.
+			if typed := observation.GetSessionUpdate().GetPlan(); typed != nil {
+				if len(typed.Entries) != 1 || typed.Entries[0].Content != fmt.Sprint(index) {
+					t.Fatalf("unexpected typed plan at %d: %v", index, typed)
+				}
+				continue
+			}
 			var plan struct{ Entries []struct{ Content string } }
 			data := observation.GetExtension().GetData()
 			if observation.GetSession().GetSessionId() != ref.SessionID || observation.GetInput() != nil ||

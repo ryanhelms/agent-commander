@@ -78,7 +78,30 @@ func acpActivityEvent(update *acpprocessor.Update, source, cursor string) servic
 	return service.ConsoleEvent{Kind: kind, Text: previewText(value), ACP: a}
 }
 
+// typedUpdate returns the ACP update behind an SDK SessionUpdate or
+// MessageContent observation. It prefers the attached original and otherwise
+// rebuilds the update from the typed fields.
+func typedUpdate(obs *model.Observation) (acpprocessor.Update, bool) {
+	if obs.GetSessionUpdate() == nil && obs.GetContent() == nil {
+		return acpprocessor.Update{}, false
+	}
+	if source := paramsSource(obs); source.GetType() == runtime.ACPUpdateParamsSource {
+		if update, ok := acpprocessor.ExtensionUpdate(source); ok && update.Disposition == "decoded" {
+			return update, true
+		}
+	}
+	return acpprocessor.TypedUpdate(obs)
+}
+
+func typedObservation(obs *model.Observation) bool {
+	return obs.GetSessionUpdate() != nil || obs.GetContent() != nil
+}
+
+// acpExtensionEvent renders an extension or a typed ACP session observation.
 func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEvent {
+	if update, ok := typedUpdate(obs); ok {
+		return acpActivityEvent(&update, source, obs.Cursor)
+	}
 	ext := obs.GetExtension()
 	if event, ok := acpScopedActivity(obs, source); ok {
 		return event
@@ -203,6 +226,8 @@ func idleSourcedEvent(obs *model.Observation, ref *acpprocessor.Activity) servic
 		e = consoleTool(obs.GetTool())
 	case obs.GetInput() != nil:
 		e = service.ConsoleEvent{Kind: "output", Text: "[Provider input request outside an active turn]"}
+	case typedObservation(obs):
+		e = acpExtensionEvent(obs, "live")
 	case obs.GetExtension() != nil:
 		ext := obs.GetExtension()
 		if activity, ok := acpScopedActivity(obs, "live"); ok {

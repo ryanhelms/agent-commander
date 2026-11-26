@@ -190,6 +190,9 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 	var pageCursor string
 	var events []service.ConsoleEvent
 	var prompt historyPrompt
+	// An unsourced typed record is followed by its replay original. The
+	// original replaces the typed row, so the row keeps the original's cursor.
+	var typedTail bool
 	sequence, bytes := 0, 0
 	appendEvent := func(event service.ConsoleEvent) {
 		event = previewConsoleEvent(event)
@@ -209,6 +212,8 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 			return nil, err
 		}
 		for _, obs := range page.Observations {
+			typedRow := typedTail
+			typedTail = false
 			if row, handled := prompt.observe(obs, pageCursor); handled {
 				if row.ACP != nil {
 					appendEvent(row)
@@ -238,9 +243,20 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 				}
 			case obs.GetGap() != nil:
 				event.Kind, event.Text = "output", obs.GetGap().Reason
+			case typedObservation(obs):
+				event = acpExtensionEvent(obs, "provider")
+				typedTail = obs.GetSourceCursor() == ""
 			case obs.GetExtension() != nil:
 				if obs.GetExtension().GetType() == runtime.ACPReplaySource {
 					update, _ := acpprocessor.ExtensionUpdate(obs.GetExtension())
+					if typedRow && len(events) > 0 {
+						last := &events[len(events)-1]
+						replacement := previewConsoleEvent(acpActivityEvent(&update, "provider", obs.Cursor))
+						replacement.Sequence = last.Sequence
+						bytes += len(replacement.Text) - len(last.Text)
+						*last = replacement
+						continue
+					}
 					// The replay adapter follows a portable text/tool observation
 					// with its source record, including across page boundaries.
 					// Attach its identity once, preserving the existing preview row.

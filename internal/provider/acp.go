@@ -722,7 +722,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					s.line(previewText(event.Text))
 					s.recordEvent(event)
 				}
-			case e.GetExtension() != nil:
+			case e.GetExtension() != nil || typedObservation(e):
 				flushText()
 				event := acpExtensionEvent(e, "live")
 				if event.ACP == nil {
