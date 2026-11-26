@@ -237,6 +237,13 @@ struct TeamsIntegrationBand: View {
 
     // MARK: Merge queue
 
+    /// The heading's figure. It counts the branches still waiting, as the Integration tab and the
+    /// "in the queue" readout do. The band also lists the branches that already merged or failed,
+    /// so with any of those the heading says both: "2 queued of 4".
+    static func queueCount(queued: Int, of listed: Int) -> String {
+        queued == listed ? "\(listed)" : "\(queued) queued of \(listed)"
+    }
+
     private var queue: some View {
         let pages = context.pages, state = pages.content, key = context.key
         let entries = state.queue[key] ?? []
@@ -247,7 +254,7 @@ struct TeamsIntegrationBand: View {
         let owner = context.isOwner
         return NetworkSplit {
             VStack(alignment: .leading, spacing: Space.s) {
-                ShellBandHeading(title: "Merge queue", count: "\(entries.count)",
+                ShellBandHeading(title: "Merge queue", count: Self.queueCount(queued: waiting.count, of: entries.count),
                                  note: owner ? "The queue on this Mac. It tests each branch and merges them in order."
                                              : "The queue on the owner’s Mac. Only \(context.ownerName) adds branches and runs it.") {
                     if owner {

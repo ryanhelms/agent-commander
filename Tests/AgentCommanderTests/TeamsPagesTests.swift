@@ -676,6 +676,44 @@ import Testing
     }
 }
 
+// The merge queue's figures (TeamsPagesWorkspace.swift): the tab, the readout and the heading agree.
+@MainActor @Suite struct TeamsQueueCountTests {
+    @Test func theHeadingCountsWhatTheTabAndTheReadoutCount() async {
+        #expect(TeamsIntegrationBand.queueCount(queued: 4, of: 4) == "4")
+        #expect(TeamsIntegrationBand.queueCount(queued: 2, of: 4) == "2 queued of 4")
+        #expect(TeamsIntegrationBand.queueCount(queued: 0, of: 3) == "0 queued of 3")
+        #expect(TeamsIntegrationBand.queueCount(queued: 0, of: 0) == "0")
+
+        // In the sample, the readout's figure is the heading's first figure before and after a merge.
+        let state = TeamsPagesTests.preview(TeamsPlace.workspace("ws-relay", on: TeamsPagesTests.studio))
+        func figures() -> (readout: String?, heading: String) {
+            let content = state.pages(go: { _ in }).content, entries = content.queue[TeamsPagesTests.relay] ?? []
+            let place = TeamsPlace.workspace("ws-relay", on: TeamsPagesTests.studio)
+            return (content.readouts(for: place).first { $0.id == "queue" }?.value,
+                    TeamsIntegrationBand.queueCount(queued: entries.filter(\.isQueued).count, of: entries.count))
+        }
+        let before = figures()
+        #expect(before.readout != nil && before.heading.hasPrefix(before.readout ?? "?"))
+    }
+}
+
+// A table cell's second line (NetworkPageMolecules.swift). Laid out, never drawn.
+@MainActor @Suite struct ShellCellTextTests {
+    static func height(_ wraps: Bool, width: CGFloat) -> CGFloat {
+        let cell = ShellCellText(title: "Retry budget", detail: "Skill, by fixture-sam on studio", detailWraps: wraps)
+        return NSHostingView(rootView: cell.frame(width: width, alignment: .leading)).fittingSize.height
+    }
+
+    /// At the width the knowledge table's item column has in a 1280 pt window with the inspector
+    /// open, the second line wraps onto another line and isn't cut short.
+    @Test func aKnowledgeRowsSecondLineWrapsInANarrowColumn() {
+        let cut = Self.height(false, width: 110), wrapped = Self.height(true, width: 110)
+        #expect(wrapped > cut, "the wrapped line takes the height it needs")
+        // With room, it stays on one line and the row keeps its height.
+        #expect(Self.height(true, width: 400) == Self.height(false, width: 400))
+    }
+}
+
 // The live binding (TeamsPagesLive.swift), against the teams fixture. No test reaches a network.
 @MainActor @Suite struct TeamsPagesLiveTests {
     @Test func theLivePagesReadAndActWithoutMovingTheTray() async throws {
@@ -783,6 +821,37 @@ import Testing
         // What Admin said stays on Admin.
         #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice != nil)
         #expect(live.pages.shown(live.content(model), place: TeamsPlace.groups).notice == nil)
+        #expect(model.route == tray, "nothing the window did moved the tray")
+    }
+
+    /// A saved policy is confirmed in one band, on Admin alone.
+    @Test func aSavedPolicyIsConfirmedOnAdminAlone() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-policy")
+        defer { model.close() }
+        let home = MultiplayerRemoteTests.home, tray = model.route
+        let live = TeamsPagesLiveState()
+        let actions = live.actions(model, share: { _, _ in }, requestAccess: { _, _ in })
+        func send(_ intent: TeamsIntent) {
+            live.pages.send(intent, in: live.pages.shown(live.content(model), place: TeamsPlace.admin), through: actions, go: { _ in },
+                            from: TeamsPlace.admin)
+        }
+        await live.read(place: TeamsPlace.admin, model: model)
+        let saved = try #require(live.content(model).server(home)?.policy)
+        let days = saved.retentionDays == 90 ? 60 : 90
+        live.pages.drafts.policy.retentionDays = String(days)
+        send(.askSetPolicy(server: home))
+        #expect(live.pages.selection.confirming == .setPolicy(server: home))
+        send(.confirm)
+        for _ in 0..<400 where live.pages.notice == nil && live.pages.failure == nil || !live.pages.results.running.isEmpty {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let name = try #require(model.server(home)?.displayName)
+        #expect(live.pages.failure == nil && live.content(model).server(home)?.policy?.retentionDays == days)
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice == "Policy set on \(name).")
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.groups).notice == nil)
+        // Leaving Admin takes the band with it.
+        live.pages.left(TeamsPlace.admin)
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice == nil)
         #expect(model.route == tray, "nothing the window did moved the tray")
     }
 }

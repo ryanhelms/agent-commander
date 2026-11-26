@@ -321,7 +321,8 @@ struct TeamsKnowledgePage: View {
                                 MultiplayerMark(symbol: MultiplayerKnowledgeKind.symbol(for: row.item.kind), tone: row.isMine ? .focus : .neutral,
                                                 size: 22)
                                 ShellCellText(title: row.item.name.multiplayerDisplay,
-                                              detail: "\(kind), \(row.isMine ? "by you" : "by \(TeamsPagesContent.owner(of: row.item).multiplayerDisplay)") on \(row.serverName)")
+                                              detail: "\(kind), \(row.isMine ? "by you" : "by \(TeamsPagesContent.owner(of: row.item).multiplayerDisplay)") on \(row.serverName)",
+                                              detailWraps: true)
                             }
                             .shellCell(Self.item)
                             ShellCellText(title: row.visibility).shellCell(Self.visible)

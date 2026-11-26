@@ -332,6 +332,9 @@ struct ShellCellText: View {
     var isData = false
     /// The detail reports how an action ended: `working` for done, `failure` for why it failed.
     var detailTone: Tone = .neutral
+    /// The detail is a phrase whose every part matters (who shared it, and on which server), so it
+    /// wraps in a narrow column and the row grows. Otherwise it is one line.
+    var detailWraps = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -340,7 +343,9 @@ struct ShellCellText: View {
             if let detail, !detail.isEmpty {
                 Text(detail).themeType(theme.type.sub)
                     .foregroundStyle(.theme(detailTone == .neutral ? \.color.secondary : detailTone.role))
-                    .lineLimit(1).truncationMode(.tail)
+                    .lineLimit(detailWraps ? nil : 1).truncationMode(.tail)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: detailWraps)
             }
         }
     }
