@@ -168,7 +168,7 @@ struct PeoplePage: View {
             if let add = actions.addFriend {
                 if addable.count == 1, let only = addable.first {
                     Button("Add friend…") { add(only.id) }.buttonStyle(ThemeButtonStyle()).disabled(state.isBusy)
-                        .help("Look up a friend on \(only.name) by exact handle, in the network panel")
+                        .help("Look up a friend on \(only.name) by exact handle")
                 } else {
                     Menu("Add friend…") {
                         ForEach(addable) { server in Button("On \(server.name)") { add(server.id) } }

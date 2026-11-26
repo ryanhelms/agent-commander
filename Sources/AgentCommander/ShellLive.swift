@@ -46,8 +46,10 @@ struct ShellNetwork: Equatable {
     /// Reads the tray's model. Every property read here is observed by the view that calls it.
     @MainActor init(model: MultiplayerModel) {
         servers = model.servers
-        approvals = model.share.pendingApprovals
-        access = model.share.pendingAccess
+        // What still waits. An answered row is held by the model for a moment to show its outcome,
+        // and no longer counts.
+        approvals = model.share.waitingApprovals
+        access = model.share.waitingAccess
         // The same rule as the tray's friend groups: a server's requests show only while its
         // session is online and its certificate is the pinned one.
         friendRequests = model.servers.flatMap { server -> [FriendRequest] in

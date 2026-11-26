@@ -91,6 +91,19 @@ extension NetworkPagesContent {
         canGrant = share.canGrant
         canComment = !model.isBusy && MultiplayerShareModel.canPost(comment: state.comment)
         canSendFanout = !model.isBusy && state.fanout.canSend
+        for server in model.servers {
+            for approval in share.approvals[server.id] ?? [] {
+                if let answer = share.answer(for: approval, on: server.id) {
+                    answered[NetworkActionResult.key(.approval, approval.id, on: server.id)] = answer
+                }
+            }
+            for request in share.incomingAccess(server.id) + share.outgoingAccess(server.id) {
+                if let answer = share.answer(for: request, on: server.id) {
+                    answered[NetworkActionResult.key(.access, request.id, on: server.id)] = answer
+                }
+            }
+        }
+        threads = state.threads
         results = state.results.results
         running = state.results.running
         working = model.working
@@ -167,6 +180,8 @@ final class NetworkPagesLiveState {
     var route = MultiplayerTrayRoute.home
     var thread: MultiplayerLoad<MultiplayerThread> = .loading
     var audit: MultiplayerLoad<[MultiplayerAuditEntry]> = .loading
+    /// The threads the person takes part in, by server. Nil until the Threads page first reads them.
+    var threads: [String: [MultiplayerThreadSummary]]?
     /// The certificate check of the open server.
     var probe = MultiplayerProbeState.idle
     var confirmingTrust: String?
@@ -249,6 +264,8 @@ struct LiveNetworkPage: View {
         case NetworkPlace.audit:
             if case .share(_, .audit) = state.route { return }
             if let first = model.friendServers.first { live.openAudit("", on: first.id) }
+        case NetworkPlace.threads:
+            live.readThreads()
         default:
             break
         }
@@ -325,6 +342,19 @@ struct LiveNetworkIntents {
         }
     }
 
+    /// Reads the threads the person takes part in on every signed-in server: sent and received,
+    /// consults included. A server that can't be read keeps what it showed before.
+    func readThreads() {
+        let servers = model.friendServers.map(\.id)
+        Task {
+            var next = state.threads ?? [:]
+            for server in servers {
+                if case .loaded(let list) = await share.loadThreads(on: server) { next[server] = list }
+            }
+            state.threads = next.filter { servers.contains($0.key) }
+        }
+    }
+
     func openAudit(_ resource: String, on server: String) {
         state.open(.share(server, .audit(resource: resource)))
         let read = state.beginRead()
@@ -339,7 +369,9 @@ struct LiveNetworkIntents {
     func reload() {
         guard case .share(let server, let page) = state.route else { return }
         switch page {
-        case .thread(let request, _): readThread(request, on: server)
+        case .thread(let request, _):
+            readThread(request, on: server)
+            readThreads()
         case .audit(let resource): openAudit(resource, on: server)
         default: break
         }
@@ -528,7 +560,7 @@ struct LiveNetworkIntents {
                 guard await model.postComment(text, to: request, on: server).isDone else { return }
                 // The typed text is cleared only if it is still what was sent.
                 if state.comment == text { state.comment = "" }
-                if case .share(server, .thread(request, _)) = state.route { reload() }
+                if case .share(server, .thread(request, _)) = state.route { reload() } else { readThreads() }
             }
         }
         actions.openAudit = { resource, server in openAudit(resource, on: server) }

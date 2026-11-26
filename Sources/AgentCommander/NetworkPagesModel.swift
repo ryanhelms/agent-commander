@@ -133,6 +133,12 @@ struct NetworkPagesContent {
     var canComment = false
     var canSendFanout = false
     /// How the last action on a row ended, by `NetworkActionResult.key`.
+    /// How an approval or access request just answered came out, by its row's result key, while
+    /// the network still lists it.
+    var answered: [String: MultiplayerAnswer] = [:]
+    /// The threads the person takes part in, by server, as the network listed them. Nil until
+    /// they are read; the list is then built from the requests the model already holds.
+    var threads: [String: [MultiplayerThreadSummary]]? = nil
     var results: [String: NetworkActionResult] = [:]
     /// Rows whose action is still running.
     var running: Set<String> = []
@@ -218,7 +224,7 @@ struct NetworkPagesContent {
                                           resourceName: resourceName(approval.resource, on: server.id),
                                           waiting: approval.arrived.map { max(0, now.timeIntervalSince($0)) },
                                           expiresIn: approval.expires.map { max(0, $0.timeIntervalSince(now)) },
-                                          result: results[key], isRunning: running.contains(key))
+                                          result: results[key], isRunning: running.contains(key), answer: answered[key])
             }
         }
         .sorted { ($0.expiresIn ?? .infinity) < ($1.expiresIn ?? .infinity) }
@@ -233,7 +239,7 @@ struct NetworkPagesContent {
                     return NetworkAccessRow(server: server.id, serverName: server.name, request: request,
                                             resourceName: resourceName(request.resource, on: server.id), isIncoming: incoming,
                                             waiting: request.createdAt.map { max(0, now.timeIntervalSince($0)) },
-                                            result: results[key], isRunning: running.contains(key))
+                                            result: results[key], isRunning: running.contains(key), answer: answered[key])
                 }
             }
             .sorted { ($0.waiting ?? .infinity) < ($1.waiting ?? .infinity) }
@@ -281,6 +287,7 @@ struct NetworkPagesContent {
 
     /// Every request you sent that has a thread: hand-offs, reviews and each fan-out answer.
     var threadRows: [NetworkWorkRow] {
+        if let threads { return Self.rows(threads: threads, in: self) }
         let answers = servers.flatMap { server in
             server.fanouts.flatMap { fanout in
                 fanout.children.map { child in
@@ -293,6 +300,36 @@ struct NetworkPagesContent {
             }
         }
         return (workRows + answers).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
+    }
+
+    /// The network's own list of threads as rows: sent and received, consults included, newest first.
+    static func rows(threads: [String: [MultiplayerThreadSummary]], in content: NetworkPagesContent) -> [NetworkWorkRow] {
+        content.servers.flatMap { server -> [NetworkWorkRow] in
+            (threads[server.id] ?? []).flatMap { summary -> [NetworkWorkRow] in
+                let name = content.resourceName(summary.resource, on: server.id).multiplayerDisplay
+                let received = summary.direction == .received
+                let who = (summary.handle.isEmpty ? summary.peer : summary.handle).multiplayerDisplay
+                let kind: NetworkWorkRow.Kind = received ? .received
+                    : summary.action == MultiplayerSharePolicy.handoff ? .handoff
+                    : summary.action == MultiplayerSharePolicy.review ? .review
+                    : summary.action.hasPrefix(MultiplayerSharePolicy.fanoutPrefix) ? .fanout : .consult
+                let title = summary.title.isEmpty ? "Untitled \(kind.title)" : summary.title.multiplayerDisplay
+                let comments = summary.comments.map { MultiplayerPlural.count($0, "comment") } ?? ""
+                func row(_ request: String, _ title: String, _ target: String, _ kind: NetworkWorkRow.Kind) -> NetworkWorkRow {
+                    NetworkWorkRow(kind: kind, server: server.id, serverName: server.name, request: request, title: title,
+                                   target: target, state: comments, tone: .neutral, at: summary.lastCommentAt ?? summary.at)
+                }
+                // A fan-out's thread is one per worker it went to.
+                if !summary.children.isEmpty {
+                    return summary.children.map { child in
+                        let worker = content.resourceName(child.resource, on: server.id).multiplayerDisplay
+                        return row(child.request, "\(worker): \(title)", worker, .answer)
+                    }
+                }
+                return [row(summary.request, title, received && !who.isEmpty ? "\(who), to \(name)" : name, kind)]
+            }
+        }
+        .sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
     }
 
     /// What friends offer on every online server: what you can use first, then by owner and name.
@@ -360,8 +397,9 @@ struct NetworkPagesContent {
         case NetworkPlace.approvals:
             let approvals = approvalRows
             let access = accessRows
-            var cells = [cell("approvals", "approvals", approvals.count, tone: .attention),
-                         cell("access", "access requests", access.filter(\.isIncoming).count, tone: .attention),
+            // An answered row still shows its outcome, but it no longer waits and isn't counted.
+            var cells = [cell("approvals", "approvals", approvals.filter { $0.answer == nil }.count, tone: .attention),
+                         cell("access", "access requests", access.filter { $0.isIncoming && $0.answer == nil }.count, tone: .attention),
                          cell("sent", "you asked", access.filter { !$0.isIncoming && $0.request.isPending }.count)]
             if let soonest = approvals.compactMap(\.expiresIn).min() {
                 cells.append(ShellReadout(id: "soonest", label: "first lapses in", value: NeedsYouClock.left(soonest),
@@ -423,7 +461,7 @@ struct NetworkPagesContent {
         case NetworkPlace.directory: return "What friends offer on your servers. Granted actions work now; ask the owner for the rest."
         case NetworkPlace.approvals: return "Uses of your resources that wait for you, and requests for access in both directions."
         case NetworkPlace.handoffs: return "Tasks you handed to friends’ agents and reviews you asked for, newest first."
-        case NetworkPlace.threads: return "The comments on each request you sent. You and the agents write in the same thread."
+        case NetworkPlace.threads: return "The comments on each request you sent or were sent. You and the agents write in the same thread."
         case NetworkPlace.audit: return "Every use of a shared resource, with who asked, how it ended and what it cost."
         case NetworkPlace.fanout: return "One prompt sent to several workers, with their answers side by side."
         case NetworkPlace.shared: return "What you share, who can use it and for how long."
@@ -444,6 +482,8 @@ struct NetworkApprovalRow: Identifiable, Equatable {
     let expiresIn: TimeInterval?
     var result: NetworkActionResult? = nil
     var isRunning = false
+    /// How it came out, while the network still lists the answered row.
+    var answer: MultiplayerAnswer? = nil
 
     var id: String { "\(server)/\(approval.id)" }
     var who: String { approval.peer.isEmpty ? "A friend" : approval.peer.multiplayerDisplay }
@@ -459,6 +499,8 @@ struct NetworkAccessRow: Identifiable, Equatable {
     let waiting: TimeInterval?
     var result: NetworkActionResult? = nil
     var isRunning = false
+    /// How it came out, while the network still lists the answered row.
+    var answer: MultiplayerAnswer? = nil
 
     var id: String { "\(server)/\(request.id)" }
     /// The other person: who asks you, or whom you asked.
@@ -483,12 +525,18 @@ struct NetworkWorkRow: Identifiable, Equatable {
         case handoff, review, fanout
         /// One worker's answer to a fan-out.
         case answer
+        /// A prompt you sent to a friend's worker, or a suggestion.
+        case consult
+        /// A request a friend sent to a resource of yours.
+        case received
 
         var symbol: String {
             switch self {
             case .handoff: "arrow.up.right"
             case .review: "list.bullet.rectangle"
             case .fanout, .answer: "arrow.triangle.branch"
+            case .consult: "bubble.left"
+            case .received: "arrow.down.left"
             }
         }
 
@@ -498,6 +546,8 @@ struct NetworkWorkRow: Identifiable, Equatable {
             case .review: "review"
             case .fanout: "fan-out"
             case .answer: "answer"
+            case .consult: "consult"
+            case .received: "request to you"
             }
         }
     }

@@ -348,11 +348,17 @@ struct ShellCellText: View {
 struct NetworkRowVerbs: View {
     let isRunning: Bool
     let result: NetworkActionResult?
+    /// How the row was answered, while the network still lists it: the outcome takes the verbs' place.
+    var answer: MultiplayerAnswer? = nil
     let verbs: [MultiplayerRowVerb]
 
     var body: some View {
         if isRunning {
             MultiplayerSpinner().accessibilityLabel("In progress")
+        } else if let answer {
+            MultiplayerStateLabel(lamp: answer == .approved ? .on : answer == .denied ? .error : .off, text: answer.title,
+                                  tone: answer == .approved ? .working : answer == .denied ? .failure : .neutral)
+                .accessibilityIdentifier("network-row-answered")
         } else if result?.isDone == true {
             MultiplayerStateLabel(lamp: .on, text: "Done", tone: .working)
                 .accessibilityIdentifier("network-row-done")

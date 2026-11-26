@@ -76,7 +76,7 @@ import Testing
         let wall = WallLiveWork(model: model)
         #expect(wall.remoteWorkers == model.share.remoteWorkers && !wall.remoteWorkers.isEmpty)
         #expect(wall.controls.map(\.handover) == model.share.live.activeHandovers.map(\.item))
-        #expect(wall.suggestions.count == model.share.pendingApprovals.filter(\.item.isSuggestion).count)
+        #expect(wall.suggestions.count == model.share.waitingApprovals.filter(\.item.isSuggestion).count)
         #expect(wall.work.allSatisfy { $0.kind != .handoff })
         if let control = wall.controls.first {
             #expect(control.resourceName == model.share.resourceName(control.handover.resource, on: control.server))

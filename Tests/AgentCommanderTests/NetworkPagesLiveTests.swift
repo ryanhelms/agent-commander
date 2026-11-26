@@ -80,6 +80,42 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
         #expect(model.route == tray)
     }
 
+    @Test func threadsListsWhatTheNetworkSaysYouTakePartIn() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-threads")
+        defer { model.close() }
+        let state = NetworkPagesLiveState()
+        let (intents, _) = Self.pages(model, state)
+        // Before the read, the list is built from the requests the model already holds.
+        #expect(NetworkPagesContent(model: model, state: state).threads == nil)
+        intents.readThreads()
+        await Self.settle(model) { state.threads != nil }
+        let listed = try #require(state.threads?[Self.home])
+        let rows = NetworkPagesContent(model: model, state: state).threadRows
+        #expect(!listed.isEmpty && !rows.isEmpty)
+        // Received requests and consults are there, which the model's own lists never held.
+        #expect(rows.contains { $0.kind == .received } == listed.contains { $0.direction == .received })
+        #expect(rows.allSatisfy { !$0.request.isEmpty && !$0.title.isEmpty })
+    }
+
+    /// A row that was answered stays for a moment with its outcome, and is no longer counted.
+    @Test func anAnsweredApprovalShowsItsOutcomeAndLeavesTheCount() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-answer")
+        defer { model.close() }
+        let state = NetworkPagesLiveState()
+        let waiting = model.share.waitingApprovals.count
+        let pending = try #require(model.share.waitingApprovals.first)
+        #expect(ShellNetwork(model: model).approvals.count == waiting)
+        _ = await model.decide(pending.item, on: pending.server, approve: false)
+        let content = NetworkPagesContent(model: model, state: state)
+        let key = NetworkActionResult.key(.approval, pending.item.id, on: pending.server)
+        if let row = content.approvalRows.first(where: { $0.approval.id == pending.item.id }) {
+            // Held: the row says how it came out.
+            #expect(row.answer == .denied && content.answered[key] == .denied)
+        }
+        #expect(ShellNetwork(model: model).approvals.count == waiting - 1)
+        #expect(content.readouts(for: NetworkPlace.approvals).first { $0.id == "approvals" }?.value == "\(waiting - 1)")
+    }
+
     @Test func aGrantIsRevokedByValueAndTheRowSaysHowItEnded() async throws {
         let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-revoke")
         defer { model.close() }

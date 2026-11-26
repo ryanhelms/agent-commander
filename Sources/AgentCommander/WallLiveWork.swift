@@ -104,7 +104,7 @@ extension WallLiveWork {
             Control(server: pending.server, serverName: model.server(pending.server)?.displayName ?? pending.server,
                     handover: pending.item, resourceName: share.resourceName(pending.item.resource, on: pending.server))
         }
-        suggestions = share.pendingApprovals.filter(\.item.isSuggestion).map { pending in
+        suggestions = share.waitingApprovals.filter(\.item.isSuggestion).map { pending in
             Suggestion(server: pending.server, approval: pending.item.id, resource: pending.item.resource,
                        who: pending.item.peer.isEmpty ? "A friend" : pending.item.peer.multiplayerDisplay,
                        text: pending.item.request)
