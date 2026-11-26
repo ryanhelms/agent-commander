@@ -40,6 +40,20 @@ Foundations come in two themes, black glass and console, with the same roles (`t
 | Templates | `WorkspacePage`, `TaskSheet`, and the window material in `CockpitShell` | `Templates.swift` |
 | Pages | Preferences, Hosts, All agents, Search history | `SetupPages.swift`, `WorkspacePages.swift`, `DelegationPages.swift` |
 
+The redesigned main-window shell (increment 2, design previews only) follows the same levels:
+
+| Level | Shell components | File |
+| --- | --- | --- |
+| Values | `CommanderNavigation`, `CommanderPlace`, `CommanderNavigationAction`, `NeedsYouInbox`, `NeedsYouItem` | `ShellNavigation.swift`, `NeedsYouModel.swift` |
+| Foundations | `ShellLayout`, `NeedsYouLayout` | `ShellMolecules.swift`, `NeedsYouPage.swift` |
+| Atoms | `ShellCount`, `ShellPlaceMark`, `ShellSelectable`, `shellSidebarSurface` | `ShellMolecules.swift` |
+| Molecules | `ShellPlaceRow`, `ShellGroupHeading`, `ShellModeCell`, `ShellReadoutStrip`, `ShellPresenceMenu`, `ShellToolbarReadouts`, `ShellSegments`, `ShellProfileRow`, `ShellLoadNote`, `ShellInboxCell`, `ShellToolbarTitle`, `NeedsYouOriginCell`, `NeedsYouKindTag`, `NeedsYouClockLabel`, `NeedsYouVerbStrip`, `NeedsYouOutcomeWell`, `NeedsYouReplyField` | `ShellMolecules.swift`, `ShellNeedsYouSidebar.swift`, `ShellTemplate.swift`, `NeedsYouPage.swift` |
+| Organisms | `ShellPlaceList`, `ShellSidebarGrouped`, `ShellModeRail`, `ShellNeedsYouSidebar`, `NeedsYouRow`, `NeedsYouList` | `ShellSidebarGrouped.swift`, `ShellModeRail.swift`, `ShellNeedsYouSidebar.swift`, `NeedsYouPage.swift` |
+| Templates | `ShellTemplate` | `ShellTemplate.swift` |
+| Pages | `NeedsYouPage`, and the previews `ShellPreviewPage`, `ShellPlaceholderPage`, `ShellWallPage` | `NeedsYouPage.swift`, `ShellPreview.swift` |
+
+The three sidebars take one `CommanderNavigation` and emit `CommanderNavigationAction`s, so a page never depends on which sidebar is showing.
+
 The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
 
 ## Native composition and ownership
