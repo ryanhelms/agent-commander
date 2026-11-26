@@ -28,10 +28,13 @@ python3 -B multiplayer/deploy/remote/remote.py deploy docker ops@server \
 
 | Piece | What the deploy runs |
 | --- | --- |
-| Sidecar | `agent-commander-relay-tailnet`, from `tailscale/tailscale`. It logs in to `--tailnet-login-server` with the pre-auth key, as `--tailnet-hostname`. Its state lives in the `agent-commander-relay-tailnet` volume, so the node keeps its name and 100.x address across redeploys. It needs `/dev/net/tun` and `NET_ADMIN`. It sets `net.ipv4.ip_unprivileged_port_start=0` in its network namespace, so the unprivileged relay can listen on 443. |
-| Relay | The same `agent-commander-relay` container, started with `--network container:agent-commander-relay-tailnet` and no published port. It listens on `:443` inside the sidecar's namespace. Only tailnet peers and the server's own Docker bridge can reach it. |
+| Sidecar | `agent-commander-relay-tailnet`, from `tailscale/tailscale`, on the host network in userspace mode (`--tun=userspace-networking`). It creates no TUN device, route or firewall rule on the server and needs no capabilities. It logs in to `--tailnet-login-server` with the pre-auth key, as `--tailnet-hostname`, with `--accept-dns=false`. Its state, socket and serve configuration live in the `agent-commander-relay-tailnet` volume, so the node keeps its name and 100.x address across redeploys. |
+| Relay | The same `agent-commander-relay` container, on the host network with no published port. It listens on `127.0.0.1:18443` (`--tailnet-local-port`), so nothing outside the server reaches it directly, and it does not collide with a proxy on `*:443`. |
+| Forwarding | `tailscale serve --bg --tcp 443 tcp://127.0.0.1:18443` in the sidecar. It forwards raw TCP, so the relay's TLS and device client certificates pass through untouched. |
 | Certificate names | After the sidecar is up, the deploy reads its MagicDNS name and tailnet addresses (`tailscale status --json`) and adds them to the relay's hostnames with `commander-relay host configure`. The relay reissues its leaf certificate with the same key, so the pin does not change. |
 | URL | `https://agent-relay.tail.internal`. `--hostname` becomes optional: the tailnet names are enough. |
+
+**Why not a shared network namespace.** A first design ran the sidecar on the Docker bridge with a kernel TUN device and started the relay with `--network container:<sidecar>`. It works where the bridge has egress, but it failed on the production router: that Docker bridge has no outbound internet, so the node got neither DERP nor STUN, and a container cannot hairpin to the router's public address. Userspace mode on the host network uses the host's own egress and leaves the host's networking alone. The relay deployed by hand next to the production Headscale uses this layout.
 
 The pre-auth key:
 
@@ -71,8 +74,8 @@ This is frontend work under AGENTS.md: Fable with the `frontend-design` skill, D
 `multiplayer/deploy/remote/testhosts/rehearse.py --mode tailnet` starts a disposable Headscale container on a private Docker network and never touches the production server. It:
 
 1. creates a Headscale user and two tagged pre-auth keys;
-2. deploys the relay to the Docker test host with the sidecar and no published port;
-3. checks that the relay is not reachable on the test host's address;
+2. deploys the relay to the Docker test host with the userspace sidecar and no published port;
+3. checks that neither 443 nor the loopback port answers on the test host's own address;
 4. starts a client node on the same Headscale, runs `remote.py connect` against `https://agent-relay.tail.internal`, and runs the Linux device agent there: `tailnet-status`, `tailnet-relays` and `server-probe` on the listed URL, with the pin matching the deploy;
 5. redeploys without an auth key and confirms the node name, address and pin are unchanged.
 
@@ -81,6 +84,6 @@ The tray verbs have unit tests against a fake `tailscale` CLI.
 ## Out of scope
 
 - Changing the production Headscale: creating keys, users, tags or ACLs. The operator does this.
-- Tailscale Serve, Funnel or Tailscale-issued HTTPS certificates. The relay keeps its own CA and pin.
+- Tailscale Serve HTTPS, Funnel or Tailscale-issued certificates. Serve forwards raw TCP only; the relay keeps its own CA and pin.
 - Embedding Tailscale (`tsnet`) in the relay or the app.
 - Systemd-mode sidecars.

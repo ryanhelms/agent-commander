@@ -8,7 +8,13 @@ host the rehearsal deploys, checks the connection, adds the relay to a real
 Agent Commander device agent with isolated state, restarts the relay,
 redeploys and confirms that the TLS identity survives, then removes it.
 
-  python3 -B multiplayer/deploy/remote/testhosts/rehearse.py [--keep] [--mode docker|systemd]
+The tailnet mode starts a disposable Headscale on a private Docker network,
+deploys the relay to a Docker host behind a userspace Tailscale sidecar
+with no published port, and checks it from a second tailnet node: the connection
+check, and the Linux device agent's tailnet-status, tailnet-relays and
+server-probe verbs. It never contacts a real tailnet's control server.
+
+  python3 -B multiplayer/deploy/remote/testhosts/rehearse.py [--keep] [--mode docker|systemd|tailnet]
 """
 import argparse
 import hashlib
@@ -31,7 +37,16 @@ HOSTS = {
     # mode: (image, container, ssh port, relay port)
     "systemd": ("acr-testhost-systemd", "acr-rehearsal-systemd", 22401, 22443),
     "docker": ("acr-testhost-docker", "acr-rehearsal-docker", 22402, 22444),
+    "tailnet": ("acr-testhost-docker", "acr-rehearsal-tailnet", 22403, 22445),
 }
+# The private network for the tailnet rehearsal. headscale/config.yaml names
+# the control server's address on it.
+TAILNET_NET, TAILNET_SUBNET = "acr-rehearsal-tailnet", "10.247.0.0/24"
+HEADSCALE, HEADSCALE_IP, HEADSCALE_IMAGE = "acr-rehearsal-headscale", "10.247.0.10", "headscale/headscale:0.27.1"
+LOGIN_SERVER = f"http://{HEADSCALE_IP}:8080"
+TS_HOST, CLIENT, CLIENT_IMAGE = "acr-rehearsal-tailnet", "acr-rehearsal-client", "acr-testhost-client"
+RELAY_NODE = "agent-relay"
+RELAY_URL = f"https://{RELAY_NODE}.tail.internal"
 
 
 def log(message):
@@ -48,7 +63,8 @@ def output(args, **kwargs):
 
 def start_host(mode, public_key):
     image, name, ssh_port, relay_port = HOSTS[mode]
-    run(["docker", "build", "-q", "-t", image, "-f", THIS / f"{mode}.Dockerfile", THIS], stdout=subprocess.DEVNULL)
+    dockerfile = "docker" if mode == "tailnet" else mode
+    run(["docker", "build", "-q", "-t", image, "-f", THIS / f"{dockerfile}.Dockerfile", THIS], stdout=subprocess.DEVNULL)
     subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     args = ["docker", "run", "-d", "--name", name, "--hostname", name, "--privileged",
             "-p", f"127.0.0.1:{ssh_port}:22", "-p", f"127.0.0.1:{relay_port}:443"]
@@ -69,7 +85,9 @@ def start_host(mode, public_key):
         time.sleep(1)
     else:
         raise SystemExit(f"{name} did not start SSH")
-    if mode == "docker":
+    if mode == "tailnet":
+        run(["docker", "network", "connect", "--ip", "10.247.0.20", TAILNET_NET, name])
+    if mode != "systemd":
         for _ in range(60):
             if subprocess.run(["docker", "exec", name, "docker", "info"], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL).returncode == 0:
@@ -181,9 +199,147 @@ def rehearse(mode, key, public_key, workdir):
     return name
 
 
+# --- Tailnet rehearsal -------------------------------------------------------
+
+def headscale(*args):
+    return output(["docker", "exec", HEADSCALE, "headscale", *args])
+
+
+def start_tailnet():
+    """A private network with a disposable Headscale on it."""
+    for name in (CLIENT, HEADSCALE, TS_HOST):
+        subprocess.run(["docker", "rm", "-f", "-v", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["docker", "network", "rm", TAILNET_NET], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run(["docker", "network", "create", "--subnet", TAILNET_SUBNET, TAILNET_NET], stdout=subprocess.DEVNULL)
+    run(["docker", "run", "-d", "--name", HEADSCALE, "--network", TAILNET_NET, "--ip", HEADSCALE_IP,
+         "-v", f"{THIS / 'headscale'}:/etc/headscale:ro", "--tmpfs", "/var/lib/headscale", "--tmpfs", "/var/run/headscale",
+         HEADSCALE_IMAGE, "serve"], stdout=subprocess.DEVNULL)
+    for _ in range(60):
+        if subprocess.run(["docker", "exec", HEADSCALE, "headscale", "users", "list"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0:
+            break
+        time.sleep(1)
+    else:
+        raise SystemExit("the disposable Headscale did not start:\n" + output(["docker", "logs", HEADSCALE]))
+    user = json.loads(headscale("users", "create", "rehearsal", "-o", "json"))["id"]
+
+    def key(*extra):
+        return json.loads(headscale("preauthkeys", "create", "-u", str(user), "-e", "1h", "-o", "json", *extra))["key"]
+
+    return key("--tags", "tag:relay"), key()
+
+
+def start_client(auth_key, workdir):
+    """A second tailnet node with python, openssl, remote.py and the Linux device agent."""
+    run(["docker", "build", "-q", "-t", CLIENT_IMAGE, "-f", THIS / "client.Dockerfile", THIS], stdout=subprocess.DEVNULL)
+    run(["docker", "run", "-d", "--name", CLIENT, "--hostname", "rehearsal-client", "--network", TAILNET_NET,
+         "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW", "--device", "/dev/net/tun",
+         "--entrypoint", "tailscaled", CLIENT_IMAGE, "--state=mem:"], stdout=subprocess.DEVNULL)
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}[output(["docker", "exec", CLIENT, "uname", "-m"]).strip()]
+    binary = workdir / f"commander-network-linux-{arch}"
+    run(["go", "build", "-trimpath", "-o", binary, "./cmd/commander-network"], cwd=MODULE,
+        env=dict(os.environ, GOWORK="off", GOOS="linux", GOARCH=arch, CGO_ENABLED="0"))
+    run(["docker", "cp", binary, f"{CLIENT}:/usr/local/bin/commander-network"])
+    run(["docker", "cp", REMOTE, f"{CLIENT}:/usr/local/bin/remote.py"])
+    for _ in range(40):
+        if subprocess.run(["docker", "exec", CLIENT, "tailscale", "status"], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode in (0, 1):
+            break
+        time.sleep(0.5)
+    run(["docker", "exec", "-i", CLIENT, "tailscale", "up", f"--login-server={LOGIN_SERVER}",
+         "--hostname=rehearsal-client", "--accept-dns=true", "--auth-key=file:/dev/stdin", "--timeout=90s"],
+        input=auth_key.encode())
+
+
+def in_client(*args, data=None):
+    return run(["docker", "exec", "-i", CLIENT, *args], input=data, stdout=subprocess.PIPE).stdout.decode()
+
+
+def client_device_agent(pin):
+    """Runs the Linux device agent on the client node and finds the relay through tailnet verbs."""
+    env = ["env", "COMMANDER_NETWORK_STATE=/tmp/net/state", "COMMANDER_NETWORK_SOCKET=/tmp/net/network.sock",
+           "AGENT_COMMANDER_SOCKET=/tmp/net/commander.sock"]
+    in_client("sh", "-c", "mkdir -p -m 0700 /tmp/net/state")
+    # The probe checks that sign-in could start; a placeholder secret is enough.
+    client = {"installed": {"client_id": CLIENT_ID, "client_secret": "rehearsal-placeholder"}}
+    in_client("sh", "-c", "umask 077 && cat > /tmp/net/state/google-desktop-client.json", data=json.dumps(client).encode())
+    run(["docker", "exec", "-d", CLIENT, *env, "commander-network", "serve"])
+    for _ in range(100):
+        if subprocess.run(["docker", "exec", CLIENT, "test", "-S", "/tmp/net/network.sock"]).returncode == 0:
+            break
+        time.sleep(0.1)
+
+    def tray(verb, body):
+        reply = json.loads(in_client(*env, "commander-network", "tray", verb, data=json.dumps(body).encode()))
+        assert reply.get("ok"), f"tray {verb} failed: {reply}"
+        return reply["data"]
+
+    status = tray("tailnet-status", {})
+    print(json.dumps({"tailnet-status": status}, indent=2))
+    assert status["running"] and status["magicDNSSuffix"] == "tail.internal", "the client is not on the tailnet"
+    relays = tray("tailnet-relays", {})["relays"]
+    print(json.dumps({"tailnet-relays": relays}, indent=2))
+    relay = next((r for r in relays if r["name"] == RELAY_NODE), None)
+    assert relay and relay["url"] == RELAY_URL and relay["online"] and not relay["added"], "the relay is not listed"
+    probe = tray("server-probe", {"url": relay["url"]})
+    steps = {s["step"]: s for s in probe["steps"]}
+    print(json.dumps({"probe": [{k: s.get(k) for k in ("step", "ok", "detail")} for s in probe["steps"]]}, indent=2))
+    for step in ("dns", "tcp", "tls", "relay", "signin"):
+        assert steps[step]["ok"], f"probe step {step} failed: {steps[step]}"
+    assert steps["tls"]["pin"] == pin, "the app would pin a different certificate"
+    in_client("sh", "-c", "pkill commander-network || true")
+
+
+def tailnet_deploy(ssh_port, key, *extra):
+    text = remote("deploy", "docker", ssh_port, key, "--name", "Rehearsal tailnet", "--issuer", ISSUER,
+                  "--client-id", CLIENT_ID, "--admin", "admin@example.org", "--tailnet-login-server", LOGIN_SERVER,
+                  "--tailnet-hostname", RELAY_NODE, "--no-connect", *extra)
+    placed = json.loads(text)
+    print(json.dumps(placed, indent=2))
+    assert placed["url"] == RELAY_URL and placed["pin"].startswith("sha256/"), "unexpected relay URL or pin"
+    assert "tag:relay" in placed["tailnet"]["tags"], "the relay node is not tagged tag:relay"
+    return placed
+
+
+def rehearse_tailnet(key, public_key, workdir):
+    log("tailnet: start a disposable Headscale and a remote Docker host")
+    relay_key, client_key = start_tailnet()
+    _, ssh_port, relay_port = start_host("tailnet", public_key)
+    key_file = workdir / "relay.authkey"
+    key_file.write_text(relay_key)
+    key_file.chmod(0o600)
+    log("tailnet: deploy over SSH with a Tailscale sidecar and no published port")
+    first = tailnet_deploy(ssh_port, key, "--tailnet-auth-key-file", key_file)
+    for container in ("agent-commander-relay", "agent-commander-relay-tailnet"):
+        ports = output(["docker", "exec", TS_HOST, "docker", "inspect", "-f", "{{json .HostConfig.PortBindings}}",
+                        container]).strip()
+        assert ports in ("{}", "null"), f"{container} publishes ports: {ports}"
+    log("tailnet: start a second tailnet node and check the relay from it")
+    start_client(client_key, workdir)
+    for port in (443, 18443):
+        reached = subprocess.run(["docker", "exec", CLIENT, "python3", "-c",
+                                  f"import socket; socket.create_connection(('10.247.0.20', {port}), 3)"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        assert not reached, f"the Docker host answers on its own address at port {port}"
+    print("The relay does not answer on the Docker host's own address.")
+    report = json.loads(in_client("python3", "-B", "/usr/local/bin/remote.py", "connect", RELAY_URL, "--pin", first["pin"]))
+    print(json.dumps(report, indent=2))
+    assert report["device_ready"] == 204 and report["anonymous_ready"] != 204
+    log("tailnet: find and probe the relay with the device agent's tailnet verbs")
+    client_device_agent(first["pin"])
+    log("tailnet: redeploy without an auth key and keep the node and pin")
+    second = tailnet_deploy(ssh_port, key)
+    assert second["pin"] == first["pin"], "redeploy replaced the relay identity"
+    assert second["tailnet"]["addresses"] == first["tailnet"]["addresses"], "redeploy changed the tailnet node"
+    in_client("python3", "-B", "/usr/local/bin/remote.py", "connect", RELAY_URL, "--pin", first["pin"])
+    print(remote("status", "docker", ssh_port, key))
+    log("tailnet: remove the relay and its sidecar")
+    print(remote("remove", "docker", ssh_port, key))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--mode", choices=sorted(HOSTS), action="append")
+    parser.add_argument("--mode", choices=sorted(HOSTS), action="append", help="default: systemd and docker")
     parser.add_argument("--keep", action="store_true", help="leave the test hosts running for inspection")
     args = parser.parse_args()
     started = []
@@ -194,12 +350,18 @@ def main():
         try:
             for mode in args.mode or ["systemd", "docker"]:
                 started.append(HOSTS[mode][1])
-                rehearse(mode, key, key.with_suffix(".pub").read_bytes(), workdir)
+                if mode == "tailnet":
+                    started += [CLIENT, HEADSCALE]
+                    rehearse_tailnet(key, key.with_suffix(".pub").read_bytes(), workdir)
+                else:
+                    rehearse(mode, key, key.with_suffix(".pub").read_bytes(), workdir)
             log("All rehearsals passed")
         finally:
             if not args.keep:
                 for name in started:
                     subprocess.run(["docker", "rm", "-f", "-v", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if "tailnet" in (args.mode or []):
+                    subprocess.run(["docker", "network", "rm", TAILNET_NET], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 if __name__ == "__main__":
