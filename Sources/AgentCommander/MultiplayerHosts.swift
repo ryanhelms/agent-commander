@@ -39,7 +39,7 @@ struct MultiplayerHostFrame<Content: View, Actions: View>: View {
             }
             footer
         }
-        .background(MultiplayerTheme.panel)
+        .background(MultiplayerTheme.panelFill)
         .onChange(of: refusal) { _, refusal in
             if let refusal { AccessibilityNotification.Announcement(refusal).post() }
         }

@@ -5,8 +5,9 @@ import SwiftUI
 // Direction: an operations console for an agent network. Hard lines, hairline grids, corners of
 // two points or less, monospace for anything that is data, a lamp and a word for every state.
 // Identity is shown as it is verified: pins and fingerprints as hash chips with copy. Agents are
-// square, people are round. Every colour, radius and face comes from `MultiplayerTheme`, so a
-// later skin redefines that one enum.
+// square, people are round. Every colour, radius, face and pace is a role of the app theme, read
+// from `@Environment(\.theme)` directly or through `MultiplayerTheme`, so a theme restyles the
+// skin and no atom asks which theme is active.
 // No stock macOS control is drawn here. Each control is a Button, Menu, Toggle or text field
 // underneath, so keyboard focus, the focus ring, VoiceOver and the menu bar panel behave natively.
 //   Atoms:      MultiplayerSpinner, MultiplayerMark, MultiplayerMeter, MultiplayerFieldBox
@@ -40,15 +41,16 @@ struct MultiplayerMark: View {
     let symbol: String
     var tone: Tone = .neutral
     var size: CGFloat = MultiplayerLayout.rowIcon
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         Image(systemName: symbol)
             .font(.system(size: size * 0.42, weight: .medium))
             .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
             .frame(width: size, height: size)
-            .background(MultiplayerTheme.well, in: shape)
-            .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.border : tone.color.opacity(0.55)) }
+            .background(MultiplayerTheme.markFill, in: shape)
+            .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.markEdge : tone.color.opacity(0.55)) }
             .accessibilityHidden(true)
     }
 }
@@ -62,6 +64,7 @@ struct MultiplayerMeter: View {
     var isGood = false
 
     private var fraction: Double { limit > 0 ? min(Double(used) / Double(limit), 1) : 0 }
+    @Environment(\.theme) private var theme
 
     var body: some View {
         let lit = Int((fraction * Double(cells)).rounded(.up))
@@ -73,7 +76,7 @@ struct MultiplayerMeter: View {
                     .frame(width: 5, height: 9)
             }
         }
-        .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.slow), value: lit)
+        .animation(theme.motion.animation(theme.motion.slow), value: lit)
         .accessibilityElement()
         .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel("\(Int((fraction * 100).rounded())) percent\(isGood ? "" : " used")")
@@ -83,15 +86,21 @@ struct MultiplayerMeter: View {
 /// The tray's field: a sunken box with a hard edge that takes the focus colour.
 struct MultiplayerFieldBox: ViewModifier {
     var focused = false
+    /// The least height. The standard field takes the theme's field height.
     var height: CGFloat? = MultiplayerLayout.fieldHeight
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+        let shape = theme.trayControl
         content
             .padding(.horizontal, 9)
-            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
-            .background(MultiplayerTheme.well, in: shape)
-            .overlay { shape.strokeBorder(focused ? MultiplayerTheme.focus : MultiplayerTheme.border, lineWidth: focused ? 1.5 : 1) }
+            .frame(maxWidth: .infinity, minHeight: height == MultiplayerLayout.fieldHeight ? theme.space.fieldHeight : height,
+                   alignment: .leading)
+            .background(MultiplayerTheme.fieldFill, in: shape)
+            .overlay {
+                shape.strokeBorder(focused ? MultiplayerTheme.focus : MultiplayerTheme.fieldEdge,
+                                   lineWidth: focused ? theme.line.focusedField : theme.line.hairline)
+            }
     }
 }
 
@@ -109,21 +118,22 @@ struct MultiplayerSegments<Option: Hashable>: View {
     let options: [Option]
     let title: (Option) -> String
     @Binding var selection: Option
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+        let shape = theme.trayControl
         HStack(spacing: 0) {
             ForEach(Array(options.enumerated()), id: \.element) { index, option in
                 let isOn = option == selection
-                if index > 0 { Rectangle().fill(MultiplayerTheme.border).frame(width: 1) }
+                if index > 0 { Rectangle().fill(MultiplayerTheme.controlEdge).frame(width: 1) }
                 Button { selection = option } label: {
                     Text(title(option))
                         .font(MultiplayerTheme.data)
-                        .foregroundStyle(isOn ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
+                        .foregroundStyle(isOn ? MultiplayerTheme.onAccent : MultiplayerTheme.controlInk)
                         .lineLimit(1)
                         .padding(.horizontal, 6)
-                        .frame(maxWidth: .infinity, minHeight: 24)
-                        .background(isOn ? MultiplayerTheme.focus : Color.clear)
+                        .frame(maxWidth: .infinity, minHeight: theme.space.controlHeight)
+                        .background { if isOn { Rectangle().fill(MultiplayerTheme.primaryFill) } }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(MultiplayerRowButtonStyle())
@@ -133,8 +143,8 @@ struct MultiplayerSegments<Option: Hashable>: View {
             }
         }
         .clipShape(shape)
-        .overlay { shape.strokeBorder(MultiplayerTheme.border) }
-        .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: selection)
+        .overlay { shape.strokeBorder(MultiplayerTheme.controlEdge) }
+        .animation(theme.motion.animation(theme.motion.fast), value: selection)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
     }
@@ -211,7 +221,7 @@ struct MultiplayerHashChip: View {
             switch self {
             case .pinned, .system: MultiplayerTheme.working
             case .changed: MultiplayerTheme.failure
-            case .plain: Palette.secondary
+            case .plain: MultiplayerTheme.secondary
             }
         }
     }
@@ -222,6 +232,7 @@ struct MultiplayerHashChip: View {
     var trust: Trust = .plain
     var onCopy: ((String) -> Void)? = nil
     @State private var copied = false
+    @Environment(\.theme) private var theme
 
     /// "9E:D9:9C…C6:55:BF": the head and the tail, which is what people compare first.
     static func short(_ hash: String) -> String {
@@ -231,7 +242,7 @@ struct MultiplayerHashChip: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         HStack(spacing: 0) {
             HStack(spacing: 4) {
                 Image(systemName: trust.symbol).font(.system(size: 8.5, weight: .semibold))
@@ -249,14 +260,14 @@ struct MultiplayerHashChip: View {
                     .lineLimit(1)
                     .padding(.horizontal, 6)
                 if let onCopy {
-                    Rectangle().fill(MultiplayerTheme.border).frame(width: 1)
+                    Rectangle().fill(MultiplayerTheme.tagEdge).frame(width: 1)
                     Button {
                         onCopy(hash)
                         copied = true
                     } label: {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(copied ? MultiplayerTheme.working : Palette.secondary)
+                            .foregroundStyle(copied ? MultiplayerTheme.working : MultiplayerTheme.secondary)
                             .frame(width: 20)
                             .frame(maxHeight: .infinity)
                             .contentShape(Rectangle())
@@ -267,7 +278,7 @@ struct MultiplayerHashChip: View {
                 }
             }
         }
-        .frame(height: 18)
+        .frame(height: theme.space.chipHeightMax)
         .fixedSize()
         .clipShape(shape)
         .overlay { shape.strokeBorder(trust.color.opacity(0.45)) }
@@ -284,14 +295,15 @@ struct MultiplayerHashChip: View {
 /// What runs an agent: its harness and model, and how many it can run at once.
 struct MultiplayerAgentChip: View {
     let capabilities: MultiplayerCapabilities
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         let parts = [capabilities.harness.isEmpty ? nil : MultiplayerCapabilities.harnessTitle(capabilities.harness),
                      capabilities.model.isEmpty ? nil : capabilities.model.multiplayerDisplay].compactMap { $0 }
         HStack(spacing: 0) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                if index > 0 { Rectangle().fill(MultiplayerTheme.border).frame(width: 1) }
+                if index > 0 { Rectangle().fill(MultiplayerTheme.tagEdge).frame(width: 1) }
                 Text(part)
                     .font(MultiplayerTheme.label)
                     .foregroundStyle(index == 0 ? MultiplayerTheme.focus : MultiplayerTheme.foreground)
@@ -300,17 +312,17 @@ struct MultiplayerAgentChip: View {
                     .background(index == 0 ? MultiplayerTheme.selection : Color.clear)
             }
             if let slots = capabilities.slots {
-                Rectangle().fill(MultiplayerTheme.border).frame(width: 1)
+                Rectangle().fill(MultiplayerTheme.tagEdge).frame(width: 1)
                 Text("×\(slots)")
                     .font(MultiplayerTheme.label)
                     .foregroundStyle(.inkSecondary)
                     .padding(.horizontal, 5)
             }
         }
-        .frame(height: 16)
+        .frame(height: theme.space.chipHeightMin)
         .fixedSize()
         .clipShape(shape)
-        .overlay { shape.strokeBorder(MultiplayerTheme.border) }
+        .overlay { shape.strokeBorder(MultiplayerTheme.tagEdge) }
         .accessibilityElement()
         .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel(capabilities.headline ?? "Agent")
@@ -361,7 +373,7 @@ struct MultiplayerStatusStrip<Trailing: View>: View {
             }
             trailing
         }
-        .background(MultiplayerTheme.well)
+        .background(MultiplayerTheme.footerFill)
         .overlay(alignment: .bottom) { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
     }
 }
@@ -382,6 +394,7 @@ struct MultiplayerTabBar: View {
 
     let tabs: [Tab]
     @Binding var selection: MultiplayerTrayTab
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 0) {
@@ -396,18 +409,21 @@ struct MultiplayerTabBar: View {
                             Text("\(tab.count)")
                                 .multiplayerTicking(tab.count)
                                 .font(MultiplayerTheme.label)
-                                .foregroundStyle(tab.isHot ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
+                                .foregroundStyle(tab.isHot ? MultiplayerTheme.highlightInk : MultiplayerTheme.foreground)
                                 .padding(.horizontal, 4)
                                 .frame(minWidth: 16, minHeight: 14)
-                                .background(tab.isHot ? MultiplayerTheme.attention : MultiplayerTheme.hair,
-                                            in: RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius))
+                                .background(tab.isHot ? MultiplayerTheme.highlightFill : MultiplayerTheme.hair, in: theme.trayChip)
                         }
                     }
-                    .foregroundStyle(isOn ? MultiplayerTheme.foreground : Palette.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 34)
-                    .background(isOn ? MultiplayerTheme.panel : MultiplayerTheme.well)
+                    .foregroundStyle(isOn ? MultiplayerTheme.foreground : MultiplayerTheme.secondary)
+                    .frame(maxWidth: .infinity, minHeight: theme.space.tabHeight)
+                    .background { if isOn { Rectangle().fill(MultiplayerTheme.panelFill) } else { MultiplayerTheme.unselectedFill } }
                     .overlay(alignment: .bottom) {
-                        Rectangle().fill(isOn ? MultiplayerTheme.focus : MultiplayerTheme.hair).frame(height: isOn ? 2 : 1)
+                        // The chosen tab's marker is as thick as the theme's selection marker; a theme
+                        // without one keeps the hairline and tells the tabs apart by their fills.
+                        let marked = isOn && theme.line.selectedMarker > 0
+                        Rectangle().fill(marked ? MultiplayerTheme.focus : MultiplayerTheme.hair)
+                            .frame(height: marked ? theme.line.selectedMarker : theme.line.hairline)
                     }
                     .contentShape(Rectangle())
                 }
@@ -420,7 +436,7 @@ struct MultiplayerTabBar: View {
                 .accessibilityHint("Tab \(index + 1) of \(tabs.count)")
             }
         }
-        .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: selection)
+        .animation(theme.motion.animation(theme.motion.fast), value: selection)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sections")
         .accessibilityAddTraits(.isTabBar)
@@ -470,7 +486,9 @@ enum MultiplayerTrayTab: String, CaseIterable, Identifiable, Sendable {
 // MARK: - Motion
 
 /// The tray's motion tokens: short, eased out, never a bounce. With Reduce Motion on, movement
-/// becomes a fade or nothing.
+/// becomes a fade or nothing. The motion modifiers below read the pace of the current theme
+/// (`theme.motion`). These constants are the console theme's, for code that animates outside a
+/// view, such as a model's `withAnimation`.
 extension MultiplayerTheme {
     enum Motion {
         private static let motion = Theme.console.motion
@@ -494,21 +512,23 @@ extension MultiplayerTheme {
 /// trace line streaming in. With Reduce Motion it only fades.
 struct MultiplayerArriving: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
         content.transition(reduceMotion
             ? .opacity
-            : .asymmetric(insertion: .opacity.combined(with: .offset(y: -MultiplayerTheme.Motion.travel)),
-                          removal: .opacity.combined(with: .offset(x: MultiplayerTheme.Motion.travel))))
+            : .asymmetric(insertion: .opacity.combined(with: .offset(y: -theme.motion.travel)),
+                          removal: .opacity.combined(with: .offset(x: theme.motion.travel))))
     }
 }
 
 /// Animates a list as its rows come and go, at the tray's standard pace.
 struct MultiplayerStreaming<Value: Equatable>: ViewModifier {
     let value: Value
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
-        content.animation(MultiplayerTheme.Motion.ease(), value: value)
+        content.animation(theme.motion.animation(theme.motion.standard), value: value)
     }
 }
 
@@ -516,11 +536,12 @@ struct MultiplayerStreaming<Value: Equatable>: ViewModifier {
 struct MultiplayerTicking<Value: Equatable>: ViewModifier {
     let value: Value
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
         content
             .contentTransition(reduceMotion ? .opacity : .numericText())
-            .animation(MultiplayerTheme.Motion.ease(), value: value)
+            .animation(theme.motion.animation(theme.motion.standard), value: value)
     }
 }
 
@@ -529,13 +550,14 @@ struct MultiplayerResponsive: ViewModifier {
     var isPressed = false
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
         content
             .background(MultiplayerTheme.foreground.opacity(!isEnabled ? 0 : isPressed ? 0.10 : hovering ? 0.06 : 0))
             .onHover { hovering = $0 }
-            .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: hovering)
-            .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: isPressed)
+            .animation(theme.motion.animation(theme.motion.fast), value: hovering)
+            .animation(theme.motion.animation(theme.motion.fast), value: isPressed)
     }
 }
 
@@ -552,6 +574,7 @@ struct MultiplayerPulse: ViewModifier {
     let color: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var beat = false
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
         content
@@ -562,7 +585,7 @@ struct MultiplayerPulse: ViewModifier {
                         .scaleEffect(beat ? 2.1 : 1)
                         .opacity(beat ? 0 : 0.7)
                         .onAppear {
-                            withAnimation(.easeOut(duration: MultiplayerTheme.Motion.pulse).repeatForever(autoreverses: false)) { beat = true }
+                            withAnimation(.easeOut(duration: theme.motion.pulse).repeatForever(autoreverses: false)) { beat = true }
                         }
                 }
             }

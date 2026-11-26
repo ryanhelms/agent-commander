@@ -250,6 +250,19 @@ extension MultiplayerModel {
         }
     }
 
+    /// Applies or saves one artifact of a hand-off's result into a local checkout, and answers for
+    /// that artifact. The message says what was done and names the saved file's final name when
+    /// the device gave it another ("Saved report.md into relay as report.md.1a2b3c4d."). The ID is
+    /// the hand-off's request. The caller confirms the checkout with the person first.
+    func apply(artifact index: Int, of row: MultiplayerSentRequest, on server: String, checkout: String) async -> MultiplayerActionResult {
+        let name = share.reports[row.request].flatMap { $0.artifacts.indices.contains(index) ? $0.artifacts[index].name.multiplayerDisplay : nil }
+        let lead = "Couldn’t apply \(name ?? "the artifact")."
+        if let problem = share.applyProblem(artifact: index, of: row, checkout: checkout) { return refused(row.request, server, lead, problem) }
+        return await result(id: row.request, server: server, failing: lead) {
+            share.apply(artifact: index, of: row, on: server, checkout: checkout, report: $0)
+        }
+    }
+
     /// Asks a friend's worker for a review. The ID is the new review's request.
     func sendReview(_ draft: MultiplayerReviewDraft, to resource: String, on server: String) async -> MultiplayerActionResult {
         let lead = "Couldn’t send the review request."
@@ -303,6 +316,16 @@ extension MultiplayerModel {
         let lead = "Couldn’t rename the server."
         if let problem = renameProblem(server.id, to: name) { return refused(server.id, server.id, lead, problem) }
         return await result(id: server.id, server: server.id, failing: lead) { rename(server.id, to: name, report: $0) }
+    }
+
+    /// Removes a saved server, by value. The caller asks the person to confirm first. It uses
+    /// neither the tray's confirm step nor its route: a tray on any other page stays there, and a
+    /// tray on the removed server's own page returns home, because that page is gone. The ID and
+    /// the server are the server's own ID.
+    func remove(_ server: MultiplayerServerSummary) async -> MultiplayerActionResult {
+        let lead = "Couldn’t remove the server."
+        guard self.server(server.id) != nil else { return refused(server.id, server.id, lead, "That server is no longer in your list.") }
+        return await result(id: server.id, server: server.id, failing: lead) { remove(server.id, report: $0) }
     }
 
     /// Pins a blocked server's new key: the one the person confirmed, after the caller showed it

@@ -357,8 +357,9 @@ struct MultiplayerQRCode: View {
         max(2, (maxSide / CGFloat(count + quietZone * 2)).rounded(.down))
     }
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
+        let shape = theme.trayTile
         Group {
             if let modules = Self.modules(for: text) {
                 let unit = Self.moduleSize(count: modules.count)
@@ -426,7 +427,7 @@ struct MultiplayerCopyChip: View {
     let value: String
     /// What VoiceOver says for the value, when the drawn text would be read badly.
     var spoken: String? = nil
-    var font: Font = MultiplayerTheme.data
+    var font: MultiplayerType = MultiplayerTheme.data
     var height: CGFloat = 22
     /// Draws the copy cell's focus ring without focus, for a headless picture.
     var showsFocus = false
@@ -434,8 +435,9 @@ struct MultiplayerCopyChip: View {
     @State private var copied = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         HStack(spacing: 0) {
             Text(label)
                 .font(MultiplayerTheme.label)
@@ -463,7 +465,7 @@ struct MultiplayerCopyChip: View {
             } label: {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(copied ? MultiplayerTheme.working : Palette.secondary)
+                    .foregroundStyle(copied ? MultiplayerTheme.working : MultiplayerTheme.secondary)
                     .frame(width: 24)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())

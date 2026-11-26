@@ -958,6 +958,31 @@ enum MultiplayerAttribution: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Something in the cockpit the person chose to share: a worker, or a run's repository.
+/// What the device did with an artifact: `{"saved": path}` for a file or a report it wrote, or
+/// `{"applied": name}` for a patch it applied and staged.
+struct MultiplayerApplied: Decodable, Equatable, Sendable {
+    /// Where the file was written. Its last component is the file's final name, which differs from
+    /// the artifact's when that name was taken (`report.md.1a2b3c4d`).
+    var saved: String? = nil
+    var applied: String? = nil
+
+    /// The saved file's final name.
+    var savedName: String? {
+        guard let saved, !saved.isEmpty else { return nil }
+        let name = URL(fileURLWithPath: saved).lastPathComponent.multiplayerDisplay
+        return name.isEmpty ? nil : name
+    }
+
+    /// The confirmation for one artifact: what was applied or saved, where, and under which name.
+    func confirmation(artifact name: String, patch: Bool, folder: String) -> String {
+        if applied != nil || (patch && saved == nil) {
+            return "Applied \(name) to \(folder). The changes are staged, not committed."
+        }
+        guard let final = savedName, final != name else { return "Saved \(name) into \(folder)." }
+        return "Saved \(name) into \(folder) as \(final)."
+    }
+}
+
 enum MultiplayerShareTarget: Equatable, Sendable {
     case agent(id: String, name: String)
     case repo(path: String, name: String)
@@ -1232,8 +1257,14 @@ extension MultiplayerClient {
     }
 
     func applyArtifact(request: String, artifact: Int, checkout: String) async throws {
-        _ = try await fetch(.applyArtifact, ["request": .string(request), "artifact": .number(artifact),
-                                             "checkout": .string(checkout)], as: MultiplayerIgnored.self, allowsEmpty: true)
+        _ = try await appliedArtifact(request: request, artifact: artifact, checkout: checkout)
+    }
+
+    /// Applies or saves one artifact and says what the device did with it.
+    func appliedArtifact(request: String, artifact: Int, checkout: String) async throws -> MultiplayerApplied {
+        try await fetch(.applyArtifact, ["request": .string(request), "artifact": .number(artifact),
+                                         "checkout": .string(checkout)], as: MultiplayerApplied.self, allowsEmpty: true)
+            ?? MultiplayerApplied()
     }
 
     func accessRequests() async throws -> [MultiplayerAccessRequest] {
