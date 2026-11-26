@@ -51,6 +51,8 @@ struct WorkerTileActions {
     var takeControl: (() -> Void)? = nil
     var interrupt: (() -> Void)? = nil
     var stop: (() -> Void)? = nil
+    /// Opens the network tray's share sheet for this worker. Present where the network is available.
+    var share: (() -> Void)? = nil
 }
 
 /// One worker. The wall and the focused (zoomed) view are variants of this single type, so identity,
@@ -411,6 +413,7 @@ struct WorkerTile: View {
                 Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
             if let source { Button("Inspect source…", action: source.open) }
+            if let share = actions.share { Button("Share…", action: share) }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
         } label: {
@@ -512,6 +515,9 @@ struct WorkerActionMenu: View {
             if worker.control == .held, let handBack = actions.handBack {
                 row("arrow.uturn.backward", "Hand back control", label: "Hand back control of \(worker.name)",
                     isEnabled: !actions.isBusy, action: handBack)
+            }
+            if let share = actions.share {
+                row("square.and.arrow.up", "Share…", label: "Share \(worker.name) with a friend on the network", action: share)
             }
             row("doc.on.doc", "Copy worker ID", action: actions.copyID)
             if actions.interrupt != nil || actions.stop != nil {
@@ -1205,6 +1211,8 @@ struct RunHeader: View {
     @Binding var showingDetails: Bool
     let showRuns: () -> Void
     let stop: () -> Void
+    /// Opens the network tray's share sheet for this run's repository.
+    var share: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 18) {
@@ -1246,6 +1254,10 @@ struct RunHeader: View {
                 .buttonStyle(CapsuleButtonStyle(height: 31))
                 .popover(isPresented: $showingDetails, arrowEdge: .bottom) { RunDetails(run: run) }
                 Menu {
+                    if let share {
+                        Button("Share repository…", action: share)
+                        Divider()
+                    }
                     Button("Stop run…", role: .destructive, action: stop).disabled(!canStop)
                 } label: {
                     Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).frame(width: 33, height: 31)

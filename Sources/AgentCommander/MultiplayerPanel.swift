@@ -46,7 +46,7 @@ struct MultiplayerAccountCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.m) {
             HStack(alignment: .top, spacing: Space.m) {
-                IconTile(symbol: symbol, tone: presence.tone, size: MultiplayerLayout.rowIcon)
+                MultiplayerMark(symbol: symbol, tone: presence.tone)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 13, weight: .semibold))
@@ -69,7 +69,7 @@ struct MultiplayerAccountCard: View {
         switch presence {
         case .checking:
             HStack(spacing: Space.s) {
-                ProgressView().controlSize(.small)
+                MultiplayerSpinner()
                 Text("Asking the network helper…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
@@ -81,7 +81,7 @@ struct MultiplayerAccountCard: View {
             trailingButton("Refresh", prominent: false, action: onCheck)
         case .waitingForBrowser:
             HStack(spacing: Space.s) {
-                ProgressView().controlSize(.small).accessibilityLabel("Waiting for sign-in")
+                MultiplayerSpinner()
                 Spacer(minLength: 0)
                 Button("Open browser again", action: onSignIn)
                     .buttonStyle(MultiplayerTrayButtonStyle())
@@ -175,6 +175,8 @@ struct MultiplayerHomeLists: View {
     let onShare: (_ handle: String?, _ resourceID: String?) -> Void
     let onRevoke: (MultiplayerGrant) -> Void
     let onSetCredential: (_ resourceID: String) -> Void
+    /// Opens a resource's audit list. Nil where there is none to open.
+    var onAudit: ((_ resourceID: String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -231,6 +233,13 @@ struct MultiplayerHomeLists: View {
                             }
                             .foregroundStyle(isBusy ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(Palette.foreground))
                             .disabled(isBusy)
+                        }
+                        if let onAudit {
+                            SymbolButton(symbol: "list.bullet.rectangle", label: "Audit for \(resource.name.multiplayerDisplay)") {
+                                onAudit(resource.id)
+                            }
+                            .foregroundStyle(Palette.foreground)
+                            .help("Every use of \(resource.name.multiplayerDisplay)")
                         }
                         Button("Share") { onShare(nil, resource.id) }
                             .buttonStyle(MultiplayerTrayButtonStyle())
@@ -437,7 +446,7 @@ struct MultiplayerAddFriendEditor: View {
             EmptyView()
         case .searching(let handle):
             HStack(spacing: Space.s) {
-                ProgressView().controlSize(.small)
+                MultiplayerSpinner()
                 Text("Looking up \(handle.multiplayerDisplay)…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
@@ -491,14 +500,8 @@ struct MultiplayerAddResourceEditor: View {
     var body: some View {
         MultiplayerEditorTemplate(title: "Add a resource",
                                   intro: "Adding a resource doesn’t share it. You choose who can use it afterwards.") {
-            Picker("Kind", selection: $draft.kind) {
-                ForEach(MultiplayerResourceKind.allCases) { kind in
-                    Label(kind.title, systemImage: kind.symbol).tag(kind)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityLabel("Resource kind")
+            MultiplayerSegments(label: "Resource kind", options: MultiplayerResourceKind.allCases, title: \.title,
+                                selection: $draft.kind)
 
             MultiplayerField(label: "Name", hint: "Friends see this name.", problem: nameProblem) {
                 MultiplayerTextField(label: "Name", placeholder: "Name", text: $draft.name, isFocused: focus == .name)
@@ -782,7 +785,7 @@ struct MultiplayerCredentialEditor: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundStyle(Palette.foreground)
-                    .fieldBox(focused: focused, height: MultiplayerLayout.fieldHeight)
+                    .multiplayerFieldBox(focused: focused)
                     .focused($focused)
                     .privacySensitive()
                     .onSubmit { if canSave { onSave() } }
@@ -807,6 +810,9 @@ struct MultiplayerCredentialEditor: View {
 /// The tray's model opens and closes the session; this only draws it.
 struct MultiplayerSessionContent: View {
     @Bindable var model: MultiplayerSessionModel
+    /// The tray's grant sheet (increment 3). Without it, Share opens this session's own form.
+    var onShare: ((_ handle: String?, _ resourceID: String?) -> Void)? = nil
+    var onAudit: ((_ resourceID: String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -854,9 +860,12 @@ struct MultiplayerSessionContent: View {
                                      onAccept: { model.accept($0) },
                                      onAddFriend: { model.startAddFriend() },
                                      onAddResource: { model.startAddResource() },
-                                     onShare: { model.startGrant(handle: $0, resourceID: $1) },
+                                     onShare: { handle, resource in
+                                         if let onShare { onShare(handle, resource) } else { model.startGrant(handle: handle, resourceID: resource) }
+                                     },
                                      onRevoke: { model.askRevoke($0) },
-                                     onSetCredential: { model.startCredential(resourceID: $0) })
+                                     onSetCredential: { model.startCredential(resourceID: $0) },
+                                     onAudit: onAudit)
             case .addFriend:
                 MultiplayerAddFriendEditor(handle: $model.friendDraft, lookup: model.currentLookup,
                                            friends: Set(status.friends.map(\.handle)),
@@ -926,7 +935,7 @@ struct MultiplayerPanelStage: View {
     let model: MultiplayerModel
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.overlay, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
         ZStack {
             Palette.window.ignoresSafeArea()
             ScrollView([.vertical]) {

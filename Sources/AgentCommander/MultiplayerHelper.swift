@@ -67,7 +67,13 @@ struct MultiplayerClient: Sendable {
     /// `profile` may carry an avatar: a data URL of at most 64 KiB, plus the other fields.
     static let profileInputLimit = MultiplayerAvatarEncoder.limit + 8 * 1024
 
-    static func inputLimit(for verb: MultiplayerVerb) -> Int { verb == .profile ? profileInputLimit : inputLimit }
+    static func inputLimit(for verb: MultiplayerVerb) -> Int {
+        switch verb {
+        case .profile: profileInputLimit
+        case .send: sendInputLimit
+        default: inputLimit
+        }
+    }
 
     let helper: any MultiplayerHelper
     /// The server every request acts on, sent as `"server"`. Nil for the server-list verbs.

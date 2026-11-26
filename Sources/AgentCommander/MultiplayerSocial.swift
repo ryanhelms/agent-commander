@@ -61,6 +61,9 @@ enum MultiplayerPersonPresence: String, Codable, Sendable, Equatable {
         }
     }
 
+    /// Reachable now: online or busy. Away, do not disturb and offline are not counted as online.
+    var isAvailable: Bool { self == .online || self == .busy }
+
     /// Has a live device on the server, whatever they chose to show.
     var isConnected: Bool {
         switch self {
@@ -217,7 +220,11 @@ struct MultiplayerActivityEvent: Decodable, Equatable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey { case server, seq, at, kind, actor, resource, detail }
 
-    var id: String { "\(server)#\(seq)" }
+    /// A relay event has its sequence. One the device agent adds itself has none, so it is told
+    /// apart by what it says.
+    var id: String {
+        seq > 0 ? "\(server)#\(seq)" : "\(server)#\(kind)#\(actor)#\(resource)#\(Int(at?.timeIntervalSince1970 ?? 0))"
+    }
 
     init(server: String, seq: Int, at: Date? = nil, kind: String, actor: String = "", resource: String = "",
          detail: String = "") {
@@ -259,6 +266,12 @@ struct MultiplayerActivityEvent: Decodable, Equatable, Sendable, Identifiable {
         case "grant.received": base = "\(who) shared access with you"
         case "grant.revoked": base = "\(who) revoked your access"
         case "member.joined": base = "\(who) joined"
+        case "access.requested": base = "\(who) asked for access"
+        case "approval.pending":
+            // The detail is the action's identifier; say it in words instead.
+            let wants = detail.isEmpty ? "use a resource you shared" : MultiplayerCapability.title(detail).lowercasedFirst
+            base = "\(who) wants to \(wants). Approve or deny it in the tray"
+            return serverName.map { "\(base), on \($0)" } ?? base
         default: base = "\(who): \(kind.multiplayerDisplay)"
         }
         if let serverName { base += " on \(serverName)" }

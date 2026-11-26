@@ -28,15 +28,32 @@ struct MultiplayerPresenceMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 5) {
-                MultiplayerLamp(kind: shown?.lamp ?? .off)
-                Text(title)
+            // Drawn as a cell of the status strip: the readout is also the control.
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 3) {
+                    Text("presence").font(MultiplayerTheme.label)
+                    Image(systemName: "chevron.down").font(.system(size: 6.5, weight: .bold))
+                }
+                .foregroundStyle(.inkSecondary)
+                HStack(spacing: 5) {
+                    MultiplayerLamp(kind: shown?.lamp ?? .off, size: 8)
+                    Text(title)
+                        .font(MultiplayerTheme.data)
+                        .foregroundStyle(MultiplayerTheme.foreground)
+                        .lineLimit(1)
+                }
+                .frame(minHeight: 17)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(width: 122, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .menuStyle(.button)
-        .buttonStyle(MultiplayerTrayButtonStyle())
-        .fixedSize()
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.6)
         .help(isEnabled ? "Choose the presence your friends see. Auto shows Busy while agents run and Away when this Mac is idle."
               : "Sign in to a server to set your presence")
         .accessibilityLabel("Your presence, \(title)")
@@ -90,6 +107,7 @@ struct MultiplayerActivityBand: View {
                                                serverName: servers.first { $0.id == event.server }?.displayName,
                                                color: MultiplayerTheme.swatch(for: event.server),
                                                isNew: server == nil && friend == nil && index < unseen, now: now)
+                            .multiplayerArriving()
                     }
                     HStack(spacing: 6) {
                         if events.count > Self.preview {
@@ -104,20 +122,24 @@ struct MultiplayerActivityBand: View {
                     .padding(.top, 4)
                 }
             }
+            .multiplayerStreaming(events.map(\.id))
         }
     }
 
     private func filter<Items: View>(title: String, label: String, @ViewBuilder items: () -> Items) -> some View {
         Menu(content: items) {
+            // The menu button speaks for the filter; its drawn label is not a second element.
             HStack(spacing: 3) {
                 Text(title).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
             }
+            .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(MultiplayerTrayButtonStyle())
         .menuIndicator(.hidden)
         .fixedSize()
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label), \(title)")
     }
 }
@@ -302,21 +324,26 @@ struct MultiplayerInvitePage: View {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
                     MultiplayerSettingRow(label: "People who can use it") {
-                        Stepper(value: $draft.maxUses, in: MultiplayerInviteDraft.usesRange) {
+                        HStack(spacing: 6) {
+                            Button { draft.maxUses -= 1 } label: { Image(systemName: "minus") }
+                                .buttonStyle(MultiplayerTrayButtonStyle())
+                                .disabled(draft.maxUses <= MultiplayerInviteDraft.usesRange.lowerBound)
+                                .accessibilityLabel("Fewer people")
                             Text("\(draft.maxUses)")
-                                .font(MultiplayerTheme.name.monospacedDigit())
+                                .font(MultiplayerTheme.figure)
                                 .foregroundStyle(MultiplayerTheme.foreground)
+                                .frame(minWidth: 30)
+                                .accessibilityLabel("\(draft.maxUses) people can use the invite")
+                            Button { draft.maxUses += 1 } label: { Image(systemName: "plus") }
+                                .buttonStyle(MultiplayerTrayButtonStyle())
+                                .disabled(draft.maxUses >= MultiplayerInviteDraft.usesRange.upperBound)
+                                .accessibilityLabel("More people")
                         }
-                        .accessibilityLabel("People who can use the invite")
                     }
                     MultiplayerSettingRow(label: "Expires after") {
-                        Picker("Expires after", selection: $draft.ttlHours) {
-                            ForEach(MultiplayerInviteDraft.lifetimes, id: \.hours) { lifetime in
-                                Text(lifetime.title).tag(lifetime.hours)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
+                        MultiplayerSegments(label: "Expires after", options: MultiplayerInviteDraft.lifetimes.map(\.hours),
+                                            title: { hours in MultiplayerInviteDraft.lifetimes.first { $0.hours == hours }?.title ?? "\(hours) h" },
+                                            selection: $draft.ttlHours)
                     }
                 }
             }
@@ -383,7 +410,7 @@ struct MultiplayerMembershipPage: View {
         case .loading:
             MultiplayerBand {
                 HStack(spacing: Space.s) {
-                    ProgressView().controlSize(.small)
+                    MultiplayerSpinner()
                     Text("Reading this relay’s membership…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                 }
                 .accessibilityElement(children: .combine)
@@ -404,16 +431,11 @@ struct MultiplayerMembershipPage: View {
                 VStack(alignment: .leading, spacing: Space.s) {
                     MultiplayerBandHeading(title: "Who can join",
                                            count: membership.memberCount == 1 ? "1 member" : "\(membership.memberCount) members")
-                    Picker("Who can join", selection: $draft.mode) {
-                        ForEach(MultiplayerMembershipMode.allCases) { mode in
-                            Text(mode.title).tag(mode.rawValue)
-                        }
-                        if MultiplayerMembershipMode(rawValue: draft.mode) == nil {
-                            Text(draft.mode.multiplayerDisplay).tag(draft.mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    let known = MultiplayerMembershipMode.allCases.map(\.rawValue)
+                    MultiplayerSegments(label: "Who can join",
+                                        options: known.contains(draft.mode) ? known : known + [draft.mode],
+                                        title: { MultiplayerMembershipMode(rawValue: $0)?.title ?? $0.multiplayerDisplay },
+                                        selection: $draft.mode)
                     Text(MultiplayerMembershipMode(rawValue: draft.mode)?.explanation ?? "This relay uses a mode this version of Commander doesn’t know.")
                         .font(MultiplayerTheme.sub)
                         .foregroundStyle(.inkSecondary)
