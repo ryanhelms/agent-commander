@@ -87,7 +87,16 @@ func TestCoordinatorNetworkToolsUseBoundActor(t *testing.T) {
 	for _, op := range []struct {
 		name string
 		body any
-	}{{"discover", struct{}{}}, {"inbox", struct{}{}}, {"submit", map[string]any{"id": "bound-1", "targets": []map[string]any{{"resource": "shared", "action": "agent.ask", "payload": map[string]any{"text": "review"}}}}}, {"receipt", map[string]string{"id": "bound-1"}}} {
+	}{
+		{"discover", struct{}{}},
+		{"inbox", struct{}{}},
+		{"submit", map[string]any{"id": "bound-1", "targets": []map[string]any{{"resource": "shared", "action": "agent.ask", "payload": map[string]any{"text": "review"}}}}},
+		{"receipt", map[string]string{"id": "bound-1"}},
+		{"online", struct{}{}},
+		{"thread", map[string]string{"request": "bound-1"}},
+		{"thread", map[string]string{"request": "bound-1", "text": "Looks good."}},
+		{"thread", map[string]string{"request": "bound-1", "text": ""}},
+	} {
 		raw, err := callMCP(ctx, sess, "commander_network_"+op.name, op.body)
 		if err != nil {
 			t.Fatal(err)
@@ -105,6 +114,22 @@ func TestCoordinatorNetworkToolsUseBoundActor(t *testing.T) {
 		want, _ = json.Marshal(value)
 		if string(out.Body) != string(want) {
 			t.Fatalf("network request changed: %s != %s", out.Body, want)
+		}
+	}
+	for _, invalid := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"online", map[string]any{"request": "bound-1"}},
+		{"thread", map[string]any{"text": "Missing request ID"}},
+		{"thread", map[string]any{"request": "bound-1", "text": 42}},
+	} {
+		reply, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: "commander_network_" + invalid.name, Arguments: invalid.body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reply.IsError {
+			t.Errorf("%s accepted invalid input %v", invalid.name, invalid.body)
 		}
 	}
 }
