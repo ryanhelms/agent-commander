@@ -20,9 +20,14 @@ final class ScriptedRelay: MultiplayerRelayControl {
         state = Mutex((script, []))
     }
 
-    var calls: [MultiplayerHostAction] { state.withLock { $0.calls } }
+    private let inputs = Mutex<[Data]>([])
 
-    func run(_ action: MultiplayerHostAction) async throws -> MultiplayerHostReport {
+    var calls: [MultiplayerHostAction] { state.withLock { $0.calls } }
+    /// What each `setup` sent on stdin.
+    var setups: [Data] { inputs.withLock { $0 } }
+
+    func run(_ action: MultiplayerHostAction, input: Data) async throws -> MultiplayerHostReport {
+        if action == .setup { inputs.withLock { $0.append(input) } }
         let reply = state.withLock { state -> Result<MultiplayerHostReport, MultiplayerHostRefusal>? in
             state.calls.append(action)
             guard var replies = state.script[action], let first = replies.first else { return nil }
@@ -115,6 +120,46 @@ final class ScriptedRelay: MultiplayerRelayControl {
         await settled(model)
         #expect(model.summary.phase == .stopped)
         #expect(model.summary.failure == "Couldn’t start the relay. Launchctl bootstrap: exit status 5.")
+    }
+
+    @Test func startOnANewMacSetsTheRelayUpFromTheForm() async throws {
+        var unconfigured = MultiplayerHostReport(state: .unconfigured, installed: false, dir: "/d", log: "/d/logs/relay.err.log")
+        unconfigured.setup = MultiplayerHostSuggestion(name: "Ryan’s Mac", hostnames: ["ryans-mac.tail.example"],
+                                                       issuer: "https://accounts.google.com", clientId: "desktop.example")
+        let relay = ScriptedRelay([
+            .status: [.success(unconfigured), .success(Self.report(.running, installed: true, pin: Self.pin))],
+            .setup: [.success(Self.report(.starting, installed: true))],
+        ])
+        let model = MultiplayerHostModel(control: relay, settle: .milliseconds(1))
+        model.refresh()
+        await settled(model)
+        #expect(model.summary.phase == .unconfigured && model.summary.canStart && !model.summary.needsClientID)
+        #expect(model.setupDraft.name == "Ryan’s Mac", "the name starts from the suggestion")
+        #expect(!model.canSetUp, "the email is required")
+        model.setupDraft.admin = "not an email"
+        #expect(model.setupDraft.adminProblem != nil && !model.canSetUp)
+        model.setupDraft.admin = " ryan@example.org "
+        #expect(model.canSetUp)
+
+        model.start()
+        await settled(model)
+        #expect(model.summary.phase == .running && model.summary.failure == nil)
+        let sent = try #require(relay.setups.first)
+        let payload = try JSONDecoder().decode([String: String].self, from: sent)
+        #expect(payload == ["admin": "ryan@example.org", "name": "Ryan’s Mac"])
+    }
+
+    @Test func aMacWithoutAGoogleClientAsksForOne() async {
+        let unconfigured = MultiplayerHostReport(state: .unconfigured, installed: false, dir: "/d", log: "/d/l",
+                                                 setup: MultiplayerHostSuggestion(name: "Mac", hostnames: ["mac.local"],
+                                                                                  issuer: "https://accounts.google.com"))
+        let model = MultiplayerHostModel(control: ScriptedRelay([.status: [.success(unconfigured)]]), settle: .milliseconds(1))
+        model.refresh()
+        await settled(model)
+        model.setupDraft.admin = "ryan@example.org"
+        #expect(model.summary.needsClientID && !model.canSetUp)
+        model.setupDraft.clientID = "typed.apps.googleusercontent.com"
+        #expect(model.canSetUp)
     }
 
     @Test func withoutTheRelayHelperHostingIsUnavailable() {

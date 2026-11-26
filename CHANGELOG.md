@@ -9,7 +9,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
 - Provide a scoped live ACP source subscription with cursor expiration and recovery.
 - Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
-- Start and stop the relay on this Mac from the network tray's Hosting page, see its address and fingerprint, and add it as a server in one step.
+- Start and stop the relay on this Mac from the network tray's Hosting page, see its address and fingerprint, and add it as a server in one step. A Mac that has never hosted asks only for your email before the first start.
 - Add a host menu to the main window's toolbar to start or stop hosting, copy the relay address, and connect to a server.
 
 ### Changed

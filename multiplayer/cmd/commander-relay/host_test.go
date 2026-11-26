@@ -147,7 +147,7 @@ func TestHostJSONReportsStateAndFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := filepath.Join(t.TempDir(), "relay")
 	var out bytes.Buffer
-	if err := hostJSON(&out, dir, "status"); err != nil {
+	if err := hostJSON(&out, dir, "status", nil); err != nil {
 		t.Fatal(err)
 	}
 	var result hostResult
@@ -159,7 +159,7 @@ func TestHostJSONReportsStateAndFailure(t *testing.T) {
 	}
 
 	out.Reset()
-	err := hostJSON(&out, dir, "install")
+	err := hostJSON(&out, dir, "install", nil)
 	if !errors.Is(err, errReported) {
 		t.Fatalf("install without host.json: %v", err)
 	}

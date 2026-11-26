@@ -59,9 +59,16 @@ func hostCommand(ctx context.Context, args []string) error {
 	if *asJSON {
 		switch action {
 		case "install", "uninstall", "status":
-			return hostJSON(os.Stdout, path, action)
+			return hostJSON(os.Stdout, path, action, nil)
+		case "setup":
+			// One JSON setup on stdin: write host.json, then install as `install` does.
+			input, err := io.ReadAll(io.LimitReader(os.Stdin, 16<<10))
+			if err != nil {
+				return err
+			}
+			return hostJSON(os.Stdout, path, action, input)
 		default:
-			return fmt.Errorf("--json applies to install, uninstall and status, not %q", action)
+			return fmt.Errorf("--json applies to setup, install, uninstall and status, not %q", action)
 		}
 	}
 	switch action {
@@ -92,9 +99,17 @@ type hostResult struct {
 // errReported marks a failure already written to stdout as JSON.
 var errReported = errors.New("host action failed")
 
-func hostJSON(output io.Writer, dir, action string) error {
+func hostJSON(output io.Writer, dir, action string, input []byte) error {
 	var err error
 	switch action {
+	case "setup":
+		var setup hostmode.Setup
+		if setup, err = hostmode.ReadSetup(input); err == nil {
+			err = hostmode.Configure(dir, setup, hostmode.SystemProbe)
+		}
+		if err == nil {
+			err = hostmode.Install(dir)
+		}
 	case "install":
 		err = hostmode.Install(dir)
 	case "uninstall":

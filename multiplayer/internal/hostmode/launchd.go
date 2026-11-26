@@ -197,6 +197,8 @@ type Report struct {
 	Dir string `json:"dir"`
 	// Log is the relay's error log, where a failed start explains itself.
 	Log string `json:"log"`
+	// Setup is what this Mac suggests for a first-time setup, only while unconfigured.
+	Setup *Suggestion `json:"setup,omitempty"`
 }
 
 func launchAgentInstalled() (bool, error) {
@@ -214,6 +216,11 @@ func launchAgentInstalled() (bool, error) {
 // Inspect reads the host's configuration, lock and certificate. A missing host.json is the
 // "unconfigured" state, not an error.
 func Inspect(dir string) (Report, error) {
+	return InspectWith(dir, SystemProbe)
+}
+
+// InspectWith is Inspect with the probe that suggests a first-time setup.
+func InspectWith(dir string, probe Probe) (Report, error) {
 	report := Report{Dir: dir, Log: filepath.Join(dir, "logs", "relay.err.log")}
 	installed, err := launchAgentInstalled()
 	if err != nil {
@@ -223,6 +230,8 @@ func Inspect(dir string) (Report, error) {
 	cfg, err := ReadConfig(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		report.State = "unconfigured"
+		suggestion := probe.Suggest()
+		report.Setup = &suggestion
 		return report, nil
 	}
 	if err != nil {

@@ -927,7 +927,8 @@ private struct MultiplayerPanelContent: View {
                                      onProbe: { model.runProbe() },
                                      onOpenExisting: { model.existingServer.map { model.openServer($0.id) } })
         case .hosting:
-            MultiplayerHostingPage(host: model.host.summary, savedServer: model.hostedServer?.displayName,
+            MultiplayerHostingPage(host: model.host.summary, setup: Bindable(model.host).setupDraft,
+                                   savedServer: model.hostedServer?.displayName,
                                    onDismissFailure: { model.host.dismissFailure() })
         case .server:
             if let server = routedServer { serverPage(server) }
@@ -1419,6 +1420,7 @@ private struct MultiplayerPanelContent: View {
         case .hosting:
             MultiplayerTrayFooter(note: model.hostingNote) {
                 MultiplayerHostingActions(host: model.host.summary, isSaved: model.hostedServer != nil,
+                                          canSetUp: model.host.canSetUp,
                                           onStart: { model.host.start() }, onStop: { model.host.stop() },
                                           onCheck: { model.host.refresh() }, onAddServer: { model.addHostedServer() })
             }

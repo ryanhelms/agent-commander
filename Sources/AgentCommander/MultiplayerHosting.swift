@@ -25,6 +25,36 @@ struct MultiplayerHostReport: Decodable, Equatable, Sendable {
     let dir: String
     /// The relay's error log, where a start that failed explains itself.
     let log: String
+    /// What this Mac suggests for a first-time setup. Only while unconfigured.
+    var setup: MultiplayerHostSuggestion? = nil
+}
+
+/// The relay's suggestion for a first-time setup: a name, the addresses it will serve, and the
+/// Google Desktop client this Mac already signs in with (nil when it has none).
+struct MultiplayerHostSuggestion: Decodable, Equatable, Sendable {
+    var name = ""
+    var hostnames: [String] = []
+    var issuer = ""
+    var clientId: String? = nil
+}
+
+/// The first-time setup form. Only the email is required; the rest start from the suggestion.
+struct MultiplayerHostSetupDraft: Equatable, Sendable {
+    var admin = ""
+    var name = ""
+    var clientID = ""
+
+    var trimmedAdmin: String { admin.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// A plain address check: something before and after one @, and a dot in the domain.
+    var adminProblem: String? {
+        let parts = trimmedAdmin.split(separator: "@", omittingEmptySubsequences: false)
+        guard !trimmedAdmin.isEmpty else { return nil }
+        guard parts.count == 2, !parts[0].isEmpty, parts[1].contains("."), !trimmedAdmin.contains(" ") else {
+            return "Enter an email address, such as you@example.com."
+        }
+        return nil
+    }
 }
 
 /// What hosting looks like now, as values for a view.
@@ -49,6 +79,8 @@ struct MultiplayerHostSummary: Equatable, Sendable {
     var pin = ""
     var dir = ""
     var log = ""
+    /// What this Mac suggests for the first setup, while unconfigured.
+    var suggestion: MultiplayerHostSuggestion?
     /// Why the last start, stop or read didn't go through.
     var failure: String?
 
@@ -57,7 +89,7 @@ struct MultiplayerHostSummary: Equatable, Sendable {
         switch phase {
         case .checking: "…"
         case .unavailable: "Unavailable"
-        case .unconfigured: "Not set up"
+        case .unconfigured: "Off"
         case .stopped: "Off"
         case .starting: "Starting"
         case .running: "On"
@@ -70,7 +102,7 @@ struct MultiplayerHostSummary: Equatable, Sendable {
         switch phase {
         case .checking: "Checking this Mac…"
         case .unavailable: "Hosting isn’t available"
-        case .unconfigured: "Not set up yet"
+        case .unconfigured: "Ready to set up"
         case .stopped: "Relay stopped"
         case .starting: "Starting the relay…"
         case .running: "Relay running"
@@ -96,7 +128,10 @@ struct MultiplayerHostSummary: Equatable, Sendable {
     }
 
     var isBusy: Bool { phase == .starting || phase == .stopping || phase == .checking }
-    var canStart: Bool { phase == .stopped }
+    /// Start works from a relay that was never set up too: the setup form goes first.
+    var canStart: Bool { phase == .stopped || phase == .unconfigured }
+    /// The setup needs a sign-in client ID typed in, because this Mac has none to reuse.
+    var needsClientID: Bool { (suggestion?.clientId ?? "").isEmpty }
     /// Stop is offered while the launch agent is loaded, even if the relay keeps failing to start.
     var canStop: Bool { phase == .running || phase == .starting }
 
@@ -111,11 +146,17 @@ struct MultiplayerHostSummary: Equatable, Sendable {
 
 // MARK: - Adapter
 
-enum MultiplayerHostAction: String, Sendable { case status, install, uninstall }
+enum MultiplayerHostAction: String, Sendable { case status, setup, install, uninstall }
 
-/// The process boundary. Tests substitute a scripted relay.
+/// The process boundary. Tests substitute a scripted relay. `input` is JSON on stdin (`setup` only).
 protocol MultiplayerRelayControl: Sendable {
-    func run(_ action: MultiplayerHostAction) async throws -> MultiplayerHostReport
+    func run(_ action: MultiplayerHostAction, input: Data) async throws -> MultiplayerHostReport
+}
+
+extension MultiplayerRelayControl {
+    func run(_ action: MultiplayerHostAction) async throws -> MultiplayerHostReport {
+        try await run(action, input: Data())
+    }
 }
 
 /// The relay refused, with its own reason.
@@ -157,7 +198,7 @@ struct MultiplayerRelayProcess: MultiplayerRelayControl {
         let error: String?
     }
 
-    func run(_ action: MultiplayerHostAction) async throws -> MultiplayerHostReport {
+    func run(_ action: MultiplayerHostAction, input: Data) async throws -> MultiplayerHostReport {
         let stop = MultiplayerStopSignal()
         let executable = executable
         let timeout = timeout
@@ -166,7 +207,7 @@ struct MultiplayerRelayProcess: MultiplayerRelayControl {
                 DispatchQueue.global(qos: .userInitiated).async {
                     continuation.resume(with: Result {
                         try MultiplayerProcessRun.execute(executable: executable, arguments: ["host", "--json", action.rawValue],
-                                                          input: Data(), timeout: timeout, limit: 64 * 1024, stop: stop)
+                                                          input: input, timeout: timeout, limit: 64 * 1024, stop: stop)
                     })
                 }
             }
@@ -193,6 +234,8 @@ struct MultiplayerRelayProcess: MultiplayerRelayControl {
 @Observable @MainActor
 final class MultiplayerHostModel {
     private(set) var summary = MultiplayerHostSummary()
+    /// The first-time setup form.
+    var setupDraft = MultiplayerHostSetupDraft()
 
     @ObservationIgnored let control: (any MultiplayerRelayControl)?
     /// How often a start or a stop is checked while launchd brings the relay up or down.
@@ -224,8 +267,41 @@ final class MultiplayerHostModel {
         }
     }
 
+    /// Start from the setup form: it needs an email, and a client ID where the Mac has none.
+    var canSetUp: Bool {
+        let draft = setupDraft
+        return summary.phase == .unconfigured && task == nil && !draft.trimmedAdmin.isEmpty && draft.adminProblem == nil
+            && (!summary.needsClientID || !draft.clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// Writes the relay's configuration from the setup form, loads its launch agent, then waits
+    /// until the relay answers, as Start does.
+    func setUp() {
+        guard let control, canSetUp else { return }
+        var payload: [String: String] = ["admin": setupDraft.trimmedAdmin]
+        let name = setupDraft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { payload["name"] = name }
+        let clientID = setupDraft.clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !clientID.isEmpty { payload["clientId"] = clientID }
+        guard let input = try? JSONEncoder().encode(payload) else { return }
+        summary.failure = nil
+        summary.phase = .starting
+        task = Task {
+            do {
+                self.apply(try await control.run(.setup, input: input))
+                await self.settle(control, until: .running)
+            } catch {
+                await self.read(control)
+                self.summary.failure = MultiplayerSentence.join("Couldn’t set up the relay.", Self.message(error))
+            }
+            self.task = nil
+        }
+    }
+
     /// Loads the relay's launch agent, then waits until the relay answers or the wait runs out.
+    /// A relay that was never set up goes through the setup form instead.
     func start() {
+        if summary.phase == .unconfigured { return setUp() }
         guard let control, task == nil, summary.phase == .stopped else { return }
         summary.failure = nil
         summary.phase = .starting
@@ -301,6 +377,8 @@ final class MultiplayerHostModel {
         next.pin = report.pin ?? ""
         next.dir = report.dir
         next.log = report.log
+        next.suggestion = report.setup
+        if let setup = report.setup, setupDraft.name.isEmpty { setupDraft.name = setup.name }
         summary = next
     }
 
@@ -315,9 +393,9 @@ final class MultiplayerHostModel {
 /// The tray's Hosting page: what hosting is, this Mac's relay and its address, and what to do
 /// next. Start and Stop are in the tray's footer.
 struct MultiplayerHostingPage: View {
-    static let setupCommand = "commander-relay host init --name \"My relay\" --hostname <this Mac’s name> --issuer <OIDC issuer> --client-id <client ID> --admin <your email>"
-
     let host: MultiplayerHostSummary
+    /// The first-time setup form, shown while the relay was never set up.
+    @Binding var setup: MultiplayerHostSetupDraft
     /// The saved server whose pin is this relay's, once the person has added it.
     let savedServer: String?
     let onDismissFailure: () -> Void
@@ -365,21 +443,36 @@ struct MultiplayerHostingPage: View {
         case .unavailable:
             line("This build of Commander has no relay helper. Build the app with make app to host from here.")
         case .unconfigured:
-            line("Before the first start, set up the relay once in Terminal. It saves the name, address and sign-in settings to \(host.dir.isEmpty ? "this Mac" : host.dir).")
-            MultiplayerWell {
-                Text(Self.setupCommand)
-                    .font(MultiplayerTheme.mono)
-                    .foregroundStyle(MultiplayerTheme.foreground)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            line("Then come back and press Check again.")
+            setupForm
         case .stopped:
             line(host.name.isEmpty ? "Start hosting to run the relay now and each time you log in."
                                    : "Start hosting to run \(host.name) now and each time you log in.")
             address
         case .starting, .running:
             address
+        }
+    }
+
+    /// The first start's form: your email makes you the relay's admin. The name and the sign-in
+    /// client start from what this Mac suggests.
+    @ViewBuilder private var setupForm: some View {
+        line("Enter your email and press Start hosting. You become the relay’s first admin, and friends sign in with Google.")
+        MultiplayerField(label: "Your email", hint: "Only you can change who joins until you add other admins.",
+                         problem: setup.adminProblem) {
+            MultiplayerTextField(label: "Your email", placeholder: "you@example.com", text: $setup.admin)
+        }
+        MultiplayerField(label: "Relay name", hint: "Friends see this name when they add the server.") {
+            MultiplayerTextField(label: "Relay name", placeholder: host.suggestion?.name ?? "My relay", text: $setup.name)
+        }
+        if host.needsClientID {
+            MultiplayerField(label: "Google sign-in client ID",
+                             hint: "This Mac has no Google Desktop client yet. Paste the client ID your relay admin gave you.") {
+                MultiplayerTextField(label: "Google sign-in client ID", placeholder: "….apps.googleusercontent.com",
+                                     text: $setup.clientID, monospaced: true)
+            }
+        }
+        if let first = host.suggestion?.hostnames.first {
+            line("Friends reach it at \(first).")
         }
     }
 
@@ -433,6 +526,8 @@ struct MultiplayerHostingPage: View {
 struct MultiplayerHostingActions: View {
     let host: MultiplayerHostSummary
     let isSaved: Bool
+    /// The setup form is complete, so Start can set the relay up first.
+    var canSetUp = false
     let onStart: () -> Void
     let onStop: () -> Void
     let onCheck: () -> Void
@@ -440,9 +535,14 @@ struct MultiplayerHostingActions: View {
 
     var body: some View {
         switch host.phase {
-        case .unconfigured, .unavailable:
+        case .unavailable:
             Button("Check again", action: onCheck)
                 .buttonStyle(MultiplayerTrayButtonStyle())
+        case .unconfigured:
+            Button("Start hosting", action: onStart)
+                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                .keyboardShortcut(canSetUp ? KeyboardShortcut.defaultAction : nil)
+                .disabled(!canSetUp)
         case .checking:
             EmptyView()
         case .stopped:
@@ -484,6 +584,7 @@ extension MultiplayerModel {
         switch host.summary.phase {
         case .running: hostedServer == nil ? "Add it here to use it yourself." : "Running under launchd."
         case .stopped: "Starts again each time you log in, until you stop it."
+        case .unconfigured: "Set up once. It then starts each time you log in."
         case .starting: "launchd is starting the relay."
         default: nil
         }
