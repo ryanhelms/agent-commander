@@ -19,17 +19,26 @@ import (
 )
 
 type input struct {
-	ID         string    `json:"id"`
-	Handle     string    `json:"handle"`
-	Resource   string    `json:"resource"`
-	Capability string    `json:"capability"`
-	Name       string    `json:"name"`
-	Kind       string    `json:"kind"`
-	Target     string    `json:"target"`
-	MaxUses    int       `json:"maxUses"`
-	ExpiresAt  time.Time `json:"expiresAt"`
-	Token      string    `json:"token"`
-	Server     string    `json:"server"`
+	ID            string    `json:"id"`
+	Handle        string    `json:"handle"`
+	Resource      string    `json:"resource"`
+	Capability    string    `json:"capability"`
+	Name          string    `json:"name"`
+	Kind          string    `json:"kind"`
+	Target        string    `json:"target"`
+	MaxUses       int       `json:"maxUses"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+	Token         string    `json:"token"`
+	Server        string    `json:"server"`
+	DisplayName   *string   `json:"displayName"`
+	StatusMessage *string   `json:"statusMessage"`
+	Avatar        *string   `json:"avatar"`
+	Presence      string    `json:"presence"`
+	Mode          string    `json:"mode"`
+	AllowedEmails []string  `json:"allowedEmails"`
+	Admins        []string  `json:"admins"`
+	TTLHours      int       `json:"ttlHours"`
+	Invite        string    `json:"invite"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -71,13 +80,13 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	a.handle = profile.Handle
 	a.mu.Unlock()
-	var social struct{ Friends []control.User }
+	var social struct{ Friends []Friend }
 	if e = a.remote(ctx, s, "GET", "/v1/friends", nil, &social); e != nil {
 		return nil, e
 	}
 	friends, incoming, outgoing := []map[string]any{}, []map[string]any{}, []map[string]any{}
 	for _, f := range social.Friends {
-		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online}
+		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online, "displayName": f.DisplayName, "statusMessage": f.StatusMessage, "presence": f.Presence, "hasAvatar": f.HasAvatar, "contactKey": f.ContactKey, "lastSeen": f.LastSeen}
 		switch f.Status {
 		case "accepted":
 			friends = append(friends, row)
@@ -252,7 +261,9 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 	case "status":
 		return a.status(ctx)
 	case "login":
-		return a.startLogin(in.Handle)
+		return a.startLogin(in.Handle, in.Invite)
+	case "presence":
+		return a.setPresenceMode(ctx, in.Presence)
 	}
 	a.edit.Lock()
 	defer a.edit.Unlock()
@@ -265,7 +276,21 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 	}
 	switch verb {
 	case "profile":
-		return nil, a.remote(ctx, s, "PUT", "/v1/profile", map[string]string{"handle": in.Handle}, nil)
+		body := map[string]any{}
+		if in.Handle != "" {
+			body["handle"] = in.Handle
+		}
+		for k, v := range map[string]*string{"displayName": in.DisplayName, "statusMessage": in.StatusMessage, "avatar": in.Avatar} {
+			if v != nil {
+				body[k] = *v
+			}
+		}
+		if len(body) == 0 {
+			return nil, errors.New("nothing to change")
+		}
+		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
+	case "avatar", "membership", "membership-set", "invite-create", "me":
+		return a.socialVerb(ctx, s, verb, in)
 	case "search", "request", "accept", "unfriend":
 		handle := in.Handle
 		if handle == "" {

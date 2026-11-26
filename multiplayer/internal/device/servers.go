@@ -63,6 +63,8 @@ type ServerSummary struct {
 	Error         string    `json:"error"`
 	FriendsOnline int       `json:"friendsOnline"`
 	Incoming      int       `json:"incoming"`
+	Presence      string    `json:"presence"`
+	Unseen        int       `json:"unseen"`
 }
 
 // ManagerConfig configures the multi-server device agent.
@@ -74,6 +76,8 @@ type ManagerConfig struct {
 	OpenBrowser          func(string) error
 	// SeedRelay is added as the first server when no server list exists.
 	SeedRelay string
+	// NoPresence disables automatic presence (tests).
+	NoPresence bool
 	// Dial is replaced in tests.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -131,6 +135,9 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 		if s.AutoConnect {
 			m.start(s)
 		}
+	}
+	if !c.NoPresence {
+		go m.presenceLoop()
 	}
 	return m, nil
 }
@@ -247,6 +254,10 @@ func (m *Manager) summary(s Server) ServerSummary {
 	defer a.mu.Unlock()
 	out.SignedIn = a.creds.Session.User != ""
 	out.Handle, out.FriendsOnline, out.Incoming = a.handle, a.friendsOn, a.incoming
+	out.Presence, out.Unseen = a.social.Pushed, a.unseen()
+	if a.social.PresenceMode != "auto" {
+		out.Presence = a.social.PresenceMode
+	}
 	if a.problem != "" {
 		out.Error = a.problem
 	}
@@ -594,6 +605,33 @@ func (m *Manager) Handler() http.Handler {
 			return
 		}
 		verb := r.PathValue("verb")
+		switch verb {
+		case "contacts", "activity", "activity-seen", "join":
+			var in struct {
+				Cursor string `json:"cursor"`
+				After  string `json:"after"`
+				Link   string `json:"link"`
+			}
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.DisallowUnknownFields()
+			if e = d.Decode(&in); e != nil {
+				reply(w, nil, errors.New("invalid request"))
+				return
+			}
+			var res any
+			switch verb {
+			case "contacts":
+				res, e = m.contacts(r.Context())
+			case "activity":
+				res = m.activity()
+			case "activity-seen":
+				e = m.activitySeen(in.Cursor)
+			case "join":
+				res, e = m.join(r.Context(), in.Link)
+			}
+			reply(w, res, e)
+			return
+		}
 		if verb == "servers" || strings.HasPrefix(verb, "server-") {
 			var in serverInput
 			d := json.NewDecoder(bytes.NewReader(raw))

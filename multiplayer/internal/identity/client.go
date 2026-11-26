@@ -27,6 +27,8 @@ type Client struct {
 	OIDCHTTP            *http.Client
 	GoogleDesktopConfig string
 	AllowLoopbackHTTP   bool
+	// Invite is an optional relay invite code sent with the enrollment challenge.
+	Invite string
 }
 type HTTPError struct{ Status int }
 
@@ -87,7 +89,11 @@ func (c Client) Login(ctx context.Context, keys *devicekeys.Keys, openBrowser fu
 		return Session{}, err
 	}
 	var ch challenge
-	if err = c.request(ctx, "POST", "/v1/auth/challenge", "", map[string]any{"public": pub}, &ch); err != nil {
+	chReq := map[string]any{"public": pub}
+	if c.Invite != "" {
+		chReq["invite"] = c.Invite
+	}
+	if err = c.request(ctx, "POST", "/v1/auth/challenge", "", chReq, &ch); err != nil {
 		return Session{}, err
 	}
 	if len(ch.Nonce) != 43 {

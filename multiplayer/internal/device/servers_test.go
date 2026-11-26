@@ -45,7 +45,7 @@ func testManager(t *testing.T) *Manager {
 		Secrets: func(relay string) (devicekeys.Store, error) {
 			return devicekeys.Directory(filepath.Join(dir, "secrets", key(relay)))
 		},
-		OpenBrowser: func(string) error { return nil },
+		OpenBrowser: func(string) error { return nil }, NoPresence: true,
 	})
 	if err != nil {
 		t.Fatal(err)

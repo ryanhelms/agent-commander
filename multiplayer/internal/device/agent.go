@@ -70,6 +70,7 @@ type Agent struct {
 	friendsOn    int
 	incoming     int
 	lastOnline   time.Time
+	social       socialState
 	ctx          context.Context
 	stop         context.CancelFunc
 	loginStop    context.CancelFunc
@@ -177,7 +178,9 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		a.stop()
 		return nil, e
 	}
+	a.loadSocial()
 	go a.receiveLoop()
+	go a.eventsLoop()
 	return a, nil
 }
 func (a *Agent) Close() { a.stop(); a.http.CloseIdleConnections() }
@@ -238,7 +241,7 @@ func (a *Agent) getSession(ctx context.Context) (identity.Session, error) {
 	a.creds = next
 	return n, nil
 }
-func (a *Agent) startLogin(handle string) (any, error) {
+func (a *Agent) startLogin(handle, invite string) (any, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.creds.Session.User != "" {
@@ -252,7 +255,9 @@ func (a *Agent) startLogin(handle string) (any, error) {
 	a.loginStop = cancel
 	a.problem = ""
 	go func() {
-		s, e := a.identity.Login(ctx, a.keys, a.cfg.OpenBrowser)
+		ic := a.identity
+		ic.Invite = invite
+		s, e := ic.Login(ctx, a.keys, a.cfg.OpenBrowser)
 		a.authMu.Lock()
 		a.mu.Lock()
 		if e == nil && ctx.Err() == nil {
