@@ -32,28 +32,28 @@ func TestSealedWire(t *testing.T) {
 	}
 }
 
-func TestDurableControlPilot(t *testing.T) {
+func controlTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	dsn := os.Getenv("PILOT_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PILOT_TEST_DATABASE_URL to exercise two edges against PostgreSQL")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := t.Context()
 	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close)
 	namespace := pgx.Identifier{"pilot_test_" + secret()}.Sanitize()
 	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+namespace); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_, err := admin.Exec(context.Background(), "DROP SCHEMA "+namespace+" CASCADE")
 		if err != nil {
 			t.Error(err)
 		}
-	}()
+	})
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,14 @@ func TestDurableControlPilot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+func TestDurableControlPilot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	pool := controlTestPool(t)
 	auth := func(r *http.Request) (Principal, error) {
 		return Principal{User: r.Header.Get("Test-User"), Device: r.Header.Get("Test-Device")}, nil
 	}

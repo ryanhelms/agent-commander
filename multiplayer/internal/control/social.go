@@ -5,60 +5,122 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type User struct {
-	User   string `json:"user"`
-	Handle string `json:"handle"`
-	Online bool   `json:"online"`
-	Status string `json:"status,omitempty"`
+	User          string     `json:"user"`
+	Handle        string     `json:"handle"`
+	Online        bool       `json:"online"`
+	Status        string     `json:"status,omitempty"`
+	DisplayName   string     `json:"displayName"`
+	StatusMessage string     `json:"statusMessage"`
+	Presence      string     `json:"presence"`
+	LastSeen      *time.Time `json:"lastSeen,omitempty"`
+	HasAvatar     bool       `json:"hasAvatar"`
+	ContactKey    string     `json:"contactKey,omitempty"`
 }
 
 func (s *Service) setProfile(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	var in struct {
-		Handle string `json:"handle"`
+		Handle        *string `json:"handle"`
+		DisplayName   *string `json:"displayName"`
+		StatusMessage *string `json:"statusMessage"`
+		Presence      *string `json:"presence"`
+		Avatar        *string `json:"avatar"`
 	}
 	if err := body(r, &in); err != nil {
 		return nil, err
 	}
-	in.Handle = strings.ToLower(in.Handle)
-	if !handlePattern.MatchString(in.Handle) {
-		return nil, bad("handle must have 2–32 lowercase letters, numbers, underscores or hyphens")
+	if in.Handle != nil {
+		*in.Handle = strings.ToLower(*in.Handle)
+		if !handlePattern.MatchString(*in.Handle) {
+			return nil, bad("handle must have 2–32 lowercase letters, numbers, underscores or hyphens")
+		}
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO mp_profiles(user_id,handle) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET handle=EXCLUDED.handle`, p.User, in.Handle)
+	if in.Presence != nil {
+		switch *in.Presence {
+		case "online", "away", "busy", "dnd":
+		default:
+			return nil, bad("invalid presence")
+		}
+	}
+	var image profileAvatar
+	if in.Avatar != nil {
+		var err error
+		image.contentType, image.data, err = decodeAvatar(*in.Avatar)
+		if err != nil {
+			return nil, err
+		}
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO mp_profiles(user_id,handle,display_name,status_message,presence,avatar_type,avatar)
+		VALUES ($1,$2,coalesce($3,''),coalesce($4,''),coalesce($5,'online'),$6,$7)
+		ON CONFLICT(user_id) DO UPDATE SET
+		  handle=coalesce($2,mp_profiles.handle),display_name=coalesce($3,mp_profiles.display_name),
+		  status_message=coalesce($4,mp_profiles.status_message),presence=coalesce($5,mp_profiles.presence),
+		  avatar_type=CASE WHEN $8 THEN excluded.avatar_type ELSE mp_profiles.avatar_type END,
+		  avatar=CASE WHEN $8 THEN excluded.avatar ELSE mp_profiles.avatar END`,
+		p.User, in.Handle, in.DisplayName, in.StatusMessage, in.Presence, image.contentType, image.data, in.Avatar != nil)
 	if err != nil {
 		return nil, err
 	}
 	return s.profile(ctx, p, r)
 }
+
+type profileAvatar struct {
+	contentType string
+	data        []byte
+}
+
+func (s *Service) avatar(ctx context.Context, _ Principal, r *http.Request) (any, error) {
+	var image profileAvatar
+	err := s.pool.QueryRow(ctx, `SELECT avatar_type,avatar FROM mp_profiles WHERE handle=$1 AND avatar IS NOT NULL`,
+		strings.ToLower(r.PathValue("handle"))).Scan(&image.contentType, &image.data)
+	return image, err
+}
+
+// Snapshot the relationship, profile and all of the member's device leases in
+// one query. Only the account and accepted friends see presence and contact keys.
+const socialUsers = `SELECT u.user_id,coalesce(u.handle,''),coalesce(u.display_name,''),coalesce(u.status_message,''),
+	coalesce(live.online,false),CASE WHEN live.online THEN coalesce(u.presence,'online') ELSE 'offline' END,
+	CASE WHEN NOT coalesce(live.online,false) THEN live.last_seen END,u.has_avatar,
+	CASE WHEN u.user_id=$1 OR f.accepted THEN coalesce(u.contact_key,'') ELSE '' END,
+	CASE WHEN f.accepted THEN 'accepted' WHEN f.requester=$1 THEN 'outgoing' WHEN f.requester IS NOT NULL THEN 'incoming' ELSE '' END
+	FROM (SELECT user_id,handle,display_name,status_message,presence,avatar IS NOT NULL AS has_avatar,contact_key
+	      FROM mp_members FULL JOIN mp_profiles USING(user_id)) u
+	LEFT JOIN mp_friends f ON f.a=least(u.user_id,$1) AND f.b=greatest(u.user_id,$1)
+	LEFT JOIN LATERAL (
+	    SELECT bool_or(ready AND expires_at>now()) AS online,
+	           max(greatest(last_seen, CASE WHEN expires_at<=now() THEN expires_at END)) AS last_seen
+	    FROM mp_leases WHERE owner_id=u.user_id AND (u.user_id=$1 OR f.accepted)
+	) live ON true `
+
+func scanUser(row pgx.Row) (User, error) {
+	var u User
+	err := row.Scan(&u.User, &u.Handle, &u.DisplayName, &u.StatusMessage, &u.Online, &u.Presence, &u.LastSeen, &u.HasAvatar, &u.ContactKey, &u.Status)
+	return u, err
+}
+
 func (s *Service) profile(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	handle := strings.ToLower(r.PathValue("handle"))
-	var v User
-	// Exact-handle discovery reveals existence. Presence is limited to the account and accepted peers.
-	err := s.pool.QueryRow(ctx, `SELECT p.user_id,p.handle,
-	(p.user_id=$1 OR EXISTS (SELECT FROM mp_friends f WHERE f.a=least(p.user_id,$1) AND f.b=greatest(p.user_id,$1) AND f.accepted))
-	AND EXISTS (SELECT FROM mp_leases l WHERE l.owner_id=p.user_id AND l.ready AND l.expires_at>now())
-	FROM mp_profiles p WHERE ($2='' AND p.user_id=$1) OR ($2<>'' AND p.handle=$2)`, p.User, handle).Scan(&v.User, &v.Handle, &v.Online)
-	return v, err
+	return scanUser(s.pool.QueryRow(ctx, socialUsers+`WHERE ($2='' AND u.user_id=$1) OR ($2<>'' AND u.handle=$2)`, p.User, handle))
 }
+
 func (s *Service) friends(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	rows, err := s.pool.Query(ctx, `SELECT u.user_id,u.handle,CASE WHEN f.accepted THEN 'accepted' WHEN f.requester=$1 THEN 'outgoing' ELSE 'incoming' END,
-	f.accepted AND EXISTS (SELECT FROM mp_leases l WHERE l.owner_id=u.user_id AND l.ready AND l.expires_at>now())
-	FROM mp_friends f JOIN mp_profiles u ON u.user_id=CASE WHEN f.a=$1 THEN f.b ELSE f.a END
-	WHERE $1 IN (f.a,f.b) ORDER BY u.handle`, p.User)
+	rows, err := s.pool.Query(ctx, socialUsers+`WHERE f.requester IS NOT NULL ORDER BY u.handle`, p.User)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := []User{}
 	for rows.Next() {
-		var v User
-		if err = rows.Scan(&v.User, &v.Handle, &v.Status, &v.Online); err != nil {
+		u, err := scanUser(rows)
+		if err != nil {
 			return nil, err
 		}
-		result = append(result, v)
+		result = append(result, u)
 	}
 	return map[string]any{"friends": result}, rows.Err()
 }
@@ -74,14 +136,25 @@ func (s *Service) friendChange(ctx context.Context, p Principal, r *http.Request
 		a, b := ownerPair(peer, p.User)
 		switch r.Method {
 		case "POST":
-			_, err := tx.Exec(ctx, `INSERT INTO mp_friends(a,b,requester) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, a, b, p.User)
-			return err
+			tag, err := tx.Exec(ctx, `INSERT INTO mp_friends(a,b,requester) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, a, b, p.User)
+			if err != nil || tag.RowsAffected() == 0 {
+				return err
+			}
+			return recordEvent(ctx, tx, peer, "friend.request", p.User, "")
 		case "PUT":
-			tag, err := tx.Exec(ctx, `UPDATE mp_friends SET accepted=true WHERE a=$1 AND b=$2 AND (requester<>$3 OR accepted)`, a, b, p.User)
-			if err == nil && tag.RowsAffected() == 0 {
+			var requester string
+			var accepted bool
+			err := tx.QueryRow(ctx, "SELECT requester,accepted FROM mp_friends WHERE a=$1 AND b=$2 FOR UPDATE", a, b).Scan(&requester, &accepted)
+			if err == pgx.ErrNoRows || (err == nil && !accepted && requester == p.User) {
 				return forbidden()
 			}
-			return err
+			if err != nil || accepted {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "UPDATE mp_friends SET accepted=true WHERE a=$1 AND b=$2", a, b); err != nil {
+				return err
+			}
+			return recordEvent(ctx, tx, peer, "friend.accepted", p.User, "")
 		default:
 			if _, err := tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE status='pending' AND ((sender=$1 AND owner_id=$2) OR (sender=$2 AND owner_id=$1))`, a, b); err != nil {
 				return err
@@ -89,8 +162,11 @@ func (s *Service) friendChange(ctx context.Context, p Principal, r *http.Request
 			if _, err := tx.Exec(ctx, `DELETE FROM mp_grants g USING mp_resources r WHERE g.resource=r.id AND ((g.grantee=$1 AND r.owner_id=$2) OR(g.grantee=$2 AND r.owner_id=$1))`, a, b); err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, "DELETE FROM mp_friends WHERE a=$1 AND b=$2", a, b)
-			return err
+			tag, err := tx.Exec(ctx, "DELETE FROM mp_friends WHERE a=$1 AND b=$2", a, b)
+			if err != nil || tag.RowsAffected() == 0 {
+				return err
+			}
+			return recordEvent(ctx, tx, peer, "friend.removed", p.User, "")
 		}
 	})
 	return nil, err
@@ -148,7 +224,7 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 	return map[string]any{"id": id}, err
 }
 func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	rows, err := s.pool.Query(ctx, `SELECT r.id,r.owner_id,r.device,r.kind,r.name,p.handle,
+	rows, err := s.pool.Query(ctx, `SELECT r.id,r.owner_id,r.device,r.kind,r.name,coalesce(p.handle,''),
 	CASE WHEN r.owner_id=$1 THEN r.actions ELSE access.actions END FROM mp_resources r
     JOIN mp_profiles p ON p.user_id=r.owner_id
     LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_effective_actions

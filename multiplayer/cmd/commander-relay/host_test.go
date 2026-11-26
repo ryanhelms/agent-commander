@@ -109,7 +109,7 @@ func TestHostModeIntegration(t *testing.T) {
 	}
 	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: rootCAs}}}
 	defer client.CloseIdleConnections()
-	checkInfo(t, client, origin, "host", "Studio host", issuer.URL, "desktop")
+	checkInfo(t, client, origin, "host", "Studio host", issuer.URL, "desktop", "allowlist")
 
 	key, err := devicekeys.Generate()
 	if err != nil {

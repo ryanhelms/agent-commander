@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,6 +29,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -268,17 +270,69 @@ func testBrowserLogin(t *testing.T, issuerName string) {
 		t.Fatal("accepted insecure production issuer")
 	}
 }
-func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
+func identityTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	dsn := os.Getenv("PILOT_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PILOT_TEST_DATABASE_URL to a disposable PostgreSQL database")
 	}
 	ctx := t.Context()
-	pool, err := pgxpool.New(ctx, dsn)
+	admin, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(admin.Close)
+	id, err := token()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := pgx.Identifier{"identity_test_" + id}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := admin.Config()
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+func identityEdge(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	edge := httptest.NewUnstartedServer(handler)
+	edge.TLS = &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAnyClientCert}
+	edge.StartTLS()
+	t.Cleanup(edge.Close)
+	return edge
+}
+
+func identityClient(t *testing.T, edge *httptest.Server) (Client, *devicekeys.Keys) {
+	t.Helper()
+	k, err := devicekeys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := k.TLSCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := edge.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	t.Cleanup(transport.CloseIdleConnections)
+	return Client{BaseURL: edge.URL, HTTP: &http.Client{Transport: transport}, AllowLoopbackHTTP: true}, k
+}
+
+func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
+	ctx := t.Context()
+	pool := identityTestPool(t)
 	f := issuer(t, "")
 	s, err := New(ctx, pool, Config{Issuer: f.URL, ClientID: "native", AllowLoopbackHTTP: true, AllowedEmails: []string{"tester@example.test", "different-owner@example.test"}})
 	if err != nil {
@@ -286,26 +340,9 @@ func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	s.Register(mux)
-	edge := httptest.NewUnstartedServer(mux)
-	edge.TLS = &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAnyClientCert}
-	edge.StartTLS()
-	defer edge.Close()
-	makeClient := func() (Client, *devicekeys.Keys) {
-		k, err := devicekeys.Generate()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cert, err := k.TLSCertificate()
-		if err != nil {
-			t.Fatal(err)
-		}
-		transport := edge.Client().Transport.(*http.Transport).Clone()
-		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
-		t.Cleanup(transport.CloseIdleConnections)
-		return Client{BaseURL: edge.URL, HTTP: &http.Client{Transport: transport}, AllowLoopbackHTTP: true}, k
-	}
-	c, keys := makeClient()
-	other, otherkeys := makeClient()
+	edge := identityEdge(t, mux)
+	c, keys := identityClient(t, edge)
+	other, otherkeys := identityClient(t, edge)
 	session, err := c.Login(ctx, keys, simulatedBrowser)
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +395,7 @@ func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Auth metadata stored in the challenge fixes the device key and OIDC nonce.
-	fresh, k := makeClient()
+	fresh, k := identityClient(t, edge)
 	pub, _ := k.Public()
 	var ch challenge
 	if err = fresh.request(ctx, "POST", "/v1/auth/challenge", "", map[string]any{"public": pub}, &ch); err != nil {
@@ -397,9 +434,9 @@ func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
 }
 
 func TestPilotRequiresVerifiedEmail(t *testing.T) {
-	s := Server{allowedHashes: []string{emailHash("allowed@example.test")}}
-	if !s.permitsEmail("Allowed@example.test", true) || s.permitsEmail("allowed@example.test", false) || s.permitsEmail("other@example.test", true) || s.permitsEmail("", true) {
-		t.Fatal("unexpected verified email admission")
+	if verifiedHash("Allowed@example.test", true) != emailHash("allowed@example.test") ||
+		verifiedHash("allowed@example.test", false) != "" || verifiedHash("", true) != "" {
+		t.Fatal("unexpected verified email hash")
 	}
 	quoted := enrollmentClaims{EmailVerified: json.RawMessage(`"true"`)}
 	if _, err := quoted.emailVerified("https://issuer.example.test"); err == nil {
@@ -408,16 +445,8 @@ func TestPilotRequiresVerifiedEmail(t *testing.T) {
 }
 
 func TestGoogleEnrollmentKeepsOneAccountAcrossIssuerSpellings(t *testing.T) {
-	dsn := os.Getenv("PILOT_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set PILOT_TEST_DATABASE_URL to a disposable PostgreSQL database")
-	}
 	ctx := t.Context()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := identityTestPool(t)
 	local := issuer(t, "")
 	s, err := New(ctx, pool, Config{Issuer: local.URL, ClientID: "native", AllowLoopbackHTTP: true, AllowedEmails: []string{"tester@example.test"}})
 	if err != nil {

@@ -1,6 +1,14 @@
 CREATE TABLE IF NOT EXISTS mp_profiles (
-    user_id text PRIMARY KEY, handle text NOT NULL UNIQUE
+    user_id text PRIMARY KEY, handle text UNIQUE
 );
+-- A member can set a profile or presence before choosing a discoverable handle.
+ALTER TABLE mp_profiles ALTER COLUMN handle DROP NOT NULL;
+ALTER TABLE mp_profiles ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT '';
+ALTER TABLE mp_profiles ADD COLUMN IF NOT EXISTS status_message text NOT NULL DEFAULT '';
+ALTER TABLE mp_profiles ADD COLUMN IF NOT EXISTS presence text NOT NULL DEFAULT 'online'
+    CHECK (presence IN ('online','away','busy','dnd'));
+ALTER TABLE mp_profiles ADD COLUMN IF NOT EXISTS avatar bytea;
+ALTER TABLE mp_profiles ADD COLUMN IF NOT EXISTS avatar_type text;
 CREATE TABLE IF NOT EXISTS mp_friends (
     a text NOT NULL REFERENCES mp_profiles, b text NOT NULL REFERENCES mp_profiles,
     requester text NOT NULL, accepted boolean NOT NULL DEFAULT false,
@@ -11,6 +19,8 @@ CREATE TABLE IF NOT EXISTS mp_leases (
     session text NOT NULL, generation bigint NOT NULL, expires_at timestamptz NOT NULL,
     ready boolean NOT NULL
 );
+ALTER TABLE mp_leases ADD COLUMN IF NOT EXISTS last_seen timestamptz;
+CREATE INDEX IF NOT EXISTS mp_leases_owner ON mp_leases(owner_id);
 CREATE TABLE IF NOT EXISTS mp_resources (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES mp_profiles, device text NOT NULL,
     kind text NOT NULL CHECK (kind IN ('agent','repo')), name text NOT NULL, actions text[] NOT NULL
