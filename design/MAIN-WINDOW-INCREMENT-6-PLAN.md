@@ -66,7 +66,7 @@ The tray side adds an "Open in Agent Commander" row atom where a page used to be
 
 ## Prerequisites
 
-- The open increment 5 defects found by the running-window check are fixed, so that no tray page is removed while its window replacement is broken.
+- The open increment 5 defects found by the running-window check are fixed, so that no tray page is removed while its window replacement is broken. The two Medium ones come first: confirmations that open below the fold at 1280, and success messages that follow you to other pages. All 11 are in the [report](demos/main-window-5/verify/REPORT.md). They are main-window work and go in the router PR.
 - The network session's tray-request issue #18 is closed, or its open items don't block a moved page.
 - The main-window gaps carried over from increment 5:
   - Admin moderation needs member and device reads.
