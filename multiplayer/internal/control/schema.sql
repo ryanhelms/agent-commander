@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS mp_resources (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES mp_profiles, device text NOT NULL,
     kind text NOT NULL CHECK (kind IN ('agent','repo')), name text NOT NULL, actions text[] NOT NULL
 );
+ALTER TABLE mp_resources ADD COLUMN IF NOT EXISTS capabilities jsonb;
+CREATE TABLE IF NOT EXISTS mp_access_requests (
+    id text PRIMARY KEY, resource text NOT NULL REFERENCES mp_resources,
+    requester text NOT NULL REFERENCES mp_profiles, actions text[] NOT NULL, note text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','granted'))
+);
+CREATE INDEX IF NOT EXISTS mp_access_requests_by_resource ON mp_access_requests(resource,requester);
+CREATE INDEX IF NOT EXISTS mp_access_requests_by_requester ON mp_access_requests(requester);
 CREATE TABLE IF NOT EXISTS mp_grants (
     resource text NOT NULL REFERENCES mp_resources, grantee text NOT NULL REFERENCES mp_profiles,
     actions text[] NOT NULL, expires_at timestamptz NOT NULL, max_uses bigint NOT NULL CHECK (max_uses > 0),
@@ -37,6 +46,12 @@ CREATE TABLE IF NOT EXISTS mp_grant_limits (
     used bigint NOT NULL DEFAULT 0, PRIMARY KEY (resource,grantee,action),
     FOREIGN KEY (resource,grantee) REFERENCES mp_grants ON DELETE CASCADE
 );
+ALTER TABLE mp_grant_limits ADD COLUMN IF NOT EXISTS approval text NOT NULL DEFAULT 'ask'
+    CHECK (approval IN ('ask','auto'));
+ALTER TABLE mp_grant_limits ADD COLUMN IF NOT EXISTS budget_tokens bigint NOT NULL DEFAULT 0
+    CHECK (budget_tokens >= 0);
+ALTER TABLE mp_grant_limits ADD COLUMN IF NOT EXISTS attribution text NOT NULL DEFAULT 'owner'
+    CHECK (attribution IN ('owner','requester'));
 CREATE OR REPLACE VIEW mp_effective_actions AS
 SELECT g.resource,g.grantee,a.action,
     CASE WHEN g.per_action THEN l.expires_at ELSE g.expires_at END AS expires_at,
