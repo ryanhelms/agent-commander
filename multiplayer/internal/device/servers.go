@@ -636,7 +636,7 @@ func (m *Manager) Handler() http.Handler {
 		}
 		verb := r.PathValue("verb")
 		switch verb {
-		case "remote-enable", "remote-disable", "remote-devices", "remote-revoke":
+		case "remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename":
 			var in remoteInput
 			d := json.NewDecoder(bytes.NewReader(raw))
 			d.DisallowUnknownFields()

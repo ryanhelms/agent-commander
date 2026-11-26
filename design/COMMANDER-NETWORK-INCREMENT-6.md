@@ -14,7 +14,7 @@ The device agent (`commander-network serve`) serves the web view when the person
 
 1. The tray verb `remote-enable` with `{"listen"?}` starts the server and returns `{"url", "code", "expiresAt", "pairURL"}`. The code is 8 characters and lasts 10 minutes. The tray shows it with a QR code of `<url>/pair?code=<code>`.
 2. The phone opens the link. The server checks the code, then sets an HttpOnly, SameSite=Strict session cookie that lasts 30 days. Each paired device is listed with the name the person gives it.
-3. `remote-devices` returns `{"devices", "url", "running"}` and, while an unused code is on offer, `"pairing": {"code", "expiresAt", "pairURL"}`; a code that has been used disappears from it. `remote-revoke` with `{"device"}` removes one. `remote-disable` stops the server and keeps the pairings.
+3. `remote-devices` returns `{"devices", "url", "running"}` and, while an unused code is on offer, `"pairing": {"code", "expiresAt", "pairURL"}`; a code that has been used disappears from it. `remote-revoke` with `{"device"}` removes one. `remote-rename` with `{"device", "name"}` (1–64 characters) names one; `/pair?code=…&name=…` can also name it at pairing. `remote-disable` stops the server and keeps the pairings.
 
 ## API (cookie session required)
 
