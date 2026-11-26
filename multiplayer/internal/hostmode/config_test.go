@@ -66,3 +66,35 @@ func checkMode(t *testing.T, path string, want os.FileMode) {
 		t.Errorf("permissions on %s = %o, want %o", path, st.Mode().Perm(), want)
 	}
 }
+
+func TestUpdateConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: "https://issuer.example.test", ClientID: "commander", Admins: []string{"admin@example.test"},
+	}
+	if err := InitConfig(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateConfig(dir, []string{"agent-relay.tail.internal", "100.64.0.7", "RELAY.example.test"}, ":443"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"relay.example.test", "agent-relay.tail.internal", "100.64.0.7"}
+	if !slices.Equal(got.Hostnames, want) || got.Listen != ":443" || got.Name != "Relay" {
+		t.Fatalf("updated config = %+v", got)
+	}
+	checkMode(t, filepath.Join(dir, "host.json"), 0600)
+	if err := UpdateConfig(dir, []string{"bad name"}, ""); err == nil {
+		t.Fatal("accepted an invalid hostname")
+	}
+	if got, _ = ReadConfig(dir); !slices.Equal(got.Hostnames, want) {
+		t.Fatalf("a refused update changed the config: %v", got.Hostnames)
+	}
+	if err := UpdateConfig(t.TempDir(), []string{"x.example.test"}, ""); err == nil {
+		t.Fatal("updated a missing config")
+	}
+}

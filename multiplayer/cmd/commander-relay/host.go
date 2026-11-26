@@ -26,6 +26,13 @@ func hostCommand(ctx context.Context, args []string) error {
 	}
 	action := flags.Arg(0)
 	var cfg hostmode.Config
+	if action == "configure" {
+		flags.StringVar(&cfg.Listen, "listen", "", "replace the HTTPS listen address")
+		flags.Func("add-hostname", "add a certificate DNS name or IP (repeatable)", func(value string) error {
+			cfg.Hostnames = append(cfg.Hostnames, value)
+			return nil
+		})
+	}
 	if action == "init" {
 		flags.StringVar(&cfg.Name, "name", "", "display name")
 		flags.StringVar(&cfg.Listen, "listen", ":443", "HTTPS listen address")
@@ -56,6 +63,8 @@ func hostCommand(ctx context.Context, args []string) error {
 	switch action {
 	case "init":
 		return hostmode.InitConfig(path, cfg)
+	case "configure":
+		return hostmode.UpdateConfig(path, cfg.Hostnames, cfg.Listen)
 	case "install":
 		return hostmode.Install(path)
 	case "uninstall":
