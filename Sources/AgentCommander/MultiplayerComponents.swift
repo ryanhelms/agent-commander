@@ -7,7 +7,8 @@ import SwiftUI
 // model or calls the helper. Helper-supplied text is drawn through `multiplayerDisplay`.
 
 enum MultiplayerLayout {
-    static let width: CGFloat = 360
+    /// The tray is 400 pt wide (design/mockups/commander-network-tray.html).
+    static let width: CGFloat = 400
     static let inset: CGFloat = Space.l
     static let sectionGap: CGFloat = 18
     /// tokens.json layout.minimumHandoffButtonHeight.

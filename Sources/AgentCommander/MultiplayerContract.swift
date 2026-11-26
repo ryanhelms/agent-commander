@@ -14,6 +14,13 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case resourceAdd = "resource-add"
     /// Stores a repository's GitHub token in the helper's Keychain. Never a `MultiplayerCommand`.
     case repoCredential = "repo-credential"
+    /// The server list (increment 1). These act on the device agent's list, not on one relay.
+    case servers
+    case serverProbe = "server-probe"
+    case serverAdd = "server-add"
+    case serverUpdate = "server-update"
+    case serverRemove = "server-remove"
+    case serverTrust = "server-trust"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
@@ -398,10 +405,12 @@ enum MultiplayerLimitProblem: Error, Equatable, Sendable {
 
 // MARK: - Commands
 
-/// One JSON value in a helper request. Strings stay strings; a count is a real JSON number.
+/// One JSON value in a helper request. Strings stay strings; a count is a real JSON number and a
+/// server setting a real JSON boolean.
 enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStringLiteral, ExpressibleByIntegerLiteral {
     case string(String)
     case number(Int)
+    case bool(Bool)
 
     init(stringLiteral value: String) { self = .string(value) }
     init(integerLiteral value: Int) { self = .number(value) }
@@ -411,6 +420,7 @@ enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStrin
         switch self {
         case .string(let text): try container.encode(text)
         case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
         }
     }
 }

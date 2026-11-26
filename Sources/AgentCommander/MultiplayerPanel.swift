@@ -1,7 +1,7 @@
 import SwiftUI
 
-// ATOMIC LEVEL: Organisms, the panel template and the page.
-// The same `MultiplayerPanel` is the menu bar window and, with AGENT_COMMANDER_NETWORK_PANEL=1,
+// ATOMIC LEVEL: Organisms and templates for one server's session, the tray's shell and the review
+// stage. `MultiplayerPanel` (MultiplayerTray.swift) is the menu bar window and, with AGENT_COMMANDER_NETWORK_PANEL=1,
 // the content of the cockpit window for review. Both read one live MultiplayerModel; nothing here
 // supplies a status of its own.
 
@@ -12,57 +12,6 @@ enum MultiplayerLaunch {
 }
 
 // MARK: - Organisms
-
-/// Presence light, network name, state and handle, and the refresh action.
-struct MultiplayerHeader: View {
-    let presence: MultiplayerPresence
-    let detail: String?
-    let isRefreshing: Bool
-    let canRefresh: Bool
-    let onRefresh: () -> Void
-
-    var body: some View {
-        HStack(spacing: Space.s + 2) {
-            MultiplayerPresenceLight(tone: presence.tone, lit: presence.isLit)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Commander network")
-                    .font(TypeRole.tileName)
-                    .foregroundStyle(Palette.foreground)
-                HStack(spacing: 6) {
-                    Text(presence.title)
-                        .font(TypeRole.ownership)
-                        .foregroundStyle(presence.tone.color)
-                    if let detail {
-                        Text(detail.multiplayerDisplay)
-                            .font(TypeRole.monoID)
-                            .foregroundStyle(.inkSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Network status")
-            .accessibilityValue(detail.map { "\(presence.title), \($0.multiplayerDisplay)" } ?? presence.title)
-            Spacer(minLength: Space.s)
-            if isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 24, height: 24)
-                    .accessibilityLabel("Checking status")
-            } else {
-                SymbolButton(symbol: "arrow.clockwise", label: "Refresh status", action: onRefresh)
-                    .foregroundStyle(canRefresh ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary))
-                    .keyboardShortcut("r", modifiers: .command)
-                    .disabled(!canRefresh)
-                    .help("Refresh status (⌘R)")
-            }
-        }
-        .padding(.horizontal, MultiplayerLayout.inset)
-        .padding(.vertical, Space.m)
-        .background(Palette.chrome)
-    }
-}
 
 /// Everything before the developer is online: check, sign in, wait for the browser, claim a handle,
 /// or recover from an unavailable helper. Each state has one clear next step.
@@ -280,7 +229,7 @@ struct MultiplayerHomeLists: View {
                 MultiplayerRows(items: status.resources, empty: "Add a repository checkout or an agent you might share.") { resource in
                     MultiplayerRow(symbol: MultiplayerResourceKind.symbol(for: resource.kind), title: resource.name,
                                    caption: resourceSummary(resource)) {
-                        if MultiplayerModel.takesCredential(resource) {
+                        if MultiplayerSessionModel.takesCredential(resource) {
                             SymbolButton(symbol: "key", label: "Set GitHub token for \(resource.name.multiplayerDisplay)") {
                                 onSetCredential(resource.id)
                             }
@@ -361,8 +310,8 @@ struct MultiplayerHomeLists: View {
 
 // MARK: - Template
 
-/// Header, scrolling body and footer at a fixed width. The body grows with its content up to a
-/// height that keeps the panel on the main display, then scrolls.
+/// Header, scrolling bands and footer at the tray's fixed width. The body grows with its content
+/// up to a height that keeps the panel on the main display, then scrolls. Bands pad themselves.
 struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
     @ViewBuilder var header: Header
     @ViewBuilder var content: Content
@@ -372,20 +321,18 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Hairline()
+            Rectangle().fill(MultiplayerTheme.hair).frame(height: 1)
             ScrollView(.vertical) {
                 content
-                    .padding(MultiplayerLayout.inset)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(max(contentHeight, 120), MultiplayerLayout.maxBodyHeight))
-            Hairline()
             footer
         }
         .frame(width: MultiplayerLayout.width)
-        .background(LinearGradient(colors: [Palette.panelTop, Palette.panelBottom], startPoint: .top, endPoint: .bottom))
+        .background(MultiplayerTheme.panel)
     }
 }
 
@@ -868,62 +815,18 @@ struct MultiplayerCredentialEditor: View {
     }
 }
 
-/// Where status comes from, and sign-out.
-struct MultiplayerFooter: View {
-    let signedIn: Bool
-    let usesFixtureHelper: Bool
-    let isBusy: Bool
-    let onSignOut: () -> Void
+// MARK: - Server session
+
+/// One server's account, friends, resources and grants: the body of a server's page in the tray.
+/// The tray's model opens and closes the session; this only draws it.
+struct MultiplayerSessionContent: View {
+    @Bindable var model: MultiplayerSessionModel
 
     var body: some View {
-        HStack(spacing: Space.s) {
-            if usesFixtureHelper {
-                Label("Fixture helper", systemImage: "testtube.2")
-                    .font(TypeRole.caption)
-                    .foregroundStyle(Palette.attention)
-                    .help("Debug review mode: status comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.")
-            } else {
-                Text("Updates while this panel is open")
-                    .font(TypeRole.caption)
-                    .foregroundStyle(.inkSecondary)
-            }
-            Spacer(minLength: Space.s)
-            if signedIn {
-                Button("Sign out", action: onSignOut)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.inkSecondary)
-                    .disabled(isBusy)
-            }
+        VStack(alignment: .leading, spacing: MultiplayerLayout.sectionGap) {
+            activity
+            page
         }
-        .padding(.horizontal, MultiplayerLayout.inset)
-        .padding(.vertical, Space.s + 2)
-        .background(Palette.footer)
-    }
-}
-
-// MARK: - Page
-
-/// The network panel: the menu bar window, and the cockpit window under AGENT_COMMANDER_NETWORK_PANEL=1.
-struct MultiplayerPanel: View {
-    @Bindable var model: MultiplayerModel
-
-    var body: some View {
-        MultiplayerPanelShell {
-            MultiplayerHeader(presence: model.presence, detail: model.statusDetail,
-                              isRefreshing: model.isRefreshing, canRefresh: model.canRefresh,
-                              onRefresh: { model.refresh() })
-        } content: {
-            VStack(alignment: .leading, spacing: MultiplayerLayout.sectionGap) {
-                activity
-                page
-            }
-        } footer: {
-            MultiplayerFooter(signedIn: model.canSignOut, usesFixtureHelper: model.usesFixtureHelper,
-                              isBusy: model.isBusy, onSignOut: { model.signOut() })
-        }
-        .onAppear { model.open() }
-        .onDisappear { model.close() }
         .onChange(of: model.notice) { _, notice in
             if let notice { AccessibilityNotification.Announcement(notice).post() }
         }
@@ -1058,7 +961,7 @@ struct MultiplayerMenuBarLabel: View {
     let model: MultiplayerModel
 
     var body: some View {
-        Image(systemName: model.presence.menuSymbol)
-            .accessibilityLabel("Commander network, \(model.presence.title)")
+        Image(systemName: model.menuSymbol)
+            .accessibilityLabel("Commander network, \(model.menuTitle)")
     }
 }
