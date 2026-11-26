@@ -45,7 +45,11 @@ gh release create "$input_tag" dist/go-build-inputs.tar.gz \
 | `Agent-Commander-Multiplayer-Pilot-macOS-universal.zip` | Ad hoc pilot app with both helpers for Intel and Apple silicon on macOS 26 or later. |
 | `commander-relay-pilot-linux-amd64.tar.gz` | Docker image archive for the multiplayer pilot relay. |
 | `agent-commander-relay-linux-amd64.tar.gz` and `agent-commander-relay-linux-arm64.tar.gz` | Standalone hosted relay bundles for the existing deployment path. |
-| `SHA256SUMS` | SHA-256 manifest for the four downloadable archives. |
+| `agent-commander-headless-linux-amd64.tar.gz` and `agent-commander-headless-linux-arm64.tar.gz` | The headless Commander service for a Linux server: `agentctl` stamped with the release tag, `VERSION` and a README. |
+| `install.sh` | Installs or upgrades the headless service on a Linux server. See [Headless Commander](design/HEADLESS-COMMANDER.md). |
+| `SHA256SUMS` | SHA-256 manifest for every other asset. |
+
+The workflow also asks GitHub for a build attestation of the headless archives and `install.sh`. This is optional. GitHub issues attestations for public repositories, and for private ones only on GitHub Enterprise Cloud, so the step may fail without failing the release. A deploy verifies an attestation when one exists.
 
 The ad hoc Mac build is for testing. Use the [Developer ID packaging procedure](design/MULTIPLAYER-PILOT.md#build-the-universal-macos-archive) for the notarized distribution archive.
 

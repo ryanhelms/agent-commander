@@ -37,14 +37,27 @@ def module_pins() -> tuple[dict[str, str], dict[tuple[str, str], str]]:
     return {name: versions[name] for name in MODULES}, sums
 
 
+LOCAL_MODULE = "agentcommander.network/hostkit"
+LOCAL_PATH = "./multiplayer/hostkit"
+
+
 def verify_binary(binary: Path, arch: str, pins: dict[str, str], sums: dict[tuple[str, str], str]) -> None:
     # Tabular build metadata works on every Go toolchain supported by Commander.
     output = subprocess.check_output(["go", "version", "-m", str(binary)], text=True)
     rows = [line.strip().split("\t") for line in output.splitlines()]
     dependencies = {}
+    local = False
     for row in rows:
+        # The hostkit module lives in this repository, so it has no checksum.
+        if row[0] == "dep" and row[1] == LOCAL_MODULE and len(row) == 3:
+            local = True
+            continue
         if row[0] == "=>":
+            if local and row[1:] == [LOCAL_PATH, "(devel)"]:
+                local = False
+                continue
             raise ValueError(f"{arch} relay binary contains a module replacement")
+        local = False
         if row[0] != "dep":
             continue
         if len(row) != 4:

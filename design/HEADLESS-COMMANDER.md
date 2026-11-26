@@ -41,7 +41,17 @@ Add these assets to each release built by `build.yml`, and list them in `SHA256S
 - `agent-commander-headless-linux-amd64.tar.gz` and `agent-commander-headless-linux-arm64.tar.gz`. Each holds the static `agentctl` binary, the systemd unit template and a `VERSION` file that records the Commander version and the API version.
 - `install.sh`. This is the only part not written in Go, because a new server has no Go binary yet. It is short POSIX `sh` that does four things: detect the architecture, download the archive and `SHA256SUMS`, verify the checksum, and run `agentctl host install`. Everything after that runs in Go.
 
-Also add a GitHub artifact attestation for each archive (`actions/attest-build-provenance`). Then a checksum file taken from the same release is not the only proof that a release is genuine, and `gh attestation verify` can check it.
+The workflow also requests a GitHub artifact attestation for each archive and `install.sh` (`actions/attest-build-provenance`). Attestations are optional. GitHub issues them for public repositories, and for private ones only on GitHub Enterprise Cloud, so while the repository is private the step may fail without failing the release. A deploy verifies an attestation with `gh attestation verify` when one exists, and otherwise relies on `SHA256SUMS`.
+
+`build.yml` builds each binary with `-ldflags "-X agentcommander/internal/buildinfo.Version=TAG"`. `go run ./packaging/headless` checks that each binary is a static Linux executable for its architecture and stamped with the tag, then writes reproducible archives.
+
+**"Latest" and prereleases.** `gh release download` without a tag fetches GitHub's latest release, which never includes a prerelease. Every pilot release is a prerelease, so until a full release exists, name the tag:
+
+```sh
+gh release download v0.2.0-pilot.4 -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- v0.2.0-pilot.4
+```
+
+Without a version argument, `install.sh` installs the newest release that is not a draft, prereleases included.
 
 ## Commands
 
