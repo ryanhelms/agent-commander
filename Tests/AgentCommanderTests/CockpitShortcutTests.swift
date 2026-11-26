@@ -12,10 +12,10 @@ import Testing
     @Test func noTwoCockpitShortcutsShareAChord() {
         #expect(CockpitShortcuts.collisions.isEmpty, "bound twice: \(CockpitShortcuts.collisions)")
         #expect(Set(CockpitShortcuts.all.map(\.command)).count == CockpitShortcuts.all.count)
-        // ⌘1 stays the coordinator's; the modes take ⌥⌘1 to ⌥⌘5 and never plain ⌘ and a digit.
+        // ⌘1 stays the coordinator's; the modes take ⌥⌘1 to ⌥⌘6 and never plain ⌘ and a digit.
         #expect(CockpitShortcuts.focusCoordinator.chord == "⌘1")
-        #expect(CockpitShortcuts.modes.map(\.chord) == ["⌥⌘1", "⌥⌘2", "⌥⌘3", "⌥⌘4", "⌥⌘5"])
-        #expect(CockpitShortcuts.modes.map(\.title) == ["Agents", "Network", "People", "Teams", "Settings"])
+        #expect(CockpitShortcuts.modes.map(\.chord) == ["⌥⌘1", "⌥⌘2", "⌥⌘3", "⌥⌘4", "⌥⌘5", "⌥⌘6"])
+        #expect(CockpitShortcuts.modes.map(\.title) == ["Agents", "Network", "People", "Teams", "Harnesses", "Settings"])
     }
 
     /// The rail's modes are the ones the keys are named for, in the same order.
@@ -23,7 +23,7 @@ import Testing
         let navigation = LiveShell.navigation(runs: [], openRunPath: nil, composing: false, place: LiveShell.wall,
                                               needsYou: 0, network: ShellLiveTests.network)
         #expect(navigation.modeItems.map(\.mode.title) == CockpitShortcuts.modeTitles)
-        #expect(navigation.modeItems.map(\.shortcut) == [1, 2, 3, 4, 5])
+        #expect(navigation.modeItems.map(\.shortcut) == [1, 2, 3, 4, 5, 6])
     }
 
     /// Every literal shortcut in the app's source, by the window it is bound in. The cockpit's
@@ -110,10 +110,10 @@ import Testing
     /// Each mode key reaches its own mode, from every mode. ⌥⌘3 once did nothing in a window
     /// while the other four worked, so every pair is checked, on the command a key press gives.
     @Test func eachModeKeyDispatchesToItsMode() {
-        let ids = ["agents", "network", "people", "teams", LiveShell.settings]
-        let starts = [LiveShell.wall, LiveShell.servers, LiveShell.people, LiveShell.team(ShellLiveTests.network.workspaces[0]), LiveShell.settings]
-        // The key codes of 1 to 5 on the digit row, and the digit each gives without its modifiers.
-        let keys: [(code: UInt16, digit: String)] = [(18, "1"), (19, "2"), (20, "3"), (21, "4"), (23, "5")]
+        let ids = ["agents", "network", "people", "teams", HarnessPlace.mode, LiveShell.settings]
+        let starts = [LiveShell.wall, LiveShell.servers, LiveShell.people, LiveShell.team(ShellLiveTests.network.workspaces[0]), HarnessPlace.installed, LiveShell.settings]
+        // The key codes of 1 to 6 on the digit row, and the digit each gives without its modifiers.
+        let keys: [(code: UInt16, digit: String)] = [(18, "1"), (19, "2"), (20, "3"), (21, "4"), (23, "5"), (22, "6")]
         for (index, key) in keys.enumerated() {
             let command = CockpitShortcuts.modeCommand(characters: key.digit, keyCode: key.code, modifiers: [.command, .option])
             #expect(command == .mode(index), "⌥⌘\(key.digit) asks for mode \(index)")
@@ -139,11 +139,11 @@ import Testing
         #expect(CockpitShortcuts.modeCommand(characters: "£", keyCode: 20, modifiers: [.command, .option]) == .mode(2))
         #expect(CockpitShortcuts.modeCommand(characters: "\"", keyCode: 20, modifiers: [.command, .option]) == .mode(2))
         #expect(CockpitShortcuts.modeCommand(characters: nil, keyCode: 23, modifiers: [.command, .option, .capsLock]) == .mode(4))
-        // ⌘3, ⇧⌥⌘3, ⌃⌥⌘3 and ⌥⌘6 are not mode keys.
+        // ⌘3, ⇧⌥⌘3, ⌃⌥⌘3 and ⌥⌘7 are not mode keys.
         #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command]) == nil)
         #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command, .option, .shift]) == nil)
         #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command, .option, .control]) == nil)
-        #expect(CockpitShortcuts.modeCommand(characters: "6", keyCode: 22, modifiers: [.command, .option]) == nil)
+        #expect(CockpitShortcuts.modeCommand(characters: "7", keyCode: 26, modifiers: [.command, .option]) == nil)
         #expect(CockpitShortcuts.modeCommand(characters: "a", keyCode: 0, modifiers: [.command, .option]) == nil)
     }
 

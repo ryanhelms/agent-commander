@@ -63,7 +63,7 @@ import Testing
 
     @Test func navigationListsTheModesAndTheirPlacesFromLiveState() {
         let navigation = Self.navigation()
-        #expect(navigation.modeItems.map(\.mode.title) == ["Agents", "Network", "People", "Teams", "Settings"])
+        #expect(navigation.modeItems.map(\.mode.title) == ["Agents", "Network", "People", "Teams", "Harnesses", "Settings"])
         #expect(navigation.modeItems.last?.mode.isTrailing == true)
         let known = Set(navigation.places.map(\.id))
         #expect(known.count == navigation.places.count)
@@ -164,7 +164,7 @@ import Testing
         #expect(LiveShell.modeModifiers == [.command, .option])
         #expect(LiveShell.modeModifiers.shellKeyCap == "⌥⌘")
         #expect(EventModifiers.command.shellKeyCap == "⌘")
-        #expect(Self.navigation().modeItems.map(\.shortcut) == [1, 2, 3, 4, 5])
+        #expect(Self.navigation().modeItems.map(\.shortcut) == [1, 2, 3, 4, 5, 6])
     }
 
     // MARK: Needs you

@@ -42,7 +42,7 @@ enum ShellConcept: String, CaseIterable, Identifiable, Sendable {
         case .shellC, .needsYou: self = .needsYouFirst
         default:
             // A network or Teams page opens in the chosen sidebar, B.
-            guard scenario.networkPlace != nil || scenario.teamsPlace != nil else { return nil }
+            guard scenario.networkPlace != nil || scenario.teamsPlace != nil || scenario.harnessPlace != nil else { return nil }
             self = .modeRail
         }
     }
@@ -101,7 +101,8 @@ enum ShellSample {
                            collapsed: Set<String> = [], profile: CommanderProfile = profile,
                            servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
                            sent: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
-                           isAdmin: Bool = true) -> CommanderNavigation {
+                           isAdmin: Bool = true,
+                           harnesses: HarnessTally = HarnessTally(HarnessFixture.harnesses)) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -128,7 +129,7 @@ enum ShellSample {
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
             place("people.requests", "Friend requests", "person.badge.plus", count: friendRequests, hot: true, detail: true),
             place("people.groups", "Groups", "person.3", detail: true),
-        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin) + [
+        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin) + HarnessPlace.places(harnesses) + [
             place("hosts", "Hosts", "desktopcomputer"),
             place("settings", "Settings", "gearshape")
         ]
@@ -161,6 +162,7 @@ enum ShellSample {
                 ]),
                 CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
                               sections: LiveShell.teamsSections(workspaces: workspaces.map(\.id), isAdmin: isAdmin)),
+                HarnessPlace.mode(harnesses),
                 CommanderMode(id: "settings", title: "Settings", symbol: "gearshape", sections: [
                     CommanderPlaceGroup(id: "settings", title: "Settings", placeIDs: ["settings", "hosts"])
                 ], isTrailing: true)
@@ -199,6 +201,9 @@ final class ShellPreviewState {
     let teams: TeamsPreviewState
     /// How long an outcome stays before its row leaves.
     var outcomeDwell: Duration = .milliseconds(2400)
+    /// The sample harnesses behind the Harnesses mode, and the one in its inspector.
+    let harnesses = HarnessFixture.feed()
+    var harnessShown: String?
     /// What the sample network adds to the wall. Take back removes the hold.
     var wall = WallSample.work()
 
@@ -211,7 +216,7 @@ final class ShellPreviewState {
 
     /// The state a scenario opens with.
     convenience init(scenario: DesignPreviewScenario) {
-        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
+        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? scenario.harnessPlace ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
                   teams: scenario.teamsPlace == nil ? nil : TeamsPreviewState(scenario: scenario))
     }
 
@@ -227,7 +232,7 @@ final class ShellPreviewState {
                                collapsed: collapsed, profile: profile, servers: network.health,
                                approvals: network.approvalCount, friendRequests: network.friendRequestCount,
                                sent: network.sentCount, workspaces: teams.workspacePlaces,
-                               isAdmin: teams.content.isAdmin)
+                               isAdmin: teams.content.isAdmin, harnesses: harnesses.tally)
     }
 
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {
@@ -408,6 +413,14 @@ struct ShellPreviewCanvas: View {
             NetworkPageView(place: place, pages: state.network.pages(go: { act(.select($0)) }))
         case let place where TeamsPlace.hasPage(place):
             TeamsPageView(place: place, pages: teamsPages)
+        case let place where HarnessPlace.hasPage(place):
+            let harnesses = HarnessesContext(feed: state.harnesses)
+            HarnessesPage(place: place, crumbs: navigation.crumbs, context: harnesses,
+                          shown: Binding(get: { state.harnessShown }, set: { state.harnessShown = $0 }))
+                // The sample sign-in: the same sheet over sample text, with no terminal behind it.
+                .sheet(item: Binding(get: { harnesses.session }, set: { if $0 == nil { harnesses.actions.endSession(nil, nil) } })) { session in
+                    HarnessSessionSheet(session: session) { code, line in harnesses.actions.endSession(code, line) }
+                }
         default:
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
                                  note: ShellSample.note(for: navigation.selection))

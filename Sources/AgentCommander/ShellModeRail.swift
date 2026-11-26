@@ -9,7 +9,7 @@ struct ShellModeRail: View {
     @Environment(\.theme) private var theme
     let navigation: CommanderNavigation
     /// The keys held with a mode's number. The live window keeps ⌘1 for the coordinator, so its
-    /// modes take ⌥⌘1 to ⌥⌘5.
+    /// modes take ⌥⌘1 to ⌥⌘6.
     var modeModifiers: EventModifiers = .command
     /// The context list can be put away to give the canvas its width. The rail stays.
     var showsContext = true

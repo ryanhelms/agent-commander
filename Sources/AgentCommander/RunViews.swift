@@ -42,6 +42,23 @@ struct RunSetupCapabilities {
         var id: String { key }
     }
 
+    /// A harness a run can be started with, as the Harnesses mode reports it.
+    struct RunHarness: Identifiable, Equatable {
+        let id: String
+        let name: String
+        /// Installed and signed in (or it needs no sign-in).
+        let isReady: Bool
+        /// The word beside it: "Signed in", "Not signed in".
+        let state: String
+        /// The service's own reason a run can't start with it, when it gives one.
+        var reason: String? = nil
+        /// The harness has a sign-in command the app can open, and isn't signed in.
+        var canSignIn = true
+    }
+
+    /// The harness the coordinator runs in. POST /v1/runs starts Claude Code.
+    static let coordinatorHarness = "claude"
+
     struct Delegation {
         let title: String
         let detail: String
@@ -59,6 +76,20 @@ struct RunSetupCapabilities {
     var limitsNote: String? = nil
     var footerNote: String? = nil
     var showsTaskEditor = true
+    /// The managed harnesses that are turned on. Nil where nothing reports them: the form then
+    /// names the coordinator alone and holds no run back.
+    var harnesses: [RunHarness]? = nil
+
+    /// Why a run can't start with the coordinator's harness now. Nil when it can, or when nothing
+    /// reports harnesses.
+    var coordinatorBlock: String? {
+        guard let harnesses else { return nil }
+        guard let coordinator = harnesses.first(where: { $0.id == Self.coordinatorHarness }) else {
+            return "Claude Code is turned off. Turn it on in Harnesses to start a run."
+        }
+        if coordinator.isReady { return nil }
+        return coordinator.reason ?? "\(coordinator.name) is \(coordinator.state.lowercased()). Sign in to start a run."
+    }
 
     /// True when several coordinators, models or hosts can be chosen, so values show a chevron.
     var offersChoices: Bool { coordinatorModel != nil }
@@ -73,6 +104,8 @@ struct NewRunView: View {
     let capabilities: RunSetupCapabilities
     let create: @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void
     let cancel: () -> Void
+    /// Opens a harness's own sign-in. Nil leaves the gate without a button.
+    var signIn: ((String) -> Void)? = nil
 
     @State private var title: String
     @State private var path: String
@@ -85,7 +118,8 @@ struct NewRunView: View {
     init(connection: CockpitModel.Connection, draft: NewRunDraft, projectName: String?,
          capabilities: RunSetupCapabilities = RunSetupCapabilities(),
          create: @escaping @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void,
-         cancel: @escaping () -> Void) {
+         cancel: @escaping () -> Void, signIn: ((String) -> Void)? = nil) {
+        self.signIn = signIn
         self.connection = connection
         self.projectName = projectName
         self.capabilities = capabilities
@@ -99,7 +133,9 @@ struct NewRunView: View {
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedTask: String { task.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var isOnline: Bool { connection == .online }
-    private var canStart: Bool { !path.isEmpty && !trimmedTask.isEmpty && isOnline && !busy }
+    private var canStart: Bool {
+        !path.isEmpty && !trimmedTask.isEmpty && isOnline && !busy && capabilities.coordinatorBlock == nil
+    }
 
     private var previewTitle: String {
         if !trimmedTitle.isEmpty { return trimmedTitle }
@@ -165,6 +201,27 @@ struct NewRunView: View {
                     LabeledField(label: "Project directory") { directoryField }
                     LabeledField(label: "Coordinator host") {
                         StaticField(symbol: "desktopcomputer", value: capabilities.localHostName, showsChevron: true)
+                    }
+                }
+            } else if let harnesses = capabilities.harnesses {
+                // What the Harnesses mode reports: a harness that isn't signed in is off, with the
+                // way to sign in beside it. The rows follow the live list while the form is open.
+                LabeledField(label: "Harnesses") {
+                    VStack(spacing: 7) {
+                        ForEach(harnesses) { harness in
+                            RunHarnessGateRow(harness: harness,
+                                              role: harness.id == RunSetupCapabilities.coordinatorHarness ? "Coordinator" : "Workers",
+                                              signIn: signIn.map { open in { open(harness.id) } })
+                        }
+                        if harnesses.isEmpty {
+                            StaticField(symbol: "exclamationmark.triangle", value: "No harness is turned on. Turn one on in Harnesses.")
+                        }
+                    }
+                }
+                HStack(alignment: .top, spacing: 16) {
+                    LabeledField(label: "Project directory") { directoryField }
+                    LabeledField(label: "Coordinator host") {
+                        StaticField(symbol: "desktopcomputer", value: capabilities.localHostName)
                     }
                 }
             } else {
@@ -350,6 +407,9 @@ struct NewRunView: View {
             } else if !isOnline {
                 Label("The local service is offline. Reconnect to start a run.", systemImage: "bolt.slash")
                     .font(.system(size: 12.5)).foregroundStyle(Palette.attention)
+            } else if let block = capabilities.coordinatorBlock {
+                Label(block, systemImage: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 12.5)).foregroundStyle(Palette.attention).lineLimit(2)
             } else if let note = capabilities.footerNote {
                 Label(note, systemImage: "lock").font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
             }
@@ -364,7 +424,7 @@ struct NewRunView: View {
             .buttonStyle(CapsuleButtonStyle(prominent: true))
             .keyboardShortcut(.return, modifiers: [.command])
             .disabled(!canStart)
-            .help(canStart ? "Start run (⌘↩)" : "Choose a directory and enter a task")
+            .help(canStart ? "Start run (⌘↩)" : capabilities.coordinatorBlock ?? "Choose a directory and enter a task")
         }
     }
 
@@ -399,5 +459,38 @@ struct NewRunView: View {
         if !path.isEmpty { panel.directoryURL = URL(filePath: path, directoryHint: .isDirectory) }
         if panel.runModal() == .OK, let url = panel.url { path = url.standardizedFileURL.path }
         if capabilities.showsTaskEditor { focus = .task }
+    }
+}
+
+/// One harness in the run form: its name, what it does in the run, and whether a run can use it
+/// now. A harness that isn't ready is dimmed, says why in the attention role, and offers its own
+/// sign-in. It follows the live harness list, so it turns back on as soon as the sign-in lands.
+struct RunHarnessGateRow: View {
+    let harness: RunSetupCapabilities.RunHarness
+    let role: String
+    var signIn: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "terminal").font(.system(size: 13)).foregroundStyle(.inkSecondary)
+            Text(harness.name).font(TypeRole.body)
+                .foregroundStyle(harness.isReady ? Palette.foreground : Palette.secondary).lineLimit(1)
+            Text(role).font(TypeRole.caption).foregroundStyle(.inkSecondary).lineLimit(1).fixedSize()
+            Spacer(minLength: 8)
+            Label(harness.isReady ? harness.state : harness.reason ?? harness.state,
+                  systemImage: harness.isReady ? "checkmark.circle.fill" : "exclamationmark.circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(harness.isReady ? Palette.working : Palette.attention)
+                .lineLimit(1)
+            if !harness.isReady, harness.canSignIn, let signIn {
+                Button("Sign in", action: signIn)
+                    .accessibilityLabel("Sign in to \(harness.name)")
+                    .accessibilityIdentifier("run-harness-sign-in-\(harness.id)")
+            }
+        }
+        .fieldBox()
+        .help(harness.reason ?? "")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(harness.name), \(role.lowercased()), \(harness.reason ?? harness.state.lowercased())")
     }
 }

@@ -150,6 +150,9 @@ struct ShellContext {
     var wallActions = WallLiveWorkActions()
     /// The services the app can talk to and the choice of one. Nil leaves the Hosts place out.
     var hosts: CommanderHostsContext? = nil
+    /// The harnesses this Mac can run, with the sign-in and install intents. Nil shows the
+    /// Harnesses mode as unavailable.
+    var harnesses: HarnessesContext? = nil
 }
 
 enum LiveShell {
@@ -189,6 +192,7 @@ enum LiveShell {
     ///   People    People
     ///   Teams     one place per workspace, then the team tools: Groups, Hosts, Knowledge, Directory
     ///             and, for an admin, Admin
+    ///   Harnesses Needs sign-in (while a harness needs it), Installed, Available
     ///   Settings  Settings, at the foot of the rail
     /// `place` is where the window is; on the wall the selected row is the open run's project, and
     /// the new-run form selects New run.
@@ -196,7 +200,8 @@ enum LiveShell {
     /// lists the Hosts place.
     static func navigation(runs: [RunSummary], openRunPath: String?, composing: Bool, place: String,
                            needsYou: Int, network: ShellNetwork, isOnline: Bool = true,
-                           showsHosts: Bool = false, serviceHost: String? = nil) -> CommanderNavigation {
+                           showsHosts: Bool = false, serviceHost: String? = nil,
+                           harnesses: HarnessTally = HarnessTally()) -> CommanderNavigation {
         func row(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                  hot: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -231,7 +236,8 @@ enum LiveShell {
         ] + (showsHosts ? [CommanderPlace(id: hosts, title: "Hosts", mark: .symbol("desktopcomputer"),
                                           figure: serviceHost)] : []) + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
-        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin) + [
+        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin)
+            + HarnessPlace.places(harnesses) + [
             CommanderPlace(id: settings, title: "Settings", mark: .symbol("gearshape"))
         ]
 
@@ -250,6 +256,7 @@ enum LiveShell {
             ]),
             CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
                           sections: teamsSections(workspaces: teams.isEmpty ? [workspaces] : teams.map(\.id), isAdmin: network.isAdmin)),
+            HarnessPlace.mode(harnesses),
             CommanderMode(id: settings, title: "Settings", symbol: "gearshape", sections: [
                 CommanderPlaceGroup(id: settings, title: "Settings", placeIDs: [settings])
             ], isTrailing: true)
@@ -262,6 +269,9 @@ enum LiveShell {
         } else if isTeamsPlace(place), !known.contains(place) {
             // A workspace that is gone, or the empty Teams place once workspaces arrive, stays in Teams.
             selection = teams.first?.id ?? workspaces
+        } else if HarnessPlace.hasPage(place), !known.contains(place) {
+            // Needs sign-in leaves the list once every harness is signed in. The mode stays open.
+            selection = HarnessPlace.installed
         } else if place == wall || !known.contains(place) {
             selection = openRunPath.map(project).flatMap { known.contains($0) ? $0 : nil } ?? wall
         } else {
@@ -325,8 +335,10 @@ enum LiveShell {
     ///             shows even after the source has dropped the request.
     ///   failures  why the last answer to a request didn't go through, by request. The row says so
     ///             and keeps its answers.
+    ///   harnessAlerts  harnesses that were signed in and no longer are. Each offers Sign in.
     static func inbox(pending: [RequestPresentation], network: ShellNetwork, now: Date,
-                      decided: [NeedsYouItem] = [], failures: [String: String] = [:]) -> NeedsYouInbox {
+                      decided: [NeedsYouItem] = [], failures: [String: String] = [:],
+                      harnessAlerts: [HarnessAlert] = []) -> NeedsYouInbox {
         var items: [NeedsYouItem] = pending.map { request in
             let isApproval = !request.choices.isEmpty && request.awaitingApprovalToolID != nil
             let detail = request.isWorkerDisconnected
@@ -336,6 +348,13 @@ enum LiveShell {
                                 origin: .worker(name: request.workerName, host: request.host),
                                 title: firstLine(request.promptWithoutChoiceList), detail: detail,
                                 waiting: nil, answers: [.reply])
+        }
+        items += harnessAlerts.map { alert in
+            NeedsYouItem(id: alert.inboxID, kind: .harnessSignIn, origin: .worker(name: alert.name, host: "This Mac"),
+                         title: alert.title,
+                         detail: alert.expired ? "Its sign-in ran out. Sign in again to keep using \(alert.name)."
+                                               : "It was signed in and no longer is. Sign in again to keep using \(alert.name).",
+                         waiting: max(0, now.timeIntervalSince(alert.since)))
         }
         items += network.approvals.map { pending in
             let approval = pending.item
@@ -409,6 +428,7 @@ struct LiveNeedsYouPage: View {
     let network: ShellNetwork
     let decided: [NeedsYouItem]
     var failures: [String: String] = [:]
+    var harnessAlerts: [HarnessAlert] = []
     var now: Date? = nil
     let decide: (NeedsYouInbox, String, NeedsYouDecision) -> Void
     let open: (String) -> Void
@@ -423,7 +443,8 @@ struct LiveNeedsYouPage: View {
     }
 
     private func page(at date: Date) -> some View {
-        let inbox = LiveShell.inbox(pending: pending, network: network, now: date, decided: decided, failures: failures)
+        let inbox = LiveShell.inbox(pending: pending, network: network, now: date, decided: decided, failures: failures,
+                                    harnessAlerts: harnessAlerts)
         return NeedsYouPage(inbox: inbox, decide: { id, decision in decide(inbox, id, decision) }, open: open,
                             reply: reply, notice: nil)
     }

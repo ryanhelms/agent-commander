@@ -53,6 +53,8 @@ final class CockpitPresentationState {
     let networkPages = NetworkPagesLiveState()
     /// The window's own place, reads and drafts on the Teams pages.
     let teamsPages = TeamsPagesLiveState()
+    /// The harness shown in the Harnesses inspector. Nil shows the place's first.
+    var harnessShown: String?
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
     /// The last key command pressed and how many there have been. The page runs each one from
@@ -646,11 +648,12 @@ struct CockpitScreen: View {
     /// The inbox as the navigation counts it: what waits now, without rows showing an outcome.
     private func shellNavigation(_ shell: ShellContext) -> CommanderNavigation {
         let inbox = LiveShell.inbox(pending: content.pending, network: shell.network, now: shell.now ?? Date(),
-                                    decided: ui.needsYouDecided)
+                                    decided: ui.needsYouDecided, harnessAlerts: shell.harnesses?.alerts ?? [])
         return LiveShell.navigation(runs: content.runs, openRunPath: run?.path, composing: ui.composingRun,
                                     place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network,
                                     isOnline: isOnline, showsHosts: shell.hosts != nil,
-                                    serviceHost: shell.hosts?.serviceName)
+                                    serviceHost: shell.hosts?.serviceName,
+                                    harnesses: shell.harnesses?.tally ?? HarnessTally())
     }
 
     /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
@@ -703,6 +706,13 @@ struct CockpitScreen: View {
         }
         // A countdown drawn by the network's own rows counts from the window's fixed time, when it has one.
         .environment(\.multiplayerFixedNow, shell.now)
+        // A harness's sign-in or install, in its own terminal. It closes when the command ends;
+        // the harness list then carries the new state.
+        .sheet(item: Binding(get: { shell.harnesses?.session },
+                             set: { if $0 == nil { shell.harnesses?.actions.endSession(nil, nil) } })) { session in
+            HarnessSessionSheet(session: session) { code, line in shell.harnesses?.actions.endSession(code, line) }
+                .environment(\.theme, theme)
+        }
     }
 
     @ViewBuilder private func shellCanvas(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
@@ -711,10 +721,17 @@ struct CockpitScreen: View {
             canvas
         } else if selection == LiveShell.needsYou {
             LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided,
-                             failures: ui.needsYouFailures, now: shell.now,
+                             failures: ui.needsYouFailures, harnessAlerts: shell.harnesses?.alerts ?? [], now: shell.now,
                              decide: { inbox, id, decision in decide(id, decision, in: inbox, shell) },
                              open: { id in openFromInbox(id, shell) },
-                             reply: { id in openFromInbox(id, shell) })
+                             reply: { id in
+                                 // A signed-out harness's one answer opens its own sign-in.
+                                 if let harness = HarnessAlert.harnessID(inboxID: id) {
+                                     shell.harnesses?.actions.signIn(harness)
+                                 } else {
+                                     openFromInbox(id, shell)
+                                 }
+                             })
         } else if selection == LiveShell.settings {
             PreferencesPage(projectName: run?.project ?? "", retention: "", retentionOptions: [],
                             showsSystemAppearance: false, presentation: ui.attentionPresentation,
@@ -724,6 +741,9 @@ struct CockpitScreen: View {
                             openAppSettings: { openSettings() })
         } else if selection == LiveShell.hosts, let hosts = shell.hosts {
             CommanderHostsPage(hosts: hosts)
+        } else if HarnessPlace.hasPage(selection) {
+            HarnessesPage(place: selection, crumbs: navigation.crumbs,
+                          context: shell.harnesses ?? Self.noHarnesses, shown: $ui.harnessShown)
         } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
             page(selection) { place in show(place: place) }
         } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
@@ -734,6 +754,21 @@ struct CockpitScreen: View {
                                  actionTitle: shell.actions.openNetworkPanel == nil ? nil : "Open network panel",
                                  action: { shell.actions.openNetworkPanel?() })
         }
+    }
+
+    /// Where nothing reports harnesses, the mode says so and offers no action.
+    private static var noHarnesses: HarnessesContext {
+        var context = HarnessesContext()
+        context.link = .unavailable
+        return context
+    }
+
+    /// What the run form offers: the caller's capabilities, with the harnesses the Harnesses mode
+    /// reports. A harness that isn't signed in is off in the form until the list says otherwise.
+    private var liveRunSetup: RunSetupCapabilities {
+        var setup = runSetup
+        if setup.harnesses == nil { setup.harnesses = shell?.harnesses?.runHarnesses }
+        return setup
     }
 
     /// Routes one navigation action. The navigation value itself is rebuilt from state.
@@ -784,6 +819,12 @@ struct CockpitScreen: View {
     /// its page: an approval in Approvals with its review beside it, an access request in
     /// Approvals, a friend request in People.
     private func openFromInbox(_ id: String, _ shell: ShellContext) {
+        if let harness = HarnessAlert.harnessID(inboxID: id) {
+            // A signed-out harness opens in the Harnesses mode, shown in the inspector.
+            ui.harnessShown = harness
+            show(place: HarnessPlace.signIn)
+            return
+        }
         if let link = NetworkDeepLink(inboxID: id) {
             shell.actions.openLink(link)
             show(place: link.place)
@@ -906,7 +947,7 @@ struct CockpitScreen: View {
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
-    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘5. Each
+    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘6. Each
     /// button only records its command; `perform` runs it from the page's current state, so a
     /// shortcut never acts on values captured when the window opened.
     private var shortcuts: some View {
@@ -965,12 +1006,13 @@ struct CockpitScreen: View {
     @ViewBuilder private var canvas: some View {
         if ui.composingRun {
             NewRunView(connection: content.connection, draft: ui.newRunDraft, projectName: run?.project,
-                       capabilities: runSetup,
+                       capabilities: liveRunSetup,
                        create: { path, task, title, key in
                            try await actions.createRun(path, task, title, key)
                            ui.composingRun = false
                        },
-                       cancel: { ui.composingRun = false })
+                       cancel: { ui.composingRun = false },
+                       signIn: shell?.harnesses.map { harnesses in { id in harnesses.actions.signIn(id) } })
         } else if let run = run {
             CoordinatorSplit(fraction: $ui.splitFraction, showsFloating: showsStack) {
                 VStack(spacing: 0) {
@@ -1773,7 +1815,8 @@ struct CockpitView: View {
                                               entries: model.hosts.entries(local: .init(model.connection)),
                                               listError: model.hosts.listError,
                                               use: { model.hosts.use($0) },
-                                              refresh: { await model.hosts.refresh() })))
+                                              refresh: { await model.hosts.refresh() }),
+                                          harnesses: HarnessesContext(feed: model.harnesses)))
             // Both subscriptions start again when the service changes, on the new socket.
             .task(id: model.serviceGeneration) { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
@@ -1794,6 +1837,12 @@ struct CockpitView: View {
             }
             // Its own task: a missing or old catalog endpoint never holds up the workspace feed.
             .task(id: model.serviceGeneration) { await model.adapterUpdates.follow() }
+            // The harness list, on its own subscription for the same reason. The service probes a
+            // harness again when the app comes forward (design/HARNESSES.md).
+            .task(id: model.serviceGeneration) { await model.harnesses.follow() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                model.harnesses.refreshOnActivation()
+            }
             .onAppear {
                 guard floatingPanel == nil else { return }
                 let controller = FloatingAttentionController(model: model, ui: ui, actions: actions, consoleModes: consoleModes,

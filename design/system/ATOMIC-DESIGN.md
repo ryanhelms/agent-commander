@@ -65,6 +65,10 @@ The atoms in `Atoms.swift` stay on the black-glass tokens because the console su
 | Molecules | `HostListRow` (shared with the concept Hosts page, with an optional In use badge), `ConnectionIndicator` with an optional host | `Molecules.swift`, `SetupPages.swift` |
 | Organisms | `CommanderHostList`, `CommanderHostDetail` | `CommanderHostsPage.swift` |
 | Pages | `CommanderHostsPage`, on `WorkspacePage` with `CollectionInspector` | `CommanderHostsPage.swift` |
+| Feature model (Harnesses) | `HarnessFeed`: the one subscription to `/v1/harnesses/events`, every harness call, the sign-out alerts and the open session. `HarnessesContext` hands its state to the window as values with `HarnessActions`. | `Harnesses.swift` |
+| Molecules (Harnesses) | `HarnessRow`, `RunHarnessGateRow` (New run form) | `HarnessesPage.swift`, `RunViews.swift` |
+| Organisms (Harnesses) | `HarnessList`, `HarnessDetail` (on `NetworkInspector`), `HarnessSessionSheet` over the AppKit leaf `HarnessTerminalWell` | `HarnessesPage.swift`, `HarnessTerminal.swift` |
+| Pages (Harnesses) | `HarnessesPage`, on `WorkspacePage` with `NetworkSplit` | `HarnessesPage.swift` |
 
 ## Native composition and ownership
 

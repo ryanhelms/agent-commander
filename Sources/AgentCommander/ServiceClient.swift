@@ -954,6 +954,46 @@ actor ServiceClient {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
+    // MARK: Harnesses (design/HARNESSES.md)
+
+    /// One connection to the harness list. It runs beside the workspace feed and every request.
+    nonisolated func watchHarnesses() -> AsyncThrowingStream<[Harness], Error> {
+        HarnessStream.connect(socket: socket)
+    }
+
+    /// Probes one harness again and returns it.
+    nonisolated func checkHarness(_ id: String) async throws -> Harness {
+        try HarnessSnapshot.decodeOne(try await harnessCall("POST", "\(Self.percentEncoded(id))/check", timeout: 30))
+    }
+
+    /// Starts the harness's own sign-in or install command in its tmux session.
+    nonisolated func startHarnessSession(_ id: String, purpose: HarnessSession.Purpose) async throws -> HarnessAttachment {
+        try HarnessSnapshot.decodeAttachment(try await harnessCall("POST", "\(Self.percentEncoded(id))/\(purpose.rawValue)", timeout: 20))
+    }
+
+    nonisolated func saveHarnessSettings(_ id: String, _ settings: Harness.Settings) async throws -> Harness {
+        struct Body: Encodable { let enabled: Bool; let default_model: String }
+        let body = try JSONEncoder().encode(Body(enabled: settings.enabled, default_model: settings.defaultModel))
+        return try HarnessSnapshot.decodeOne(try await harnessCall("PUT", "\(Self.percentEncoded(id))/settings", body: body, timeout: 10))
+    }
+
+    /// One harness request, off the request queue and cancellable. No bearer credential is sent:
+    /// the routes refuse an Authorization header.
+    private nonisolated func harnessCall(_ method: String, _ rest: String, body: Data? = nil, timeout: Int) async throws -> Data {
+        let socket = socket
+        let transfer = Transfer()
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                let data = try Self.send(socket: socket, path: "/v1/harnesses/\(rest)", body: body ?? Data("{}".utf8),
+                                         operationID: nil, timeout: timeout, transfer: transfer, method: method)
+                try Task.checkCancellation()
+                return data
+            }.value
+        } onCancel: {
+            transfer.cancel()
+        }
+    }
+
     func startService() throws {
         // A headless host's service is started on that host. Only this Mac's is started from here.
         if let remote = endpoint.remote {
@@ -984,12 +1024,14 @@ actor ServiceClient {
     /// One request over the owner socket. `transfer`, when given, lets the caller end it early.
     /// With `reportsStatus`, a refusal is a `ServiceStatusError` carrying its HTTP status.
     private static func send(socket: String, path: String, body: Data?, operationID: String?,
-                             timeout: Int = 6, transfer: Transfer? = nil, reportsStatus: Bool = false) throws -> Data {
+                             timeout: Int = 6, transfer: Transfer? = nil, reportsStatus: Bool = false,
+                             method: String? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/curl")
         var args = ["--disable", "--silent", "--show-error", "--max-time", String(timeout), "--noproxy", "*",
                     "--unix-socket", socket, "--write-out", "\n%{http_code}"]
         if let operationID { args += ["--header", "Idempotency-Key: \(operationID)"] }
+        if let method { args += ["--request", method] }
         let input = Pipe()
         if body != nil {
             args += ["--header", "Content-Type: application/json", "--data-binary", "@-"]
