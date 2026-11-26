@@ -14,6 +14,15 @@ Apply Brad Frost’s Atomic Design strictly to each implemented view. Start with
 
 When changing a screen, identify its actual Swift components and compare the rendered state with the matching [original screenshot](design/concepts/index.html). Record any visible differences that matter. Use the approved coordinator wall and PiP as the starting point for the local build.
 
+## Design
+
+[DESIGN.md](DESIGN.md) is the visual source of truth for every surface: the main window, zoom, PiP and the network tray. Read it before any design or interface task, including new views, restyles, components, tokens, motion, mockups and UI defect fixes.
+
+- Use its tokens and component inventory. Reuse an existing atom or molecule before adding one.
+- If a view needs something DESIGN.md does not cover, propose the addition and update DESIGN.md in the same change. Do not invent a one-off style.
+- Keep the console, terminal and pretty view rendering as it is. The design applies to everything around them.
+- When a change adds or alters a component, token or motion, update DESIGN.md in the same commit.
+
 ## Backend
 
 Before implementing a flow, consult the [existing GoF and Enterprise Integration Patterns decisions](design/PATTERN-DECISIONS.md). Make a short note for a new boundary or changed approach. Deliver working increments as described in the [MVP plan](MVP-PLAN.md).
