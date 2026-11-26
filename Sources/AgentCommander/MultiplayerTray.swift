@@ -1667,6 +1667,7 @@ struct MultiplayerPanel: View {
         let remote = model.remote
         MultiplayerRemoteBand(status: remote.status, failure: remote.failure, pairing: remote.livePairing,
                               pairingExpired: remote.pairingExpired, confirmingRevoke: remote.confirmingRevoke,
+                              renaming: remote.renaming,
                               now: model.currentDate(), isBusy: model.isBusy,
                               onSetRunning: { remote.setRunning($0) },
                               onNewCode: { remote.enable() },
@@ -1674,6 +1675,9 @@ struct MultiplayerPanel: View {
                               onAskRevoke: { remote.askRevoke($0) },
                               onCancelRevoke: { remote.cancelRevoke() },
                               onConfirmRevoke: { remote.confirmRevoke() },
+                              onStartRename: { remote.startRename($0) },
+                              onCancelRename: { remote.cancelRename() },
+                              onRename: { remote.rename(to: $0) },
                               onRetry: { remote.refresh() })
         MultiplayerBand {
             MultiplayerLinkRow(symbol: "server.rack", title: "Hosting on this Mac",

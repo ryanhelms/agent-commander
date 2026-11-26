@@ -345,6 +345,9 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                     .background { MultiplayerScrollerSilencer().accessibilityHidden(true) }
             }
+            // The page is one stop on the way from the header to the footer: Tab finishes it first,
+            // including the rows scrolled out of sight, which otherwise sort after the footer.
+            .focusSection()
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(max(contentHeight, 120), MultiplayerLayout.maxBodyHeight))
             footer

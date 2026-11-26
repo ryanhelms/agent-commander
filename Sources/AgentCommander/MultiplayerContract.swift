@@ -49,6 +49,7 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case remoteDisable = "remote-disable"
     case remoteDevices = "remote-devices"
     case remoteRevoke = "remote-revoke"
+    case remoteRename = "remote-rename"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
