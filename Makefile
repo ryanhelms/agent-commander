@@ -6,9 +6,11 @@ CONFIG ?= debug
 CODE_SIGN_IDENTITY ?= -
 NATIVE_TEST_JOBS ?= 3
 
-.PHONY: app cli network pilot-macos test test-native test-multiplayer-docker smoke run
+PG_FORMULA ?= postgresql@17
 
-app: cli network
+.PHONY: app cli network relay postgres pilot-macos test test-native test-multiplayer-docker smoke run
+
+app: cli network relay postgres
 	swift build -c $(CONFIG) --product AgentCommander
 	mkdir -p "$(MACOS)" "$(RESOURCES)"
 	bin_path="$$(swift build -c $(CONFIG) --show-bin-path)" && \
@@ -17,9 +19,12 @@ app: cli network
 		ditto "$$bin_path/SwiftTerm_SwiftTerm.bundle" "$(RESOURCES)/SwiftTerm_SwiftTerm.bundle"
 	cp dist/agentctl "$(MACOS)/agentctl"
 	cp dist/commander-network "$(MACOS)/commander-network"
+	cp dist/commander-relay "$(MACOS)/commander-relay"
+	rm -rf "$(RESOURCES)/postgres" && ditto dist/postgres "$(RESOURCES)/postgres"
 	cp packaging/Info.plist "$(APP)/Contents/Info.plist"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/agentctl"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-network"
+	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-relay"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(APP)"
 
 pilot-macos:
@@ -28,6 +33,16 @@ pilot-macos:
 network:
 	mkdir -p dist
 	cd multiplayer && go build -o ../dist/commander-network ./cmd/commander-network
+
+relay:
+	mkdir -p dist
+	cd multiplayer && go build -o ../dist/commander-relay ./cmd/commander-relay
+
+# The host-mode relay's database: a relocated copy of Homebrew PostgreSQL.
+postgres: dist/postgres/bin/postgres
+
+dist/postgres/bin/postgres:
+	python3 -I packaging/bundle-postgres.py "$(CURDIR)/dist/postgres" --formula $(PG_FORMULA)
 
 cli:
 	mkdir -p dist
