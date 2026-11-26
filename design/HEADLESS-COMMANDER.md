@@ -20,7 +20,7 @@ Deploying is a product feature, written in Go. The Python relay deploy tool (`mu
 | SSH workers | The Mac's service starts Claude on an SSH host, through `internal/sshlink` and a reverse Unix socket. The service itself stays on the Mac. |
 | `hostmode.Install` | The relay's supervisor adapters (launchd, systemd, Docker), in `multiplayer/internal/hostmode`. Go's `internal` rule stops `cmd/agentctl` from importing them, so the systemd adapter moves to a shared package first. |
 | `remote.py` | Was Python. Now `commander-relay deploy`, in Go. |
-| GitHub releases | `build.yml` publishes prereleases from `v*-*` tags. None are published yet. |
+| GitHub releases | `build.yml` publishes prereleases from `v*-*` tags. v0.1.0-pilot.4 was the first. |
 
 ## Constraint: the repository is private
 
@@ -45,13 +45,13 @@ The workflow also requests a GitHub artifact attestation for each archive and `i
 
 `build.yml` builds each binary with `-ldflags "-X agentcommander/internal/buildinfo.Version=TAG"`. `go run ./packaging/headless` checks that each binary is a static Linux executable for its architecture and stamped with the tag, then writes reproducible archives.
 
-**"Latest" and prereleases.** `gh release download` without a tag fetches GitHub's latest release, which never includes a prerelease. Every pilot release is a prerelease, so until a full release exists, name the tag:
+**"Latest" and prereleases.** `gh release download` without a tag fetches GitHub's latest release, which never includes a prerelease. The workflow publishes every pilot as a prerelease. After checking a pilot, mark it as the latest release so the one-liner without a tag finds it (see [RELEASING.md](RELEASING.md)). To install a pilot that is not marked latest, name its tag:
 
 ```sh
-gh release download v0.2.0-pilot.4 -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- v0.2.0-pilot.4
+gh release download v0.1.0-pilot.5 -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- v0.1.0-pilot.5
 ```
 
-Without a version argument, `install.sh` installs the newest release that is not a draft, prereleases included.
+Without a version argument, `install.sh` installs the newest `v*` release that is not a draft, prereleases included. It reads the list through `gh api`, which older `gh` releases such as 2.23 in Debian 12 support.
 
 ## Commands
 

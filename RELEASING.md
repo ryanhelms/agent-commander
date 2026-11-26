@@ -49,6 +49,12 @@ gh release create "$input_tag" dist/go-build-inputs.tar.gz \
 | `install.sh` | Installs or upgrades the headless service on a Linux server. See [Headless Commander](design/HEADLESS-COMMANDER.md). |
 | `SHA256SUMS` | SHA-256 manifest for every other asset. |
 
+After the release publishes, download its headless archive on a test host and check it. Then mark it as the latest release, so `gh release download` without a tag picks it up:
+
+```sh
+gh release edit v0.1.0-pilot.5 --prerelease=false --latest
+```
+
 The workflow also asks GitHub for a build attestation of the headless archives and `install.sh`. This is optional. GitHub issues attestations for public repositories, and for private ones only on GitHub Enterprise Cloud, so the step may fail without failing the release. A deploy verifies an attestation when one exists.
 
 The ad hoc Mac build is for testing. Use the [Developer ID packaging procedure](design/MULTIPLAYER-PILOT.md#build-the-universal-macos-archive) for the notarized distribution archive.

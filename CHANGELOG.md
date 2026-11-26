@@ -4,6 +4,13 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+## [0.1.0-pilot.5] - 2026-11-26
+
+
+### Fixed
+
+- `install.sh` without a version now finds the newest release with older `gh` releases, such as 2.23 in Debian 12, and ignores the build-input releases.
+
 ## [0.1.0-pilot.4] - 2026-11-26
 
 

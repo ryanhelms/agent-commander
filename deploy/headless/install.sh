@@ -7,7 +7,7 @@
 #
 # Usage: install.sh [VERSION] [INSTALL_FLAGS...]
 #   VERSION        a release tag, or "latest" (the default): the newest
-#                  release that is not a draft, prereleases included.
+#                  v* release that is not a draft, prereleases included.
 #   INSTALL_FLAGS  passed to `agentctl host install`, such as --sudo-linger.
 #
 # It downloads with `gh` when gh is signed in, and otherwise anonymously over
@@ -60,13 +60,14 @@ fi
 
 if [ "$version" = latest ]; then
 	if [ $use_gh = yes ]; then
-		version=$(gh release list -R "$repo" --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')
+		# gh api works with older gh releases, such as 2.23 in Debian 12.
+		version=$(gh api "repos/$repo/releases?per_page=30" --jq '[.[] | select((.draft | not) and (.tag_name | startswith("v")))][0].tag_name // empty')
 	elif [ -n "${AGENT_COMMANDER_DOWNLOAD_BASE:-}" ]; then
 		fetch "$AGENT_COMMANDER_DOWNLOAD_BASE/LATEST" "$tmp/latest"
 		version=$(tr -d ' \n' <"$tmp/latest")
 	else
-		fetch "https://api.github.com/repos/$repo/releases?per_page=1" "$tmp/releases.json"
-		version=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/releases.json" | head -n 1)
+		fetch "https://api.github.com/repos/$repo/releases?per_page=30" "$tmp/releases.json"
+		version=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(v[^"]*\)".*/\1/p' "$tmp/releases.json" | head -n 1)
 	fi
 	[ -n "$version" ] || die "no release found in $repo; check that gh is signed in with access to it"
 fi
