@@ -145,11 +145,28 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
     /// The address without the scheme, the default port or a trailing slash.
     var host: String { MultiplayerServerAddress.host(url).multiplayerDisplay }
 
-    /// State as a sentence fragment: "Offline, seen 2 hr. ago".
+    /// Signed in and set to connect on its own, but without a live session: the device agent is
+    /// retrying every second, so it reads as reconnecting, not as a server left offline.
+    var isReconnecting: Bool { state == .offline && signedIn && autoConnect }
+
+    /// The state the row draws: a reconnecting server takes Connecting's lamp and tone.
+    var shownState: MultiplayerServerState { isReconnecting ? .connecting : state }
+
+    /// State as a sentence fragment: "Offline, seen 2 hr. ago" or "Reconnecting, online 17 min. ago".
     func stateTitle(now: Date = Date()) -> String {
-        guard state == .offline, let lastSeen, lastSeen < now else { return state.title }
         let style = Date.RelativeFormatStyle(presentation: .numeric, unitsStyle: .abbreviated)
+        if isReconnecting {
+            guard let lastSeen, lastSeen < now else { return "Reconnecting…" }
+            return "Reconnecting, online \(lastSeen.formatted(style))"
+        }
+        guard state == .offline, let lastSeen, lastSeen < now else { return state.title }
         return "Offline, seen \(lastSeen.formatted(style))"
+    }
+
+    /// The reason the last attempt failed, shown under the row while it reconnects or after an error.
+    var shownProblem: String? {
+        guard !error.isEmpty, state == .error || isReconnecting else { return nil }
+        return error
     }
 
     /// Favorites first, then most recently used. A server never used sorts after one that was;

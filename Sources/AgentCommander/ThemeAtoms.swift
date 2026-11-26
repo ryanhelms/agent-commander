@@ -184,3 +184,36 @@ struct ThemeCanvas<Content: View>: View {
             .background(theme.color.window.color)
     }
 }
+
+/// The main window's footer: the app's version from its bundle, on the footer fill under a hairline.
+struct AppVersionFooter: View {
+    @Environment(\.theme) private var theme
+    var version: String = AppVersionFooter.bundleVersion
+
+    /// The git version the build stamped ("v0.1.0-pilot.3-236-g441beb9"), else "0.1.0 (1)" from the
+    /// bundle; "Development build" when run outside a bundle.
+    static var bundleVersion: String {
+        let info = Bundle.main.infoDictionary
+        if let git = info?["AgentCommanderGitVersion"] as? String, !git.isEmpty { return git }
+        guard let short = info?["CFBundleShortVersionString"] as? String else { return "Development build" }
+        if let build = info?["CFBundleVersion"] as? String, !build.isEmpty { return "\(short) (\(build))" }
+        return short
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ThemeRule()
+            HStack {
+                Spacer(minLength: Space.m)
+                Text("Agent Commander \(version)").themeType(theme.type.sub)
+                    .foregroundStyle(.theme(\.color.secondary))
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, Space.l)
+            .frame(height: 22)
+            .background(theme.surface.footerFill.color)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Agent Commander version \(version)")
+    }
+}

@@ -366,3 +366,24 @@ enum MultiplayerServerFixture {
         #expect(!model.isBusy)
     }
 }
+
+@Suite struct MultiplayerReconnectingTests {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let timeout = "Get \"https://relay.example/v1/inbox?session=abc\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+
+    @Test func aSignedInAutoConnectServerOfflineReadsAsReconnecting() {
+        let server = MultiplayerServerSummary(id: "s", url: "https://relay.example", name: "Relay", state: .offline,
+                                              signedIn: true, lastSeen: now.addingTimeInterval(-17 * 60), error: timeout)
+        #expect(server.isReconnecting && server.shownState == .connecting)
+        #expect(server.stateTitle(now: now).hasPrefix("Reconnecting, online "))
+        #expect(server.shownProblem == timeout)
+        #expect(MultiplayerModel.reconnectText(timeout) == "The relay isn’t answering. Agent Commander keeps trying.")
+    }
+
+    @Test func aServerThatWontReconnectStaysOffline() {
+        let manual = MultiplayerServerSummary(id: "s", url: "https://relay.example", name: "Relay", autoConnect: false,
+                                              state: .offline, signedIn: true, lastSeen: now.addingTimeInterval(-60))
+        #expect(!manual.isReconnecting && manual.shownState == .offline && manual.shownProblem == nil)
+        #expect(manual.stateTitle(now: now).hasPrefix("Offline, seen "))
+    }
+}
