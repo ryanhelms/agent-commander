@@ -9,7 +9,9 @@ The Harnesses mode lists the AI harnesses this Mac can run, shows whether each o
 - Sign in and Install run the harness's own command in a dedicated tmux session. The cockpit attaches to it with the native terminal viewer. Credentials never pass through Commander.
 - Status changes reach the cockpit within about 2 s of a login or logout, without running any status command on a timer (see "How status stays current").
 
-Later increments: SSH and headless hosts, update checks with the latest version, usage limits, catalog delivery through the signed adapter catalog refresh, and Add your own harness (built on the ACP profile registry).
+Later increments: SSH and headless hosts, update checks with the latest version, usage limits, catalog delivery through the signed adapter catalog refresh, FSEvents in place of the once-a-second file comparison, flagging running workers whose sign-in lapses, and Add your own harness (built on the ACP profile registry).
+
+Codex runs in Commander only with `AGENT_COMMANDER_CODEX_PROFILE` set to a dedicated profile. Without it, the page reports Codex sign-in as unknown and says why.
 
 ## API (owner socket only)
 
@@ -67,6 +69,7 @@ Field values:
 - `kind`: `agent` (a coding harness) or `runner` (a local model runner such as Ollama).
 - `group`: `vendor`, `open_source`, `ide` or `runner`. The cockpit may use it to order Available.
 - `managed`: Commander can start runs with it today (Claude Code and Codex).
+- `run_blocker`: present only on a managed harness that cannot start a run now. It holds the launcher's own reason, for example a missing adapter or Codex profile. The cockpit shows it in the inspector, and the New run sheet disables the harness whenever it is present, whatever `auth.state` says.
 - `verified`: the probe was checked against the real CLI. An unverified harness reports sign-in from its credential files only, and `auth.source` says so.
 - `auth.state`: `signed_in`, `signed_out`, `expired`, `not_required` (runners), `unknown` (installed, but no way to tell), or `not_installed`.
 - `auth.source`: `status_command`, `credential_file`, `environment` (an API key variable is set) or `none`.
@@ -86,7 +89,7 @@ The session ends when the command exits. The service re-checks the harness then,
 The service never runs a status command on a timer. A watcher loop compares cheap file fingerprints once a second and re-probes a harness only when something it depends on changed:
 
 - the harness's credential files and folders (for example `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`)
-- the login keychain file, for harnesses that keep credentials in the Keychain (Claude Code's `Claude Code-credentials` item)
+- Claude Code's `Claude Code-credentials` Keychain item: when the login keychain file changes, the service reads the item's modification date (attributes only, never the secret)
 - the folders on `PATH` and the usual install folders, to catch installs and removals
 - the end of a login or install session
 - the stored expiry time, where the status command reports one

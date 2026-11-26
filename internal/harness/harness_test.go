@@ -2,10 +2,12 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,6 +36,7 @@ type fixture struct {
 	outputs   map[string]string
 	codes     map[string]int
 	calls     []string
+	mu        sync.Mutex
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -47,13 +50,31 @@ func newFixture(t *testing.T) *fixture {
 		}
 	}
 	f.vars["PATH"] = f.bin
-	f.env = Env{Home: f.home, Getenv: func(k string) string { return f.vars[k] }, Now: func() time.Time { return f.now },
+	f.env = Env{Home: f.home, Getenv: func(k string) string { return f.vars[k] }, Now: func() time.Time {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.now
+	},
 		Run: func(_ context.Context, _ string, env []string, argv ...string) ([]byte, int, error) {
 			key := filepath.Base(argv[0]) + " " + strings.Join(argv[1:], " ")
+			f.mu.Lock()
+			defer f.mu.Unlock()
 			f.calls = append(f.calls, key)
 			return []byte(f.outputs[key]), f.codes[key], nil
 		}}
 	return f
+}
+
+func (f *fixture) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fixture) advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = f.now.Add(d)
 }
 
 func (f *fixture) install(t *testing.T, name string) {
@@ -99,6 +120,8 @@ func TestExitAndTextProbes(t *testing.T) {
 	f := newFixture(t)
 	f.install(t, "codex")
 	f.install(t, "opencode")
+	f.vars["AGENT_COMMANDER_CODEX_PROFILE"] = filepath.Join(f.home, "profile")
+	os.Mkdir(f.vars["AGENT_COMMANDER_CODEX_PROFILE"], 0700)
 	f.outputs["codex login status"] = "Logged in using ChatGPT"
 	if s := Check(context.Background(), f.env, entry(t, "codex"), Settings{}); s.Auth.State != SignedIn || s.Auth.Method != "Logged in using ChatGPT" {
 		t.Fatalf("codex = %+v", s.Auth)
@@ -116,7 +139,13 @@ func TestExitAndTextProbes(t *testing.T) {
 func TestCodexUsesCommanderProfile(t *testing.T) {
 	f := newFixture(t)
 	f.install(t, "codex")
+	if s := Check(context.Background(), f.env, entry(t, "codex"), Settings{}); s.Auth.State != Unknown || s.Login.Available {
+		t.Fatalf("without a profile: %+v", s)
+	}
 	profile := filepath.Join(f.home, "profile")
+	if err := os.Mkdir(profile, 0700); err != nil {
+		t.Fatal(err)
+	}
 	f.vars["AGENT_COMMANDER_CODEX_PROFILE"] = profile
 	var gotEnv []string
 	f.env.Run = func(_ context.Context, _ string, env []string, argv ...string) ([]byte, int, error) {
@@ -172,12 +201,12 @@ func TestMonitorPublishesCredentialChangeWithoutPolling(t *testing.T) {
 	if first[0].Auth.State != SignedOut {
 		t.Fatalf("first = %+v", first[0].Auth)
 	}
-	callsBefore := len(f.calls)
+	callsBefore := f.callCount()
 	time.Sleep(100 * time.Millisecond)
-	if len(f.calls) != callsBefore {
-		t.Fatalf("monitor ran commands without a change: %v", f.calls[callsBefore:])
+	if f.callCount() != callsBefore {
+		t.Fatal("monitor ran commands without a change")
 	}
-	f.now = f.now.Add(time.Minute) // past the recheck spacing
+	f.advance(time.Minute) // past the recheck spacing
 	os.MkdirAll(filepath.Join(f.home, ".qwen"), 0700)
 	os.WriteFile(filepath.Join(f.home, ".qwen", "oauth_creds.json"), []byte("{}"), 0600)
 	select {
@@ -256,5 +285,25 @@ func TestLoginSessionRunsInTmuxAndReportsItsEnd(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the session end was not reported")
+	}
+}
+
+func TestMonitorReportsRunBlockerAndKeepsSettings(t *testing.T) {
+	f := newFixture(t)
+	f.install(t, "claude")
+	m, _ := newMonitor(t.TempDir(), f.env, []Entry{entry(t, "claude")})
+	defer m.Close()
+	m.SetRunCheck(func(string) error { return errors.New("adapter not found") })
+	list, err := m.List(context.Background())
+	if err != nil || list[0].RunBlocker != "adapter not found" {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	stale := list[0]
+	if _, err := m.UpdateSettings(context.Background(), "claude", Settings{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	m.publish(stale)
+	if got, _ := m.List(context.Background()); got[0].Settings.Enabled {
+		t.Fatal("an older probe turned the harness back on")
 	}
 }

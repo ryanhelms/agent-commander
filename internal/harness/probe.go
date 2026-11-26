@@ -33,7 +33,10 @@ type Status struct {
 	Settings   Settings  `json:"settings"`
 	Models     []string  `json:"models,omitempty"`
 	CheckedAt  time.Time `json:"checked_at"`
-	Changed    string    `json:"changed,omitempty"`
+	// RunBlocker says why Commander cannot start a run with a managed harness
+	// right now, in the launcher's own words. Empty means it can.
+	RunBlocker string `json:"run_blocker,omitempty"`
+	Changed    string `json:"changed,omitempty"`
 }
 
 type Auth struct {
@@ -145,14 +148,28 @@ func (e Env) expand(path string) string {
 }
 
 // profileHome is the dedicated home Commander uses for this harness, or "".
+// It applies the launcher's rules: a private directory, apart from the default home.
 func (e Env) profileHome(entry Entry) string {
 	if entry.Profile == nil {
 		return ""
 	}
-	if dir := e.Getenv(entry.Profile.Env); filepath.IsAbs(dir) {
-		return dir
+	dir := e.Getenv(entry.Profile.Env)
+	if !filepath.IsAbs(dir) {
+		return ""
 	}
-	return ""
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return ""
+	}
+	if standard, err := os.Stat(filepath.Join(e.Home, "."+entry.ID)); err == nil && os.SameFile(standard, info) {
+		return ""
+	}
+	return dir
+}
+
+// needsProfile reports a harness Commander can only use through a dedicated home that is not set up.
+func (e Env) needsProfile(entry Entry) bool {
+	return entry.Profile != nil && e.profileHome(entry) == ""
 }
 
 // CommandEnv is the environment a probe, login or install runs with.
@@ -177,9 +194,11 @@ func (e Env) CommandEnv(entry Entry) []string {
 // WatchPaths are the files and folders whose change can alter this harness's state.
 func (e Env) WatchPaths(entry Entry) []string {
 	var paths []string
-	if home := e.profileHome(entry); home != "" {
-		for _, p := range entry.Profile.Watch {
-			paths = append(paths, filepath.Join(home, p))
+	if entry.Profile != nil {
+		if home := e.profileHome(entry); home != "" {
+			for _, p := range entry.Profile.Watch {
+				paths = append(paths, filepath.Join(home, p))
+			}
 		}
 	} else {
 		for _, p := range entry.Watch {
@@ -190,9 +209,6 @@ func (e Env) WatchPaths(entry Entry) []string {
 		paths = append(paths, e.expand(p))
 	}
 	paths = append(paths, entry.Apps...)
-	if entry.Keychain {
-		paths = append(paths, filepath.Join(e.Home, "Library", "Keychains", "login.keychain-db"))
-	}
 	return unique(paths)
 }
 
@@ -218,7 +234,7 @@ func Check(ctx context.Context, env Env, entry Entry, settings Settings) Status 
 		}
 	}
 	s.Install = installAction(env, entry)
-	if s.Executable != "" && entry.Login != nil {
+	if s.Executable != "" && entry.Login != nil && !env.needsProfile(entry) {
 		s.Login = Action{Available: true, Display: strings.TrimSpace(filepath.Base(s.Executable) + " " + strings.Join(entry.Login, " "))}
 	}
 	s.ACP = acpState(env, entry)
@@ -307,6 +323,9 @@ func authState(ctx context.Context, env Env, entry Entry, s Status) Auth {
 	}
 	if !s.Installed {
 		return Auth{State: NotInstalled, Source: "none"}
+	}
+	if env.needsProfile(entry) {
+		return Auth{State: Unknown, Source: "none", Detail: "Commander needs a dedicated, private profile. Set " + entry.Profile.Env + " to it."}
 	}
 	if entry.Status != nil && s.Executable != "" {
 		return probeAuth(ctx, env, entry, s.Executable)

@@ -9,7 +9,7 @@
       "login": ["auth", "login"],
       "status": {"args": ["auth", "status", "--json"], "parse": "json", "signed_in_field": "loggedIn",
         "account_field": "email", "plan_field": "subscriptionType", "method_field": "authMethod", "expires_field": "loginExpiresAt"},
-      "watch": ["~/.claude/.credentials.json"], "keychain": true,
+      "watch": ["~/.claude/.credentials.json"], "keychain_service": "Claude Code-credentials",
       "acp_adapter": "claude-agent-acp", "models": ["opus", "sonnet", "haiku"]
     },
     {
@@ -86,7 +86,7 @@
       "binaries": ["copilot"], "version_args": ["--version"],
       "install": ["npm", "install", "-g", "@github/copilot"],
       "login": [],
-      "credentials": ["~/.copilot/config.json"], "watch": ["~/.copilot"], "keychain": true
+      "credentials": ["~/.copilot/config.json"], "watch": ["~/.copilot"]
     },
     {
       "id": "cursor", "name": "Cursor CLI", "vendor": "Anysphere", "kind": "agent", "group": "ide",
@@ -95,7 +95,7 @@
       "install_script": "curl https://cursor.com/install -fsS | bash",
       "login": ["login"],
       "status": {"args": ["status"], "parse": "text", "signed_out_match": "Not logged in"},
-      "watch": ["~/.cursor"], "keychain": true
+      "watch": ["~/.cursor"]
     },
     {
       "id": "amp", "name": "Amp", "vendor": "Sourcegraph", "kind": "agent", "group": "ide",

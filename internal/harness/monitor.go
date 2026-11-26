@@ -30,6 +30,8 @@ type Monitor struct {
 	inFlight map[string]bool
 	again    map[string]bool
 	pending  map[string]bool
+	runCheck func(id string) error
+	keychain map[string]keychainPrint
 	subs     map[chan []Status]struct{}
 	sessions *sessions
 
@@ -53,7 +55,7 @@ func newMonitor(stateDir string, env Env, entries []Entry) (*Monitor, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{env: env, entries: entries, settingsPath: filepath.Join(stateDir, "harness-settings.json"),
 		interval: time.Second, statuses: map[string]Status{}, settings: map[string]Settings{}, prints: map[string]string{},
-		inFlight: map[string]bool{}, again: map[string]bool{}, pending: map[string]bool{}, subs: map[chan []Status]struct{}{},
+		inFlight: map[string]bool{}, again: map[string]bool{}, pending: map[string]bool{}, keychain: map[string]keychainPrint{}, subs: map[chan []Status]struct{}{},
 		ready: make(chan struct{}), ctx: ctx, stop: cancel}
 	m.sessions = newSessions(stateDir, env, m.Recheck)
 	raw, err := os.ReadFile(m.settingsPath)
@@ -65,6 +67,10 @@ func newMonitor(stateDir string, env Env, entries []Entry) (*Monitor, error) {
 	}
 	return m, nil
 }
+
+// SetRunCheck supplies the launcher's own test for whether a managed harness can
+// start a run. Call it before the first read.
+func (m *Monitor) SetRunCheck(check func(id string) error) { m.runCheck = check }
 
 // Start runs the first full check and the watch loop. It is safe to call more than once.
 func (m *Monitor) Start() {
@@ -100,8 +106,9 @@ func (m *Monitor) checkAll() {
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, 6)
 	for _, e := range m.entries {
+		print := m.fingerprint(e)
 		m.mu.Lock()
-		m.prints[e.ID] = m.fingerprint(e)
+		m.prints[e.ID] = print
 		m.mu.Unlock()
 		wg.Add(1)
 		go func(e Entry) {
@@ -123,12 +130,23 @@ func (m *Monitor) checkOne(e Entry) {
 	settings := m.settingsFor(e.ID)
 	m.mu.Unlock()
 	next := Check(m.ctx, m.env, e, settings)
+	if e.Managed && m.runCheck != nil {
+		if err := m.runCheck(e.ID); err != nil {
+			next.RunBlocker = err.Error()
+		}
+	}
 	m.publish(next)
 }
 
 func (m *Monitor) publish(next Status) {
 	m.mu.Lock()
 	prev, had := m.statuses[next.ID]
+	// A probe that began before a newer one or a settings change must not undo it.
+	if had && next.CheckedAt.Before(prev.CheckedAt) {
+		m.mu.Unlock()
+		return
+	}
+	next.Settings = m.settingsFor(next.ID)
 	next.Changed = ""
 	m.statuses[next.ID] = next
 	if !m.loaded {
@@ -168,7 +186,7 @@ func changeKind(prev, next Status) string {
 	switch {
 	case prev.Installed != next.Installed || prev.Executable != next.Executable:
 		return "installed"
-	case !reflect.DeepEqual(prev.Auth, next.Auth):
+	case !reflect.DeepEqual(prev.Auth, next.Auth) || prev.RunBlocker != next.RunBlocker:
 		return "auth"
 	case prev.Version != next.Version:
 		return "version"
@@ -294,6 +312,9 @@ func (m *Monitor) UpdateSettings(ctx context.Context, id string, next Settings) 
 	if err != nil {
 		return Status{}, err
 	}
+	m.mu.Lock()
+	status = m.statuses[id]
+	m.mu.Unlock()
 	status.Settings = next
 	m.publish(status)
 	return status, nil
@@ -366,6 +387,36 @@ func (m *Monitor) scan() {
 	}
 }
 
+type keychainPrint struct{ file, item string }
+
+// keychainItem returns the item's own modification date. The keychain file changes
+// on any app's write, so the item is read, attributes only, just when the file moved.
+func (m *Monitor) keychainItem(service string) string {
+	file := statPrint(filepath.Join(m.env.Home, "Library", "Keychains", "login.keychain-db"))
+	m.mu.Lock()
+	cached, ok := m.keychain[service]
+	m.mu.Unlock()
+	if ok && cached.file == file {
+		return cached.item
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 3*time.Second)
+	defer cancel()
+	// Neither -g nor -w: the secret is never requested.
+	out, code, err := m.env.Run(ctx, m.env.Home, []string{"HOME=" + m.env.Home}, "/usr/bin/security", "find-generic-password", "-s", service)
+	item := "absent"
+	if err == nil && code == 0 {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, `"mdat"`) {
+				item = strings.TrimSpace(line)
+			}
+		}
+	}
+	m.mu.Lock()
+	m.keychain[service] = keychainPrint{file, item}
+	m.mu.Unlock()
+	return item
+}
+
 // fingerprint summarizes everything that can change e's state without running it:
 // the resolved executables, and the watched credential files and folders.
 func (m *Monitor) fingerprint(e Entry) string {
@@ -385,6 +436,9 @@ func (m *Monitor) fingerprint(e Entry) string {
 		if m.env.Getenv(key) != "" {
 			b.WriteString(key + ";")
 		}
+	}
+	if e.KeychainService != "" {
+		b.WriteString("keychain=" + m.keychainItem(e.KeychainService) + ";")
 	}
 	for _, path := range m.env.WatchPaths(e) {
 		b.WriteString(path + statPrint(path))

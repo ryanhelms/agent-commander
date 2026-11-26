@@ -36,10 +36,11 @@ type Entry struct {
 	Credentials   []string `json:"credentials,omitempty"`
 	CredentialEnv []string `json:"credential_env,omitempty"`
 	Watch         []string `json:"watch,omitempty"`
-	Keychain      bool     `json:"keychain,omitempty"`
-	Profile       *Profile `json:"profile,omitempty"`
-	ACPAdapter    string   `json:"acp_adapter,omitempty"`
-	Models        []string `json:"models,omitempty"`
+	// KeychainService names the login-keychain item that holds this sign-in.
+	KeychainService string   `json:"keychain_service,omitempty"`
+	Profile         *Profile `json:"profile,omitempty"`
+	ACPAdapter      string   `json:"acp_adapter,omitempty"`
+	Models          []string `json:"models,omitempty"`
 }
 
 // Probe describes a status command and how to read its result.

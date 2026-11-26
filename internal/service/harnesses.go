@@ -17,13 +17,19 @@ import (
 // state lock, because a probe runs the harness's own commands.
 type harnessRoutes struct {
 	stateDir string
+	launcher Launcher
 	once     sync.Once
 	monitor  *harness.Monitor
 	err      error
 }
 
 func (h *harnessRoutes) get() (*harness.Monitor, error) {
-	h.once.Do(func() { h.monitor, h.err = harness.NewMonitor(h.stateDir, harness.DefaultEnv()) })
+	h.once.Do(func() {
+		h.monitor, h.err = harness.NewMonitor(h.stateDir, harness.DefaultEnv())
+		if launcher, ok := h.launcher.(interface{ CheckClient(string) error }); ok && h.err == nil {
+			h.monitor.SetRunCheck(launcher.CheckClient)
+		}
+	})
 	return h.monitor, h.err
 }
 
