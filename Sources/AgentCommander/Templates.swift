@@ -180,65 +180,104 @@ struct WorkspacePage<Header: View, Content: View>: View {
     @ViewBuilder let header: Header
     @ViewBuilder let content: Content
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var position = ScrollPosition(edge: .top)
+    /// What the page shows now: how far it is scrolled, and the heights of the window and the column.
+    @State private var viewport = PageReveal.Viewport()
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: theme.space.sectionGap) {
-                    header
-                    content
-                }
-                .padding(.top, theme.space.pageInset - 6)
-                .padding(.horizontal, theme.space.pageInset)
-                .padding(.bottom, theme.space.pageInset - 8)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: theme.space.sectionGap) {
+                header
+                content
             }
-            // Something that opens below the fold asks the page to bring it into view (`shellRevealed`).
-            .environment(\.pageReveal, PageReveal { id, anchor, animation in
-                withAnimation(animation) { proxy.scrollTo(id, anchor: anchor) }
-            })
+            .padding(.top, theme.space.pageInset - 6)
+            .padding(.horizontal, theme.space.pageInset)
+            .padding(.bottom, theme.space.pageInset - 8)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            // Something that opens below the fold asks to be brought into view (`shellRevealed`). It
+            // may sit inside the bands' own sideways scroll, where a reader's `scrollTo` moves that
+            // inner scroll view and leaves the page where it is. So the page measures the view in
+            // its own column and scrolls itself to the offset that shows it.
+            .overlayPreferenceValue(PageRevealKey.self, alignment: .topLeading) { targets in
+                GeometryReader { geometry in
+                    ForEach(targets, id: \.id) { target in
+                        Color.clear.frame(width: 1, height: 1)
+                            .onAppear { reveal(geometry[target.bounds], anchor: target.anchor) }
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: PageReveal.Viewport.self) { geometry in
+            PageReveal.Viewport(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                                height: geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom,
+                                content: geometry.contentSize.height)
+        } action: { _, next in viewport = next }
+    }
+
+    private func reveal(_ frame: CGRect, anchor: UnitPoint?) {
+        // After this layout pass, so the column has grown to hold the view.
+        DispatchQueue.main.async {
+            guard let y = PageReveal.offset(showing: frame, in: viewport, anchor: anchor, margin: theme.space.pageInset - 8) else { return }
+            withAnimation(reduceMotion ? nil : theme.motion.animation(theme.motion.standard)) { position.scrollTo(y: y) }
         }
     }
 }
 
-/// Brings a part of the page into view, by its ID.
-struct PageReveal {
-    /// With no anchor the page moves the least that shows the view.
-    var scroll: (_ id: String, _ anchor: UnitPoint?, _ animation: Animation?) -> Void = { _, _, _ in }
-}
+/// How a part of the page is brought into view.
+enum PageReveal {
+    /// What a page shows: how far its column is scrolled, the height it shows and the column's height.
+    struct Viewport: Equatable {
+        var offset: CGFloat = 0
+        var height: CGFloat = 0
+        var content: CGFloat = 0
+    }
 
-private struct PageRevealKey: EnvironmentKey {
-    static var defaultValue: PageReveal { PageReveal() }
-}
-
-extension EnvironmentValues {
-    /// The page's own scroll, for a view that opens in answer to a press and may be below the fold.
-    var pageReveal: PageReveal {
-        get { self[PageRevealKey.self] }
-        set { self[PageRevealKey.self] = newValue }
+    /// The offset that shows `frame`, a view's place in the page's column. Nil when it already
+    /// shows, or when the page hasn't been measured. With no anchor the page moves the least that
+    /// shows the view with `margin` around it; a view taller than the page, or one anchored to the
+    /// top, is put with its top edge at the top.
+    static func offset(showing frame: CGRect, in viewport: Viewport, anchor: UnitPoint?, margin: CGFloat) -> CGFloat? {
+        guard viewport.height > 0 else { return nil }
+        // The column is at least as tall as the view it holds, whatever was last measured.
+        let limit = max(0, max(viewport.content, frame.maxY + margin) - viewport.height)
+        let top = frame.minY - margin, bottom = frame.maxY + margin
+        var target = viewport.offset
+        if anchor == .top || bottom - top > viewport.height {
+            target = top
+        } else if bottom > viewport.offset + viewport.height {
+            target = bottom - viewport.height
+        } else if top < viewport.offset {
+            target = top
+        }
+        target = min(max(0, target), limit)
+        return abs(target - viewport.offset) < 0.5 ? nil : target
     }
 }
 
-/// Scrolls the page until this view shows, once, when it appears: a confirmation or a form that
-/// opened in answer to a press. Eased, or at once with Reduce Motion.
-private struct ShellRevealed: ViewModifier {
-    @Environment(\.pageReveal) private var reveal
-    @Environment(\.theme) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// A view that asked to be revealed: where it is, and which edge to hold when it is taller than
+/// the window. With no anchor the page moves the least that shows it.
+struct PageRevealTarget: Equatable {
     let id: String
-    var anchor: UnitPoint? = nil
+    let bounds: Anchor<CGRect>
+    let anchor: UnitPoint?
+}
 
-    func body(content: Content) -> some View {
-        content.id(id).onAppear {
-            // After this layout pass, so the view has its place in the page.
-            DispatchQueue.main.async { reveal.scroll(id, anchor, reduceMotion ? nil : theme.motion.animation(theme.motion.standard)) }
-        }
-    }
+struct PageRevealKey: PreferenceKey {
+    static var defaultValue: [PageRevealTarget] { [] }
+    static func reduce(value: inout [PageRevealTarget], nextValue: () -> [PageRevealTarget]) { value += nextValue() }
 }
 
 extension View {
-    /// `anchor` puts that edge of a view taller than the window at the same edge of the page.
-    func shellRevealed(_ id: String, anchor: UnitPoint? = nil) -> some View { modifier(ShellRevealed(id: id, anchor: anchor)) }
+    /// Scrolls the page until this view shows, once, when it appears: a confirmation or a form that
+    /// opened in answer to a press. Eased, or at once with Reduce Motion. `anchor` puts that edge of
+    /// a view taller than the window at the same edge of the page.
+    func shellRevealed(_ id: String, anchor: UnitPoint? = nil) -> some View {
+        anchorPreference(key: PageRevealKey.self, value: .bounds) { [PageRevealTarget(id: id, bounds: $0, anchor: anchor)] }
+    }
 }
 
 // MARK: - CollectionInspector

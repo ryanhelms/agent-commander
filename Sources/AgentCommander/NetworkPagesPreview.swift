@@ -497,6 +497,8 @@ final class NetworkPreviewState {
         actions.close = { [self] in open(.home) }
         actions.back = { [self] in open(.home) }
         actions.closeGrant = { [self] in selection.grant = nil }
+        // The sample asks before it revokes, like the live page, and then leaves the grant as it is.
+        actions.revoke = { _, _ in }
         actions.bind(network, results: results,
                      openGrant: { [self] in selection.grant = $0 },
                      grantServer: { [self] in selection.grant },
