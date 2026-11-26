@@ -243,14 +243,14 @@ struct MultiplayerHomeLists: View {
                             SymbolButton(symbol: "key", label: "Set GitHub token for \(resource.name.multiplayerDisplay)") {
                                 onSetCredential(resource.id)
                             }
-                            .foregroundStyle(isBusy ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(Palette.foreground))
+                            .foregroundStyle(isBusy ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(MultiplayerTheme.foreground))
                             .disabled(isBusy)
                         }
                         if let onAudit {
                             SymbolButton(symbol: "list.bullet.rectangle", label: "Audit for \(resource.name.multiplayerDisplay)") {
                                 onAudit(resource.id)
                             }
-                            .foregroundStyle(Palette.foreground)
+                            .foregroundStyle(MultiplayerTheme.foreground)
                             .help("Every use of \(resource.name.multiplayerDisplay)")
                         }
                         Button("Share") { onShare(nil, resource.id) }
@@ -353,7 +353,7 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
             footer
         }
         .frame(width: MultiplayerLayout.width)
-        .background(MultiplayerTheme.panel)
+        .background(MultiplayerTheme.panelFill)
     }
 }
 
@@ -821,7 +821,7 @@ struct MultiplayerCredentialEditor: View {
                 SecureField("Paste token", text: $entry.value)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(Palette.foreground)
+                    .foregroundStyle(MultiplayerTheme.foreground)
                     .multiplayerFieldBox(focused: focused)
                     .focused($focused)
                     .privacySensitive()
@@ -851,10 +851,11 @@ struct MultiplayerSessionContent: View {
     var onShare: ((_ handle: String?, _ resourceID: String?) -> Void)? = nil
     var onAudit: ((_ resourceID: String) -> Void)? = nil
 
+    @Environment(\.theme) private var theme
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             activity
-                .padding(.horizontal, MultiplayerTheme.sectionInset)
+                .padding(.horizontal, theme.space.sectionInset)
                 .padding(.top, 10)
             page
         }
@@ -972,8 +973,9 @@ struct MultiplayerSessionContent: View {
 struct MultiplayerPanelStage: View {
     let model: MultiplayerModel
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
+        let shape = theme.trayTile
         ZStack {
             Palette.window.ignoresSafeArea()
             ScrollView([.vertical]) {

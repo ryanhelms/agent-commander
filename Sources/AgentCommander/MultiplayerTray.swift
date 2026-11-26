@@ -20,6 +20,7 @@ struct MultiplayerTrayHeader<Trailing: View>: View {
     var onBack: () -> Void = {}
     @ViewBuilder var trailing: Trailing
 
+    @Environment(\.theme) private var theme
     var body: some View {
         HStack(spacing: Space.s) {
             if let back {
@@ -54,7 +55,7 @@ struct MultiplayerTrayHeader<Trailing: View>: View {
             if back == nil { Spacer(minLength: Space.s) }
             trailing
         }
-        .padding(.horizontal, MultiplayerTheme.sectionInset)
+        .padding(.horizontal, theme.space.sectionInset)
         .padding(.vertical, 12)
         .frame(minHeight: 56)
     }
@@ -66,6 +67,7 @@ struct MultiplayerTrayFooter<Actions: View>: View {
     var isFixture = false
     @ViewBuilder var actions: Actions
 
+    @Environment(\.theme) private var theme
     var body: some View {
         VStack(spacing: 0) {
             Rectangle().fill(MultiplayerTheme.hair).frame(height: 1)
@@ -84,9 +86,9 @@ struct MultiplayerTrayFooter<Actions: View>: View {
                 Spacer(minLength: Space.s)
                 actions
             }
-            .padding(.horizontal, MultiplayerTheme.sectionInset)
+            .padding(.horizontal, theme.space.sectionInset)
             .padding(.vertical, 9)
-            .background(MultiplayerTheme.well)
+            .background(MultiplayerTheme.footerFill)
         }
     }
 }
@@ -180,11 +182,20 @@ struct MultiplayerNeedsYou: View {
     var onDecide: (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Void = { _, _ in }
     var onReviewAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
     var onDeclineAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
+    /// How a listed approval or access request came out, while its answered row stays. Such a row
+    /// shows its outcome in place of its verbs and is no longer counted.
+    var approvalAnswer: (MultiplayerPending<MultiplayerApproval>) -> MultiplayerAnswer? = { _ in nil }
+    var accessAnswer: (MultiplayerPending<MultiplayerAccessRequest>) -> MultiplayerAnswer? = { _ in nil }
 
-    private var count: Int { groups.reduce(0) { $0 + $1.incoming.count } + approvals.count + access.count }
+    /// Every row drawn, answered ones included.
+    private var rows: Int { groups.reduce(0) { $0 + $1.incoming.count } + approvals.count + access.count }
+    /// What still waits on the person.
+    private var count: Int {
+        rows - approvals.filter { approvalAnswer($0) != nil }.count - access.filter { accessAnswer($0) != nil }.count
+    }
 
     var body: some View {
-        if count > 0 {
+        if rows > 0 {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
                   Group {
@@ -199,7 +210,7 @@ struct MultiplayerNeedsYou: View {
                                                    ? (approval.request.isEmpty ? "For \(name)." : "For \(name): \(approval.request)")
                                                    : approval.request.isEmpty ? "\(name). Grant is set to Ask each time."
                                                                               : "\(name): \(approval.request)",
-                                               isBusy: isBusy,
+                                               outcome: approvalAnswer(pending), isBusy: isBusy,
                                                onOpen: { onOpenApproval(pending) },
                                                onDecline: { onDecide(pending, false) },
                                                onAccept: { onDecide(pending, true) })
@@ -210,7 +221,8 @@ struct MultiplayerNeedsYou: View {
                         MultiplayerDecisionRow(color: MultiplayerTheme.swatch(for: pending.server),
                                                title: "\(request.requester.multiplayerDisplay) asks for access",
                                                detail: "\(resourceName(request.resource, pending.server).multiplayerDisplay) on \(serverName(pending.server)). \(MultiplayerAccessRequestsPage.detail(request))",
-                                               declineTitle: "Decline", acceptTitle: "Review", isBusy: isBusy,
+                                               declineTitle: "Decline", acceptTitle: "Review",
+                                               outcome: accessAnswer(pending), isBusy: isBusy,
                                                onOpen: { onReviewAccess(pending) },
                                                onDecline: { onDeclineAccess(pending) },
                                                onAccept: { onReviewAccess(pending) })
@@ -591,9 +603,10 @@ struct MultiplayerCertificateReview: View {
     let onCancelRemove: () -> Void
     let onConfirmRemove: () -> Void
 
+    @Environment(\.theme) private var theme
     var body: some View {
         MultiplayerBand {
-            let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
+            let shape = theme.trayControl
             VStack(alignment: .leading, spacing: 4) {
                 Text("Commander blocked this connection")
                     .font(.system(size: 13, weight: .semibold))
@@ -681,7 +694,7 @@ struct MultiplayerCertificateReview: View {
                 unread("The server didn’t get as far as presenting a certificate.")
             }
         case .failed(_, let message):
-            unread(message)
+            unread(message.isEmpty ? "Commander couldn’t read the certificate." : message)
         case .idle:
             unread("Commander hasn’t read the certificate yet.")
         }
@@ -755,8 +768,21 @@ struct MultiplayerHostingGuide: View {
 
 /// The network tray: the menu bar window, and the cockpit window under AGENT_COMMANDER_NETWORK_PANEL=1.
 struct MultiplayerPanel: View {
+    let model: MultiplayerModel
+    /// The theme the tray is drawn in. The menu bar tray stays in the console theme whatever the
+    /// main window uses; whether it follows the person's choice is still to be decided (DESIGN.md
+    /// section 6). Its components read `\.theme`, so another theme here restyles all of it.
+    var theme: Theme = .console
+
+    var body: some View {
+        MultiplayerPanelContent(model: model).environment(\.theme, theme)
+    }
+}
+
+private struct MultiplayerPanelContent: View {
     @Bindable var model: MultiplayerModel
 
+    @Environment(\.theme) private var theme
     var body: some View {
         MultiplayerPanelShell {
             header
@@ -909,7 +935,7 @@ struct MultiplayerPanel: View {
                                       action: { model.refresh() })
                 }
             }
-            .padding(.horizontal, MultiplayerTheme.sectionInset)
+            .padding(.horizontal, theme.space.sectionInset)
             .padding(.top, 10)
         }
     }
@@ -1609,7 +1635,8 @@ struct MultiplayerPanel: View {
     /// Agents: what waits on you, live remote work, your agents and your friends' agents.
     @ViewBuilder private var agentsTab: some View {
         let share = model.share
-        MultiplayerNeedsYou(groups: [], approvals: share.waitingApprovals, access: share.waitingAccess,
+        // An answered row stays for the model's hold with its outcome, then leaves.
+        MultiplayerNeedsYou(groups: [], approvals: share.pendingApprovals, access: share.pendingAccess,
                             serverName: { model.server($0)?.displayName ?? "a server" },
                             resourceName: { share.resourceName($0, on: $1) },
                             isBusy: model.isBusy,
@@ -1617,7 +1644,9 @@ struct MultiplayerPanel: View {
                             onOpenApproval: { share.open(.approval($0.item.id), on: $0.server) },
                             onDecide: { share.decide($0.item, on: $0.server, approve: $1) },
                             onReviewAccess: { share.review($0.item, on: $0.server) },
-                            onDeclineAccess: { share.remove($0.item, on: $0.server, declining: true) })
+                            onDeclineAccess: { share.remove($0.item, on: $0.server, declining: true) },
+                            approvalAnswer: { share.answer(for: $0.item, on: $0.server) },
+                            accessAnswer: { share.answer(for: $0.item, on: $0.server) })
         let live = share.live
         MultiplayerControlBand(items: live.activeHandovers,
                                resourceName: { share.resourceName($0.item.resource, on: $0.server) },

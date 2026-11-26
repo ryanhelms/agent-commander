@@ -9,7 +9,7 @@ Sources of truth in code:
 | What | Where |
 |---|---|
 | Base colour tokens | `design/system/tokens.json`, `Palette` in `DesignTokens.swift` |
-| Tray role tokens | `MultiplayerTheme` in `MultiplayerTrayComponents.swift` |
+| Tray role tokens | `MultiplayerTheme` in `MultiplayerTrayComponents.swift`: each token names a role of `Theme` and resolves it where it is drawn |
 | Skin atoms, molecules, motion | `MultiplayerSkin.swift` |
 | Tray layout constants | `MultiplayerLayout` in `MultiplayerComponents.swift` |
 | Reference mockup | `design/mockups/commander-network-tray.html` |
@@ -20,6 +20,8 @@ Sources of truth in code:
 | Teams pages (main window) | `TeamsPageMolecules.swift`, `TeamsPagesWorkspace.swift`, `TeamsPagesTools.swift`, `TeamsPagesModel.swift`, `TeamsPagesLive.swift` |
 
 The app has two themes. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. Console is the default. Black glass is chosen in Settings and kept under `appearance.theme`. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
+
+The tray's components follow the same rule (see "Tray roles" below). Whatever the main window composes from them (a hosted composer, the dock's holder row, the remote worker zoom and group, an inspector's organism) takes the window's theme. The menu bar tray itself sets the console theme at its root (`MultiplayerPanel(model:theme:)`), so it looks the same whichever theme the window uses.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
@@ -75,6 +77,32 @@ Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `we
 Reduce Transparency forces the opaque fill in both themes. The web Remote page is unaffected.
 
 Black glass draws the same components through its own tokens: the sidebar floats as a glass sheet, groups are separated by space rather than rules, the selected row has a rounded fill and outline with no marker, and a hot count uses the highlight fill.
+
+### Tray roles
+
+A tray component names a role through `MultiplayerTheme`, or reads `@Environment(\.theme)` for a shape or a size. Neither holds a value: each resolves the role in the theme of the view it is drawn in. In console every role below has the value the tray always drew.
+
+| Tray part | Theme role |
+|---|---|
+| Inks: `foreground`, `secondary`, `focus`, `working`, `attention`, `failure`, `onAccent`, `selection` | The same role in `color` |
+| Rules between rows and bands (`hair`), plain outlines (`border`) | `color.hair`, `color.border` |
+| The tray, a hosted composer, the zoom: fill and edge | `surface.panelFill`, `surface.panelEdge` |
+| Field, text area, sunken block | `surface.fieldFill`, `surface.fieldEdge`, `radius.control`, `space.fieldHeight`, `line.focusedField` |
+| Mark, avatar | `surface.markFill`, `surface.markEdge`, `radius.chip` |
+| Button, segments, verb strip | `style.buttonShape`, `surface.controlFill`, `controlEdge`, `controlInk`; primary `surface.primaryFill`, `primaryEdge` with `onAccent` ink; `space.controlHeight` and `controlHeightLarge`; type from `pageType.control`, one point smaller unless large |
+| Badge, hash chip, agent chip | `surface.tagEdge`, `radius.chip`, `space.chipHeightMin` and `chipHeightMax` |
+| Lamp | `style.statusMark`: the lamp shapes, or one dot in the state's colour |
+| Switch | `style.switchShape`: the square track, or the system switch in `surface.switchTint` |
+| Tab bar | Chosen tab `surface.panelFill`, others `surface.unselectedFill`; marker `line.selectedMarker` (none where the theme has none); `space.tabHeight`; hot count `surface.highlightFill` and `highlightInk` |
+| Status strip, footer | `surface.footerFill` |
+| Band | `space.sectionInset`, `bandTop`, `bandBottom`, `line.hairline` |
+| Type: `title`, `name`, `body`, `sub`, `heading`, `state`, `data`, `mono`, `label`, `fingerprint`, `figure` | The same role in `type`, with its tracking and case |
+| Remote worker group (wall) | `wall.groupFill`, `groupEdge`, `groupRadius`, `groupTitleType`, `groupNoteType` |
+| Motion in a view: arriving, streaming, ticking, hover, pulse, meter | `motion` |
+
+Increase Contrast swaps the rule and outline roles for `strongBorder`, as it does in the main window.
+
+Not mapped, because no theme role has their console value: the banner's and the capability note's fills (base palette), the server and harness swatches, and the QR code's ink. `MultiplayerTheme.Motion` keeps the console pace for code that animates outside a view.
 
 ### Wall
 
@@ -176,6 +204,8 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 
 ### Atoms
 
+The descriptions below are the console form. In another theme the same atom takes that theme's roles ("Tray roles" in section 2): in black glass a button is a capsule, a lamp is a dot, the switch is the system switch, and a heading is a tracked capital kicker.
+
 | Component | What it is |
 |---|---|
 | Lamp | 9 pt state mark: `on` filled circle, `off` outlined circle, `waiting` open arc, `error` diamond, `unknown` focus ring, `busy` square, `away` half-filled circle, `doNotDisturb` circle with a bar. Live lamps pulse. |
@@ -255,7 +285,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 |---|---|
 | Data table | Header cells in `label` on the header fill, then hairline rows of 34 pt on one panel. A column has a fixed width or shares what is left; figures and times are mono and right-aligned. The row's cells are one button that selects it (`selection` fill with the leading `focus` marker); its verbs sit after them as a verb strip. With no rows the table shows one note. |
 | Person cell | An avatar, the handle in `data`, and under it the server as a swatch and its name. Used where a row is about someone on a server. |
-| Row outcome | What takes a row's verb strip after an answer: a spinner while it runs, then a state label "Done" for 2.4 s. The row's second line says what happened in `working`. After a failure the verbs stay and the second line gives the reason in `failure` until the row is tried again. |
+| Row outcome | What takes a row's verb strip after an answer: a spinner while it runs, then a state label "Done" for 2.4 s. The row's second line says what happened in `working`. After a failure the verbs stay and the second line gives the reason in `failure` until the row is tried again. The tray's own form is under "Organisms (in the tray today)". |
 | Alert band, page form | The network's last action across the page, under the telemetry strip: a spinner and a sentence on the well while it runs, a lit lamp when it confirmed, the `failure` fill and edge when it failed. Confirmed and failed bands can be dismissed. | The sentence is one static text ("Done: …") and Dismiss is its own button. The band belongs to the page the action was taken on and clears when that page is left.
 | Inspector | The panel beside a collection: a title with the server's swatch and name, a state label, a close action, then the content, then a footer on the well with one line of context and the actions. Its content is a tray organism used as it is. With nothing chosen it is one note saying what choosing a row shows. |
 | Request inspector | A request with no page of its own (an access request, a friend request), opened by choosing its row: who, what and when as labelled lines, then one `sub` sentence saying what the answers do. |
@@ -299,6 +329,12 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 
 The need row is something waiting on the person: the server's swatch, a title in `name`, one line in `sub`, then the answer. A friend request's line names the server and, when the relay says, how long ago it came ("On home, 5m ago"). A request that can be refused has Decline first and the answer after it as the primary button. Declining a friend request takes one press: it refuses, the sender can ask again, and nothing is deleted.
 
+**Answered rows.** An approval or an access request the person answered stays in the network's lists for 2 seconds (`MultiplayerShareModel.answeredHold`), marked with how it came out (`answer(for:on:)`: Approved, Denied, Declined, Withdrawn). It keeps its place through every read in that time, then leaves. It no longer waits: counts use `waitingApprovals` and `waitingAccess`, and a list that shows outcomes uses `pendingApprovals` and `pendingAccess`. A model built without a hold (a test, a fixture) removes the row at once.
+
+The tray's row outcome is drawn on the decision row in Needs you. Where the row's two verbs were, a state label fades in at the `standard` pace: a lit lamp and "Approved" in `working`, or an unlit lamp and "Denied" or "Declined" in secondary ink. The row's text no longer opens the request and is dimmed. The band's count drops at once. When the hold ends the row leaves as every row does: it fades while moving `travel` to the right, or only fades with Reduce Motion. VoiceOver reads the outcome with the request ("Approved: …").
+
+The activity feed says where a waiting request is answered by a name that holds in both the tray and the main window: "<who> wants to <what>. Approve or deny it under Needs you."
+
 The grant sheet is one form drawn in two places. The tray shows it as a page with the tray's footer. A view outside the tray presents the grant host: the same form in a scroll area over a footer with the hint, Cancel and a primary Share. A refused grant shows its reason in a failure banner at the top of the host and leaves the sheet open.
 
 **Hosts.** Every composer a view outside the tray presents is drawn through a host: the tray's own composer in the host frame (`MultiplayerHostFrame` in `MultiplayerHosts.swift`). There is a host for the grant sheet, Consult, Hand off, Request review, Watch, Add friend, Invite, Membership and Add server. Teams has a host for New workspace, Claim, Card, Queue a branch, Share knowledge, Run on a host and Relay policy (`MultiplayerTeamsHosts.swift`). A host adds no styling.
@@ -339,7 +375,7 @@ Increment 5 (teams) adds:
 - **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
 - **Pull-request workspace:** a "Pull requests" band in place of the merge queue. Its heading carries the open count and a trailing Repository button that opens the repository's pull-request list. Each open pull request is a pull request row, split by hairlines. The device reads them with the person's own `gh` only as the page opens and when its Refresh is pressed. While reading, the band shows the spinner and "Reading the open pull requests…"; with none open, one `sub` sentence; when the read fails, the reason in `failure` with Try again (a missing or signed-out `gh` says what to check). At the device's limit of 50, a `sub` line points to the repository for the rest.
 - **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in the remote band under the local workers (see "The wall's frame"). The band draws nothing until there is a hand-off, a review or a fan-out to show.
-- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note. In the main window the bar over it is a wall crumb with a Read-only badge and one standard action, "Open hand-off", which goes to the hand-off on its page.
+- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with one button, "Open in tray" unless the caller titles it or leaves it out (`footerTitle`). It reads while it is on screen. It sends nothing unless the caller allows suggestions (`allowsSuggestion`) and the owner shared Suggest on the worker: then the watch view's suggestion field shows under the trace with the caller's draft, the footer adds a primary "Send suggestion" (⌘Return), and the footer's note says the owner approves each one. Without a Watch grant it says so in a load note. In the main window the bar over it is a wall crumb with a Read-only badge and one standard action, "Open hand-off", which goes to the hand-off on its page.
 
 Increment 6 (the tray's Remote band, on the Network tab) adds:
 - **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device. The device agent names its unused code, so a tray that reopens shows the same QR code, code, link and countdown.
@@ -403,8 +439,10 @@ The tray keeps its own versions of these:
 - **Refused answers.** When a network answer isn't taken or fails, the row returns to its waiting form and the reason shows in an `error` load note above the list.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion. On a full-size page a view asks with `shellRevealed`: the Revoke confirmation, the grant sheet opened by Review or Share, and every confirmation well.
 - **Live work on the wall.** A local worker is matched to the network by the resource it is shared as. Take back on the dock ends the friend's control at once. A remote worker tile zooms; the band's link, a wall work row and "Open hand-off" go to Hand-offs or Fan-out with that request open.
-- **Apply.** Apply never overwrites: a patch runs `git apply` and stages the changes without committing, and a file or report is saved under a new name when its name is taken. The confirmation says so and names the checkout before anything is written. Each artifact shows its own result.
-- **The window owns what it shows.** The main window's network pages keep their own place: which server, approval, hand-off, thread, audit log or fan-out is open, what was read for it, and every draft. They read and act through the network model's calls that name their target (`loadThread(_:on:)`, `postComment(_:to:on:)`, `revoke(_:on:)` and the like), which never read or move the tray's route. Opening something in the window leaves the tray where it is, and a form open in the tray keeps what was typed. Composers are the network's hosts, shown on the page. Removing a server is the exception: it is still the tray's own two-step, and the tray returns home once the server is gone.
+- **Apply.** Apply never overwrites: a patch runs `git apply` and stages the changes without committing, and a file or report is saved under a new name when its name is taken. The confirmation says so and names the checkout before anything is written. Each artifact shows its own result, and a file saved under another name is named in it ("Saved report.md into relay as report.md.1a2b3c4d.").
+- **The wall reads for itself.** While a cockpit wall is on screen (`share.wallAppeared()` until `wallDisappeared()`), hand-offs, who holds control and the reviews and fan-outs sent are read with every panel closed, and read again every 15 seconds. Approvals and access requests are read only while a panel is open.
+- **Clocks.** A countdown ticks from the real clock. A fixture, a preview or a headless picture sets `multiplayerFixedNow` in the environment (or passes `now:`), and every countdown below counts from that instant.
+- **The window owns what it shows.** The main window's network pages keep their own place: which server, approval, hand-off, thread, audit log or fan-out is open, what was read for it, and every draft. They read and act through the network model's calls that name their target (`loadThread(_:on:)`, `postComment(_:to:on:)`, `revoke(_:on:)` and the like), which never read or move the tray's route. Opening something in the window leaves the tray where it is, and a form open in the tray keeps what was typed. Composers are the network's hosts, shown on the page. A server is removed by value too (`remove(_:)`), after the window's own confirmation: the tray's confirm step is not used and its page stays, unless that page is the removed server's own.
 - **Answers per row.** An answer given on a row (approve, deny, decline, withdraw, accept) comes back for that row alone and shows there as a row outcome. The page's alert band still carries the model's own sentence.
 - **Teams in the window.** The window owns its place on the Teams pages (band, card, group, host, item, search, form), its drafts and its reads: each board, pull-request list, version list and reputation it asked for. It acts through the network model's calls that name their target. Those calls ask nothing twice and refresh no list of the window's, so the window asks for the second press itself and reads again after each action. Every delete, remove, release, suspend and revoke waits for a confirmation that names its target. No Teams page reads or moves the tray's route.
 - **Held answers.** An approval or access request that was answered stays listed for the network's own hold (2 s), with its outcome in place of its verbs. The window builds its rows from every listed request and the network's word on each, in Approvals and in Needs you, and adds no time of its own. An answered row is not counted and its countdown stops; "Waiting on you", "Access requests", the telemetry strip and the navigation count the same rows.
@@ -412,6 +450,10 @@ The tray keeps its own versions of these:
 
 ## 6. Open work
 
-- **Unify the token layers.** `Theme` (`ThemeTokens.swift`) now holds both themes' roles, type, radii, spacing and motion, checked against `design/system/tokens.json`. `MultiplayerTheme` reads `Theme.console`, so the tray always draws in the console theme; making the tray follow the person's choice is a separate decision. Rename the components from `Multiplayer*` to app-wide names once they are shared. The design must stay pluggable and themeable: a skin redefines one token layer.
+- **Token layers.** Done: `Theme` (`ThemeTokens.swift`) holds both themes' roles, and the tray's atoms, molecules, hosts and wall components read them from `@Environment(\.theme)` ("Tray roles" in section 2). Open:
+  - Whether the menu bar tray follows the person's choice. It sets console at its root today; following the choice is one line (`.appTheme()` in place of the fixed theme in `MultiplayerPanel`).
+  - The banner and the capability note still take base-palette fills, because no theme role has their console value. Add `success` and `progress` surface roles to `Theme`, then map them.
+  - Organisms that set a size in place (`.system(size: 12)` body text, 13 pt titles) keep that size in black glass. Move them to `type` roles a page at a time.
+  - Rename the components from `Multiplayer*` to app-wide names once they are shared.
 - **Coordinate the files.** `MultiplayerTray.swift` (1,522 lines) and `MultiplayerShareViews.swift` (1,355 lines) need splitting. The tray session is still changing every `Sources/AgentCommander/Multiplayer*.swift` file. Promote shared components only by agreement with that session. Increment 5 also edits `CockpitView.swift`, `Organisms.swift` and `Molecules.swift` to put hand-off cards on the cockpit wall (D8).
 - **The wall's frame follows the theme; its controls don't yet.** The pane headings, the worker groups, the remote band and the control dock read the `wall` roles. Still in the earlier look in both themes: the run header above the wall, the "Group by parent" control, the presentation menu and the key hints under the wall. The console tiles keep their own shell and radius by design.

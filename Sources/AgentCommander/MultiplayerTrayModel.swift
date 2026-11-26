@@ -291,7 +291,7 @@ final class MultiplayerModel {
         self.fastPoll = fastPoll
         self.clock = now
         self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
-                                           answeredHold: answeredHold)
+                                           answeredHold: answeredHold, wallPoll: steadyPoll)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.share.tray = self
         self.remote.tray = self
@@ -641,6 +641,21 @@ final class MultiplayerModel {
                    confirmation: "Removed \(server.displayName).") { client in
             try await client.removeServer(id: id)
             self.go(.home)
+        }
+    }
+
+    /// Removes a saved server the caller names, after the caller asked the person to confirm. The
+    /// helper also signs out and deletes that server's Keychain item and files. The tray's own
+    /// confirm step is not used and its page stays, unless that page is the removed server's.
+    @discardableResult
+    func remove(_ id: String, report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard let server = server(id) else { return nil }
+        return act("Removing \(server.displayName)…", failing: "Couldn’t remove the server.",
+                   confirmation: "Removed \(server.displayName).", report: report) { client in
+            try await client.removeServer(id: id)
+            // The list read that follows would do this too; doing it now means the answer the
+            // caller awaits already finds the server gone.
+            self.apply(self.servers.filter { $0.id != id })
         }
     }
 

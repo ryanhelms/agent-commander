@@ -36,6 +36,12 @@ offered, two hand-offs you sent (one done with a report, a patch and a branch; o
 owner), threads, and an audit log. Consult answers at once; a prompt containing "wait" stays pending
 and one containing "deny" is denied. Share, approve, deny, request access, withdraw, comment and
 apply are all kept in the scratch file. Apply writes nothing: it only checks the folder exists.
+A patch answers `{"applied": name}`. The report answers `{"saved": path}`, under `Result.md`, or
+under `Result.md.1a2b3c4d` when the folder already holds a `Result.md`.
+
+COMMANDER_NETWORK_FIXTURE_NOW fixes the clock every time here is measured from: seconds since
+1970. A headless picture sets it, with the same instant as the model's clock, so a countdown shows
+the same figure on every run. Without it the fixture reads the real clock.
 
 `threads` lists the threads you take part in on a server, newest first, at most 50: every `sent`
 row (hand-offs, a review as agent.review, a fan-out as agent.fanout with `children`, and one consult),
@@ -89,8 +95,16 @@ STATE = os.environ.get("COMMANDER_NETWORK_FIXTURE_STATE") or os.path.join(
     tempfile.gettempdir(), "commander-network-fixture-state.json")
 
 
+def clock():
+    fixed = os.environ.get("COMMANDER_NETWORK_FIXTURE_NOW")
+    try:
+        return datetime.fromtimestamp(float(fixed), timezone.utc) if fixed else datetime.now(timezone.utc)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
 def now(delta_minutes=0):
-    moment = datetime.now(timezone.utc) + timedelta(minutes=delta_minutes)
+    moment = clock() + timedelta(minutes=delta_minutes)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -491,7 +505,7 @@ def answer(request):
 
 
 def seconds(delta):
-    moment = datetime.now(timezone.utc) + timedelta(seconds=delta)
+    moment = clock() + timedelta(seconds=delta)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -748,7 +762,10 @@ def sharing(state, verb, request):
             raise ValueError("name the absolute path of a local checkout")
         if request.get("artifact") not in (0, 1):
             raise ValueError("this artifact kind is not applied automatically; fetch the branch from the owner's repository")
-        return {"applied": "fixture"}
+        if request.get("artifact") == 1:
+            return {"applied": "reconnect-wait.patch"}
+        taken = os.path.exists(os.path.join(request["checkout"], "Result.md"))
+        return {"saved": os.path.join(request["checkout"], "Result.md.1a2b3c4d" if taken else "Result.md")}
     if verb == "relay":
         path, method = request.get("path") or "", (request.get("method") or "").upper()
         if not path.startswith("/v1/access-requests"):

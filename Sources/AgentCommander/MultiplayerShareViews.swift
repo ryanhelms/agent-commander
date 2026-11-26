@@ -14,13 +14,16 @@ import SwiftUI
 
 // MARK: - Molecules
 
-/// A request that waits for a yes or a no. The text opens the full review.
+/// A request that waits for a yes or a no. The text opens the full review. Once answered, the row
+/// shows its outcome in place of its verbs for the moment it stays (DESIGN.md, "Row outcome").
 struct MultiplayerDecisionRow: View {
     let color: Color
     let title: String
     let detail: String
     var declineTitle = "Deny"
     var acceptTitle = "Approve"
+    /// How the request came out, while its answered row is still listed. Nil while it waits.
+    var outcome: MultiplayerAnswer? = nil
     let isBusy: Bool
     let onOpen: () -> Void
     let onDecline: () -> Void
@@ -46,19 +49,41 @@ struct MultiplayerDecisionRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Review this request")
+            .disabled(outcome != nil)
+            .help(outcome == nil ? "Review this request" : "")
             .accessibilityLabel("\(title). \(detail)")
-            .accessibilityHint("Opens the full request")
-            Button(declineTitle, action: onDecline)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .disabled(isBusy)
-                .accessibilityLabel("\(declineTitle): \(title)")
-            Button(acceptTitle, action: onAccept)
-                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                .disabled(isBusy)
-                .accessibilityLabel("\(acceptTitle): \(title)")
+            .accessibilityHint(outcome == nil ? "Opens the full request" : "")
+            if let outcome {
+                MultiplayerRowOutcome(answer: outcome)
+                    .accessibilityLabel("\(outcome.title): \(title)")
+            } else {
+                Button(declineTitle, action: onDecline)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(isBusy)
+                    .accessibilityLabel("\(declineTitle): \(title)")
+                Button(acceptTitle, action: onAccept)
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .disabled(isBusy)
+                    .accessibilityLabel("\(acceptTitle): \(title)")
+            }
         }
         .frame(minHeight: 30)
+        .multiplayerStreaming(outcome)
+    }
+}
+
+/// A row's outcome, where its verbs were: a lamp and the word for how the request came out. A yes
+/// is lit in `working`; a no is an unlit lamp in secondary ink. It fades in at the standard pace
+/// and leaves with its row.
+struct MultiplayerRowOutcome: View {
+    let answer: MultiplayerAnswer
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        MultiplayerStateLabel(lamp: answer == .approved ? .on : .off, text: answer.title,
+                              tone: answer == .approved ? .working : .neutral)
+            .frame(minHeight: theme.space.controlHeight)
+            .transition(.opacity)
     }
 }
 

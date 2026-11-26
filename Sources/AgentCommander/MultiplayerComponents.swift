@@ -37,11 +37,12 @@ struct MultiplayerTextField: View {
     var monospaced = false
     var isFocused = false
 
+    @Environment(\.theme) private var theme
     var body: some View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
-            .font(monospaced ? .system(size: 13, design: .monospaced) : MultiplayerTheme.name)
-            .foregroundStyle(Palette.foreground)
+            .font(monospaced ? .system(size: 13, design: .monospaced) : MultiplayerTheme.name.font(in: theme))
+            .foregroundStyle(MultiplayerTheme.foreground)
             .autocorrectionDisabled()
             .multiplayerFieldBox(focused: isFocused)
             .accessibilityLabel(label)
@@ -67,7 +68,7 @@ struct MultiplayerField<Control: View>: View {
             if let problem {
                 Label(problem, systemImage: "exclamationmark.circle")
                     .font(MultiplayerTheme.sub)
-                    .foregroundStyle(Palette.failure)
+                    .foregroundStyle(MultiplayerTheme.failure)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let hint {
                 Text(hint)
@@ -89,12 +90,13 @@ struct MultiplayerRow<Trailing: View>: View {
     var caption: String? = nil
     @ViewBuilder var trailing: Trailing
 
+    @Environment(\.theme) private var theme
     var body: some View {
         HStack(spacing: Space.m) {
             MultiplayerMark(symbol: symbol, tone: tone)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title.multiplayerDisplay)
-                    .font(monospacedTitle ? .system(size: 12.5, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
+                    .font(monospacedTitle ? .system(size: 12.5, weight: .medium, design: .monospaced) : MultiplayerTheme.name.font(in: theme))
                     .foregroundStyle(MultiplayerTheme.foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -188,13 +190,14 @@ struct MultiplayerBanner: View {
     var action: (() -> Void)? = nil
     var onDismiss: (() -> Void)? = nil
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
+        let shape = theme.trayTile
         HStack(alignment: .top, spacing: Space.s) {
             icon.frame(width: 16, height: 16)
             Text(message)
                 .font(.system(size: 12))
-                .foregroundStyle(Palette.foreground)
+                .foregroundStyle(MultiplayerTheme.foreground)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
@@ -224,11 +227,11 @@ struct MultiplayerBanner: View {
         case .progress:
             MultiplayerSpinner()
         case .success:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.working).accessibilityHidden(true)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(MultiplayerTheme.working).accessibilityHidden(true)
         case .attention:
-            Image(systemName: "hourglass").foregroundStyle(Palette.attention).accessibilityHidden(true)
+            Image(systemName: "hourglass").foregroundStyle(MultiplayerTheme.attention).accessibilityHidden(true)
         case .failure:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failure).accessibilityHidden(true)
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MultiplayerTheme.failure).accessibilityHidden(true)
         }
     }
 
@@ -248,7 +251,7 @@ struct MultiplayerBanner: View {
         case .progress: Palette.chrome
         case .success: Palette.workingFill
         case .attention: Palette.attentionFill
-        case .failure: Palette.failure.opacity(0.10)
+        case .failure: MultiplayerTheme.failure.opacity(0.10)
         }
     }
 
@@ -257,7 +260,7 @@ struct MultiplayerBanner: View {
         case .progress: Palette.hairline
         case .success: Palette.workingEdge
         case .attention: Palette.attentionSoftEdge
-        case .failure: Palette.failure.opacity(0.45)
+        case .failure: MultiplayerTheme.failure.opacity(0.45)
         }
     }
 }
@@ -267,17 +270,18 @@ struct MultiplayerCapabilityNote: View {
     let capability: String
     let resourceName: String
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
+        let shape = theme.trayTile
         HStack(alignment: .top, spacing: Space.s) {
             Image(systemName: MultiplayerCapability.symbol(capability))
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Palette.attention)
+                .foregroundStyle(MultiplayerTheme.attention)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(MultiplayerCapability.title(capability))
                     .font(MultiplayerTheme.heading)
-                    .foregroundStyle(Palette.foreground)
+                    .foregroundStyle(MultiplayerTheme.foreground)
                 Text(MultiplayerCapability.explanation(capability, resource: resourceName.multiplayerDisplay))
                     .font(.system(size: 12))
                     .foregroundStyle(.inkSecondary)
@@ -300,6 +304,7 @@ struct MultiplayerSummaryLine: View {
     /// The value is a time: drawn in the `fingerprint` face, as every time is.
     var isTime = false
 
+    @Environment(\.theme) private var theme
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
             Text(label)
@@ -307,9 +312,9 @@ struct MultiplayerSummaryLine: View {
                 .foregroundStyle(.inkSecondary)
                 .frame(width: 72, alignment: .leading)
             Text(value.multiplayerDisplay)
-                .font(isTime ? MultiplayerTheme.fingerprint.monospacedDigit()
-                      : monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
-                .foregroundStyle(Palette.foreground)
+                .font(isTime ? MultiplayerTheme.fingerprint.monospacedDigit().font(in: theme)
+                      : monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : MultiplayerTheme.name.font(in: theme))
+                .foregroundStyle(MultiplayerTheme.foreground)
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
