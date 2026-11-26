@@ -1,0 +1,95 @@
+{
+  "grants": [
+    {
+      "id": "g-res-1-fixture-jonas-issue.comment",
+      "handle": "fixture-jonas",
+      "kind": "repo",
+      "resource": "res-1",
+      "capability": "issue.comment",
+      "maxUses": 10,
+      "expiresAt": "2026-11-27T01:10:00Z",
+      "approval": "auto",
+      "budgetTokens": 50000,
+      "attribution": "requester"
+    },
+    {
+      "id": "g-res-1-fixture-jonas-issue.read",
+      "handle": "fixture-jonas",
+      "kind": "repo",
+      "resource": "res-1",
+      "capability": "issue.read",
+      "maxUses": 10,
+      "expiresAt": "2026-11-27T01:10:00Z",
+      "approval": "auto",
+      "budgetTokens": 50000,
+      "attribution": "requester"
+    }
+  ],
+  "access": [
+    {
+      "id": "ar-1",
+      "resource": "res-1",
+      "owner": "u-ryan",
+      "ownerHandle": "fixture-ryan",
+      "requester": "u-jonas",
+      "requesterHandle": "fixture-jonas",
+      "actions": [
+        "issue.read",
+        "issue.comment"
+      ],
+      "note": "I want to triage the open relay issues this week.",
+      "status": "granted",
+      "createdAt": "2026-11-26T00:19:31Z"
+    },
+    {
+      "id": "ar-2",
+      "resource": "dir-mei-docs",
+      "owner": "u-mei",
+      "ownerHandle": "fixture-mei",
+      "requester": "u-ryan",
+      "requesterHandle": "fixture-ryan",
+      "actions": [
+        "issue.read"
+      ],
+      "note": "",
+      "status": "pending",
+      "createdAt": "2026-11-25T15:09:31Z"
+    }
+  ],
+  "approvals": [],
+  "audit_head": [
+    {
+      "request": "ap-2",
+      "peer": "fixture-sam",
+      "resource": "res-2",
+      "action": "agent.handoff",
+      "started": "2026-11-26T01:09:36Z",
+      "ended": "2026-11-26T01:09:36Z",
+      "outcome": "denied",
+      "tokens": 0,
+      "summary": "Denied by you."
+    },
+    {
+      "request": "ap-1",
+      "peer": "fixture-sam",
+      "resource": "res-2",
+      "action": "agent.ask",
+      "started": "2026-11-26T01:09:31Z",
+      "ended": "2026-11-26T01:09:31Z",
+      "outcome": "ok",
+      "tokens": 12300,
+      "summary": "Approved by you."
+    },
+    {
+      "request": "rq-in-9",
+      "peer": "fixture-sam",
+      "resource": "res-2",
+      "action": "agent.ask",
+      "started": "2026-11-25T21:49:31Z",
+      "ended": "2026-11-25T21:50:31Z",
+      "outcome": "ok",
+      "tokens": 18400,
+      "summary": "Explained the lease renewal path."
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+[
+  {
+    "request": "rq-21d9b078bc",
+    "child": "c-21d9b078bc",
+    "resource": "dir-sam-agent",
+    "action": "agent.handoff",
+    "title": "Demo: add a timeout to the probe",
+    "at": "2026-11-26T01:11:37Z",
+    "status": "ok",
+    "value": {
+      "run": "run-fixture-433",
+      "worker": "w-fixture"
+    }
+  },
+  {
+    "request": "rq-cf67fa5a13",
+    "child": "c-cf67fa5a13",
+    "resource": "dir-sam-agent",
+    "action": "agent.ask",
+    "title": "Which file holds the lease renewal logic?",
+    "at": "2026-11-26T01:11:21Z",
+    "status": "ok",
+    "value": {
+      "text": "Fixture answer. The worker read your prompt and would look at the lease renewal first: the test drops the link before the renewal lands."
+    }
+  },
+  {
+    "request": "rq-7bba1399ae",
+    "child": "c-7bba1399ae",
+    "resource": "dir-sam-agent",
+    "action": "agent.ask",
+    "title": "Where should the reconnect test wait for the lease renewal?",
+    "at": "2026-11-26T01:11:13Z",
+    "status": "pending",
+    "value": null
+  },
+  {
+    "request": "rq-4c941a57df",
+    "child": "c-4c941a57df",
+    "resource": "dir-sam-agent",
+    "action": "agent.result",
+    "title": "Result: Fix flaky reconnect test",
+    "at": "2026-11-26T01:10:31Z",
+    "status": "ok",
+    "value": {
+      "run": "run-fixture-1",
+      "state": "completed",
+      "title": "Hand-off",
+      "summary": "40 runs in a row pass.",
+      "updatedAt": "2026-11-26T01:10:31Z",
+      "artifacts": [
+        {
+          "kind": "report",
+          "name": "Result",
+          "content": "## sam-agent\n\nThe reconnect test raced the lease renewal. It now waits for the renewal event before it drops the link. 40 runs in a row pass."
+        },
+        {
+          "kind": "patch",
+          "name": "reconnect-wait.patch",
+          "content": "--- a/Tests/ReconnectTests.swift\n+++ b/Tests/ReconnectTests.swift\n@@ -41,3 +41,4 @@\n     relay.drop()\n+    try await relay.renewed()\n     #expect(client.isOnline)\n"
+        },
+        {
+          "kind": "branch",
+          "name": "handoff/fix-flaky-reconnect"
+        }
+      ]
+    }
+  },
+  {
+    "request": "rq-96e0eee15b",
+    "child": "c-96e0eee15b",
+    "resource": "dir-sam-agent",
+    "action": "agent.status",
+    "title": "Status: Fix flaky reconnect test",
+    "at": "2026-11-26T01:10:27Z",
+    "status": "ok",
+    "value": {
+      "run": "run-fixture-1",
+      "state": "completed",
+      "title": "Hand-off",
+      "summary": "40 runs in a row pass.",
+      "updatedAt": "2026-11-26T01:10:27Z"
+    }
+  },
+  {
+    "request": "rq-handoff-2",
+    "child": "c-2",
+    "resource": "dir-sam-agent",
+    "action": "agent.handoff",
+    "title": "Add a retry to the avatar upload",
+    "at": "2026-11-26T01:01:31Z",
+    "status": "pending",
+    "value": null
+  },
+  {
+    "request": "rq-handoff-1",
+    "child": "c-1",
+    "resource": "dir-sam-agent",
+    "action": "agent.handoff",
+    "title": "Fix flaky reconnect test",
+    "at": "2026-11-25T23:34:31Z",
+    "status": "ok",
+    "value": {
+      "run": "run-fixture-1",
+      "worker": "w-fixture-1"
+    }
+  }
+]

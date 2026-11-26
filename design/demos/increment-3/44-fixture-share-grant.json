@@ -1,0 +1,74 @@
+[
+  {
+    "id": "g-res-2-fixture-noor-agent.ask",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "agent.ask",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  },
+  {
+    "id": "g-res-2-fixture-noor-agent.handoff",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "agent.handoff",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  },
+  {
+    "id": "g-res-2-fixture-noor-agent.result",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "agent.result",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  },
+  {
+    "id": "g-res-2-fixture-noor-agent.status",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "agent.status",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  },
+  {
+    "id": "g-res-2-fixture-noor-thread.comment",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "thread.comment",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  },
+  {
+    "id": "g-res-2-fixture-noor-thread.read",
+    "handle": "fixture-noor",
+    "kind": "agent",
+    "resource": "res-2",
+    "capability": "thread.read",
+    "maxUses": 10,
+    "expiresAt": "2026-11-27T01:12:00Z",
+    "approval": "ask",
+    "budgetTokens": 0,
+    "attribution": "owner"
+  }
+]

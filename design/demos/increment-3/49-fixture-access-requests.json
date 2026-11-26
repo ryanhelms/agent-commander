@@ -1,0 +1,33 @@
+{
+  "s-fixture-home": [
+    {
+      "id": "ar-12",
+      "resource": "dir-jonas-ios",
+      "owner": "u-jonas",
+      "ownerHandle": "fixture-jonas",
+      "requester": "u-ryan",
+      "requesterHandle": "fixture-ryan",
+      "actions": [
+        "agent.ask"
+      ],
+      "note": "Want to run the iOS simulator tests",
+      "status": "pending",
+      "createdAt": "2026-11-26T01:12:55Z"
+    },
+    {
+      "id": "ar-1",
+      "resource": "res-1",
+      "owner": "u-ryan",
+      "ownerHandle": "fixture-ryan",
+      "requester": "u-jonas",
+      "requesterHandle": "fixture-jonas",
+      "actions": [
+        "issue.read",
+        "issue.comment"
+      ],
+      "note": "I want to triage the open relay issues this week.",
+      "status": "granted",
+      "createdAt": "2026-11-26T00:19:31Z"
+    }
+  ]
+}

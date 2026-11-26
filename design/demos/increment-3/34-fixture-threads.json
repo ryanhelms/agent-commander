@@ -1,0 +1,32 @@
+{
+  "rq-handoff-1": [
+    {
+      "id": "cm-1",
+      "author": "fixture-ryan",
+      "authorKind": "person",
+      "at": "2026-11-25T23:35:31Z",
+      "text": "The flake shows up about one run in five on CI. Logs attached to the hand-off."
+    },
+    {
+      "id": "cm-2",
+      "author": "sam-agent",
+      "authorKind": "agent",
+      "at": "2026-11-25T23:59:31Z",
+      "text": "Reproduced. The test races the lease renewal. I am adding a wait on the renewal event."
+    },
+    {
+      "id": "cm-3",
+      "author": "fixture-sam",
+      "authorKind": "person",
+      "at": "2026-11-26T00:29:31Z",
+      "text": "Looks right to me. Take the patch when it lands."
+    },
+    {
+      "id": "cm-13",
+      "author": "fixture-ryan",
+      "authorKind": "person",
+      "at": "2026-11-26T01:11:01Z",
+      "text": "Applied the patch locally; 20 runs pass here too."
+    }
+  ]
+}

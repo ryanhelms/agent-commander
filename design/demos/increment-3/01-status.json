@@ -1,0 +1,20 @@
+{
+    "data": {
+        "displayName": "Ryan Helms",
+        "error": "",
+        "friends": [],
+        "grants": [],
+        "handle": "ryan",
+        "hasAvatar": false,
+        "incoming": [],
+        "loginPending": false,
+        "online": true,
+        "outgoing": [],
+        "presence": "online",
+        "resources": [],
+        "shared": [],
+        "signedIn": true,
+        "statusMessage": "Demoing increment 2 (UI)"
+    },
+    "ok": true
+}
