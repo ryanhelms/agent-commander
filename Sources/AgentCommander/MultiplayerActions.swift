@@ -69,7 +69,7 @@ private final class MultiplayerActionValue<Value> {
 
 extension MultiplayerModel {
     /// Why an answer can't be sent right now.
-    private func notSent(_ lead: String) -> String {
+    func notSent(_ lead: String) -> String {
         if client == nil {
             return MultiplayerSentence.join(lead, unavailable?.message ?? "The network helper isn’t available.")
         }
@@ -165,7 +165,7 @@ extension MultiplayerModel {
 
 extension MultiplayerModel {
     /// Runs one tray action that makes something new, and reports the new thing's ID.
-    private func made(server: String, failing lead: String,
+    func made(server: String, failing lead: String,
                       _ start: (_ report: @escaping @MainActor (String?) -> Void,
                                 _ made: @escaping @MainActor (String) -> Void) -> Task<Void, Never>?) async -> MultiplayerActionResult {
         let report = MultiplayerActionReport()
@@ -178,7 +178,7 @@ extension MultiplayerModel {
     }
 
     /// Runs one tray action that brings a value back.
-    private func brought<Value: Equatable>(failing lead: String,
+    func brought<Value: Equatable>(failing lead: String,
                                            _ start: (_ report: @escaping @MainActor (String?) -> Void,
                                                      _ keep: @escaping @MainActor (Value) -> Void) -> Task<Void, Never>?) async -> MultiplayerLoad<Value> {
         let report = MultiplayerActionReport()
@@ -190,7 +190,7 @@ extension MultiplayerModel {
         return .loaded(value)
     }
 
-    private func refused(_ id: String, _ server: String, _ lead: String, _ why: String) -> MultiplayerActionResult {
+    func refused(_ id: String, _ server: String, _ lead: String, _ why: String) -> MultiplayerActionResult {
         .failed(id: id, server: server, reason: MultiplayerSentence.join(lead, why))
     }
 
