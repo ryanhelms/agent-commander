@@ -154,6 +154,32 @@ func InitConfig(dir string, cfg Config) error {
 	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), false)
 }
 
+// UpdateConfig adds certificate hostnames and, when listen is set, replaces the
+// listen address of an existing configuration. The relay reissues its leaf
+// certificate with the same key on the next start, so clients keep their pin.
+func UpdateConfig(dir string, hostnames []string, listen string) error {
+	cfg, err := ReadConfig(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range hostnames {
+		if !slices.ContainsFunc(cfg.Hostnames, func(have string) bool { return strings.EqualFold(have, name) }) {
+			cfg.Hostnames = append(cfg.Hostnames, name)
+		}
+	}
+	if listen != "" {
+		cfg.Listen = listen
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), true)
+}
+
 // Stage private files on the same volume so readers always see a complete record.
 func publishFile(path string, data []byte, replace bool) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".relay-*")

@@ -80,6 +80,8 @@ type ManagerConfig struct {
 	NoPresence bool
 	// Dial is replaced in tests.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+	// Tailscale overrides the tailscale CLI path.
+	Tailscale string
 }
 
 // Manager runs one Agent per enabled server and serves the tray.
@@ -93,6 +95,7 @@ type Manager struct {
 	problems    map[string]string
 	certChanged map[string]bool
 	rs          *remoteServer
+	tailnet     tailnetState
 }
 
 func (m *Manager) listPath() string { return filepath.Join(m.cfg.Dir, "servers.json") }
@@ -671,6 +674,17 @@ func (m *Manager) Handler() http.Handler {
 			case "join":
 				res, e = m.join(r.Context(), in.Link)
 			}
+			reply(w, res, e)
+			return
+		case "tailnet-status", "tailnet-join", "tailnet-relays":
+			var in tailnetInput
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.DisallowUnknownFields()
+			if e = d.Decode(&in); e != nil {
+				reply(w, nil, errors.New("invalid request"))
+				return
+			}
+			res, e := m.tailnetVerb(r.Context(), verb, in)
 			reply(w, res, e)
 			return
 		}
