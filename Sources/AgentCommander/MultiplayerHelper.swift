@@ -19,9 +19,11 @@ struct MultiplayerHelperLocation: Equatable, Sendable {
 }
 
 enum MultiplayerHelperLocator {
-    /// Fixture override, honoured only in fixture mode: a DEBUG build launched with
-    /// AGENT_COMMANDER_NETWORK_PANEL=1. Must then be an absolute path to an executable.
+    /// Fixture override, honoured only in fixture mode. Must then be an absolute path to an executable.
     static let overrideVariable = "COMMANDER_NETWORK_BIN"
+    /// The fixture's own scratch file. The fixture reads it from the environment it inherits.
+    static let fixtureStateVariable = "COMMANDER_NETWORK_FIXTURE_STATE"
+    static let homeVariable = "AGENT_COMMANDER_HOME"
     static let helperName = "commander-network"
 
     /// Release builds never run a substitute helper, whatever the environment says.
@@ -33,9 +35,26 @@ enum MultiplayerHelperLocator {
         #endif
     }
 
-    /// Fixture mode is explicit: a debug build and the review/test panel switch together.
-    static func isFixtureMode(environment: [String: String], debugBuild: Bool) -> Bool {
-        debugBuild && environment[MultiplayerLaunch.panelVariable] == "1"
+    /// The live app's folder. A fixture run never reads or writes here.
+    static var liveHome: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Agent Commander")
+    }
+
+    /// True when AGENT_COMMANDER_HOME names a folder of the run's own: an absolute path that is
+    /// not the live app's folder, nor inside it, nor a folder that holds it.
+    static func hasOwnHome(environment: [String: String], liveHome: URL = liveHome) -> Bool {
+        guard let raw = environment[homeVariable], raw.hasPrefix("/") else { return false }
+        let home = URL(filePath: raw, directoryHint: .isDirectory).standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let live = liveHome.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        return !home.starts(with: live) && !live.starts(with: home)
+    }
+
+    /// Fixture mode is explicit, and debug builds only. Either the review panel switch
+    /// (AGENT_COMMANDER_NETWORK_PANEL=1) is on, or the run has a home of its own, so the cockpit
+    /// can run against the fixture. The live app has neither, so it never picks up a fixture.
+    static func isFixtureMode(environment: [String: String], debugBuild: Bool, liveHome: URL = liveHome) -> Bool {
+        debugBuild && (environment[MultiplayerLaunch.panelVariable] == "1"
+                       || hasOwnHome(environment: environment, liveHome: liveHome))
     }
 
     /// Normal launches always use the signed bundle's `Contents/MacOS/commander-network`; the
@@ -44,10 +63,11 @@ enum MultiplayerHelperLocator {
     static func resolve(environment: [String: String] = ProcessInfo.processInfo.environment,
                         bundleURL: URL = Bundle.main.bundleURL,
                         debugBuild: Bool = buildAllowsFixture,
+                        liveHome: URL = liveHome,
                         isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) })
         -> Result<MultiplayerHelperLocation, MultiplayerFailure>
     {
-        if isFixtureMode(environment: environment, debugBuild: debugBuild),
+        if isFixtureMode(environment: environment, debugBuild: debugBuild, liveHome: liveHome),
            let raw = environment[overrideVariable], !raw.isEmpty {
             guard raw.hasPrefix("/") else { return .failure(.badOverride) }
             let url = URL(fileURLWithPath: raw).standardizedFileURL

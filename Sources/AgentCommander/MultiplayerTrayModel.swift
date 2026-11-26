@@ -281,6 +281,7 @@ final class MultiplayerModel {
          notifier: (any MultiplayerNotifying)? = nil,
          winners: MultiplayerWinnerStore = .scratch(),
          watchInterval: Duration = .seconds(2),
+         answeredHold: Duration = .zero,
          now: @escaping () -> Date = { Date() }) {
         self.client = client
         self.notifier = notifier
@@ -289,7 +290,8 @@ final class MultiplayerModel {
         self.steadyPoll = steadyPoll
         self.fastPoll = fastPoll
         self.clock = now
-        self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval)
+        self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
+                                           answeredHold: answeredHold)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.share.tray = self
         self.remote.tray = self
@@ -298,13 +300,15 @@ final class MultiplayerModel {
     /// The one live model: the menu bar panel, the review window and invite links all use it.
     static let shared = MultiplayerModel.live()
 
-    /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in debug review mode.
+    /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in a debug build's
+    /// fixture mode (the review panel, or a run with its own AGENT_COMMANDER_HOME).
     static func live() -> MultiplayerModel {
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
             MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
-                             winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)))
+                             winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
+                             answeredHold: MultiplayerShareModel.answeredHold)
         case .failure(let failure):
             MultiplayerModel(client: nil, setupFailure: failure)
         }
@@ -327,7 +331,7 @@ final class MultiplayerModel {
         MultiplayerTally(servers: servers.count,
                          serversOnline: servers.filter { $0.state == .online }.count,
                          friendsOnline: friendsAvailable ?? servers.reduce(0) { $0 + $1.friendsOnline },
-                         needsYou: servers.reduce(0) { $0 + $1.incoming } + share.pendingApprovals.count + share.pendingAccess.count)
+                         needsYou: servers.reduce(0) { $0 + $1.incoming } + share.waitingApprovals.count + share.waitingAccess.count)
     }
 
     /// One group per server, in list order. A server's friends come from its own session, and

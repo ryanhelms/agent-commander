@@ -472,12 +472,13 @@ struct MultiplayerWinnerStore: Sendable {
     static func key(_ request: String, on server: String) -> String { "\(server)/\(request)" }
 
     /// Where the live app keeps it: under AGENT_COMMANDER_HOME, or Application Support. A fixture
-    /// run with no home of its own writes to the temporary folder instead.
+    /// run keeps it in a home of its own, or in the temporary folder: never in the live app's
+    /// folder, even when AGENT_COMMANDER_HOME names that folder.
     static func location(isFixture: Bool, environment: [String: String] = ProcessInfo.processInfo.environment,
-                         support: URL = FileManager.default.homeDirectoryForCurrentUser
-                            .appending(path: "Library/Application Support/Agent Commander"),
+                         support: URL = MultiplayerHelperLocator.liveHome,
                          temporary: URL = FileManager.default.temporaryDirectory) -> URL {
-        if let home = environment["AGENT_COMMANDER_HOME"], !home.isEmpty {
+        let own = MultiplayerHelperLocator.hasOwnHome(environment: environment, liveHome: support)
+        if let home = environment[MultiplayerHelperLocator.homeVariable], !home.isEmpty, own || !isFixture {
             return URL(filePath: home, directoryHint: .isDirectory).appending(path: "network/fanout-winners.json")
         }
         return (isFixture ? temporary.appending(path: "agent-commander-fixture") : support)

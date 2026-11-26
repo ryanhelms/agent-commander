@@ -187,7 +187,7 @@ enum MultiplayerShareFixture {
     @Test func activityNamesApprovalsAndAccessRequests() {
         let pending = MultiplayerActivityEvent(server: "s-home", seq: 0, kind: "approval.pending", actor: "fixture-bo",
                                                resource: "res-1", detail: "agent.ask")
-        #expect(pending.sentence == "fixture-bo wants to send prompts to the worker. Approve or deny it in the tray")
+        #expect(pending.sentence == "fixture-bo wants to send prompts to the worker. Approve or deny it under Needs you")
         let asked = MultiplayerActivityEvent(server: "s-home", seq: 7, kind: "access.requested", actor: "fixture-cy")
         #expect(asked.line(on: "home") == "fixture-cy asked for access on home")
         // The device agent's own events have no sequence, so two of them are still two rows.

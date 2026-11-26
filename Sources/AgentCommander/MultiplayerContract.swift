@@ -31,6 +31,8 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     /// Share and consult (increment 3). `relay` reaches the relay's access-request routes.
     case approvals, approve, deny, audit, send, sent, handoffs, thread, comment, relay
     case applyArtifact = "apply-artifact"
+    /// The threads the person takes part in, sent and received, consults included. Read-only.
+    case threads
     /// Live work (increment 4). Review requests and suggestions travel through `send`.
     case watch, handover, handback, handovers, fanout
     case reviewPost = "review-post"

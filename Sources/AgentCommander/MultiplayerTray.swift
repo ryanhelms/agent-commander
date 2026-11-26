@@ -74,7 +74,7 @@ struct MultiplayerTrayFooter<Actions: View>: View {
                     Label("Fixture helper", systemImage: "testtube.2")
                         .font(MultiplayerTheme.sub)
                         .foregroundStyle(MultiplayerTheme.attention)
-                        .help("Debug review mode: everything here comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.")
+                        .help("Fixture mode: everything here comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.")
                 } else if let note {
                     Text(note)
                         .font(MultiplayerTheme.sub)
@@ -857,7 +857,7 @@ struct MultiplayerPanel: View {
     /// Servers online, approvals waiting, unseen activity and the person's presence: always above the tabs.
     private var statusStrip: some View {
         let tally = model.tally
-        let waiting = model.share.pendingApprovals.count
+        let waiting = model.share.waitingApprovals.count
         return MultiplayerStatusStrip(cells: [
             MultiplayerReadout(id: "servers", label: "servers", value: "\(tally.serversOnline)/\(tally.servers)",
                                lamp: tally.serversOnline > 0 ? .on : .off, spoken: tally.summary),
@@ -879,7 +879,7 @@ struct MultiplayerPanel: View {
         let requests = model.servers.reduce(0) { $0 + $1.incoming }
         let trouble = model.servers.filter { $0.state == .certChanged || $0.state == .error }.count
         return [
-            MultiplayerTabBar.Tab(id: .agents, count: share.pendingApprovals.count + share.pendingAccess.count, isHot: true),
+            MultiplayerTabBar.Tab(id: .agents, count: share.waitingApprovals.count + share.waitingAccess.count, isHot: true),
             MultiplayerTabBar.Tab(id: .network, count: trouble, isHot: true),
             MultiplayerTabBar.Tab(id: .people, count: requests + model.unseen, isHot: requests > 0),
         ]
@@ -978,7 +978,8 @@ struct MultiplayerPanel: View {
                     MultiplayerRequestAccessPage(entry: entry, draft: $share.accessDraft)
                 }
             case .requests:
-                MultiplayerAccessRequestsPage(incoming: share.incomingAccess(id), outgoing: share.outgoingAccess(id),
+                MultiplayerAccessRequestsPage(incoming: share.unanswered(share.incomingAccess(id), on: id),
+                                              outgoing: share.unanswered(share.outgoingAccess(id), on: id),
                                               resourceName: { share.resourceName($0, on: id) }, color: color, now: now,
                                               isBusy: model.isBusy,
                                               onReview: { share.review($0, on: id) },
@@ -1608,7 +1609,7 @@ struct MultiplayerPanel: View {
     /// Agents: what waits on you, live remote work, your agents and your friends' agents.
     @ViewBuilder private var agentsTab: some View {
         let share = model.share
-        MultiplayerNeedsYou(groups: [], approvals: share.pendingApprovals, access: share.pendingAccess,
+        MultiplayerNeedsYou(groups: [], approvals: share.waitingApprovals, access: share.waitingAccess,
                             serverName: { model.server($0)?.displayName ?? "a server" },
                             resourceName: { share.resourceName($0, on: $1) },
                             isBusy: model.isBusy,
@@ -1746,15 +1747,15 @@ struct MultiplayerPanel: View {
             if let session, session.route == .home, session.isOnline, let status = session.status {
                 let share = model.share
                 MultiplayerSharingBand(directoryCount: status.directoryEntries.count,
-                                       requestCount: share.incomingAccess(server.id).count,
-                                       approvalCount: share.approvals[server.id]?.count ?? 0,
+                                       requestCount: share.unanswered(share.incomingAccess(server.id), on: server.id).count,
+                                       approvalCount: share.waitingApprovals(on: server.id).count,
                                        handoffCount: share.handoffs[server.id]?.count ?? 0,
                                        canShare: !model.isBusy && !status.friends.isEmpty && !status.resources.isEmpty,
                                        onShare: { share.startGrant(on: server.id) },
                                        onDirectory: { share.open(.directory, on: server.id) },
                                        onRequests: { share.open(.requests, on: server.id) },
                                        onApprovals: {
-                                           if let first = share.approvals[server.id]?.first { share.open(.approval(first.id), on: server.id) }
+                                           if let first = share.waitingApprovals(on: server.id).first { share.open(.approval(first.id), on: server.id) }
                                        },
                                        onHandoffs: { share.open(.handoffs, on: server.id) },
                                        onAudit: { share.open(.audit(resource: ""), on: server.id) })

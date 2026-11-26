@@ -7,6 +7,16 @@ Stands in for `commander-network tray VERB` so the panel can be previewed withou
     COMMANDER_NETWORK_BIN="$PWD/Tests/Fixtures/commander-network-fixture.py" \
     swift run AgentCommander          # debug builds only
 
+To run the cockpit itself against it, give the run a home of its own instead of the panel switch:
+
+    AGENT_COMMANDER_HOME="$(mktemp -d)" \
+    COMMANDER_NETWORK_BIN="$PWD/Tests/Fixtures/commander-network-fixture.py" \
+    COMMANDER_NETWORK_FIXTURE_STATE="$AGENT_COMMANDER_HOME/network-fixture.json" \
+    swift run AgentCommander          # debug builds only
+
+The home must be an absolute path outside the live app's Application Support folder; otherwise the
+bundled helper is used and the fixture is ignored.
+
 It starts with three servers: ryan-mac (online, admin, with friends and one friend request),
 studio-relay (online, not admin; fixture-sam is a friend on both, so the two rows are linked) and
 team-relay (certificate changed). The feed has events on both online servers, three of them unseen.
@@ -26,6 +36,11 @@ offered, two hand-offs you sent (one done with a report, a patch and a branch; o
 owner), threads, and an audit log. Consult answers at once; a prompt containing "wait" stays pending
 and one containing "deny" is denied. Share, approve, deny, request access, withdraw, comment and
 apply are all kept in the scratch file. Apply writes nothing: it only checks the folder exists.
+
+`threads` lists the threads you take part in on a server, newest first, at most 50: every `sent`
+row (hand-offs, a review as agent.review, a fan-out as agent.fanout with `children`, and one consult),
+with `peer` and `handle` empty, then what friends sent you. A received row always carries `comments`
+(0 for none) and carries `lastCommentAt` only above 0. An approval still waiting is a received row too.
 
 Increment 4: relay-worker starts handed over to fixture-sam with about 24 minutes left, and a
 suggestion from fixture-sam waits in approvals. sam-agent offers Watch, Suggest and Review; its
@@ -250,6 +265,14 @@ def seed():
              "text": "Reproduced. The test races the lease renewal. I am adding a wait on the renewal event."},
             {"id": "cm-3", "author": "fixture-sam", "authorKind": "person", "at": now(-40),
              "text": "Looks right to me. Take the patch when it lands."}]},
+        "consults": {"s-fixture-home": [
+            {"request": "rq-consult-1", "resource": "dir-mei-agent", "action": "agent.ask",
+             "title": "How should the lease renewal back off?", "at": now(-52)}]},
+        "received": {"s-fixture-home": [
+            {"request": "rq-in-9", "resource": "res-2", "action": "agent.ask", "title": "Explain the lease renewal path",
+             "at": now(-200), "peer": "u-sam", "handle": "fixture-sam"},
+            {"request": "rq-in-8", "resource": "res-2", "action": "agent.handoff", "title": "Bisect the reconnect flake",
+             "at": now(-1400), "peer": "u-sam", "handle": "fixture-sam"}]},
         "audit": [
             {"request": "rq-in-9", "peer": "fixture-sam", "resource": "res-2", "action": "agent.ask", "started": now(-200),
              "ended": now(-199), "outcome": "ok", "tokens": 18400, "summary": "Explained the lease renewal path."},
@@ -590,8 +613,53 @@ def remote(state, verb, request):
     return listed
 
 
+# Comments on a request a friend sent you. An older scratch file gains them on first read.
+RECEIVED_COMMENTS = {"rq-in-9": [
+    {"id": "cm-in-1", "author": "fixture-sam", "authorKind": "person", "minutes": -198,
+     "text": "Thanks. Does the backoff reset after a clean renewal?"},
+    {"id": "cm-in-2", "author": "relay-worker", "authorKind": "agent", "minutes": -197,
+     "text": "Yes. One clean renewal sets it back to the base interval."}]}
+SENT_ACTIONS = {"review.request": "agent.review"}
+
+
+def thread_rows(state, request):
+    table = share(state, "threads")
+    if request not in table:
+        table[request] = [{"id": row["id"], "author": row["author"], "authorKind": row["authorKind"],
+                           "at": now(row["minutes"]), "text": row["text"]} for row in RECEIVED_COMMENTS.get(request, [])]
+    return table[request]
+
+
+def thread_list(state, server):
+    """What the device's `threads` verb answers: sent rows, then received ones, newest first."""
+    rows = []
+    for row in share(state, "sent").get(server, []) + share(state, "consults").get(server, []):
+        action = row["action"]
+        entry = {"request": row["request"], "resource": row["resource"], "title": row.get("title") or action,
+                 "at": row["at"], "direction": "sent", "peer": "", "handle": "",
+                 "action": "agent.fanout" if action.startswith("fanout:") else SENT_ACTIONS.get(action, action)}
+        if row.get("children"):
+            entry["children"] = [{"request": child["id"], "resource": child["resource"]} for child in row["children"]]
+        rows.append(entry)
+    waiting = [{"request": row["id"], "resource": row["resource"], "action": row["action"],
+                "title": (json.loads(row.get("summary") or "{}").get("title")
+                          or json.loads(row.get("summary") or "{}").get("text") or row["action"]),
+                "at": row["arrived"], "peer": "u-" + row["peer"].replace("fixture-", ""), "handle": row["peer"]}
+               for row in share(state, "approvals").get(server, [])]
+    for row in waiting + share(state, "received").get(server, []):
+        comments = thread_rows(state, row["request"])
+        entry = dict(row, direction="received", comments=len(comments))
+        if comments:
+            entry["lastCommentAt"] = max(comment["at"] for comment in comments)
+        rows.append(entry)
+    rows.sort(key=lambda row: row["at"], reverse=True)
+    return rows[:50]
+
+
 def sharing(state, verb, request):
     server = find(state, request)["id"]
+    if verb == "threads":
+        return {"threads": thread_list(state, server)}
     if verb == "approvals":
         return {"approvals": share(state, "approvals").get(server, [])}
     if verb in ("approve", "deny"):
@@ -667,7 +735,7 @@ def sharing(state, verb, request):
         rows = [row for row in share(state, "sent").get(server, []) if verb == "sent" or row["action"] == "agent.handoff"]
         return {verb: rows[:50]}
     if verb in ("thread", "comment"):
-        rows = share(state, "threads").setdefault(request.get("request") or "", [])
+        rows = thread_rows(state, request.get("request") or "")
         if verb == "comment":
             if not (request.get("text") or "").strip():
                 raise ValueError("Write a comment first.")
@@ -1205,7 +1273,7 @@ def run(verb, request):
         save(state)
         return {}
     if verb in ("approvals", "approve", "deny", "audit", "resource-add", "grant", "revoke", "send", "sent", "handoffs",
-                "thread", "comment", "apply-artifact", "relay"):
+                "thread", "threads", "comment", "apply-artifact", "relay"):
         return sharing(state, verb, request)
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
