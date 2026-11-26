@@ -33,7 +33,7 @@ type pilotPeer struct {
 	turns                              atomic.Int32
 }
 
-func startPeer(t *testing.T, ctx context.Context, p *testpilot.Pilot, edge int, handle string, configureActions func(actions.Config) actions.Config) *pilotPeer {
+func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
 	t.Helper()
 	who := &pilotPeer{handle: handle, actor: handle + "-coordinator", worker: handle + "-assistant", run: handle + "-run", bearer: newID()}
 	who.otherRun = &pilotPeer{handle: handle, actor: handle + "-other-worker", run: handle + "-other-run", bearer: newID()}
@@ -93,6 +93,12 @@ func startPeer(t *testing.T, ctx context.Context, p *testpilot.Pilot, edge int, 
 	server := &http.Server{Handler: mux}
 	go server.Serve(ln)
 	t.Cleanup(func() { server.Close() })
+	return who, socket
+}
+
+func startPeer(t *testing.T, ctx context.Context, p *testpilot.Pilot, edge int, handle string, configureActions func(actions.Config) actions.Config) *pilotPeer {
+	t.Helper()
+	who, socket := startPilotCommander(t, handle)
 	dir := t.TempDir()
 	secrets, err := devicekeys.Directory(filepath.Join(dir, "secrets"))
 	if err != nil {

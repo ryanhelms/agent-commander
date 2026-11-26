@@ -64,61 +64,116 @@ func TestApprovalsAndReceivedThreads(t *testing.T) {
 	}
 }
 
-func TestHandoffRowsAndApplyArtifact(t *testing.T) {
-	makePeer := func(user string) (*devicekeys.Keys, devicekeys.Public) {
-		t.Helper()
-		keys, err := devicekeys.Generate()
-		if err != nil {
-			t.Fatal(err)
-		}
-		public, err := keys.Public()
-		if err != nil {
-			t.Fatal(err)
-		}
-		public.User = user
-		return keys, public
+func makeDevicePeer(t *testing.T, user string) (*devicekeys.Keys, devicekeys.Public) {
+	t.Helper()
+	keys, err := devicekeys.Generate()
+	if err != nil {
+		t.Fatal(err)
 	}
-	localKeys, local := makePeer("my-user-id")
-	friendKeys, friend := makePeer("friend-user-id")
-	const updated = "2026-11-21T11:42:00Z"
-	submissions := map[string]control.Submission{}
-	processing := map[string]bool{}
-	processingResult := func(s control.Submission) control.Submission {
-		c := s.Children[0]
-		c.Status, c.Result = "processing", nil
-		return control.Submission{ID: s.ID, Children: []control.Child{c}}
+	public, err := keys.Public()
+	if err != nil {
+		t.Fatal(err)
+	}
+	public.User = user
+	return keys, public
+}
+
+const testRelayURL = "https://relay.test"
+
+// relayTransport runs the relay handler synchronously, including identity lookups.
+type relayTransport struct{ http.Handler }
+
+func (rt relayTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Body != nil {
+		defer r.Body.Close()
+	}
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, r)
+	return w.Result(), nil
+}
+
+// newRequester exercises the device's real submission and receipt paths. The
+// friend's resources share a device that opens each request and signs its answer.
+func newRequester(t *testing.T, resources []control.Resource, pendingFirstRead bool, answer func(control.Child, json.RawMessage) any) *Agent {
+	t.Helper()
+	localKeys, local := makeDevicePeer(t, "my-user-id")
+	friendKeys, friend := makeDevicePeer(t, "friend-user-id")
+	for i := range resources {
+		resources[i].Owner, resources[i].Device = friend.User, friend.Device
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/friends", func(w http.ResponseWriter, req *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"friends": []Friend{{User: friend.User, Handle: "sam"}}})
+	mux.HandleFunc("GET /v1/friends", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"friends": []Friend{{User: friend.User, Handle: "sam", Status: "accepted"}}})
 	})
-	mux.HandleFunc("GET /v1/identity/devices/"+friend.Device, func(w http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("GET /v1/identity/devices/"+friend.Device, func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(friend)
 	})
-	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, req *http.Request) {
-		resource := control.Resource{ID: "shared", Device: friend.Device, Owner: friend.User, Actions: []string{"agent.handoff", "agent.result"}}
-		json.NewEncoder(w).Encode(map[string]any{"resources": []control.Resource{resource}})
+	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"resources": resources})
 	})
-	mux.HandleFunc("POST /v1/submissions", func(w http.ResponseWriter, req *http.Request) {
+	completed := map[string]control.Submission{}
+	processing := map[string]control.Submission{}
+	mux.HandleFunc("POST /v1/submissions", func(w http.ResponseWriter, r *http.Request) {
 		var submitted outbound
-		if err := json.NewDecoder(req.Body).Decode(&submitted); err != nil || len(submitted.Children) != 1 {
-			http.Error(w, "expected one target", http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
+			t.Fatal(err)
+		}
+		pending := control.Submission{ID: submitted.ID}
+		done := control.Submission{ID: submitted.ID}
+		for _, target := range submitted.Children {
+			c := control.Child{Addressed: target, Parent: submitted.ID, Status: "processing",
+				Sender: local.User, SenderDevice: local.Device, Owner: friend.User}
+			pending.Children = append(pending.Children, c)
+			payload, err := friendKeys.Open(local, header(c, "request"), c.Envelope)
+			if err != nil {
+				t.Fatalf("open %s request: %v", c.Action, err)
+			}
+			c.Status = "completed"
+			signed, err := json.Marshal(map[string]any{"status": c.Status, "value": answer(c, payload)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Result, err = friendKeys.Seal(local, header(c, "result"), signed)
+			if err != nil {
+				t.Fatalf("seal %s result: %v", c.Action, err)
+			}
+			done.Children = append(done.Children, c)
+		}
+		completed[submitted.ID] = done
+		if pendingFirstRead {
+			processing[submitted.ID] = pending
+		}
+		json.NewEncoder(w).Encode(pending)
+	})
+	mux.HandleFunc("GET /v1/submissions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if p, ok := processing[id]; ok {
+			delete(processing, id)
+			json.NewEncoder(w).Encode(p)
 			return
 		}
-		c := control.Child{Addressed: submitted.Children[0], Parent: submitted.ID, Status: "completed",
-			Sender: local.User, SenderDevice: local.Device, Owner: friend.User}
-		body, err := friendKeys.Open(local, header(c, "request"), c.Envelope)
-		if err != nil {
-			t.Errorf("open request: %v", err)
-			http.Error(w, "could not open", http.StatusBadRequest)
+		s, ok := completed[id]
+		if !ok {
+			http.NotFound(w, r)
 			return
 		}
+		json.NewEncoder(w).Encode(s)
+	})
+	client := &http.Client{Transport: relayTransport{mux}}
+	return &Agent{cfg: Config{Dir: t.TempDir(), ServerID: "s-test", Relay: testRelayURL}, http: client, keys: localKeys,
+		identity: identity.Client{BaseURL: testRelayURL, HTTP: client}, policy: localPolicy{Pins: map[string]devicekeys.Public{}},
+		creds: credentials{Session: identity.Session{User: local.User, Device: local.Device, ExpiresAt: time.Now().Add(time.Hour)}}}
+}
+
+func TestHandoffRowsAndApplyArtifact(t *testing.T) {
+	const updated = "2026-11-21T11:42:00Z"
+	resources := []control.Resource{{ID: "shared", Actions: []string{"agent.handoff", "agent.result"}}}
+	a := newRequester(t, resources, true, func(c control.Child, body json.RawMessage) any {
 		value := map[string]any{"run": "assigned-run", "state": "running"}
 		if c.Action == "agent.result" {
 			var target struct{ Run string }
 			if json.Unmarshal(body, &target) != nil || target.Run == "" {
-				http.Error(w, "missing run", http.StatusBadRequest)
-				return
+				t.Fatalf("missing run in %s", body)
 			}
 			value["run"], value["state"], value["updatedAt"] = target.Run, "done", updated
 			value["artifacts"] = []map[string]string{
@@ -130,34 +185,8 @@ func TestHandoffRowsAndApplyArtifact(t *testing.T) {
 				value["state"], value["artifacts"] = "unrelated", []any{}
 			}
 		}
-		signed, _ := json.Marshal(map[string]any{"status": c.Status, "value": value})
-		c.Result, err = friendKeys.Seal(local, header(c, "result"), signed)
-		if err != nil {
-			t.Errorf("seal result: %v", err)
-			http.Error(w, "could not seal", http.StatusInternalServerError)
-			return
-		}
-		s := control.Submission{ID: submitted.ID, Children: []control.Child{c}}
-		submissions[s.ID] = s
-		if c.Action == "agent.result" {
-			processing[s.ID] = true
-			s = processingResult(s)
-		}
-		json.NewEncoder(w).Encode(s)
+		return value
 	})
-	mux.HandleFunc("GET /v1/submissions/{id}", func(w http.ResponseWriter, req *http.Request) {
-		s := submissions[req.PathValue("id")]
-		if processing[s.ID] {
-			delete(processing, s.ID)
-			s = processingResult(s)
-		}
-		json.NewEncoder(w).Encode(s)
-	})
-	server := httptest.NewTLSServer(mux)
-	defer server.Close()
-	a := &Agent{cfg: Config{Dir: t.TempDir(), ServerID: "s-test", Relay: server.URL}, http: server.Client(), keys: localKeys,
-		identity: identity.Client{BaseURL: server.URL, HTTP: server.Client()}, policy: localPolicy{Pins: map[string]devicekeys.Public{}},
-		creds: credentials{Session: identity.Session{User: local.User, Device: local.Device, ExpiresAt: time.Now().Add(time.Hour)}}}
 	h := a.Handler()
 	send := func(action, name, payload string) string {
 		t.Helper()

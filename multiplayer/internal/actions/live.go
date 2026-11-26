@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -169,11 +168,7 @@ func parseReview(text string) map[string]any {
 		Summary  string          `json:"summary"`
 		Findings []ReviewFinding `json:"findings"`
 	}
-	body := text
-	if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
-		body = text[i : j+1]
-	}
-	if json.Unmarshal([]byte(body), &out) != nil || out.Summary == "" {
+	if json.Unmarshal([]byte(text), &out) != nil || out.Summary == "" {
 		return map[string]any{"summary": text, "findings": []ReviewFinding{}}
 	}
 	if out.Findings == nil {

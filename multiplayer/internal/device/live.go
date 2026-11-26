@@ -26,16 +26,19 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		if in.Handle == "" || in.Resource == "" || in.Minutes < 1 || in.Minutes > 240 {
 			return nil, errors.New("handover needs a friend, a resource and 1–240 minutes")
 		}
-		peer, e := a.userID(ctx, s, in.Handle)
+		peer, e := a.lookupUser(ctx, s, in.Handle)
 		if e != nil {
 			return nil, e
 		}
-		if peer == s.User {
+		if peer.User == s.User {
 			return nil, errors.New("hand control to a friend, not to yourself")
+		}
+		if peer.Status != "accepted" {
+			return nil, errors.New("hand control to an accepted friend")
 		}
 		a.mu.Lock()
 		granted := slices.ContainsFunc(a.policy.Grants, func(g actions.Grant) bool {
-			return g.Peer == peer && g.Resource == in.Resource && (g.Action == "agent.ask" || g.Action == "agent.suggest")
+			return g.Peer == peer.User && g.Resource == in.Resource && g.ExpiresAt.After(time.Now()) && (g.Action == "agent.ask" || g.Action == "agent.suggest")
 		})
 		a.mu.Unlock()
 		if !granted {
@@ -46,7 +49,7 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		if a.handovers == nil {
 			a.handovers = map[string]time.Time{}
 		}
-		a.handovers[peer+"|"+in.Resource] = until
+		a.handovers[peer.User+"|"+in.Resource] = until
 		a.mu.Unlock()
 		return map[string]any{"handle": in.Handle, "resource": in.Resource, "until": until}, nil
 	case "handback":
@@ -56,10 +59,11 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		a.mu.Unlock()
 		peer := in.Handle
 		if !byID {
-			var e error
-			if peer, e = a.userID(ctx, s, in.Handle); e != nil {
+			user, e := a.lookupUser(ctx, s, in.Handle)
+			if e != nil {
 				return nil, e
 			}
+			peer = user.User
 		}
 		a.mu.Lock()
 		delete(a.handovers, peer+"|"+in.Resource)
@@ -102,12 +106,10 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 			title = "Fan-out"
 		}
 		record := SentRequest{ID: id, Resource: in.Targets[0].Resource, Action: "fanout:" + in.Targets[0].Action, Title: title, At: time.Now().UTC()}
-		if rec, e := a.receipt(ctx, s, id); e == nil {
-			for _, c := range allRows(rec) {
-				cid, _ := c["id"].(string)
-				resource, _ := c["resource"].(string)
-				record.Children = append(record.Children, SentChild{ID: cid, Resource: resource})
-			}
+		for _, c := range allRows(res) {
+			cid, _ := c["id"].(string)
+			resource, _ := c["resource"].(string)
+			record.Children = append(record.Children, SentChild{ID: cid, Resource: resource})
 		}
 		_ = a.logSent(record)
 		return map[string]any{"request": id, "children": res}, nil
@@ -150,19 +152,19 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 
 func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
-func (a *Agent) userID(ctx context.Context, s identity.Session, handle string) (string, error) {
+func (a *Agent) lookupUser(ctx context.Context, s identity.Session, handle string) (Friend, error) {
+	var u Friend
 	part, e := segment(handle)
 	if e != nil {
-		return "", e
+		return u, e
 	}
-	var u struct{ User string }
 	if e = a.remote(ctx, s, "GET", "/v1/users/"+part, nil, &u); e != nil {
-		return "", e
+		return u, e
 	}
 	if u.User == "" {
-		return "", errors.New("unknown friend")
+		return u, errors.New("unknown friend")
 	}
-	return u.User, nil
+	return u, nil
 }
 
 // online lists accepted friends with presence and the resources they share.
