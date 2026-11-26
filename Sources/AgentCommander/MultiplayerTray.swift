@@ -150,10 +150,10 @@ struct MultiplayerServerList: View {
                     if server.state == .certChanged {
                         MultiplayerCertificateNotice(serverName: server.displayName) { onOpen(server.id) }
                             .padding(.bottom, Space.xs)
-                    } else if server.state == .error, !server.error.isEmpty {
-                        Text(MultiplayerModel.problemText(server.error))
+                    } else if let problem = server.shownProblem {
+                        Text(server.isReconnecting ? MultiplayerModel.reconnectText(problem) : MultiplayerModel.problemText(problem))
                             .font(MultiplayerTheme.sub)
-                            .foregroundStyle(MultiplayerTheme.failure)
+                            .foregroundStyle(server.state == .error ? MultiplayerTheme.failure : MultiplayerTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.leading, 28)
                             .padding(.bottom, Space.xs)

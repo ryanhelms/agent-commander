@@ -362,6 +362,17 @@ final class MultiplayerModel {
         MultiplayerSessionModel.serviceText(raw) ?? "This server reported a problem. Refresh to check again."
     }
 
+    /// Why a reconnecting server has no session yet. A timeout or refused connection reads as the
+    /// relay not answering; anything else is the service's own text when it is safe to show.
+    nonisolated static func reconnectText(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        let unreachable = ["timeout", "deadline exceeded", "connection refused", "no such host", "network is unreachable", "eof"]
+        if unreachable.contains(where: lower.contains) {
+            return "The relay isn’t answering. Agent Commander keeps trying."
+        }
+        return MultiplayerSessionModel.serviceText(raw) ?? "The last attempt failed. Agent Commander keeps trying."
+    }
+
     var menuSymbol: String {
         if unavailable != nil || servers.contains(where: { $0.state == .certChanged }) { return "person.2.slash" }
         return servers.contains { $0.state == .online } ? "person.2.fill" : "person.2"
