@@ -15,6 +15,11 @@ import Observation
 // - Deleting a group, removing a member, releasing a claim or a card, removing a queued branch,
 //   suspending a member and revoking a device each ask once more first.
 // - A host run carries extra arguments only for a command whose owner allows them.
+// - Each change has two forms. The tray's own call reads the tray's draft, checks its second press
+//   and, where it moves the tray, sends nothing unless the tray is on its page. It then calls the
+//   form that names its target and takes the caller's values, which never reads or moves the
+//   route and leaves the tray's drafts and page lists alone. A view outside the tray awaits that
+//   form through MultiplayerTeamsActions.swift.
 
 /// A destructive step waiting for its second press.
 enum MultiplayerTeamsConfirmation: Equatable {
@@ -234,21 +239,36 @@ final class MultiplayerTeamsModel {
 
     // MARK: - Groups
 
-    var canCreateGroup: Bool {
-        let name = groupDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tray?.isBusy == false && !name.isEmpty && name.utf8.count <= 128
+    /// Why a group can't take this name, when it can't.
+    nonisolated static func groupNameProblem(_ name: String) -> String? {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "Give the group a name." }
+        return name.utf8.count <= 128 ? nil : "Keep the name under 128 bytes."
     }
 
+    var canCreateGroup: Bool { tray?.isBusy == false && Self.groupNameProblem(groupDraft) == nil }
+
+    /// Creates the group typed on the tray's Groups page, then opens it.
     @discardableResult
     func createGroup(on server: String) -> Task<Void, Never>? {
-        guard canCreateGroup else { return nil }
-        let name = groupDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tray?.act("Creating \(name.multiplayerDisplay)…", failing: "Couldn’t create the group.") { client in
+        guard canCreateGroup, tray?.route == .share(server, .groups) else { return nil }
+        return createGroup(named: groupDraft, on: server, then: { id in
+            self.groupDraft = ""
+            if !id.isEmpty { self.share?.open(.group(id), on: server) }
+        })
+    }
+
+    /// Creates a group with the caller's name. `then` is given the new group's ID.
+    @discardableResult
+    func createGroup(named name: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
+        guard Self.groupNameProblem(name) == nil else { return nil }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tray?.act("Creating \(name.multiplayerDisplay)…", failing: "Couldn’t create the group.", report: report) { client in
             let scoped = client.scoped(to: server)
             let id = try await scoped.createGroup(name: name)
-            self.groupDraft = ""
             self.groups[server] = try await scoped.groups()
-            if !id.isEmpty { self.share?.open(.group(id), on: server) }
+            then?(id)
             self.tray?.post(notice: "Created \(name.multiplayerDisplay). Add friends to it next.")
         }
     }
@@ -261,11 +281,18 @@ final class MultiplayerTeamsModel {
             guard confirming == .removeMember(group: group.id, handle: handle) else { return nil }
             confirming = nil
         }
+        return changeMember(handle, in: group, on: server, isMember: isMember)
+    }
+
+    /// Adds a friend to a group, or removes a member. The caller asks before a removal.
+    @discardableResult
+    func changeMember(_ handle: String, in group: MultiplayerGroup, on server: String, isMember: Bool,
+                      report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         let who = handle.multiplayerDisplay, name = group.name.multiplayerDisplay
         return tray?.act(isMember ? "Adding \(who) to \(name)…" : "Removing \(who) from \(name)…",
                          failing: isMember ? "Couldn’t add \(who)." : "Couldn’t remove \(who).",
                          confirmation: isMember ? "\(who) is in \(name) and has the group’s grants."
-                                                : "\(who) left \(name) and lost the group’s grants.") { client in
+                                                : "\(who) left \(name) and lost the group’s grants.", report: report) { client in
             let scoped = client.scoped(to: server)
             try await scoped.setGroupMember(handle, in: group.id, isMember: isMember)
             self.groups[server] = try await scoped.groups()
@@ -275,11 +302,20 @@ final class MultiplayerTeamsModel {
     @discardableResult
     func deleteGroup(_ group: MultiplayerGroup, on server: String) -> Task<Void, Never>? {
         confirming = nil
-        return tray?.act("Deleting \(group.name.multiplayerDisplay)…", failing: "Couldn’t delete the group.") { client in
+        return removeGroup(group, on: server, then: {
+            if self.tray?.route == .share(server, .group(group.id)) { self.share?.back() }
+        })
+    }
+
+    /// Deletes a group. The caller asks first. `then` runs once it is gone.
+    @discardableResult
+    func removeGroup(_ group: MultiplayerGroup, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        tray?.act("Deleting \(group.name.multiplayerDisplay)…", failing: "Couldn’t delete the group.", report: report) { client in
             let scoped = client.scoped(to: server)
             try await scoped.deleteGroup(group.id)
             self.groups[server]?.removeAll { $0.id == group.id }
-            if self.tray?.route == .share(server, .group(group.id)) { self.share?.back() }
+            then?()
             self.tray?.post(notice: "Deleted \(group.name.multiplayerDisplay). Its members lost the group’s grants.")
         }
     }
@@ -298,15 +334,24 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func createWorkspace(on server: String) -> Task<Void, Never>? {
-        guard canCreateWorkspace else { return nil }
-        let draft = workspaceDraft
+        guard canCreateWorkspace, tray?.route == .share(server, .workspaceCreate) else { return nil }
+        return createWorkspace(workspaceDraft, on: server, then: { id in
+            self.workspaceDraft = MultiplayerWorkspaceDraft()
+            if !id.isEmpty { self.share?.replace(with: .workspace(id), on: server) } else { self.share?.back() }
+        })
+    }
+
+    /// Creates a workspace from the caller's draft. `then` is given the new workspace's ID.
+    @discardableResult
+    func createWorkspace(_ draft: MultiplayerWorkspaceDraft, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                         then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend else { return nil }
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines).multiplayerDisplay
-        return tray?.act("Creating \(name)…", failing: "Couldn’t create the workspace.") { client in
+        return tray?.act("Creating \(name)…", failing: "Couldn’t create the workspace.", report: report) { client in
             let scoped = client.scoped(to: server)
             let id = try await scoped.createWorkspace(draft.body)
-            self.workspaceDraft = MultiplayerWorkspaceDraft()
             self.workspaces[server] = try await scoped.workspaces()
-            if !id.isEmpty { self.share?.replace(with: .workspace(id), on: server) } else { self.share?.back() }
+            then?(id)
             self.tray?.post(notice: "Created \(name). Its group can claim work and add cards now.")
         }
     }
@@ -320,14 +365,22 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func sendClaim(in workspace: String, on server: String) -> Task<Void, Never>? {
+        guard canClaim, tray?.route == .share(server, .claim(workspace: workspace)) else { return nil }
+        return sendClaim(claimDraft, in: workspace, on: server, then: { _ in self.share?.back() })
+    }
+
+    /// Claims part of a workspace from the caller's draft, in the person's own name. `then` is
+    /// given the new claim's ID, which is empty when the relay doesn't name it.
+    @discardableResult
+    func sendClaim(_ draft: MultiplayerClaimDraft, in workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                   then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
         let me = handle(on: server)
-        guard canClaim, !me.isEmpty else { return nil }
-        let draft = claimDraft
-        return tray?.act("Claiming \(draft.trimmedKey.multiplayerDisplay)…", failing: "Couldn’t claim it.") { client in
+        guard draft.canSend, !me.isEmpty else { return nil }
+        return tray?.act("Claiming \(draft.trimmedKey.multiplayerDisplay)…", failing: "Couldn’t claim it.", report: report) { client in
             let scoped = client.scoped(to: server)
-            try await scoped.claim(draft.body(handle: me), in: workspace)
+            let id = try await scoped.claim(draft.body(handle: me), in: workspace)
             self.workspaces[server] = try await scoped.workspaces()
-            self.share?.back()
+            then?(id)
             self.tray?.post(notice: "Claimed \(draft.trimmedKey.multiplayerDisplay) for \(draft.trimmedAgent.multiplayerDisplay). The claim lasts while this Mac stays connected.")
         }
     }
@@ -337,12 +390,22 @@ final class MultiplayerTeamsModel {
     func release(_ claim: MultiplayerClaim, in workspace: String, on server: String) -> Task<Void, Never>? {
         guard confirming == .releaseClaim(claim.id) else { return nil }
         confirming = nil
-        return tray?.act("Releasing \(claim.key.multiplayerDisplay)…", failing: "Couldn’t release the claim.",
-                  confirmation: "Released \(claim.key.multiplayerDisplay).") { client in
+        return releaseClaim(claim, in: workspace, on: server, then: { scoped in
+            if let next = try? await scoped.cards(in: workspace) { self.cards = .loaded(next) }
+        })
+    }
+
+    /// Releases a claim. The caller asks first. `then` runs once it is released, with that
+    /// server's client.
+    @discardableResult
+    func releaseClaim(_ claim: MultiplayerClaim, in workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                      then: (@MainActor (MultiplayerClient) async throws -> Void)? = nil) -> Task<Void, Never>? {
+        tray?.act("Releasing \(claim.key.multiplayerDisplay)…", failing: "Couldn’t release the claim.",
+                  confirmation: "Released \(claim.key.multiplayerDisplay).", report: report) { client in
             let scoped = client.scoped(to: server)
             try await scoped.release(claim: claim.id, in: workspace)
             self.workspaces[server] = try await scoped.workspaces()
-            if let next = try? await scoped.cards(in: workspace) { self.cards = .loaded(next) }
+            try await then?(scoped)
         }
     }
 
@@ -384,12 +447,22 @@ final class MultiplayerTeamsModel {
     @discardableResult
     func addCard(to workspace: String, on server: String) -> Task<Void, Never>? {
         guard canAddCard else { return nil }
-        let draft = cardDraft
-        return tray?.act("Adding the card…", failing: "Couldn’t add the card.") { client in
-            let scoped = client.scoped(to: server)
-            try await scoped.createCard(draft.json, in: workspace)
+        return addCard(cardDraft, to: workspace, on: server, then: { _, scoped in
             self.cardDraft = MultiplayerCardDraft()
             self.cards = .loaded(try await scoped.cards(in: workspace))
+        })
+    }
+
+    /// Adds a card from the caller's draft. `then` is given the new card's ID, which is empty when
+    /// the relay doesn't name it, and that server's client.
+    @discardableResult
+    func addCard(_ draft: MultiplayerCardDraft, to workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                 then: (@MainActor (String, MultiplayerClient) async throws -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend else { return nil }
+        return tray?.act("Adding the card…", failing: "Couldn’t add the card.", report: report) { client in
+            let scoped = client.scoped(to: server)
+            let id = try await scoped.createCard(draft.json, in: workspace)
+            try await then?(id, scoped)
         }
     }
 
@@ -402,11 +475,23 @@ final class MultiplayerTeamsModel {
     /// Giving up a card the person holds is sent only from its confirmation.
     @discardableResult
     func move(_ card: MultiplayerCard, in workspace: String, on server: String, to state: MultiplayerCard.State) -> Task<Void, Never>? {
+        guard !handle(on: server).isEmpty else { return nil }
+        if state == .open && card.known == .claimed { guard confirming == .releaseCard(card.id) else { return nil } }
+        confirming = nil
+        return updateCard(card, in: workspace, on: server, to: state, result: resultDraft, then: { scoped in
+            self.cards = .loaded(try await scoped.cards(in: workspace))
+        })
+    }
+
+    /// Claims a card, completes it with the caller's result, or reopens it. The caller asks before
+    /// giving up a card the person holds. `then` runs once it is changed, with that server's client.
+    @discardableResult
+    func updateCard(_ card: MultiplayerCard, in workspace: String, on server: String, to state: MultiplayerCard.State,
+                    result: String = "", report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: (@MainActor (MultiplayerClient) async throws -> Void)? = nil) -> Task<Void, Never>? {
         let me = handle(on: server)
         guard !me.isEmpty else { return nil }
         let releasing = state == .open && card.known == .claimed
-        if releasing { guard confirming == .releaseCard(card.id) else { return nil } }
-        confirming = nil
         var fields: [String: MultiplayerJSON] = ["state": .string(state.rawValue)]
         let title = card.title.multiplayerDisplay
         let progress: String, done: String
@@ -415,16 +500,16 @@ final class MultiplayerTeamsModel {
             fields["assignee"] = .string("\(me)/\(defaultAgent(on: server))")
             (progress, done) = ("Claiming \(title)…", "Claimed \(title). Nobody else can take it while you hold it.")
         case .done:
-            fields["result"] = .string(resultDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+            fields["result"] = .string(result.trimmingCharacters(in: .whitespacesAndNewlines))
             (progress, done) = ("Completing \(title)…", "Completed \(title).")
         case .open:
             (progress, done) = releasing ? ("Releasing \(title)…", "Released \(title). Anyone in the group can claim it.")
                                          : ("Reopening \(title)…", "Reopened \(title).")
         }
-        return tray?.act(progress, failing: "Couldn’t update the card.", confirmation: done) { client in
+        return tray?.act(progress, failing: "Couldn’t update the card.", confirmation: done, report: report) { client in
             let scoped = client.scoped(to: server)
             try await scoped.updateCard(card.id, in: workspace, fields: fields)
-            self.cards = .loaded(try await scoped.cards(in: workspace))
+            try await then?(scoped)
             if let next = try? await scoped.workspaces() { self.workspaces[server] = next }
         }
     }
@@ -441,27 +526,40 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func addToQueue(_ workspace: String, on server: String) -> Task<Void, Never>? {
-        guard canQueue else { return nil }
-        let draft = queueDraft
-        return tray?.act("Queueing \(draft.trimmedBranch.multiplayerDisplay)…", failing: "Couldn’t queue the branch.") { client in
+        guard canQueue, tray?.route == .share(server, .queueAdd(workspace: workspace)) else { return nil }
+        return addToQueue(queueDraft, for: workspace, on: server, then: { _ in
+            self.queueDraft = MultiplayerQueueDraft()
+            self.share?.back()
+        })
+    }
+
+    /// Queues a branch from the caller's draft. `then` is given the queued entry's ID.
+    @discardableResult
+    func addToQueue(_ draft: MultiplayerQueueDraft, for workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend else { return nil }
+        return tray?.act("Queueing \(draft.trimmedBranch.multiplayerDisplay)…", failing: "Couldn’t queue the branch.", report: report) { client in
             self.queue = try await client.scoped(to: server).queueAdd(workspace: workspace, branch: draft.trimmedBranch,
                                                                       checkout: draft.checkout.trimmingCharacters(in: .whitespaces),
                                                                       testCommand: draft.testCommand)
-            self.queueDraft = MultiplayerQueueDraft()
-            self.share?.back()
+            then?(self.queue(for: workspace).last { $0.branch == draft.trimmedBranch }?.id ?? "")
             self.tray?.post(notice: "Queued \(draft.trimmedBranch.multiplayerDisplay). Run the queue to test and merge it.")
         }
     }
 
+    /// Tests and merges a workspace's queued branches. It names its workspace and needs no page.
+    /// `then` is given the branches that ran, each in the state it ended in.
     @discardableResult
-    func runQueue(_ workspace: String, on server: String) -> Task<Void, Never>? {
+    func runQueue(_ workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                  then: (@MainActor ([MultiplayerQueueEntry]) -> Void)? = nil) -> Task<Void, Never>? {
         let waiting = queue(for: workspace).filter(\.isQueued).count
         guard waiting > 0 else { return nil }
         return tray?.act(waiting == 1 ? "Testing and merging 1 branch…" : "Testing and merging \(waiting) branches…",
-                         failing: "Couldn’t run the merge queue.") { client in
+                         failing: "Couldn’t run the merge queue.", report: report) { client in
             let before = Set(self.queue(for: workspace).filter(\.isQueued).map(\.id))
             self.queue = try await client.scoped(to: server).queueMerge(workspace: workspace)
             let ran = self.queue(for: workspace).filter { before.contains($0.id) }
+            then?(ran)
             let merged = ran.filter { $0.state == "merged" }.count
             if merged == ran.count {
                 self.tray?.post(notice: merged == 1 ? "Merged 1 branch." : "Merged \(merged) branches.")
@@ -477,9 +575,15 @@ final class MultiplayerTeamsModel {
     func removeQueued(_ entry: MultiplayerQueueEntry, on server: String) -> Task<Void, Never>? {
         guard confirming == .removeQueued(entry.id) else { return nil }
         confirming = nil
+        return removeFromQueue(entry, on: server)
+    }
+
+    /// Takes a branch out of the queue. The caller asks first.
+    @discardableResult
+    func removeFromQueue(_ entry: MultiplayerQueueEntry, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         let branch = entry.branch.multiplayerDisplay
         return tray?.act("Removing \(branch) from the queue…", failing: "Couldn’t remove \(branch) from the queue.",
-                         confirmation: "Removed \(branch) from the queue. The branch itself is untouched.") { client in
+                         confirmation: "Removed \(branch) from the queue. The branch itself is untouched.", report: report) { client in
             self.queue = try await client.scoped(to: server).queueRemove(workspace: entry.workspace, branch: entry.branch)
         }
     }
@@ -488,7 +592,12 @@ final class MultiplayerTeamsModel {
 
     /// Whether the chosen command takes extra arguments: nil when the host doesn't say.
     func hostAllowsArguments(_ resource: String, on server: String) -> Bool? {
-        share?.entry(resource, on: server)?.capabilities?.allowsArguments(hostDraft.command.trimmingCharacters(in: .whitespaces))
+        hostAllowsArguments(resource, on: server, for: hostDraft.command)
+    }
+
+    /// Whether a host's command takes extra arguments: nil when the host doesn't say.
+    func hostAllowsArguments(_ resource: String, on server: String, for command: String) -> Bool? {
+        share?.entry(resource, on: server)?.capabilities?.allowsArguments(command.trimmingCharacters(in: .whitespaces))
     }
 
     func startHostRun(_ resource: String, on server: String) {
@@ -502,29 +611,29 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func runOnHost(_ resource: String, on server: String) -> Task<Void, Never>? {
-        guard canRunOnHost else { return nil }
-        let draft = hostDraft
+        guard canRunOnHost, tray?.route == .share(server, .hostRun(resource: resource)) else { return nil }
+        return runOnHost(hostDraft, resource: resource, on: server, then: { self.hostReply = $0 })
+    }
+
+    /// Runs one enrolled command on a friend's host, from the caller's draft. `then` is given
+    /// what came back.
+    @discardableResult
+    func runOnHost(_ draft: MultiplayerHostRunDraft, resource: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                   then: @escaping @MainActor (MultiplayerSentRequest) -> Void) -> Task<Void, Never>? {
+        guard draft.canSend else { return nil }
         // Arguments typed for another command are never sent to one that takes none.
-        let payload = draft.payload(allowingArguments: hostAllowsArguments(resource, on: server) != false)
+        let payload = draft.payload(allowingArguments: hostAllowsArguments(resource, on: server, for: draft.command) != false)
         let name = share?.resourceName(resource, on: server).multiplayerDisplay ?? "the host"
-        return tray?.act("Running \(draft.command.multiplayerDisplay) on \(name)…", failing: "Couldn’t run the command.") { client in
-            self.hostReply = try await client.scoped(to: server).send(resource: resource, action: MultiplayerSharePolicy.hostRun,
-                                                                      payload: payload, name: "Run \(draft.command)")
+        return tray?.act("Running \(draft.command.multiplayerDisplay) on \(name)…", failing: "Couldn’t run the command.", report: report) { client in
+            then(try await client.scoped(to: server).send(resource: resource, action: MultiplayerSharePolicy.hostRun,
+                                                         payload: payload, name: "Run \(draft.command)"))
         }
     }
 
     // MARK: - Knowledge
 
     func startKnowledge(on server: String, editing item: MultiplayerKnowledgeItem? = nil) {
-        var draft = MultiplayerKnowledgeDraft()
-        if let item {
-            draft.editing = item.id
-            draft.kind = MultiplayerKnowledgeKind(rawValue: item.kind) ?? .prompt
-            draft.name = item.name
-            draft.content = item.content
-            if let (scope, target) = MultiplayerKnowledgeScope.parse(item.visibility) { (draft.scope, draft.target) = (scope, target) }
-        }
-        knowledgeDraft = draft
+        knowledgeDraft = MultiplayerKnowledgeDraft(editing: item)
         secretRefusal = nil
         share?.open(.knowledgeShare, on: server)
     }
@@ -533,23 +642,34 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func shareKnowledge(on server: String) -> Task<Void, Never>? {
-        guard canShareKnowledge else { return nil }
-        let draft = knowledgeDraft
-        let name = draft.trimmedName.multiplayerDisplay
+        guard canShareKnowledge, tray?.route == .share(server, .knowledgeShare) else { return nil }
         secretRefusal = nil
-        return tray?.act(draft.editing.isEmpty ? "Sharing \(name)…" : "Saving a new version of \(name)…",
-                         failing: "Couldn’t share \(name).") { client in
-            let scoped = client.scoped(to: server)
-            do {
-                if draft.editing.isEmpty { try await scoped.shareKnowledge(draft.body) } else { try await scoped.updateKnowledge(draft.editing, draft.body) }
-            } catch {
-                let failure = MultiplayerFailure.from(error)
-                if MultiplayerSecretCheck.isRefusal(failure.message) { self.secretRefusal = MultiplayerSecretCheck.refusal }
-                throw failure
-            }
+        return shareKnowledge(knowledgeDraft, on: server, report: { failure in
+            if let failure, MultiplayerSecretCheck.isRefusal(failure) { self.secretRefusal = MultiplayerSecretCheck.refusal }
+        }, then: { _ in
             self.knowledgeDraft = MultiplayerKnowledgeDraft()
-            self.knowledge[server] = try await scoped.knowledge()
             self.share?.back()
+        })
+    }
+
+    /// Shares a knowledge item from the caller's draft, or saves a new version of the item the
+    /// draft edits. `then` is given the item's ID, which is empty when a new item can't be found
+    /// by its name. A refusal for a secret is in the reported sentence
+    /// (`MultiplayerSecretCheck.isRefusal`).
+    @discardableResult
+    func shareKnowledge(_ draft: MultiplayerKnowledgeDraft, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                        then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend else { return nil }
+        let name = draft.trimmedName.multiplayerDisplay
+        return tray?.act(draft.editing.isEmpty ? "Sharing \(name)…" : "Saving a new version of \(name)…",
+                         failing: "Couldn’t share \(name).", report: report) { client in
+            let scoped = client.scoped(to: server)
+            if draft.editing.isEmpty { try await scoped.shareKnowledge(draft.body) } else { try await scoped.updateKnowledge(draft.editing, draft.body) }
+            let before = Set((self.knowledge[server] ?? []).map(\.id))
+            let next = try await scoped.knowledge()
+            self.knowledge[server] = next
+            let made = next.first { !before.contains($0.id) && $0.name == draft.trimmedName } ?? next.first { $0.name == draft.trimmedName }
+            then?(draft.editing.isEmpty ? made?.id ?? "" : draft.editing)
             self.tray?.post(notice: draft.editing.isEmpty ? "Shared \(name)." : "Saved a new version of \(name).")
         }
     }
@@ -559,12 +679,15 @@ final class MultiplayerTeamsModel {
     }
 
     /// Installs a skill, or saves an MCP item to the file the person chose. Other kinds are copied
-    /// by the page itself.
+    /// by the page itself. It names its item and needs no page. `then` is given where it was written.
     @discardableResult
-    func install(_ item: MultiplayerKnowledgeItem, on server: String, destination: String = "") -> Task<Void, Never>? {
+    func install(_ item: MultiplayerKnowledgeItem, on server: String, destination: String = "",
+                 report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                 then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
         let name = item.name.multiplayerDisplay
-        return tray?.act("Installing \(name)…", failing: "Couldn’t install \(name).") { client in
+        return tray?.act("Installing \(name)…", failing: "Couldn’t install \(name).", report: report) { client in
             let path = try await client.scoped(to: server).installKnowledge(item.installItem, destination: destination)
+            then?(path)
             self.tray?.post(notice: path.isEmpty ? "Installed \(name)." : "Installed \(name) at \(path.multiplayerDisplay).")
         }
     }
@@ -582,28 +705,50 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func report(_ request: MultiplayerSentRequest, on server: String, accepted: Bool) -> Task<Void, Never>? {
+        reportOutcome(request, on: server, accepted: accepted, then: { scoped in
+            if let next = try? await scoped.reputation(request.resource) { self.reputation = .loaded(next) }
+        })
+    }
+
+    /// Reports how a finished request turned out. `then` runs once it is reported, with that
+    /// server's client.
+    @discardableResult
+    func reportOutcome(_ request: MultiplayerSentRequest, on server: String, accepted: Bool, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                       then: (@MainActor (MultiplayerClient) async -> Void)? = nil) -> Task<Void, Never>? {
         tray?.act("Reporting the result…", failing: "Couldn’t report the result.",
-                  confirmation: accepted ? "Reported as accepted." : "Reported as rejected.") { client in
+                  confirmation: accepted ? "Reported as accepted." : "Reported as rejected.", report: report) { client in
             let scoped = client.scoped(to: server)
             try await scoped.reportOutcome(resource: request.resource, request: request.request, accepted: accepted)
             self.outcomes[request.request] = accepted
-            if let next = try? await scoped.reputation(request.resource) { self.reputation = .loaded(next) }
+            await then?(scoped)
         }
     }
 
-    var canEndorse: Bool {
-        let skill = endorseDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tray?.isBusy == false && !skill.isEmpty && skill.utf8.count <= 128
+    /// Why a skill can't be endorsed as typed, when it can't.
+    nonisolated static func skillProblem(_ skill: String) -> String? {
+        let skill = skill.trimmingCharacters(in: .whitespacesAndNewlines)
+        if skill.isEmpty { return "Name the skill first." }
+        return skill.utf8.count <= 128 ? nil : "Keep the skill under 128 bytes."
     }
+
+    var canEndorse: Bool { tray?.isBusy == false && Self.skillProblem(endorseDraft) == nil }
 
     @discardableResult
     func endorse(_ resource: String, on server: String) -> Task<Void, Never>? {
         guard canEndorse else { return nil }
-        let skill = endorseDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return endorse(resource, for: endorseDraft, on: server, then: { self.endorseDraft = "" })
+    }
+
+    /// Endorses a resource for the skill the caller names. `then` runs once it is endorsed.
+    @discardableResult
+    func endorse(_ resource: String, for skill: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                 then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        guard Self.skillProblem(skill) == nil else { return nil }
+        let skill = skill.trimmingCharacters(in: .whitespacesAndNewlines)
         return tray?.act("Endorsing…", failing: "Couldn’t endorse it.",
-                         confirmation: "Endorsed for \(skill.multiplayerDisplay).") { client in
+                         confirmation: "Endorsed for \(skill.multiplayerDisplay).", report: report) { client in
             try await client.scoped(to: server).endorse(resource: resource, skill: skill)
-            self.endorseDraft = ""
+            then?()
             self.tray?.session(server)?.refresh()
         }
     }
@@ -647,41 +792,67 @@ final class MultiplayerTeamsModel {
 
     @discardableResult
     func savePolicy(on server: String) -> Task<Void, Never>? {
-        guard canSavePolicy, let changes = policyChanges else { return nil }
-        return tray?.act("Saving the relay policy…", failing: "Couldn’t save the policy.",
-                         confirmation: "Saved. The policy applies to everyone on this relay.") { client in
-            let saved = try await client.scoped(to: server).setRelayPolicy(changes)
+        guard canSavePolicy, let changes = policyChanges, tray?.route == .share(server, .policy) else { return nil }
+        return savePolicy(changes, on: server, then: { saved in
             let member = self.policyDraft.member, device = self.policyDraft.device
             self.policy = .loaded(saved)
             self.policyDraft = MultiplayerPolicyDraft(saved)
             (self.policyDraft.member, self.policyDraft.device) = (member, device)
+        })
+    }
+
+    /// Saves the caller's edits to a relay's policy. `then` is given what the relay now holds.
+    @discardableResult
+    func savePolicy(_ changes: [String: MultiplayerJSON], on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: @escaping @MainActor (MultiplayerRelayPolicy) -> Void) -> Task<Void, Never>? {
+        guard !changes.isEmpty else { return nil }
+        return tray?.act("Saving the relay policy…", failing: "Couldn’t save the policy.",
+                         confirmation: "Saved. The policy applies to everyone on this relay.", report: report) { client in
+            then(try await client.scoped(to: server).setRelayPolicy(changes))
         }
     }
 
     @discardableResult
     func setSuspended(_ suspended: Bool, on server: String) -> Task<Void, Never>? {
-        let handle = policyDraft.trimmedMember
-        guard !handle.isEmpty else { return nil }
+        guard tray?.route == .share(server, .policy) else { return nil }
         confirming = nil
+        return setSuspended(suspended, member: policyDraft.trimmedMember, on: server, then: { self.policyDraft.member = "" })
+    }
+
+    /// Suspends a member of a relay, or restores one. The caller asks before suspending. `then`
+    /// runs once it is done.
+    @discardableResult
+    func setSuspended(_ suspended: Bool, member handle: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                      then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        let handle = handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !handle.isEmpty else { return nil }
         let who = handle.multiplayerDisplay
         return tray?.act(suspended ? "Suspending \(who)…" : "Restoring \(who)…",
                          failing: suspended ? "Couldn’t suspend \(who)." : "Couldn’t restore \(who).",
                          confirmation: suspended ? "Suspended \(who). Their devices can’t use this relay until you restore them."
-                                                 : "Restored \(who).") { client in
+                                                 : "Restored \(who).", report: report) { client in
             try await client.scoped(to: server).setSuspended(handle, suspended)
-            self.policyDraft.member = ""
+            then?()
         }
     }
 
     @discardableResult
     func revokeDevice(on server: String) -> Task<Void, Never>? {
-        let device = policyDraft.trimmedDevice
-        guard !device.isEmpty else { return nil }
+        guard tray?.route == .share(server, .policy) else { return nil }
         confirming = nil
+        return revokeDevice(policyDraft.trimmedDevice, on: server, then: { self.policyDraft.device = "" })
+    }
+
+    /// Revokes one device on a relay. The caller asks first. `then` runs once it is revoked.
+    @discardableResult
+    func revokeDevice(_ device: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                      then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        let device = device.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !device.isEmpty else { return nil }
         return tray?.act("Revoking the device…", failing: "Couldn’t revoke the device.",
-                         confirmation: "Revoked. That device must sign in again to use this relay.") { client in
+                         confirmation: "Revoked. That device must sign in again to use this relay.", report: report) { client in
             try await client.scoped(to: server).revokeDevice(device)
-            self.policyDraft.device = ""
+            then?()
         }
     }
 }

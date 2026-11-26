@@ -1050,8 +1050,10 @@ extension MultiplayerClient {
         try await relay("POST", "/v1/workspaces", body: body).firstText("id") ?? ""
     }
 
-    func claim(_ body: MultiplayerJSON, in workspace: String) async throws {
-        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/claims", body: body)
+    /// The new claim's ID, when the relay names it.
+    @discardableResult
+    func claim(_ body: MultiplayerJSON, in workspace: String) async throws -> String {
+        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/claims", body: body).firstText("id") ?? ""
     }
 
     func release(claim: String, in workspace: String) async throws {
@@ -1063,8 +1065,10 @@ extension MultiplayerClient {
             .compactMap(MultiplayerCard.init)
     }
 
-    func createCard(_ body: MultiplayerJSON, in workspace: String) async throws {
-        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/cards", body: body)
+    /// The new card's ID, when the relay names it.
+    @discardableResult
+    func createCard(_ body: MultiplayerJSON, in workspace: String) async throws -> String {
+        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/cards", body: body).firstText("id") ?? ""
     }
 
     func updateCard(_ card: String, in workspace: String, fields: [String: MultiplayerJSON]) async throws {
