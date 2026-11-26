@@ -71,12 +71,15 @@ type followUp struct {
 
 func register[T any](s *mcp.Server, name, desc string, handle func(context.Context, T) (json.RawMessage, error)) {
 	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc}, func(ctx context.Context, _ *mcp.CallToolRequest, in T) (*mcp.CallToolResult, any, error) {
-		data, err := handle(ctx, in)
-		if err != nil {
-			return nil, nil, err
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
+		return textResult(handle(ctx, in))
 	})
+}
+
+func textResult(data json.RawMessage, err error) (*mcp.CallToolResult, any, error) {
+	if err != nil {
+		return nil, nil, err
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
 }
 
 func Run(ctx context.Context, c *localapi.Client) error {
