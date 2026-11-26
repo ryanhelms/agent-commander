@@ -611,11 +611,14 @@ import Testing
 
     /// One row approved and one denied, then a refresh that no longer lists either: for the
     /// network's hold both rows stay with their outcome, in Approvals and in Needs you, neither
-    /// counts down, and every count says nothing waits.
+    /// counts down, and every count says nothing waits. The test ends the hold by hand: a hold on
+    /// the clock runs out before the checks on a slow machine, and the rows are gone.
     @Test func approvedAndDeniedRowsKeepTheirOutcomeForTheHold() async throws {
+        let hold = MultiplayerManualHold()
         let (model, helper) = MultiplayerAnsweredRowTests.model(
             [.approvals: [Self.twoApprovals, MultiplayerAnsweredRowTests.noApprovals],
-             .approve: [MultiplayerShareFixture.empty], .deny: [MultiplayerShareFixture.empty]], hold: .seconds(5))
+             .approve: [MultiplayerShareFixture.empty], .deny: [MultiplayerShareFixture.empty]],
+            hold: MultiplayerShareModel.answeredHold, holdTimer: hold.timer)
         model.open()
         await model.settle()
         defer { model.close() }
@@ -656,6 +659,11 @@ import Testing
         // Leaving the page and coming back changes nothing while the hold lasts.
         state.open(.home)
         #expect(NetworkPagesContent(model: model, state: state).approvalRows.map(\.answer).count == 2)
+
+        // The hold ends, and both rows leave.
+        await hold.end(in: model)
+        #expect(hold.asked == [MultiplayerShareModel.answeredHold, MultiplayerShareModel.answeredHold])
+        #expect(NetworkPagesContent(model: model, state: state).approvalRows.isEmpty && model.share.pendingApprovals.isEmpty)
     }
 
     /// The Threads strip counts the comments its rows count.

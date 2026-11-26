@@ -218,7 +218,10 @@ struct MultiplayerAXNode: CustomStringConvertible {
                     let found = nodes.filter { $0.label == picker }
                     #expect(found.count == 1 && found.first?.value.isEmpty == false, "\(picker)\n\(dump)")
                 }
-                #expect(!nodes.contains { $0.role == "AXMenuButton" }, "\(dump)")
+                // Each menu is one element. A combined menu's role is a menu button on macOS 26 and
+                // a button on macOS 27, so the count is what shows its label is not offered again.
+                let menus = nodes.filter { $0.role == "AXMenuButton" }
+                #expect(menus.allSatisfy { ["Resource", "Friend"].contains($0.label) }, "\(dump)")
             case "directory":
                 #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Directory in Agent Commander" }, "\(dump)")
                 #expect(!nodes.contains { $0.label.contains("sam-agent") }, "\(dump)")
