@@ -93,15 +93,19 @@ type Grant struct {
 	MaxUses   int64        `json:"max_uses"`
 	Used      int64        `json:"used"`
 	Limits    []LimitUsage `json:"limits,omitempty"`
+	// Sources lets the owner mirror each group independently of direct grants.
+	// The empty key names the direct grant.
+	Sources map[string][]string `json:"sources,omitempty"`
 }
 
 func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	rows, err := s.pool.Query(ctx, `SELECT pair.resource,r.owner_id,r.device,pair.grantee,coalesce(p.handle,''),
 		coalesce(a.actions,'{}'),pair.expires_at,pair.max_uses,pair.used,
-		CASE WHEN pair.needs_limits THEN a.limits END
+		CASE WHEN pair.needs_limits THEN a.limits END, CASE WHEN r.owner_id=$1 THEN pair.sources END
 		FROM (
 			SELECT g.resource,g.grantee,max(g.expires_at) AS expires_at,sum(g.max_uses)::bigint AS max_uses,
-				sum(g.used)::bigint AS used,count(*)>1 OR bool_or(g.per_action) AS needs_limits
+				sum(g.used)::bigint AS used,count(*)>1 OR bool_or(g.per_action) AS needs_limits,
+				jsonb_object_agg(g.source,g.actions) AS sources
 			FROM mp_grants g JOIN mp_resources r ON r.id=g.resource
 			WHERE r.owner_id=$1 OR g.grantee=$1 GROUP BY g.resource,g.grantee
 		) pair JOIN mp_resources r ON r.id=pair.resource JOIN mp_profiles p ON p.user_id=pair.grantee
@@ -118,7 +122,7 @@ func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any
 	results := []Grant{}
 	for rows.Next() {
 		var g Grant
-		if err := rows.Scan(&g.Resource, &g.Owner, &g.Device, &g.Grantee, &g.Handle, &g.Actions, &g.ExpiresAt, &g.MaxUses, &g.Used, &g.Limits); err != nil {
+		if err := rows.Scan(&g.Resource, &g.Owner, &g.Device, &g.Grantee, &g.Handle, &g.Actions, &g.ExpiresAt, &g.MaxUses, &g.Used, &g.Limits, &g.Sources); err != nil {
 			return nil, err
 		}
 		results = append(results, g)

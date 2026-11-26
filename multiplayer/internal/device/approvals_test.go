@@ -167,4 +167,34 @@ func TestConsultDecisionsAndAuditAcrossDevices(t *testing.T) {
 	if owner.turns.Load() != 2 {
 		t.Fatalf("want two completed turns, got %d", owner.turns.Load())
 	}
+
+	for _, g := range owner.state(t, ctx).Grants {
+		if g.Resource == "worker" && g.Capability == "agent.ask" {
+			owner.must(t, ctx, "/tray/revoke", input{ID: g.ID}, nil)
+		}
+	}
+	var group control.Group
+	owner.must(t, ctx, "/tray/group-create", input{Name: "Reviewers"}, &group)
+	owner.must(t, ctx, "/tray/grant", input{Resource: "worker", Group: group.ID, Capability: "agent.ask", Approval: "ask", BudgetTokens: 7, MaxUses: 4}, nil)
+	owner.must(t, ctx, "/tray/group-add", input{Group: group.ID, Handle: guest.handle}, nil)
+	owner.state(t, ctx) // Refresh expanded grants after adding the member.
+	groupAsk := submit("group-ask", "agent.ask", question)
+	waitPending(groupAsk)
+	owner.must(t, ctx, "/tray/approve", input{ID: groupAsk}, nil)
+	check(groupAsk, "completed", 7)
+	groupSpent := submit("group-spent", "agent.ask", question)
+	check(groupSpent, "budget_exhausted", 0)
+	if owner.turns.Load() != 3 {
+		t.Fatalf("group budget permitted an extra provider turn: %d", owner.turns.Load())
+	}
+	// The same action can be granted directly with a separate ledger. Once
+	// the direct use is spent, the group budget must still apply.
+	grant("agent.ask", "auto", 1, 0)
+	check(submit("direct-use", "agent.ask", question), "completed", 7)
+	check(submit("back-to-group", "agent.ask", question), "budget_exhausted", 0)
+	owner.must(t, ctx, "/tray/group-remove", input{Group: group.ID, Handle: guest.handle}, nil)
+	owner.state(t, ctx)
+	if _, why := guest.call(t, ctx, "/coordinator/submit", Submit{ID: "after-group-removal", Targets: []Target{{Resource: "worker", Action: "agent.ask", Payload: question}}}); why == "" {
+		t.Fatal("a removed group member could still submit")
+	}
 }

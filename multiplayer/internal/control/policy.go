@@ -52,6 +52,18 @@ func (p Policy) validate() error {
 	return nil
 }
 
+func (s *Service) policy(ctx context.Context, p Principal, _ *http.Request) (any, error) {
+	var current Policy
+	var admin bool
+	err := s.pool.QueryRow(ctx, "SELECT $1=ANY(admin_hashes),"+policyColumns+" FROM mp_membership_policy CROSS JOIN mp_policy", p.EmailHash).
+		Scan(&admin, &current.KnowledgeDefault, &current.KnowledgeWidest, &current.ReputationVisibility,
+			&current.Directory, &current.MaxGrantDays, &current.MaxBudgetTokens, &current.RetentionDays)
+	if err == nil && !admin {
+		return nil, forbidden()
+	}
+	return current, err
+}
+
 func (s *Service) setPolicy(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	var edit json.RawMessage
 	if err := body(r, &edit); err != nil {

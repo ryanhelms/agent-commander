@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
+	"agentcommander.network/pilot/internal/actions"
 	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/identity"
 )
@@ -50,7 +52,7 @@ func TestTrayResourceAndGrantRoundTrip(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, _ *http.Request) {
-		shared := control.Resource{ID: "other-agent", Device: "other-mac", Owner: "bob", Handle: "bob", Kind: "agent", Capabilities: &control.Capabilities{Harness: "codex"}}
+		shared := control.Resource{ID: "other-agent", Device: "other-mac", Owner: "bob", Handle: "bob", Kind: "agent", Capabilities: &control.Capabilities{Harness: "codex"}, Endorsements: []control.Endorsement{{Handle: "sam", Skill: "reviews"}}}
 		json.NewEncoder(w).Encode(map[string]any{"resources": []control.Resource{own, shared}, "directory": []control.DirectoryResource{{Resource: shared}}})
 	})
 	var grants []control.Grant
@@ -134,7 +136,9 @@ func TestTrayResourceAndGrantRoundTrip(t *testing.T) {
 	}
 	if len(status.Resources) != 1 || !reflect.DeepEqual(status.Resources[0].Capabilities, &want) ||
 		len(status.Shared) != 1 || len(status.Directory) != 1 || status.Shared[0].Capabilities == nil || status.Shared[0].Capabilities.Harness != "codex" ||
-		!reflect.DeepEqual(status.Shared[0].Capabilities, status.Directory[0].Capabilities) {
+		!reflect.DeepEqual(status.Shared[0].Capabilities, status.Directory[0].Capabilities) ||
+		!slices.Equal(status.Directory[0].Endorsements, []control.Endorsement{{Handle: "sam", Skill: "reviews"}}) ||
+		!slices.Equal(status.Shared[0].Endorsements, status.Directory[0].Endorsements) {
 		t.Fatalf("status resources: %+v", status)
 	}
 	if len(status.Grants) != 3 || status.Grants[0].Approval != "auto" || status.Grants[0].BudgetTokens != 65 || status.Grants[0].Attribution != "requester" ||
@@ -187,5 +191,106 @@ func TestTrayResourceAndGrantRoundTrip(t *testing.T) {
 	trayCall("grant", edit)
 	if ask := a.policy.Grants[1]; ask.Action != "agent.ask" || ask.ReceiptKey() == ledger {
 		t.Fatalf("a new grant inherited the revoked grant's ledger: %+v", ask)
+	}
+}
+
+func TestTrayHostPublishesEnrolledCapabilities(t *testing.T) {
+	var got control.Resource
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/resources/mac", func(w http.ResponseWriter, r *http.Request) {
+		got = control.Resource{}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+	})
+	dir := t.TempDir()
+	file := filepath.Join(dir, "commands.json")
+	write := func(commands ...actions.HostCommand) {
+		t.Helper()
+		if err := save(file, map[string]any{"commands": commands}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := actions.HostCommand{Name: "lint", Args: []string{"check"}, Dir: dir, Environment: "ios"}
+	second := actions.HostCommand{Name: "test", Args: []string{"test"}, Dir: dir, Environment: "ios"}
+	write(first, second)
+	s := identity.Session{User: "alice", Device: "mac", ExpiresAt: time.Now().Add(time.Hour)}
+	a := &Agent{cfg: Config{Dir: dir, Relay: testRelayURL}, http: &http.Client{Transport: relayTransport{mux}}, creds: credentials{Session: s}}
+	h := a.Handler()
+	_, why := call(t, h, "resource-add", input{ID: "mac", Name: "Mac", Kind: "host", Target: file})
+	if why != "" || got.Capabilities == nil || !slices.Equal(got.Capabilities.Tools, []string{"lint", "test"}) || !slices.Equal(got.Capabilities.Environments, []string{"ios"}) {
+		t.Fatalf("host enrollment: %+v, %s", got.Capabilities, why)
+	}
+	second.Environment = ""
+	write(second)
+	_, why = call(t, h, "resource-update", input{Resource: "mac", Name: "Build Mac"})
+	if why != "" || got.Capabilities == nil || !slices.Equal(got.Capabilities.Tools, []string{"test"}) || len(got.Capabilities.Environments) != 0 {
+		t.Fatalf("host update retained withdrawn capabilities: %+v, %s", got.Capabilities, why)
+	}
+}
+
+func TestTrayGroupGrantsFollowMembership(t *testing.T) {
+	s := identity.Session{User: "owner", Device: "mac", ExpiresAt: time.Now().Add(time.Hour)}
+	mux := http.NewServeMux()
+	peers := []string{"bob"}
+	var limits []control.Limit
+	mux.HandleFunc("PUT /v1/grants/worker/group:team", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Limits []control.Limit }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		limits = body.Limits
+	})
+	mux.HandleFunc("GET /v1/grants", func(w http.ResponseWriter, r *http.Request) {
+		rows := []control.Grant{}
+		for _, peer := range peers {
+			g := control.Grant{Resource: "worker", Device: s.Device, Owner: s.User, Grantee: peer, Handle: peer}
+			for _, l := range limits {
+				g.Actions = append(g.Actions, l.Action)
+				g.Limits = append(g.Limits, control.LimitUsage{Limit: l})
+			}
+			g.Sources = map[string][]string{"team": g.Actions}
+			rows = append(rows, g)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"grants": rows})
+	})
+	a := &Agent{cfg: Config{Dir: t.TempDir(), Relay: testRelayURL}, http: &http.Client{Transport: relayTransport{mux}},
+		creds: credentials{Session: s}, policy: localPolicy{Resources: []actions.Resource{{ID: "worker", Kind: "agent"}}}}
+	h := a.Handler()
+	grant := func(action string, ask string) {
+		t.Helper()
+		_, why := call(t, h, "grant", input{Resource: "worker", Group: "team", Capability: action, Approval: ask, MaxUses: 3, BudgetTokens: 20, Attribution: "requester"})
+		if why != "" {
+			t.Fatal(why)
+		}
+	}
+	grant("agent.ask", "ask")
+	bob := a.policy.Grants
+	if len(bob) != 1 || bob[0].Peer != "bob" || bob[0].Group != "team" || bob[0].Approval != "ask" || bob[0].BudgetTokens != 20 || bob[0].MaxUses != 3 || bob[0].Attribution != "requester" {
+		t.Fatalf("initial expansion: %+v", bob)
+	}
+	askLedger := bob[0].ReceiptKey()
+	grant("agent.handoff", "auto")
+	if len(limits) != 2 || len(a.policy.Grants) != 2 || a.policy.Grants[0].ReceiptKey() != askLedger {
+		t.Fatalf("second action replaced the first grant: %+v", a.policy.Grants)
+	}
+	if err := a.loadPolicy(s.User); err != nil {
+		t.Fatal(err)
+	}
+	peers = []string{"cara"}
+	if _, err := a.readGrants(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	enforced := a.localConfig(s).Grants
+	if len(enforced) != 2 || enforced[0].Peer != "cara" || enforced[1].Peer != "cara" || enforced[0].ReceiptKey() == askLedger {
+		t.Fatalf("membership change after restart: %+v", enforced)
+	}
+	child := control.Child{Addressed: control.Addressed{Resource: "worker", Action: "agent.ask"}, Sender: "cara", GrantGroup: "team"}
+	if !a.needsApproval(child) {
+		t.Fatal("group expansion skipped owner approval")
+	}
+	child.Action = "agent.handoff"
+	if a.needsApproval(child) {
+		t.Fatal("automatic group grant unexpectedly required approval")
 	}
 }

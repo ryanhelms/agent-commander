@@ -8,7 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"time"
+
+	"agentcommander.network/pilot/internal/sharing"
 )
 
 // HostCommand is one command an owner lends to friends.
@@ -43,6 +46,28 @@ func LoadHostCommands(path string) ([]HostCommand, error) {
 		}
 	}
 	return file.Commands, nil
+}
+
+func prepareHost(r Resource) (Resource, error) {
+	commands, err := LoadHostCommands(r.Target)
+	if err != nil {
+		return r, ErrInvalid
+	}
+	caps := sharing.Capabilities{}
+	if r.Capabilities != nil {
+		caps = *r.Capabilities
+	}
+	caps.Tools, caps.Environments = []string{}, []string{}
+	for _, command := range commands {
+		if !slices.Contains(caps.Tools, command.Name) {
+			caps.Tools = append(caps.Tools, command.Name)
+		}
+		if command.Environment != "" && !slices.Contains(caps.Environments, command.Environment) {
+			caps.Environments = append(caps.Environments, command.Environment)
+		}
+	}
+	r.Capabilities = &caps
+	return r, nil
 }
 
 func hostHandler(ctx context.Context, _ Config, r Resource, req Request, _ string, _ bool) (json.RawMessage, error) {

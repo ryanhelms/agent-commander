@@ -49,7 +49,7 @@ func TestWorkspaceClaimsAndBoard(t *testing.T) {
 	const all = "/v1/workspaces"
 	call("cara", "POST", all, in, 404)
 	w := shareResponse[workspace](t, call("alice", "POST", all, in, 200))
-	if w.ID == "" || w.Repository != "repo" || w.Group != group || w.Integration != "queue" {
+	if w.ID == "" || w.OwnerHandle != "alice" || w.Repository != "repo" || w.Group != group || w.Integration != "queue" {
 		t.Fatalf("created workspace: %+v", w)
 	}
 	claims := all + "/" + w.ID + "/claims"
@@ -181,5 +181,9 @@ func TestWorkspaceClaimsAndBoard(t *testing.T) {
 	}
 	if first.code != 200 || second.code != 409 || first.holder == "" || second.holder != first.holder {
 		t.Fatalf("concurrent paths: %+v, %+v", first, second)
+	}
+	call("alice", "PUT", "/v1/profile", map[string]string{"handle": "alice-renamed"}, 200)
+	if row := workspaces("bob")[0]; row.Owner != "alice" || row.OwnerHandle != "alice-renamed" {
+		t.Fatalf("workspace owner after handle change: %+v", row)
 	}
 }

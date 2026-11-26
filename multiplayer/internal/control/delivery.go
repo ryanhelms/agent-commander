@@ -30,6 +30,8 @@ type Child struct {
 	Owner        string          `json:"owner"`
 	Status       string          `json:"status"`
 	Result       json.RawMessage `json:"result,omitempty"`
+	// GrantGroup identifies the source debited by a successful execution claim.
+	GrantGroup string `json:"grantGroup,omitempty"`
 }
 type Submission struct {
 	ID       string  `json:"id"`
@@ -223,6 +225,7 @@ func (s *Service) claim(ctx context.Context, p Principal, r *http.Request) (any,
 			return err
 		}
 		child.Status = "processing"
+		child.GrantGroup = source
 		claimed = true
 		// A final use can settle siblings from other submissions. A later grant
 		// extension cannot revive them, and polling clients can stop waiting.

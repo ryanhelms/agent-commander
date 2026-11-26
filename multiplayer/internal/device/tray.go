@@ -21,6 +21,7 @@ import (
 type input struct {
 	ID            string                `json:"id"`
 	Handle        string                `json:"handle"`
+	Group         string                `json:"group"`
 	Resource      string                `json:"resource"`
 	Capability    string                `json:"capability"`
 	Capabilities  *control.Capabilities `json:"capabilities,omitempty"`
@@ -59,6 +60,13 @@ type input struct {
 	Path          string                `json:"path"`
 	Body          json.RawMessage       `json:"body"`
 	Workspace     string                `json:"workspace"`
+	Goal          string                `json:"goal"`
+	Repository    string                `json:"repository"`
+	Base          string                `json:"base"`
+	Integration   string                `json:"integration"`
+	Key           string                `json:"key"`
+	Holder        string                `json:"holder"`
+	Claim         string                `json:"claim"`
 	Branch        string                `json:"branch"`
 	TestCommand   []string              `json:"testCommand"`
 	Item          json.RawMessage       `json:"item"`
@@ -144,7 +152,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	own, shared := []map[string]any{}, []map[string]any{}
 	kind := map[string]string{}
 	for _, r := range catalog.Resources {
-		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device}
+		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
 		}
@@ -177,9 +185,14 @@ type grantList struct {
 }
 
 func (a *Agent) readGrants(ctx context.Context, s identity.Session) (grantList, error) {
-	// A slower previous refresh must not replace a newer display snapshot.
+	// Serialize snapshots with edits so older membership cannot replace a newer mirror.
 	a.grantReadMu.Lock()
 	defer a.grantReadMu.Unlock()
+	return a.refreshGrants(ctx, s)
+}
+
+// The caller holds grantReadMu.
+func (a *Agent) refreshGrants(ctx context.Context, s identity.Session) (grantList, error) {
 	var grants grantList
 	if err := a.remote(ctx, s, "GET", "/v1/grants", nil, &grants); err != nil {
 		return grants, err
@@ -220,9 +233,11 @@ func (a *Agent) readGrants(ctx context.Context, s identity.Session) (grantList, 
 				ExpiresAt: entry.ExpiresAt.UTC(), MaxUses: entry.MaxUses, Approval: entry.Approval, BudgetTokens: entry.BudgetTokens, Attribution: entry.Attribution})
 		}
 	}
-	if !slices.Equal(grants.rows, a.policy.Published) {
+	mirrored := a.policy.mirrorGroupGrants(s, grants.Grants)
+	if !slices.Equal(grants.rows, a.policy.Published) || !slices.Equal(mirrored, a.policy.Grants) {
 		next := a.policy
 		next.Published = grants.rows
+		next.Grants = mirrored
 		if err := save(a.policyPath(s.User), next); err != nil {
 			return grants, err
 		}
@@ -230,6 +245,40 @@ func (a *Agent) readGrants(ctx context.Context, s identity.Session) (grantList, 
 	}
 	return grants, nil
 }
+
+// A relay confirms which peers belong to each group. Only locally enrolled
+// group policies supply executable actions, limits and approval settings.
+func (p localPolicy) mirrorGroupGrants(s identity.Session, rows []control.Grant) []actions.Grant {
+	var result []actions.Grant
+	previous := make(map[string]string)
+	for _, g := range p.Grants {
+		if g.Group == "" {
+			result = append(result, g)
+		} else {
+			previous[g.ID] = g.UsageID
+		}
+	}
+	for _, row := range rows {
+		if row.Owner != s.User || row.Device != s.Device || row.Grantee == "" || row.Grantee == s.User {
+			continue
+		}
+		for _, template := range p.GroupTemplates {
+			if template.Resource != row.Resource || !slices.Contains(row.Sources[template.Group], template.Action) {
+				continue
+			}
+			g := template
+			g.Peer = row.Grantee
+			g.ID = key(template.ID + "|" + row.Grantee)
+			g.UsageID = previous[g.ID]
+			if g.UsageID == "" {
+				g.UsageID = newID()
+			}
+			result = append(result, g)
+		}
+	}
+	return result
+}
+
 func grantDefaults(g actions.Grant) actions.Grant {
 	if g.Approval == "" {
 		g.Approval = "ask"
@@ -241,18 +290,19 @@ func grantDefaults(g actions.Grant) actions.Grant {
 }
 func grantID(resource, user, action string) string { return key(resource + "|" + user + "|" + action) }
 func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke bool) error {
-	var p localPolicy
-	a.mu.Lock()
-	p = a.policy
-	p.Grants = slices.Clone(p.Grants)
-	a.mu.Unlock()
+	a.grantReadMu.Lock()
+	defer a.grantReadMu.Unlock()
 	var peer control.User
-	published, err := a.readGrants(ctx, s)
+	published, err := a.refreshGrants(ctx, s)
 	if err != nil {
 		return err
 	}
 	resource := in.Resource
 	action := in.Capability
+	group := in.Group
+	if group != "" && (!idPattern.MatchString(group) || in.Handle != "" || revoke) {
+		return errors.New("provide one group or peer handle for the grant")
+	}
 	if revoke {
 		for _, g := range published.Grants {
 			if g.Owner != s.User || g.Device != s.Device {
@@ -260,6 +310,9 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 			}
 			for _, cap := range g.Actions {
 				if grantID(g.Resource, g.Grantee, cap) == in.ID {
+					if g.Sources != nil && !slices.Contains(g.Sources[""], cap) {
+						return errors.New("this grant comes from a group; remove the member to withdraw access")
+					}
 					resource, action, peer = g.Resource, cap, control.User{User: g.Grantee, Handle: g.Handle}
 				}
 			}
@@ -267,7 +320,7 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		if peer.User == "" {
 			return nil
 		}
-	} else {
+	} else if group == "" {
 		if !idPattern.MatchString(in.Handle) {
 			return errors.New("invalid peer handle")
 		}
@@ -275,6 +328,9 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 			return e
 		}
 	}
+	a.mu.Lock()
+	p := a.policy
+	a.mu.Unlock()
 	i := slices.IndexFunc(p.Resources, func(r actions.Resource) bool { return r.ID == resource })
 	if i < 0 || !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
 		return errors.New("unsupported local resource or capability")
@@ -285,17 +341,27 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	for _, g := range published.Grants {
 		if g.Owner == s.User && g.Device == s.Device && g.Grantee == peer.User && g.Resource == resource {
 			current = g.Actions
+			if g.Sources != nil {
+				current = g.Sources[""]
+			}
 			break
 		}
 	}
+	existing := p.Grants
+	target, subject := peer.Handle, peer.User
+	if group != "" {
+		existing = p.GroupTemplates
+		target = "group:" + group
+		subject = target
+	}
 	next := []actions.Grant{}
 	var usageID string
-	for _, g := range p.Grants {
-		if g.Resource != resource || g.Peer != peer.User {
+	for _, g := range existing {
+		if g.Resource != resource || g.Peer != peer.User || g.Group != group {
 			next = append(next, g)
 			continue
 		}
-		if !slices.Contains(current, g.Action) {
+		if group == "" && !slices.Contains(current, g.Action) {
 			continue
 		}
 		if g.Action == action {
@@ -328,20 +394,20 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		if usageID == "" {
 			usageID = newID()
 		}
-		next = append(next, grantDefaults(actions.Grant{ID: grantID(resource, peer.User, action), UsageID: usageID, Peer: peer.User, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit,
+		next = append(next, grantDefaults(actions.Grant{ID: grantID(resource, subject, action), UsageID: usageID, Peer: peer.User, Group: group, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit,
 			Approval: in.Approval, BudgetTokens: in.BudgetTokens, Attribution: in.Attribution}))
 	}
 	// Both sides apply the same per-action policy. Updating a different action
 	// must preserve this capability's remaining uses and expiry.
 	var limits []control.Limit
 	for _, g := range next {
-		if g.Resource == resource && g.Peer == peer.User {
+		if g.Resource == resource && g.Peer == peer.User && g.Group == group {
 			g = grantDefaults(g)
 			limits = append(limits, control.Limit{Action: g.Action, ExpiresAt: g.ExpiresAt, MaxUses: int64(g.MaxUses),
 				Approval: g.Approval, BudgetTokens: int64(g.BudgetTokens), Attribution: g.Attribution})
 		}
 	}
-	path := "/v1/grants/" + url.PathEscape(resource) + "/" + url.PathEscape(peer.Handle)
+	path := "/v1/grants/" + url.PathEscape(resource) + "/" + url.PathEscape(target)
 	persist := func() error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -349,7 +415,13 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 			return errors.New("local identity changed")
 		}
 		updated := a.policy
-		updated.Grants = next
+		if group != "" {
+			updated.GroupTemplates = next
+			// Apply changed limits to existing members even if the next relay read fails.
+			updated.Grants = updated.mirrorGroupGrants(s, published.Grants)
+		} else {
+			updated.Grants = next
+		}
 		if e := save(a.policyPath(s.User), updated); e != nil {
 			return e
 		}
@@ -365,7 +437,13 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	} else if e := a.remote(ctx, s, "PUT", path, map[string]any{"limits": limits}, nil); e != nil {
 		return e
 	}
-	return persist()
+	if err := persist(); err != nil {
+		return err
+	}
+	if group != "" {
+		_, err = a.refreshGrants(ctx, s)
+	}
+	return err
 }
 
 func (a *Agent) publishResource(ctx context.Context, s identity.Session, in input, update bool) (any, error) {
@@ -396,6 +474,12 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 			r.Name = in.Name
 		}
 		r.Capabilities = in.Capabilities.WithDefaults(r.Capabilities)
+		if r.Kind == "host" {
+			var err error
+			if r, err = actions.PrepareResource(ctx, r); err != nil {
+				return nil, err
+			}
+		}
 		if r.Kind == "agent" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
 			// An enrolled target can be edited even while Commander is offline.
 			if info, err := actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, r); err == nil {
@@ -452,6 +536,10 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.startLogin(in.Handle, in.Invite)
 	case "presence":
 		return a.setPresenceMode(ctx, in.Presence)
+	case "relay":
+		if publicInfoRoute(in.Method, in.Path) {
+			return a.teamRelay(ctx, identity.Session{}, in.Method, in.Path, in.Body)
+		}
 	}
 	a.edit.Lock()
 	defer a.edit.Unlock()
@@ -479,6 +567,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
 	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge":
 		return a.teamVerb(ctx, s, verb, in)
+	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "claim", "release", "knowledge":
+		return a.namedTeamRelay(ctx, s, verb, in)
 	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
 		return a.liveVerb(ctx, s, verb, in)
 	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":

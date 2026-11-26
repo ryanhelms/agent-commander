@@ -133,9 +133,7 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 		return nil, e
 	}
 	for _, s := range m.servers {
-		if s.AutoConnect {
-			m.start(s)
-		}
+		m.start(s)
 	}
 	if !c.NoPresence {
 		go m.presenceLoop()
@@ -196,6 +194,15 @@ func NormalizeRelay(raw string) (string, error) {
 }
 
 func (m *Manager) start(s Server) {
+	if s.ID == m.servers[0].ID {
+		if err := migrateQueue(m.cfg.Dir, s.ID); err != nil {
+			m.problems[s.ID] = err.Error()
+			return
+		}
+	}
+	if !s.AutoConnect {
+		return
+	}
 	dir := filepath.Join(m.cfg.Dir, "servers", s.ID)
 	if e := os.MkdirAll(filepath.Dir(dir), 0700); e != nil {
 		m.problems[s.ID] = e.Error()
@@ -613,7 +620,10 @@ func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 	return nil, errors.New("sign in to a server first")
 }
 
-var readOnlyVerbs = map[string]bool{"status": true, "avatar": true, "approvals": true, "audit": true, "me": true, "membership": true}
+var readOnlyVerbs = map[string]bool{
+	"status": true, "avatar": true, "approvals": true, "audit": true, "me": true, "membership": true,
+	"groups": true, "workspaces": true, "knowledge": true, "queue": true,
+}
 
 // Handler serves the tray and coordinator APIs for every server.
 func (m *Manager) Handler() http.Handler {

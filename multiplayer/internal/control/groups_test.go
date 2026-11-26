@@ -58,6 +58,10 @@ func TestGroupsAndExpandedGrants(t *testing.T) {
 	if gs := grants("bob"); len(gs) != 1 || !slices.Equal(gs[0].Actions, []string{"read", "run", "write"}) || gs[0].Limits[0].BudgetTokens != 100 {
 		t.Fatalf("expanded grants: %+v", gs)
 	}
+	if gs := grants("alice"); len(gs) != 1 || !slices.Equal(gs[0].Sources[first], []string{"read"}) ||
+		!slices.Equal(gs[0].Sources[second], []string{"write"}) || !slices.Equal(gs[0].Sources[""], []string{"run"}) {
+		t.Fatalf("owner could not distinguish group expansions from direct grants: %+v", gs)
+	}
 	call("alice", "POST", "/v1/friends/cara", nil, 200)
 	call("cara", "PUT", "/v1/friends/alice", nil, 200)
 	call("alice", "PUT", member(first, "cara"), nil, 200)
@@ -75,9 +79,12 @@ func TestGroupsAndExpandedGrants(t *testing.T) {
 	}
 	submit("bob", "queued", "read")
 	submit("cara", "working", "read")
-	receipt := shareResponse[struct{ Claimed bool }](t, call("alice", "POST", "/v1/children/working/claim", proof, 200))
-	if !receipt.Claimed {
-		t.Fatal("expanded grant did not admit execution")
+	receipt := shareResponse[struct {
+		Claimed bool
+		Child   Child
+	}](t, call("alice", "POST", "/v1/children/working/claim", proof, 200))
+	if !receipt.Claimed || receipt.Child.GrantGroup != first {
+		t.Fatalf("expanded grant execution claim: %+v", receipt)
 	}
 	if gs := grants("bob"); gs[0].Used != 0 {
 		t.Fatal("another member's execution consumed this grant", gs)

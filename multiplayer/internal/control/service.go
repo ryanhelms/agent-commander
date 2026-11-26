@@ -133,7 +133,8 @@ func (s *Service) Handler() http.Handler {
 		"PUT /v1/resources/{id}": s.putResource, "GET /v1/resources": s.resources, "GET /v1/grants": s.grants, "PUT /v1/grants/{resource}/{handle}": s.changeGrant, "DELETE /v1/grants/{resource}/{handle}": s.changeGrant,
 		"POST /v1/access-requests": s.requestAccess, "GET /v1/access-requests": s.accessRequests, "DELETE /v1/access-requests/{id}": s.deleteAccessRequest,
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
-		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership, "PUT /v1/admin/policy": s.setPolicy,
+		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
+		"GET /v1/admin/policy": s.policy, "PUT /v1/admin/policy": s.setPolicy,
 		"POST /v1/invites":     s.createInvite,
 		"POST /v1/submissions": s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
 	}

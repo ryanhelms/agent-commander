@@ -68,7 +68,7 @@ func (a *Agent) needsApproval(c control.Child) bool {
 		return true
 	}
 	for _, g := range a.policy.Grants {
-		if g.Peer == c.Sender && g.Resource == c.Resource && g.Action == c.Action {
+		if g.Peer == c.Sender && g.Group == c.GrantGroup && g.Resource == c.Resource && g.Action == c.Action {
 			return g.Approval != "auto"
 		}
 	}

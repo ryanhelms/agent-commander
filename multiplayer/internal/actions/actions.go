@@ -37,6 +37,7 @@ type Grant struct {
 	// UsageID identifies this issuance across policy edits. Revocation retires it.
 	UsageID   string    `json:"usageId,omitempty"`
 	Peer      string    `json:"peer"`
+	Group     string    `json:"group,omitempty"`
 	Resource  string    `json:"resource"`
 	Action    string    `json:"action"`
 	ExpiresAt time.Time `json:"expiresAt"`
@@ -49,6 +50,7 @@ type Grant struct {
 type Request struct {
 	ID       string          `json:"id"`
 	Peer     string          `json:"peer"`
+	Group    string          `json:"group,omitempty"`
 	Resource string          `json:"resource"`
 	Action   string          `json:"action"`
 	Payload  json.RawMessage `json:"payload"`
@@ -283,7 +285,7 @@ func (g Grant) ReceiptKey() string {
 
 func activeGrant(cfg Config, req Request) (Grant, bool) {
 	for _, g := range cfg.Grants {
-		if g.Peer == req.Peer && g.Resource == req.Resource && g.Action == req.Action && g.ExpiresAt.After(time.Now()) && g.MaxUses >= 0 && g.BudgetTokens >= 0 {
+		if g.Peer == req.Peer && g.Group == req.Group && g.Resource == req.Resource && g.Action == req.Action && g.ExpiresAt.After(time.Now()) && g.MaxUses >= 0 && g.BudgetTokens >= 0 {
 			return g, true
 		}
 	}

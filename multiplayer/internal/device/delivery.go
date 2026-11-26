@@ -404,16 +404,20 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 		return e
 	}
 	payload, verify := a.keys.Open(peer, header(c, "request"), c.Envelope)
-	var claim struct{ Claimed bool }
+	var claim struct {
+		Claimed bool
+		Child   struct{ GrantGroup string }
+	}
 	if e = a.remote(ctx, s, "POST", "/v1/children/"+id+"/claim", proof(l), &claim); e != nil {
 		return e
 	}
 	if !claim.Claimed {
 		return nil
 	}
+	c.GrantGroup = claim.Child.GrantGroup
 	p := claimedRequest{child: c, payload: payload, peer: peer, arrived: time.Now().UTC()}
 	if verify == nil && a.needsApproval(c) {
-		req := actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: payload}
+		req := actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: payload}
 		if errors.Is(actions.CheckBudget(a.localConfig(s), req), actions.ErrBudgetExhausted) {
 			return a.finish(ctx, s, l, p, nil, "budget_exhausted", "")
 		}
@@ -432,7 +436,7 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 	var e error
 	if verify == nil && denial == "" {
 		task, cancel := context.WithDeadline(ctx, c.ExpiresAt)
-		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: p.payload})
+		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload})
 		cancel()
 	}
 	status := "completed"
