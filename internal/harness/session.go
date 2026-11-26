@@ -100,8 +100,12 @@ func (s *sessions) open(ctx context.Context, e Entry, purpose string, argv []str
 	name := purpose + "-" + e.ID
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.running[name]; ok && s.alive(ctx, tmux, name) {
-		return existing, nil
+	if s.alive(ctx, tmux, name) {
+		if existing, ok := s.running[name]; ok {
+			return existing, nil
+		}
+		// The tmux server outlives a service restart, so adopt the session it still holds.
+		return s.track(ctx, tmux, name, e.ID, purpose)
 	}
 	dir := s.env.Home
 	if home := s.env.profileHome(e); home != "" {
@@ -117,6 +121,11 @@ func (s *sessions) open(ctx context.Context, e Entry, purpose string, argv []str
 	}
 	// The cockpit's sheet already names the command, so tmux's own status bar stays off.
 	_ = exec.CommandContext(ctx, tmux, "-N", "-L", s.label, "set-option", "-t", "="+name+":", "status", "off").Run()
+	return s.track(ctx, tmux, name, e.ID, purpose)
+}
+
+// track records a live session and re-checks its harness when it ends. The caller holds s.mu.
+func (s *sessions) track(ctx context.Context, tmux, name, id, purpose string) (Attachment, error) {
 	raw, err := exec.CommandContext(ctx, tmux, "-N", "-L", s.label, "display-message", "-p", "-t", "="+name+":", "#{session_id} #{socket_path}").Output()
 	if err != nil {
 		return Attachment{}, fmt.Errorf("could not read the %s session: %w", purpose, err)
@@ -126,9 +135,9 @@ func (s *sessions) open(ctx context.Context, e Entry, purpose string, argv []str
 	if !filepath.IsAbs(socket) || !tmuxSessionID.MatchString(session) {
 		return Attachment{}, errors.New("tmux returned an unexpected session")
 	}
-	a := Attachment{HarnessID: e.ID, Purpose: purpose, SocketPath: socket, SessionID: session}
+	a := Attachment{HarnessID: id, Purpose: purpose, SocketPath: socket, SessionID: session}
 	s.running[name] = a
-	go s.awaitEnd(tmux, name, e.ID)
+	go s.awaitEnd(tmux, name, id)
 	return a, nil
 }
 

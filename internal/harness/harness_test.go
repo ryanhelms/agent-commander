@@ -307,3 +307,25 @@ func TestMonitorReportsRunBlockerAndKeepsSettings(t *testing.T) {
 		t.Fatal("an older probe turned the harness back on")
 	}
 }
+
+func TestLoginSessionIsAdoptedAfterAServiceRestart(t *testing.T) {
+	env := DefaultEnv()
+	state := t.TempDir()
+	first := newSessions(state, env, func(string) {})
+	tmux, err := first.tmux()
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer exec.Command(tmux, "-L", first.label, "kill-server").Run()
+	e := Entry{ID: "fixture", Name: "Fixture"}
+	a, err := first.open(ctx, e, "login", []string{"/bin/echo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newSessions(state, env, func(string) {}).open(ctx, e, "login", []string{"/bin/echo"})
+	if err != nil || b != a {
+		t.Fatalf("after restart = %+v, %v; want %+v", b, err, a)
+	}
+}
