@@ -224,8 +224,9 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Endorsement chips | Skills people vouch for as `working` badges with a seal, each with "×n" when more than one person did. The first four show, then "+n". |
 | Group row | A group: its name, its member count, the first few avatars, and an Owner (`focus`) or Member badge. |
 | Markdown block | Text an agent or friend wrote in Markdown, in the tray's type: headings, paragraphs, lists, fenced code on a well, and rules, with bold, italic, inline code and links. Nothing is fetched; an image stays as its source text. |
-| Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. |
-| Device row | A paired device: a mark, its name, "paired … , ends …" in mono, and Revoke (`danger`), which opens an inline confirm. |
+| Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. The frame clips the system focus ring, so the copy cell draws an inset focus ring. |
+| Inset focus ring | For a control whose frame clips the system focus ring, such as a cell joined to its neighbours: 2 pt of `focus` inside the control's own edge while it has keyboard focus. The control stays a native button. |
+| Device row | A paired device: a mark, its name, "paired … , ends …" in mono, then Rename and Revoke (`danger`). Rename opens a well under the row with a "Device name" field box holding the name, then Cancel and a primary Save name; Return saves and Escape cancels. Revoke opens an inline confirm. One of the two is open at a time, and the row's verbs hide while it is. |
 
 ### Organisms (in the tray today)
 
@@ -260,13 +261,18 @@ Increment 5 (teams) adds:
 - **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note.
 
 Increment 6 (the tray's Remote band, on the Network tab) adds:
-- **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device.
+- **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device. The device agent names its unused code, so a tray that reopens shows the same QR code, code, link and countdown.
+- **Keyboard:** the tray's scrolling page and the Remote band are focus sections. Tab visits every control in one before it moves on, including rows scrolled out of sight, and reaches the footer last.
 - **Motion:** the QR code prints once, the block and rows arrive, the countdown drains, and a copy cell ticks. A device that pairs ends the code and the block leaves.
 
 Increment 6 (the Remote web page) adds:
 - **Touch scale:** controls are 44 px high, type about 15% larger (body 15, name 15, sub 13.5, heading 13, state 12, figure 17, trace 12.5), and the header icon action is a 52 px full-height cell split off by a hairline.
 - **Decision row, phone form:** lamp, title, a countdown on the right, summary, the metadata line with the swatch edge, a 2 px drain line, then Deny (danger) and Approve (primary) as two joined 44 px cells. Under one minute the countdown and line turn `failure`.
 - **Pairing steps:** numbered hairline rows on the not-paired screen.
+- **Watch band:** the workers friends let you watch, each with an eye mark, its name, the owner's handle, the metadata line and a full-width Watch. It is the way into the watch view without a hand-off.
+- **Band action:** a band's one action sits at the trailing edge of its heading as a text verb in `focus` with a 44 px hit area. Activity has Mark seen while something is unseen; a refusal shows under the heading in `failure`.
+- **Stopped watch:** when the Mac refuses a watch, the view stops reading, the footer says Stopped, and the load note has a full-width Try again under it. It keeps retrying only while the Mac can't be reached.
+- **Sentences:** a lead-in and a device's reason are joined as two sentences, each with a capital and a closing mark, as in the tray. The alert band holds one sentence; the time of the last good read is in the header's state label.
 - **Motion:** `arrive` (0.18 s, 6 px travel, ease-out) for new rows and trace lines, `tick` for a changing figure, and a drain line that moves linearly each second. With reduced motion these become fades, and pulses, spinners and the drain stop.
 
 ### What the main window reuses

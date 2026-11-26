@@ -35,7 +35,8 @@ handle or that account ID under `handle`.
 
 Increment 6: Remote starts off with two paired devices. `remote-enable` serves nothing: it answers a
 tailnet-shaped address with a new eight-character code that lasts ten minutes. `remote-devices`,
-`remote-revoke` and `remote-disable` keep their state in the scratch file. These verbs name no
+`remote-revoke`, `remote-rename` and `remote-disable` keep their state in the scratch file, and
+`remote-devices` returns `pairing` while the code is unused and under ten minutes old. These verbs name no
 server and refuse any field they don't know, as the device agent does.
 
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
@@ -534,7 +535,8 @@ REMOTE_URL = "http://100.64.0.7:8780"
 
 def remote(state, verb, request):
     """Increment 6: the web view's switch, pairing code and paired devices. Nothing is served."""
-    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"}}.get(verb, set())
+    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"},
+               "remote-rename": {"device", "name"}}.get(verb, set())
     if set(request) - allowed:
         raise ValueError("invalid request")
     if "remote" not in state:
@@ -543,11 +545,12 @@ def remote(state, verb, request):
     if verb == "remote-enable":
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
         code = "".join(alphabet[byte % 32] for byte in os.urandom(8))
-        held.update(running=True, url=REMOTE_URL, code=code)
+        held.update(running=True, url=REMOTE_URL, code=code, expiresAt=now(10))
         save(state)
-        return {"url": REMOTE_URL, "code": code, "expiresAt": now(10), "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
+        return {"url": REMOTE_URL, "code": code, "expiresAt": held["expiresAt"],
+                "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
     if verb == "remote-disable":
-        held.update(running=False, url="", code="")
+        held.update(running=False, url="", code="", expiresAt="")
         save(state)
         return {}
     if verb == "remote-revoke":
@@ -557,7 +560,22 @@ def remote(state, verb, request):
         held["devices"] = kept
         save(state)
         return {}
-    return {"devices": held["devices"], "url": held["url"], "running": held["running"]}
+    if verb == "remote-rename":
+        name = str(request.get("name", "")).strip()
+        if not name or len(name.encode()) > 64:
+            raise ValueError("give the device a name of 1–64 characters")
+        row = next((row for row in held["devices"] if row["id"] == request.get("device")), None)
+        if row is None:
+            raise ValueError("unknown device")
+        row["name"] = name
+        save(state)
+        return {}
+    listed = {"devices": held["devices"], "url": held["url"], "running": held["running"]}
+    # The code on show, so a tray that restarts can draw the same QR code. Timestamps sort as text.
+    if held["running"] and held.get("code") and held.get("expiresAt", "") > now():
+        listed["pairing"] = {"code": held["code"], "expiresAt": held["expiresAt"],
+                             "pairURL": "%s/pair?code=%s" % (held["url"], held["code"])}
+    return listed
 
 
 def sharing(state, verb, request):
@@ -1041,7 +1059,7 @@ def probe(request):
 
 def run(verb, request):
     state = load()
-    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke"):
+    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename"):
         return remote(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)

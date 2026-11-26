@@ -83,6 +83,12 @@ dl{margin:0}
 .band-head h2{font:600 13px/1.2 var(--mono);color:var(--secondary)}
 .band-head .count{font:600 13px/1.2 var(--mono)}
 .band-head .count.hot{background:var(--attention);color:var(--on-accent);padding:1px 5px;border-radius:1px}
+/* A band's one action: a quiet text verb whose hit area is the full 44 px. */
+.head-btn{margin:-14px calc(-1 * var(--inset)) -13px auto;min-height:var(--touch);padding:0 var(--inset);background:none;border:0;
+  font:600 13px/1 var(--mono);color:var(--focus);cursor:pointer;transition:opacity var(--fast) ease-out}
+.head-btn:active{opacity:.6}
+.head-btn[disabled]{color:var(--secondary);cursor:default}
+.band>.fail{padding:0 var(--inset) 10px;font-size:13px;color:var(--failure)}
 .rows>li{border-top:1px solid var(--hair);padding:11px var(--inset) 12px}
 .arrive{animation:arrive var(--standard) ease-out}
 .leave{opacity:0;transition:opacity var(--standard) ease-out}
@@ -90,6 +96,9 @@ dl{margin:0}
 /* Load note: never a blank region */
 .note{border-top:1px solid var(--hair);padding:12px var(--inset) 14px;font-size:13.5px;color:var(--secondary);display:flex;gap:9px;align-items:flex-start}
 .note .lamp{margin-top:5px}
+.note-act{padding:0 var(--inset) 14px}
+.note-act .btn{width:100%}
+.mark svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.1}
 .alert{border-bottom:1px solid color-mix(in srgb,var(--failure) 45%,transparent);background:color-mix(in srgb,var(--failure) 12%,transparent);
   padding:10px var(--inset);font-size:13.5px;display:flex;gap:9px;align-items:flex-start}
 .alert .lamp{margin-top:5px}
@@ -197,8 +206,14 @@ dl{margin:0}
       <div class="band-head"><h2 id="h-hand">Hand-offs</h2><span class="count" id="c-hand"></span></div>
       <div id="hand"></div>
     </section>
+    <section class="band" aria-labelledby="h-can">
+      <div class="band-head"><h2 id="h-can">Watch</h2><span class="count" id="c-can"></span></div>
+      <div id="can"></div>
+    </section>
     <section class="band" aria-labelledby="h-act">
-      <div class="band-head"><h2 id="h-act">Activity</h2><span class="count" id="c-act"></span></div>
+      <div class="band-head"><h2 id="h-act">Activity</h2><span class="count" id="c-act"></span>
+        <button class="head-btn" id="seen" type="button" hidden>Mark seen</button></div>
+      <p class="fail" id="seen-fail" role="alert" hidden></p>
       <div id="act"></div>
     </section>
     <section class="band" aria-labelledby="h-srv">
@@ -271,11 +286,26 @@ function when(at){var d=new Date(at),n=new Date();if(isNaN(d))return '';
 function swatch(id){var x=2166136261,i;id=String(id||'');for(i=0;i<id.length;i++){x^=id.charCodeAt(i);x=Math.imul(x,16777619)}return 'var(--sw'+((x>>>0)%4)+')'}
 function cut(s){s=String(s||'');return s.length>18?s.slice(0,10)+'…'+s.slice(-6):s}
 
+/* One reason as a sentence, as the tray writes it (MultiplayerSentence): no transport prefix, a
+   capital first letter unless the first word is a name, path or command, and a closing mark. */
+function sentence(t){
+  t=String(t==null?'':t).trim();
+  var m=/^relay HTTP \d{3}:\s*/.exec(t);if(m&&m[0].length<t.length)t=t.slice(m[0].length);
+  if(!t)return '';
+  var first=t.charAt(0),word=t.split(/\s/)[0];
+  if(first!==first.toUpperCase()&&!/[\/\\_.:=@\-0-9]/.test(word.slice(0,-1)))t=first.toUpperCase()+t.slice(1);
+  var last=t.slice(-1),inner=t.slice(-2,-1);
+  if('.!?…'.indexOf(last)<0&&!(')”"’'.indexOf(last)>=0&&inner&&'.!?…'.indexOf(inner)>=0))t+='.';
+  return t;
+}
+function join(lead,reason){return [sentence(lead),sentence(reason)].filter(Boolean).join(' ')}
+
 /* API. Every reply is {ok, data} or {ok:false, error}. */
 function Unpaired(){this.unpaired=true}
 function Offline(){this.offline=true;this.message="Can't reach your Mac."}
-function api(path,post){
-  return fetch(path,{method:post?'POST':'GET',headers:post?{'X-Commander-Remote':'1'}:{},credentials:'same-origin',cache:'no-store'})
+function api(path,post,body){
+  var head=post?{'X-Commander-Remote':'1'}:{};if(body)head['Content-Type']='application/json';
+  return fetch(path,{method:post?'POST':'GET',headers:head,body:body?JSON.stringify(body):undefined,credentials:'same-origin',cache:'no-store'})
     .catch(function(){throw new Offline()})
     .then(function(r){return r.json().catch(function(){return null}).then(function(j){
       if(r.status===401||(j&&j.error==='not paired'))throw new Unpaired();
@@ -284,7 +314,7 @@ function api(path,post){
     })});
 }
 
-var S={servers:null,approvals:null,activity:null,handoffs:null,err:{},first:true,read:null,names:{}};
+var S={servers:null,approvals:null,activity:null,handoffs:null,watchable:null,err:{},first:true,read:null,names:{}};
 var view='home',timer=null,slow=0,busy=false;
 
 /* Views */
@@ -339,14 +369,14 @@ function decide(a,el,verb){
   el.dataset.held='1';
   api('/api/approvals/'+encodeURIComponent(a.server)+'/'+encodeURIComponent(ap.id)+'/'+verb,true).then(function(){
     var word=verb==='approve'?'Approved':'Denied';
-    el.querySelector('.verbs').replaceWith(h('div',{class:'outcome'},stateLabel(verb==='approve'?'on':'off',word,verb==='approve'?'working':null)));
+    el.querySelector('.verbs').replaceWith(h('div',{class:'outcome'},verb==='approve'?stateLabel('on',word,'working'):stateLabel('error',word,'failure')));
     el.querySelector('.drain').remove();el.querySelector('.left').textContent='';
     $('announce').textContent=word+': '+needTitle(ap)+'.';
     setTimeout(function(){el.classList.add('leave');setTimeout(function(){delete needEls[needKey(a)];el.remove();refresh()},200)},1100);
   },function(e){
     if(e.unpaired)return unpaired();
     delete el.dataset.held;btns.forEach(function(b){b.disabled=false});pressed.textContent=was;
-    el.append(h('p',{class:'fail',role:'alert',text:(verb==='approve'?"Couldn't approve. ":"Couldn't deny. ")+e.message}));
+    el.append(h('p',{class:'fail',role:'alert',text:join(verb==='approve'?"Couldn't approve":"Couldn't deny",e.message)}));
   });
 }
 function needRow(a){
@@ -384,7 +414,7 @@ function renderNeeds(){
   if(!list){
     c.textContent='';c.className='count';
     host.append(h('li',{class:'note'},lamp(S.err.overview?'error':'waiting'),
-      h('span',{text:S.err.overview?"Couldn't read approvals. "+S.err.overview:'Reading approvals from your Mac.'})));
+      h('span',{text:S.err.overview?join("Couldn't read approvals",S.err.overview):'Reading approvals from your Mac.'})));
     return;
   }
   list.forEach(function(a){
@@ -415,7 +445,7 @@ function renderHand(){
   var list=handoffList();
   $('c-hand').textContent=list?list.length:'';
   region('hand',JSON.stringify([list,S.err.handoffs,S.names]),function(){
-    if(!list)return note(S.err.handoffs?'error':'waiting',S.err.handoffs?"Couldn't read hand-offs. "+S.err.handoffs:'Reading hand-offs from each server.');
+    if(!list)return note(S.err.handoffs?'error':'waiting',S.err.handoffs?join("Couldn't read hand-offs",S.err.handoffs):'Reading hand-offs from each server.');
     if(!list.length)return note('off','No hand-offs yet. Work you hand to a friend’s agent shows up here.');
     return h('ul',{class:'rows'},list.map(function(x){
       var li=h('li',{class:'with-mark'},
@@ -433,12 +463,54 @@ function renderHand(){
     }));
   });
 }
+/* Workers friends let you watch: the way into Watch without a hand-off. */
+var EYE='<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M.8 5S2.3 2 5 2s4.2 3 4.2 3S7.7 8 5 8 .8 5 .8 5Z"/><circle cx="5" cy="5" r="1.2"/></svg>';
+function watchName(server,resource){
+  var hit=(S.watchable||[]).filter(function(x){return x&&x.server===server&&x.resource&&x.resource.id===resource})[0];
+  return hit&&hit.resource.name||resource;
+}
+function renderCan(){
+  var list=S.watchable;
+  $('c-can').textContent=list?list.length:'';
+  region('can',JSON.stringify([list,S.err.watchable,S.names]),function(){
+    if(!list)return note(S.err.watchable?'error':'waiting',S.err.watchable?join("Couldn't read what you can watch",S.err.watchable):'Reading the workers you can watch.');
+    if(!list.length)return note('off','Nothing to watch yet. A friend’s worker shows up here once they share Watch with you.');
+    return h('ul',{class:'rows'},list.map(function(x){
+      var r=x.resource||{},who=r.handle||cut(r.owner),name=r.name||r.id,mark=h('span',{class:'mark','aria-hidden':'true'});
+      mark.innerHTML=EYE;
+      var li=h('li',{class:'with-mark'},mark,
+        h('div',{class:'body'},
+          h('div',{class:'row-top'},h('span',{class:'name',text:name}),who?h('span',{class:'time',text:'@'+String(who).replace(/^@/,'')}):null),
+          h('div',{class:'meta'},
+            h('span',{class:'srv',text:S.names[x.server]||x.server}),
+            r.kind?h('span',{class:'badge',text:r.kind}):null,
+            r.id&&r.id!==name?h('span',{class:'chip'},h('span',{text:r.id})):null),
+          h('div',{class:'verbs one'},h('button',{class:'btn',type:'button',text:'Watch','aria-label':'Watch '+name,
+            onclick:function(){location.hash='#watch/'+encodeURIComponent(x.server)+'/'+encodeURIComponent(r.id)}}))));
+      li.style.setProperty('--sw',swatch(x.server));return li;
+    }));
+  });
+}
 var KIND={'approval.pending':'approval','person':'person','request':'request'};
+var marking=false;
+function markSeen(){
+  var a=S.activity,btn=$('seen'),fail=$('seen-fail');
+  if(!a||!a.cursor||marking)return;
+  marking=true;btn.disabled=true;btn.textContent='Marking…';fail.hidden=true;
+  api('/api/activity/seen',true,{cursor:a.cursor}).then(function(){
+    marking=false;if(S.activity)S.activity.unseen=0;
+    $('announce').textContent='Activity marked seen.';render();refresh();
+  },function(e){
+    marking=false;if(e.unpaired)return unpaired();
+    fail.textContent=join("Couldn't mark activity seen",e.message);fail.hidden=false;renderAct();
+  });
+}
 function renderAct(){
-  var a=S.activity,ev=a&&a.events||[];
+  var a=S.activity,ev=a&&a.events||[],btn=$('seen');
   $('c-act').textContent=a?ev.length:'';
+  if(!marking){btn.hidden=!(a&&a.unseen>0&&a.cursor);btn.disabled=false;btn.textContent='Mark seen'}
   region('act',JSON.stringify([a&&ev.slice(0,40),S.err.activity,S.names]),function(){
-    if(!a)return note(S.err.activity?'error':'waiting',S.err.activity?"Couldn't read activity. "+S.err.activity:'Reading activity from your Mac.');
+    if(!a)return note(S.err.activity?'error':'waiting',S.err.activity?join("Couldn't read activity",S.err.activity):'Reading activity from your Mac.');
     if(!ev.length)return note('off','No activity yet. Requests and friends coming online show up here.');
     return h('ul',{class:'rows'},ev.slice(0,40).map(function(e){
       var li=h('li',null,
@@ -457,7 +529,7 @@ var SRV={online:['on','Online','working'],connecting:['waiting','Connecting','at
 function renderSrv(){
   var sv=S.servers;$('c-srv').textContent=sv?sv.length:'';
   region('srv',JSON.stringify([sv,S.err.overview]),function(){
-    if(!sv)return note(S.err.overview?'error':'waiting',S.err.overview?"Couldn't read servers. "+S.err.overview:'Reading servers from your Mac.');
+    if(!sv)return note(S.err.overview?'error':'waiting',S.err.overview?join("Couldn't read servers",S.err.overview):'Reading servers from your Mac.');
     if(!sv.length)return note('off','No servers yet. Add one from the tray on your Mac.');
     return h('ul',{class:'rows'},sv.map(function(s){
       var m=SRV[s.state]||['unknown',s.state||'Unknown',null],bad=s.state==='certChanged';
@@ -476,25 +548,28 @@ function renderSrv(){
 
 function renderLink(offline){
   var el=$('link');el.textContent='';
-  if(offline)el.append(lamp('error'),h('span',{class:'t-failure',text:'No answer from your Mac'}));
+  if(offline)el.append(lamp('error'),h('span',{class:'t-failure',text:S.read?'No answer, last read '+clock(S.read,true):'No answer from your Mac'}));
   else el.append(lamp('on',true),h('span',{text:'Live, read '+clock(S.read,true)}));
   $('alert').hidden=!offline;
-  if(offline)$('alert-text').textContent="Can't reach your Mac. Check that this phone is on the tailnet and Remote is on in the tray. Trying again every 5 s."+(S.read?' Showing what was read at '+clock(S.read,true)+'.':'');
+  if(offline)$('alert-text').textContent="Can't reach your Mac: check that this phone is on the tailnet and Remote is on in the tray.";
 }
-function render(){renderStrip();renderNeeds();renderHand();renderAct();renderSrv()}
+function render(){renderStrip();renderNeeds();renderHand();renderCan();renderAct();renderSrv()}
 
-/* Polling: overview and activity every 5 s, hand-offs every 15 s (each row costs the Mac a relay read). */
+/* Polling: overview and activity every 5 s; hand-offs and the watch list every 15 s (each costs the Mac a relay read). */
+function takeOverview(d){S.err.overview=null;S.servers=d.servers||[];S.approvals=d.approvals||[];
+  S.names={};S.servers.forEach(function(s){S.names[s.id]=s.name||s.url||s.id})}
 function refresh(force){
   clearTimeout(timer);if(view!=='home'||busy)return;
   busy=true;$('refresh').classList.add('turn');
   var gone=false,offline=false;
   function fail(key){return function(e){if(e.unpaired)gone=true;else{if(e.offline)offline=true;S.err[key]=e.message}}}
   var jobs=[
-    api('/api/overview').then(function(d){S.err.overview=null;S.servers=d.servers||[];S.approvals=d.approvals||[];
-      S.names={};S.servers.forEach(function(s){S.names[s.id]=s.name||s.url||s.id})},fail('overview')),
+    api('/api/overview').then(takeOverview,fail('overview')),
     api('/api/activity').then(function(d){S.err.activity=null;S.activity=d},fail('activity'))
   ];
-  if(force===true||!S.handoffs||slow++%3===0)jobs.push(api('/api/handoffs').then(function(d){S.err.handoffs=null;S.handoffs=d||{}},fail('handoffs')));
+  if(force===true||!S.handoffs||!S.watchable||slow++%3===0)jobs.push(
+    api('/api/handoffs').then(function(d){S.err.handoffs=null;S.handoffs=d||{}},fail('handoffs')),
+    api('/api/watchable').then(function(d){S.err.watchable=null;S.watchable=d&&d.resources||[]},fail('watchable')));
   Promise.all(jobs).then(function(){
     busy=false;$('refresh').classList.remove('turn');
     if(gone)return unpaired();
@@ -513,16 +588,39 @@ function watchReadouts(w){
   readout(st,'w-lines','Lines',''+w.lines,{});
   readout(st,'w-read','Last read',w.read?clock(w.read,true):'–',{text:true});
 }
-function watchNote(kind,text){var n=$('w-note');n.textContent='';if(text)n.append(note(kind,text))}
+function watchNote(kind,text,retry){
+  var n=$('w-note');n.textContent='';if(!text)return;
+  n.append(note(kind,text));
+  if(retry)n.append(h('div',{class:'note-act'},h('button',{class:'btn',type:'button',text:'Try again',onclick:retry})));
+}
+/* A refusal doesn't change by itself: stop asking and leave the next try to the person. */
+function haltWatch(w,text){
+  clearTimeout(w.timer);w.halted=true;
+  $('w-spin').hidden=true;$('w-foot').textContent='Stopped';
+  watchNote('error',text,function(){
+    w.halted=false;w.misses=0;$('w-spin').hidden=false;$('w-foot').textContent='every 2 s';
+    watchNote('waiting','Reading this worker’s output through your Mac.');poll(w);
+  });
+  $('announce').textContent=text;
+}
+function watchHead(w){
+  $('w-title').textContent=watchName(w.server,w.resource);
+  var sub=$('w-sub');sub.textContent='';var sw=h('i',{class:'swatch','aria-hidden':'true'});sw.style.setProperty('--sw',swatch(w.server));
+  /* Until the overview has been read the server's name isn't known. Its ID is never shown in its place. */
+  sub.append(sw,h('span',{text:S.names[w.server]||(S.servers?'Unknown server':'Reading the server’s name')}));
+}
 function poll(w){
-  if(!w.open)return;
+  if(!w.open||w.halted)return;
   api('/api/watch/'+encodeURIComponent(w.server)+'/'+encodeURIComponent(w.resource)+'?after='+encodeURIComponent(w.cursor)).then(function(d){
     if(!w.open)return;
     /* The route returns the request's receipt row; the watch page is in its value. */
     var v=(d&&(d.value||d.result))||d||{},st=d&&d.status;
+    w.misses=0;
     if(st&&/^(denied|failed|expired|rejected|error)$/.test(st)){
-      watchNote('error','The owner’s device answered “'+st+'”. Watching needs a grant for agent.watch on this worker.');
-    }else if(!v.events&&st&&st!=='completed'){
+      watchReadouts(w);
+      return haltWatch(w,'The owner’s device answered “'+st+'”, so watching needs a grant for agent.watch on this worker.');
+    }
+    if(!v.events&&st&&st!=='completed'){
       watchNote('waiting','Waiting for the owner’s device to answer ('+st+').');
     }else{
       var ev=v.events||[],trace=$('w-trace'),stick=window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-80;
@@ -540,19 +638,30 @@ function poll(w){
     $('w-foot').textContent='every 2 s';$('w-spin').hidden=false;watchReadouts(w);
   },function(e){
     if(!w.open)return;if(e.unpaired)return unpaired();
-    $('w-spin').hidden=true;$('w-foot').textContent='trying again every 2 s';
-    watchNote('error',e.offline?"Can't reach your Mac. Check that this phone is on the tailnet.":"Couldn't read this worker. "+e.message);
-  }).then(function(){if(w.open&&!document.hidden)w.timer=setTimeout(function(){poll(w)},2000)});
+    if(e.offline){
+      $('w-spin').hidden=true;$('w-foot').textContent='trying again every 2 s';
+      return watchNote('error',"Can't reach your Mac: check that this phone is on the tailnet.");
+    }
+    /* The Mac answered with a refusal. Before any output that is final; mid-stream, three in a row are. */
+    w.misses=(w.misses||0)+1;
+    var text=join("Couldn't read this worker",e.message);
+    if(!w.read||w.misses>=3)return haltWatch(w,text);
+    $('w-spin').hidden=true;$('w-foot').textContent='trying again every 2 s';watchNote('error',text);
+  }).then(function(){if(w.open&&!w.halted&&!document.hidden)w.timer=setTimeout(function(){poll(w)},2000)});
 }
 function openWatch(server,resource){
   stopWatch();clearTimeout(timer);
-  W={server:server,resource:resource,cursor:'',lines:0,state:'',read:null,open:true};
-  $('w-title').textContent=resource;
-  var sub=$('w-sub');sub.textContent='';var sw=h('i',{class:'swatch','aria-hidden':'true'});sw.style.setProperty('--sw',swatch(server));
-  sub.append(sw,h('span',{text:S.names[server]||server}));
+  var w=W={server:server,resource:resource,cursor:'',lines:0,state:'',read:null,open:true,halted:false,misses:0};
+  watchHead(w);
   $('w-trace').textContent='';['ro-w-state','ro-w-lines','ro-w-read'].forEach(function(id){delete lastFig[id]});
-  watchReadouts(W);watchNote('waiting','Reading this worker’s output through your Mac.');
-  show('watch');$('w-title').focus();poll(W);
+  $('w-spin').hidden=false;$('w-foot').textContent='every 2 s';
+  watchReadouts(w);watchNote('waiting','Reading this worker’s output through your Mac.');
+  show('watch');$('w-title').focus();poll(w);
+  /* Opened by its link, the page has read nothing yet: the overview has the server's name. */
+  if(!S.servers)api('/api/overview').then(function(d){takeOverview(d);if(W===w)watchHead(w)},function(e){
+    if(e.unpaired)unpaired();else if(W===w&&!S.names[server])$('w-sub').lastChild.textContent='Server name not read';
+  });
+  if(!S.watchable)api('/api/watchable').then(function(d){S.watchable=d&&d.resources||[];if(W===w)watchHead(w)},function(){});
 }
 function route(){
   if(view==='unpaired')return;
@@ -562,12 +671,13 @@ function route(){
 }
 
 $('refresh').addEventListener('click',function(){refresh(true)});
+$('seen').addEventListener('click',markSeen);
 $('back').addEventListener('click',function(){location.hash=''});
 $('recheck').addEventListener('click',function(){view='home';route()});
 window.addEventListener('hashchange',route);
 document.addEventListener('visibilitychange',function(){
   if(document.hidden)return;
-  if(view==='home')refresh();else if(W){clearTimeout(W.timer);poll(W)}
+  if(view==='home')refresh();else if(W&&!W.halted){clearTimeout(W.timer);poll(W)}
 });
 setInterval(countdowns,1000);
 render();route();
