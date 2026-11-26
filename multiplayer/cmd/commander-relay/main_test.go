@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +16,17 @@ import (
 	"agentcommander.network/pilot/internal/testpilot"
 	"github.com/nats-io/nats.go"
 )
+
+func TestEdgeConfigArguments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edge.json")
+	for _, args := range [][]string{{path}, {"-config", path}} {
+		err := run(t.Context(), args)
+		var openErr *os.PathError
+		if !errors.As(err, &openErr) || openErr.Path != path || !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("run(%q) should read %s, got %v", args, path, err)
+		}
+	}
+}
 
 func TestTwoEdgeNetwork(t *testing.T) {
 	p := testpilot.Start(t)

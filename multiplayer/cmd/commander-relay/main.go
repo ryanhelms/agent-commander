@@ -201,13 +201,34 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 	if err != nil {
 		return err
 	}
-	httpClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}}}
+	httpClient := issuerClient(ca)
 	defer httpClient.CloseIdleConnections()
-	auth, err := identity.New(startup, pool, identity.Config{AllowedEmails: cfg.AllowedEmails, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest})
+	return serveRelay(ctx, listen, cert, pool, nc, relaySettings{
+		edge: cfg.Edge, replicas: cfg.Replicas, mode: "edge", name: cfg.Edge,
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
+	})
+}
+
+func issuerClient(ca *x509.CertPool) *http.Client {
+	return &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: ca}}}
+}
+
+// Both deployments use the same identity, control store and dispatcher. Only
+// the owner and transport of the PostgreSQL and NATS connections differ.
+type relaySettings struct {
+	edge, mode, name string
+	replicas         int
+	identity         identity.Config
+}
+
+func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, pool *pgxpool.Pool, nc *nats.Conn, cfg relaySettings) error {
+	startup, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	auth, err := identity.New(startup, pool, cfg.identity)
 	if err != nil {
 		return errors.New("cannot initialize device identity; check issuer discovery and database settings")
 	}
-	store, err := control.New(startup, pool, cfg.Edge, auth.Authenticate, auth.DeviceActive)
+	store, err := control.New(startup, pool, cfg.edge, auth.Authenticate, auth.DeviceActive)
 	if err != nil {
 		return fmt.Errorf("initialize control plane: %w", err)
 	}
@@ -229,16 +250,12 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 		}
 		w.WriteHeader(204)
 	})
-	// The TLS handshake proves possession of a device's self-signed key. Enrollment
-	// and each authenticated endpoint separately bind its fingerprint to an OIDC user.
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32768,
-		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAnyClientCert,
-			VerifyConnection: func(st tls.ConnectionState) error { _, err := identity.DeviceID(&st); return err }}, ErrorLog: log.New(io.Discard, "", 0)}
+	srv := relayServer(cert, cfg, mux)
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 2)
 	go func() {
-		done <- dispatch.Run(runCtx, nc, store, cfg.Edge, cfg.Replicas, func() { brokerReady.Store(true) })
+		done <- dispatch.Run(runCtx, nc, store, cfg.edge, cfg.replicas, func() { brokerReady.Store(true) })
 	}()
 	go func() { done <- srv.ServeTLS(listen, "", "") }()
 	var first error
@@ -264,21 +281,72 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 	}
 	return first
 }
-func main() {
-	f := flag.String("config", "", "path to edge JSON configuration")
-	flag.Parse()
-	cfg, err := readConfig(*f)
+func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler) *http.Server {
+	info := map[string]string{
+		"version": "1", "mode": cfg.mode, "name": cfg.name,
+		"issuer": cfg.identity.Issuer, "clientId": cfg.identity.ClientID,
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/info" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(info)
+			return
+		}
+		// VerifyConnection checked every presented device certificate, including
+		// on session resumption. Enforce possession before entering any other route.
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			http.Error(w, "device certificate required", http.StatusUnauthorized)
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
+	return &http.Server{
+		Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32768,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequestClientCert,
+			VerifyConnection: func(st tls.ConnectionState) error {
+				if len(st.PeerCertificates) == 0 {
+					return nil
+				}
+				_, err := identity.DeviceID(&st)
+				return err
+			},
+		},
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+}
+
+func run(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "host" {
+		return hostCommand(ctx, args[1:])
+	}
+	flags := flag.NewFlagSet("commander-relay", flag.ContinueOnError)
+	path := flags.String("config", "", "path to edge JSON configuration")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" && flags.NArg() == 1 {
+		*path = flags.Arg(0)
+	} else if *path == "" || flags.NArg() != 0 {
+		return errors.New("usage: commander-relay CONFIG.json | commander-relay host [init|install|uninstall|status] [flags]")
+	}
+	cfg, err := readConfig(*path)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer ln.Close()
+	return serve(ctx, cfg, ln)
+}
+
+func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err = serve(ctx, cfg, ln); err != nil {
+	if err := run(ctx, os.Args[1:]); err != nil && !errors.Is(err, flag.ErrHelp) {
 		log.Fatal(err)
 	}
 }

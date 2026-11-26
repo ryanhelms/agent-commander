@@ -1,0 +1,159 @@
+// Package hostmode owns the private configuration and local services of a hosted relay.
+package hostmode
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/mail"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+)
+
+type Config struct {
+	Name          string   `json:"name"`
+	Listen        string   `json:"listen"`
+	Hostnames     []string `json:"hostnames"`
+	Issuer        string   `json:"issuer"`
+	ClientID      string   `json:"client_id"`
+	AllowedEmails []string `json:"allowed_emails"`
+	Admins        []string `json:"admins"`
+}
+
+func DefaultDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "Application Support", "Agent Commander", "relay"), nil
+}
+
+var dnsLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
+func validHostname(name string) bool {
+	if net.ParseIP(name) != nil {
+		return true
+	}
+	name = strings.TrimSuffix(name, ".")
+	if len(name) > 253 {
+		return false
+	}
+	for label := range strings.SplitSeq(name, ".") {
+		if !dnsLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Config) validate() error {
+	if strings.TrimSpace(c.Name) == "" || len(c.Hostnames) == 0 || strings.TrimSpace(c.ClientID) == "" || len(c.Admins) == 0 {
+		return errors.New("host configuration requires a name, hostname, OIDC client ID and admin email")
+	}
+	if c.Listen == "" {
+		c.Listen = ":443"
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
+		return fmt.Errorf("invalid host listen address: %w", err)
+	}
+	for _, name := range c.Hostnames {
+		if !validHostname(name) {
+			return fmt.Errorf("invalid hostname or IP address %q", name)
+		}
+	}
+	issuer, err := url.Parse(c.Issuer)
+	if err != nil || issuer.Scheme != "https" || issuer.Hostname() == "" || issuer.User != nil || issuer.Fragment != "" {
+		return errors.New("host configuration requires an HTTPS OIDC issuer")
+	}
+	if c.AllowedEmails == nil {
+		c.AllowedEmails = []string{}
+	}
+	for _, email := range slices.Concat(c.AllowedEmails, c.Admins) {
+		address, err := mail.ParseAddress(email)
+		if err != nil || address.Address != email {
+			return fmt.Errorf("invalid email address %q", email)
+		}
+	}
+	return nil
+}
+
+func (c Config) PermittedEmails() []string {
+	var emails []string
+	seen := make(map[string]bool)
+	for _, email := range slices.Concat(c.AllowedEmails, c.Admins) {
+		key := strings.ToLower(email)
+		if !seen[key] {
+			seen[key] = true
+			emails = append(emails, email)
+		}
+	}
+	return emails
+}
+
+func ReadConfig(dir string) (Config, error) {
+	var cfg Config
+	file, err := os.Open(filepath.Join(dir, "host.json"))
+	if err != nil {
+		return cfg, err
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&cfg); err != nil {
+		return cfg, err
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return cfg, errors.New("expected a single host configuration")
+	}
+	err = cfg.validate()
+	return cfg, err
+}
+
+func InitConfig(dir string, cfg Config) error {
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("host path %s must be a directory", dir)
+	}
+	if info.Mode().Perm() != 0700 {
+		if err := os.Chmod(dir, 0700); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), false)
+}
+
+// Stage private files on the same volume so readers always see a complete record.
+func publishFile(path string, data []byte, replace bool) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".relay-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, err = file.Write(data)
+	if err = errors.Join(err, file.Close()); err != nil {
+		return err
+	}
+	if replace {
+		return os.Rename(file.Name(), path)
+	}
+	return os.Link(file.Name(), path)
+}
