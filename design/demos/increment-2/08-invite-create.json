@@ -1,0 +1,9 @@
+{
+    "data": {
+        "code": "40ad73817443b6d24eb21559b2c2770512159b952fde2b1a",
+        "expiresAt": "2026-12-02T19:39:34.848147-05:00",
+        "link": "agentcommander://join?code=40ad73817443b6d24eb21559b2c2770512159b952fde2b1a&from=ryan&pin=sha256%2FmzRsixS5iA2sfqYhOYVkydWg%2FvJhmsVut4dyaH21444%3D&server=https%3A%2F%2Fryan-mac.tail.internal%3A8443",
+        "maxUses": 5
+    },
+    "ok": true
+}

@@ -1,0 +1,11 @@
+{
+    "data": {
+        "admins": [
+            "<admin email redacted>"
+        ],
+        "allowedEmails": [],
+        "memberCount": 1,
+        "mode": "open"
+    },
+    "ok": true
+}

@@ -98,6 +98,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		return result, nil
 	}
 	result["handle"] = profile.Handle
+	result["displayName"], result["statusMessage"], result["hasAvatar"], result["presence"] = profile.DisplayName, profile.StatusMessage, profile.HasAvatar, profile.Presence
 	a.mu.Lock()
 	a.handle = profile.Handle
 	a.mu.Unlock()

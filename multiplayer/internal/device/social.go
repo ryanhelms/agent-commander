@@ -85,12 +85,15 @@ func (a *Agent) setPresenceMode(ctx context.Context, mode string) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	if mode != "auto" {
-		if e = a.pushPresence(ctx, mode); e != nil {
-			return nil, e
-		}
+	effective := mode
+	if mode == "auto" {
+		idle, _ := IdleTime()
+		effective = AutoPresence(agentsBusy(ctx, a.cfg.CommanderSocket), idle)
 	}
-	return map[string]any{"presence": mode, "auto": mode == "auto"}, nil
+	if e = a.pushPresence(ctx, effective); e != nil {
+		return nil, e
+	}
+	return map[string]any{"presence": effective, "auto": mode == "auto"}, nil
 }
 
 // pushPresence sends a presence to the relay when it changed.
