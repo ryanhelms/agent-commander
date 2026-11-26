@@ -16,6 +16,7 @@ import (
 	"agentcommander.network/pilot/internal/actions"
 	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/identity"
+	"agentcommander.network/pilot/internal/sharing"
 )
 
 type input struct {
@@ -152,10 +153,16 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	own, shared := []map[string]any{}, []map[string]any{}
 	kind := map[string]string{}
+	a.mu.Lock()
+	local := slices.Clone(a.policy.Resources)
+	a.mu.Unlock()
 	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
+		}
+		if r.Kind == "host" && r.Device == s.Device && r.Owner == s.User {
+			row["capabilities"] = hostCapabilities(ctx, r, local)
 		}
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
@@ -178,6 +185,25 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	result["grants"] = rows
 	return result, nil
+}
+
+// hostCapabilities gives an own host's published capabilities with the
+// commands this Mac has enrolled for it. It falls back to the relay's copy when
+// the command file can't be read, and always carries a commands list.
+func hostCapabilities(ctx context.Context, r control.Resource, local []actions.Resource) *control.Capabilities {
+	caps := control.Capabilities{}
+	if r.Capabilities != nil {
+		caps = *r.Capabilities
+	}
+	if i := slices.IndexFunc(local, func(l actions.Resource) bool { return l.ID == r.ID && l.Kind == "host" }); i >= 0 {
+		if prepared, err := actions.PrepareResource(ctx, local[i]); err == nil && prepared.Capabilities != nil {
+			caps.Commands = prepared.Capabilities.Commands
+		}
+	}
+	if caps.Commands == nil {
+		caps.Commands = []sharing.Command{}
+	}
+	return &caps
 }
 
 type grantList struct {
@@ -588,8 +614,10 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
 	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs":
 		return a.teamVerb(ctx, s, verb, in)
-	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "claim", "release", "knowledge":
+	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members":
 		return a.namedTeamRelay(ctx, s, verb, in)
+	case "workspace-combined":
+		return a.combinedWorkspace(ctx, s, in)
 	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
 		return a.liveVerb(ctx, s, verb, in)
 	case "send", "sent", "handoffs", "threads", "thread", "comment", "apply-artifact":
@@ -694,7 +722,14 @@ func reply(w http.ResponseWriter, value any, e error) {
 	w.Header().Set("Cache-Control", "no-store")
 	if e != nil {
 		w.WriteHeader(400)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": e.Error()})
+		envelope := map[string]any{"ok": false, "error": e.Error()}
+		var status statusError
+		if errors.As(e, &status) {
+			for k, v := range status.refusalFields() {
+				envelope[k] = v
+			}
+		}
+		_ = json.NewEncoder(w).Encode(envelope)
 		return
 	}
 	if value == nil {

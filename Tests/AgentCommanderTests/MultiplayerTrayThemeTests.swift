@@ -283,6 +283,31 @@ import Testing
 
 // MARK: - Defects from the window's check
 
+/// An answered row's hold the test ends by hand, so nothing waits on the clock.
+@MainActor final class MultiplayerManualHold {
+    /// The durations the model asked to hold for, in order.
+    private(set) var asked: [Duration] = []
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var ended = false
+
+    nonisolated var timer: MultiplayerHoldTimer { MultiplayerHoldTimer { [self] in await self.wait($0) } }
+
+    private func wait(_ duration: Duration) async {
+        asked.append(duration)
+        guard !ended else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Ends the hold of every row answered so far, and returns once each row's hold is over.
+    func end(in model: MultiplayerModel) async {
+        ended = true
+        waiting.forEach { $0.resume() }
+        waiting = []
+        await model.share.settleHolds()
+        ended = false
+    }
+}
+
 @MainActor @Suite struct MultiplayerWindowCheckTests {
     static let pin = "sha256/nUnZnJ0SWPmE73KXxj+i59pMBxAJmysaaVUgzoL+cgg="
 
@@ -327,27 +352,33 @@ import Testing
 
     /// The live sequence: the window's answer, the tray's reads after it, a panel closing and
     /// opening, and the tray moving between pages. The row and its outcome stay for the hold.
+    /// Nothing here depends on time: no poll fires during the test, every read is one the test
+    /// asks for, and the hold ends when the test says so.
     @Test func anAnsweredRowIsHeldForTheLiveHoldThroughReadsAndNavigation() async throws {
         let none = MultiplayerFixture.output(#"{"ok":true,"data":{"approvals":[]}}"#)
         let helper = ScriptedMultiplayerHelper([
             .servers: [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)], .status: [MultiplayerShareFixture.status],
-            .approvals: [MultiplayerShareFixture.approvals, none], .approve: [MultiplayerShareFixture.empty]])
-        let hold = MultiplayerShareModel.answeredHold
-        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .milliseconds(150), fastPoll: .milliseconds(150),
-                                     answeredHold: hold)
+            .approvals: [MultiplayerShareFixture.approvals, none], .approve: [MultiplayerShareFixture.empty], .deny: [MultiplayerShareFixture.empty]])
+        let hold = MultiplayerManualHold()
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                     answeredHold: MultiplayerShareModel.answeredHold, holdTimer: hold.timer)
         model.open()
         await model.settle()
-        // The first approvals read lands on a background poll; wait for it rather than assume it.
-        #expect(await MultiplayerLiveFixture.eventually { !model.share.pendingApprovals.isEmpty })
+        // Approvals are read once the session is known to be signed in: on this read, or the next.
+        if helper.count(.approvals) == 0 {
+            model.refreshAll()
+            await model.settle()
+        }
+        #expect(helper.count(.approvals) == 1)
         let pending = try #require(model.share.pendingApprovals.first)
         let server = pending.server
         func listed() -> Bool { model.share.approvals[server]?.contains { $0.id == pending.item.id } == true }
         func held() -> Bool { listed() && model.share.answer(for: pending.item, on: server) == .approved }
 
-        let start = ContinuousClock.now
         let result = await model.decide(pending.item, on: server, approve: true)
         #expect(result.isDone && held())
-        // The read after the action, and every session and status read with it, no longer lists it.
+        // A read after the action no longer lists it.
+        model.refreshAll()
         await model.settle()
         #expect(helper.count(.approvals) >= 2 && held())
         // What waits no longer counts it; what is listed still has it.
@@ -366,16 +397,133 @@ import Testing
         model.refreshAll()
         await model.settle()
         #expect(held())
-
-        // It stays through several polls, until the hold ends. Then it leaves, with its outcome.
-        while ContinuousClock.now - start < hold - .milliseconds(300) {
-            #expect(held(), "left after \(ContinuousClock.now - start)")
-            try await Task.sleep(for: .milliseconds(50))
+        // It stays through more reads, for as long as the hold lasts.
+        for _ in 0..<3 {
+            model.refreshAll()
+            await model.settle()
+            #expect(held())
         }
-        await MultiplayerAnsweredRowTests.wait { !listed() }
-        let stayed = ContinuousClock.now - start
-        #expect(stayed >= hold - .milliseconds(100) && stayed < hold + .seconds(2))
+
+        // The hold ends. The row leaves, with its outcome.
+        await hold.end(in: model)
+        // The hold asked for was the live one.
+        #expect(hold.asked == [MultiplayerShareModel.answeredHold])
         #expect(!listed() && model.share.answer(for: pending.item, on: server) == nil && model.share.pendingApprovals.isEmpty)
+        model.close()
+    }
+
+    /// Request 9: the relay keeps listing a denied approval. Its answer outlasts the hold, for as
+    /// long as the relay lists the request, and goes when the relay stops.
+    @Test func anAnswerOutlastsTheHoldWhileTheRelayStillListsTheRequest() async throws {
+        let none = MultiplayerFixture.output(#"{"ok":true,"data":{"approvals":[]}}"#)
+        let listing = MultiplayerShareFixture.approvals
+        let helper = ScriptedMultiplayerHelper([
+            .servers: [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)], .status: [MultiplayerShareFixture.status],
+            .approvals: [listing, listing, listing, listing, none], .approve: [MultiplayerShareFixture.empty], .deny: [MultiplayerShareFixture.empty]])
+        let hold = MultiplayerManualHold()
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                     answeredHold: MultiplayerShareModel.answeredHold, holdTimer: hold.timer)
+        func read() async {
+            model.refreshAll()
+            await model.settle()
+        }
+        model.open()
+        await model.settle()
+        if helper.count(.approvals) == 0 { await read() }
+        #expect(helper.count(.approvals) == 1)
+        let pending = try #require(model.share.pendingApprovals.first)
+        let server = pending.server
+        func listed() -> Bool { model.share.approvals[server]?.contains { $0.id == pending.item.id } == true }
+        func answer() -> MultiplayerAnswer? { model.share.answer(for: pending.item, on: server) }
+
+        #expect(await model.decide(pending.item, on: server, approve: false).isDone)
+        #expect(listed() && answer() == .denied)
+        // The tray reads again after every action. The relay still lists it, during the hold and after.
+        await model.settle()
+        #expect(helper.count(.approvals) == 2 && listed() && answer() == .denied)
+        await hold.end(in: model)
+        #expect(listed() && answer() == .denied)
+        #expect(model.share.waitingApprovals.isEmpty && model.share.pendingApprovals.map(\.item.id) == [pending.item.id])
+        await read()
+        await read()
+        #expect(helper.count(.approvals) == 4 && listed() && answer() == .denied)
+        // An answered row can't be answered again.
+        #expect(await model.decide(pending.item, on: server, approve: true).reason == "Couldn’t approve the request. It was already denied.")
+        #expect(helper.count(.approve) == 0 && helper.count(.deny) == 1)
+        // The relay stops listing it. The row and its answer go.
+        await read()
+        #expect(helper.count(.approvals) == 5 && !listed() && answer() == nil && model.share.pendingApprovals.isEmpty)
+        model.close()
+    }
+
+    /// The hold ends before any read succeeds. The row leaves; if the relay then lists the request
+    /// again, it comes back answered, not waiting.
+    @Test func aRequestTheRelayListsAgainAfterTheHoldComesBackAnswered() async throws {
+        let none = MultiplayerFixture.output(#"{"ok":true,"data":{"approvals":[]}}"#)
+        let unreachable = MultiplayerFixture.output(#"{"ok":false,"error":"the relay did not answer"}"#)
+        let listing = MultiplayerShareFixture.approvals
+        let helper = ScriptedMultiplayerHelper([
+            .servers: [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)], .status: [MultiplayerShareFixture.status],
+            .approvals: [listing, unreachable, listing, none, listing], .approve: [MultiplayerShareFixture.empty],
+            .deny: [MultiplayerShareFixture.empty]])
+        let hold = MultiplayerManualHold()
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                     answeredHold: MultiplayerShareModel.answeredHold, holdTimer: hold.timer)
+        func read() async {
+            model.refreshAll()
+            await model.settle()
+        }
+        model.open()
+        await model.settle()
+        if helper.count(.approvals) == 0 { await read() }
+        #expect(helper.count(.approvals) == 1)
+        let pending = try #require(model.share.pendingApprovals.first)
+        let server = pending.server
+        func listed() -> Bool { model.share.approvals[server]?.contains { $0.id == pending.item.id } == true }
+        func answer() -> MultiplayerAnswer? { model.share.answer(for: pending.item, on: server) }
+
+        #expect(await model.decide(pending.item, on: server, approve: false).isDone)
+        // The read after the action fails, so the relay hasn't said whether it still lists it.
+        await model.settle()
+        #expect(helper.count(.approvals) == 2 && listed() && answer() == .denied)
+        await hold.end(in: model)
+        #expect(!listed() && answer() == nil)
+        await read()
+        #expect(helper.count(.approvals) == 3 && listed() && answer() == .denied && model.share.waitingApprovals.isEmpty)
+        // Once the relay has let it go, the answer is forgotten: the same ID listed later waits.
+        await read()
+        #expect(helper.count(.approvals) == 4 && !listed() && answer() == nil)
+        await read()
+        #expect(helper.count(.approvals) == 5 && listed() && answer() == nil && model.share.waitingApprovals.count == 1)
+        model.close()
+    }
+
+    /// A model built with no hold drops the row at once, and still keeps the answer for a request
+    /// the relay goes on listing.
+    @Test func withNoHoldARequestTheRelayStillListsReadsAsAnswered() async throws {
+        let none = MultiplayerFixture.output(#"{"ok":true,"data":{"approvals":[]}}"#)
+        let listing = MultiplayerShareFixture.approvals
+        let (model, helper) = MultiplayerAnsweredRowTests.model([.approvals: [listing, listing, none], .approve: [MultiplayerShareFixture.empty], .deny: [MultiplayerShareFixture.empty]],
+                                                               hold: .zero)
+        func read() async {
+            model.refreshAll()
+            await model.settle()
+        }
+        model.open()
+        await model.settle()
+        if helper.count(.approvals) == 0 { await read() }
+        #expect(helper.count(.approvals) == 1)
+        let pending = try #require(model.share.pendingApprovals.first)
+        let server = pending.server
+        func answer() -> MultiplayerAnswer? { model.share.answer(for: pending.item, on: server) }
+
+        #expect(await model.decide(pending.item, on: server, approve: false).isDone)
+        // The read after the action still lists it: answered, not waiting.
+        await model.settle()
+        #expect(helper.count(.approvals) == 2)
+        #expect(model.share.pendingApprovals.count == 1 && answer() == .denied && model.share.waitingApprovals.isEmpty)
+        await read()
+        #expect(helper.count(.approvals) == 3 && model.share.pendingApprovals.isEmpty && answer() == nil)
         model.close()
     }
 

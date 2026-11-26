@@ -282,7 +282,8 @@ final class MultiplayerModel {
          winners: MultiplayerWinnerStore = .scratch(),
          watchInterval: Duration = .seconds(2),
          answeredHold: Duration = .zero,
-         now: @escaping () -> Date = { Date() }) {
+         now: @escaping () -> Date = { Date() },
+         holdTimer: MultiplayerHoldTimer = .clock) {
         self.client = client
         self.notifier = notifier
         self.setupFailure = setupFailure
@@ -291,7 +292,7 @@ final class MultiplayerModel {
         self.fastPoll = fastPoll
         self.clock = now
         self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
-                                           answeredHold: answeredHold, wallPoll: steadyPoll)
+                                           answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.share.tray = self
         self.remote.tray = self

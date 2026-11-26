@@ -51,6 +51,26 @@ private extension SingleInstanceError {
     var isUnsafeFolder: Bool { if case .unsafeFolder = self { true } else { false } }
 }
 
+/// Ends a stand-in process: drops its lease and returns once the kernel has released the lock, as
+/// it has once a real process is gone. Closing the descriptor alone doesn't promise that here. A
+/// child this test process is spawning at that instant (other suites start helpers in parallel)
+/// holds a copy of every descriptor until its exec closes them, and the lock lasts as long as any
+/// copy does. An admission that probed in that window would see a dead instance as live.
+private func quit(_ membership: SingleInstanceMembership) throws {
+    membership.relinquish()
+    let lease = membership.directory.path(percentEncoded: false) + "/\(membership.pid).lease"
+    let probe = open(lease, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+    guard probe >= 0 else { return }    // already removed, so already released
+    defer { close(probe) }
+    let deadline = ContinuousClock.now + .seconds(10)
+    while flock(probe, LOCK_SH | LOCK_NB) != 0 {
+        try #require(errno == EWOULDBLOCK || errno == EINTR, "probing \(lease)")
+        try #require(ContinuousClock.now < deadline, "\(lease) stayed locked after its owner let go")
+        usleep(200)
+    }
+    flock(probe, LOCK_UN)
+}
+
 private func entries(_ store: SingleInstanceStore) throws -> Set<String> {
     Set(try FileManager.default.contentsOfDirectory(atPath: store.directory.path(percentEncoded: false)))
 }
@@ -161,7 +181,7 @@ struct SingleInstanceTests {
         let lower = try #require(try sandbox.launch().admit(onlyOneInstance: false, pid: 101).membership)
         let survivor = try #require(try sandbox.launch().admit(onlyOneInstance: false, pid: 102).membership)
         defer { survivor.relinquish() }
-        lower.relinquish()
+        try quit(lower)
 
         #expect(try sandbox.launch().admit(onlyOneInstance: true, pid: 103).target == 102)
         #expect(survivor.takeFocusRequest())
@@ -176,9 +196,13 @@ struct SingleInstanceTests {
         let survivor = try #require(try store.admit(onlyOneInstance: false, pid: 102).membership)
         defer { survivor.relinquish() }
 
+        // The target is gone by the time the launch posts its request and probes the lease again.
+        let exited = Mutex<(any Error)?>(nil)
         let admission = try sandbox.launch().admit(onlyOneInstance: true, pid: 103) { target in
-            if target == 101 { lower.relinquish() }
+            guard target == 101 else { return }
+            do { try quit(lower) } catch { exited.withLock { $0 = error } }
         }
+        #expect(exited.withLock { $0 } == nil)
         #expect(admission.target == 102)
         #expect(survivor.takeFocusRequest())
         #expect(try entries(store) == ["admission.lock", "102.lease"])
@@ -190,14 +214,14 @@ struct SingleInstanceTests {
         let store = try sandbox.launch()
         let crashed = try #require(try store.admit(onlyOneInstance: true, pid: 101).membership)
         #expect(try sandbox.launch().admit(onlyOneInstance: true, pid: 102).target == 101)
-        crashed.relinquish()
+        try quit(crashed)
 
         let next = try #require(try sandbox.launch().admit(onlyOneInstance: true, pid: 103).membership)
         defer { next.relinquish() }
         #expect(try entries(store) == ["admission.lock", "103.lease"])
 
         // A later Commander that reuses the crashed pid starts with no pending request.
-        next.relinquish()
+        try quit(next)
         let reused = try #require(try sandbox.launch().admit(onlyOneInstance: true, pid: 101).membership)
         defer { reused.relinquish() }
         #expect(!reused.takeFocusRequest())

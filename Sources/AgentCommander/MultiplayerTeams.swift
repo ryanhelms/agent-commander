@@ -173,6 +173,8 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     let id: String
     /// The owner's account on the relay.
     let owner: String
+    /// The owner's handle. Empty when the relay doesn't say, or the owner has none.
+    let ownerHandle: String
     let group: String
     let name: String
     let goal: String
@@ -181,10 +183,11 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     let integration: String
     let claims: [MultiplayerClaim]
 
-    init(id: String, owner: String = "", group: String = "", name: String, goal: String = "", repository: String = "",
-         base: String = "", integration: String = "", claims: [MultiplayerClaim] = []) {
+    init(id: String, owner: String = "", ownerHandle: String = "", group: String = "", name: String, goal: String = "",
+         repository: String = "", base: String = "", integration: String = "", claims: [MultiplayerClaim] = []) {
         self.id = id
         self.owner = owner
+        self.ownerHandle = ownerHandle
         self.group = group
         self.name = name
         self.goal = goal
@@ -196,7 +199,8 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
 
     init?(_ json: MultiplayerJSON) {
         guard let id = json.firstText("id") else { return nil }
-        self.init(id: id, owner: json.firstText("owner") ?? "", group: json.firstText("group") ?? "",
+        self.init(id: id, owner: json.firstText("owner") ?? "", ownerHandle: json.firstText("ownerHandle") ?? "",
+                  group: json.firstText("group") ?? "",
                   name: json.firstText("name") ?? id, goal: json.firstText("goal") ?? "",
                   repository: json.firstText("repository") ?? "", base: json.firstText("base") ?? "",
                   integration: json.firstText("integration") ?? "",
@@ -204,6 +208,9 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     }
 
     var usesQueue: Bool { integration == MultiplayerIntegration.queue.rawValue }
+
+    /// Whether this person owns it: only the owner edits a workspace, and the owner can't leave it.
+    func isOwned(by handle: String) -> Bool { !handle.isEmpty && ownerHandle == handle }
 
     /// Where the repository's pull requests are, when the repository names a GitHub project.
     var pullRequestsURL: URL? {
@@ -575,6 +582,8 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
     let id: String
     /// The owner's account on the relay.
     let owner: String
+    /// The owner's handle. Empty when the relay doesn't say, or the owner has none.
+    let ownerHandle: String
     let kind: String
     let name: String
     let content: String
@@ -582,10 +591,11 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
     let version: Int
     let createdAt: Date?
 
-    init(id: String, owner: String = "", kind: String, name: String, content: String = "", visibility: String = "private",
-         version: Int = 1, createdAt: Date? = nil) {
+    init(id: String, owner: String = "", ownerHandle: String = "", kind: String, name: String, content: String = "",
+         visibility: String = "private", version: Int = 1, createdAt: Date? = nil) {
         self.id = id
         self.owner = owner
+        self.ownerHandle = ownerHandle
         self.kind = kind
         self.name = name
         self.content = content
@@ -596,7 +606,8 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
 
     init?(_ json: MultiplayerJSON) {
         guard let id = json.firstText("id") else { return nil }
-        self.init(id: id, owner: json.firstText("owner") ?? "", kind: json.firstText("kind") ?? "",
+        self.init(id: id, owner: json.firstText("owner") ?? "", ownerHandle: json.firstText("ownerHandle") ?? "",
+                  kind: json.firstText("kind") ?? "",
                   name: json.firstText("name") ?? id, content: json["content"]?.text ?? "",
                   visibility: json.firstText("visibility") ?? "private", version: json["version"]?.int ?? 1,
                   createdAt: json.date("createdAt"))

@@ -21,13 +21,16 @@ final class RoutedMultiplayerHelper: MultiplayerHelper {
     private let calls = Mutex<[Call]>([])
     private let route: @Sendable (Call) -> String?
 
-    /// `route` returns the reply's `data` as JSON text, "!message" for a refusal, or nil for `{}`.
+    /// `route` returns the reply's `data` as JSON text, "!message" for a refusal, "=" and a whole
+    /// envelope to send it as written, or nil for `{}`.
     init(_ route: @escaping @Sendable (Call) -> String?) { self.route = route }
 
     func run(verb: MultiplayerVerb, input: Data) async throws -> MultiplayerHelperOutput {
         let call = Call(verb: verb, input: (try? JSONDecoder().decode(MultiplayerJSON.self, from: input)) ?? .null)
         calls.withLock { $0.append(call) }
         let reply = route(call) ?? "{}"
+        // A whole envelope, for a refusal that carries fields beside its sentence.
+        if reply.hasPrefix("=") { return MultiplayerFixture.output(String(reply.dropFirst())) }
         if reply.hasPrefix("!") {
             let message = String(data: try JSONEncoder().encode(String(reply.dropFirst())), encoding: .utf8) ?? "\"\""
             return MultiplayerFixture.output(#"{"ok":false,"error":\#(message)}"#)
