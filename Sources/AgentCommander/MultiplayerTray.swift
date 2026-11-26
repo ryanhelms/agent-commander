@@ -297,6 +297,8 @@ struct MultiplayerFriendGroups: View {
             .fixedSize()
             .disabled(isBusy || addable.isEmpty)
             .help(addable.isEmpty ? "Sign in to a server first" : "Choose the server to add a friend on")
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Add friend: choose a server")
         }
     }
 }
@@ -1446,6 +1448,8 @@ struct MultiplayerPanel: View {
                     .buttonStyle(MultiplayerTrayButtonStyle())
                     .fixedSize()
                     .disabled(model.isBusy)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Sign out: choose a server")
                 }
             }
         case .addServer:

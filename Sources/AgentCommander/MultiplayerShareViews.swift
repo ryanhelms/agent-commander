@@ -468,6 +468,8 @@ struct MultiplayerAgentRoster: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help(help)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title): choose a server")
         }
     }
 
@@ -498,6 +500,7 @@ struct MultiplayerAgentRoster: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel([name.multiplayerDisplay, badge.text, chip?.headline,
                                      owner.map { "owned by \($0.multiplayerDisplay)" }, "on \(serverName(server))"]
                     .compactMap { $0 }.joined(separator: ", "))
@@ -766,6 +769,7 @@ struct MultiplayerApprovalPage: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel("Suggested message: \(approval.request)")
             }
         }
@@ -1157,13 +1161,7 @@ struct MultiplayerHandoffDetail: View {
                 MultiplayerBand {
                     VStack(alignment: .leading, spacing: Space.s) {
                         MultiplayerBandHeading(title: report.report == nil ? "Latest summary" : "Result report")
-                        MultiplayerWell {
-                            Text(text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(MultiplayerTheme.foreground)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
+                        MultiplayerWell { MultiplayerMarkdown(text: text) }
                     }
                 }
             }
@@ -1197,6 +1195,13 @@ struct MultiplayerHandoffDetail: View {
 
 /// A request's comments, oldest first, and the field to add one.
 struct MultiplayerThreadPage: View {
+    /// One comment as VoiceOver reads it: "sam, agent, 2 min ago: text".
+    static func spoken(_ comment: MultiplayerComment, now: Date) -> String {
+        let who = comment.author.isEmpty ? (comment.isAgent ? "Agent" : "Someone") : comment.author.multiplayerDisplay
+        let parts = [who, comment.isAgent && !comment.author.isEmpty ? "agent" : nil, MultiplayerActivityRow.time(comment.at, now: now)]
+        return "\(parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")): \(comment.text)"
+    }
+
     let title: String
     let state: MultiplayerLoad<MultiplayerThread>
     @Binding var draft: String
@@ -1242,7 +1247,9 @@ struct MultiplayerThreadPage: View {
                                 .textSelection(.enabled)
                         }
                         .padding(.vertical, 4)
-                        .accessibilityElement(children: .combine)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isStaticText)
+                        .accessibilityLabel(Self.spoken(comment, now: now))
                         .multiplayerArriving()
                     }
                 }

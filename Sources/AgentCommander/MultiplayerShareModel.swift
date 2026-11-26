@@ -126,6 +126,8 @@ final class MultiplayerShareModel {
     /// The pages Back returns through.
     @ObservationIgnored private var trail: [MultiplayerTrayRoute] = []
     @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
+    /// Cockpit walls on screen.
+    @ObservationIgnored private(set) var wallViewers = 0
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
 
@@ -202,9 +204,21 @@ final class MultiplayerShareModel {
     /// Reads approvals, access requests and hand-offs for every server the person is signed in to.
     /// Called after each server list while a panel is open.
     func refresh() {
-        guard let client, let tray, tray.viewers > 0, quietTask == nil else { return }
+        guard let client, let tray, tray.viewers > 0 || wallViewers > 0, quietTask == nil else { return }
         let ids = tray.servers.filter { $0.state == .online && $0.signedIn }.map(\.id)
         let live = Set(ids)
+        // With only the cockpit wall showing, hand-offs are all that is read.
+        guard tray.viewers > 0 else {
+            handoffs = handoffs.filter { live.contains($0.key) }
+            guard !ids.isEmpty else { return }
+            quietTask = Task {
+                for id in ids where !Task.isCancelled {
+                    if let next = try? await client.scoped(to: id).handoffs() { self.handoffs[id] = next }
+                }
+                self.quietTask = nil
+            }
+            return
+        }
         approvals = approvals.filter { live.contains($0.key) }
         accessRequests = accessRequests.filter { live.contains($0.key) }
         handoffs = handoffs.filter { live.contains($0.key) }
@@ -219,6 +233,18 @@ final class MultiplayerShareModel {
             }
             self.quietTask = nil
         }
+    }
+
+    /// The cockpit wall shows hand-offs as remote workers, so they are read while it is on screen
+    /// even with every panel closed. The first wall reads the server list once if nothing has.
+    func wallAppeared() {
+        wallViewers += 1
+        guard wallViewers == 1, let tray else { return }
+        if tray.hasLoaded { refresh() } else { tray.refresh() }
+    }
+
+    func wallDisappeared() {
+        wallViewers = max(0, wallViewers - 1)
     }
 
     func cancel() {
