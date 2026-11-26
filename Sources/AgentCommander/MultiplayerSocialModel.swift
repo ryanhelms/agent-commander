@@ -217,10 +217,8 @@ extension MultiplayerModel {
 
     func startProfile(_ id: String) {
         guard let session = session(id), session.isOnline, let status = session.status else { return }
-        profileDraft = MultiplayerProfileDraft(handle: status.handle, displayName: status.displayName,
-                                               statusMessage: status.statusMessage, savedHandle: status.handle,
-                                               savedDisplayName: status.displayName,
-                                               savedStatusMessage: status.statusMessage)
+        guard let draft = profileDraft(on: id) else { return }
+        profileDraft = draft
         go(.profile(id))
         if status.hasAvatar { loadAvatar(server: id, handle: status.handle) }
     }
@@ -251,11 +249,31 @@ extension MultiplayerModel {
 
     var canSaveProfile: Bool { !isBusy && profileDraft.problem == nil && profileDraft.hasChanges }
 
+    /// Your profile on a server as an editor's draft, for a view that keeps the draft itself.
+    /// Nil while that server's session is offline.
+    func profileDraft(on id: String) -> MultiplayerProfileDraft? {
+        guard let session = session(id), session.isOnline, let status = session.status else { return nil }
+        return MultiplayerProfileDraft(handle: status.handle, displayName: status.displayName,
+                                       statusMessage: status.statusMessage, savedHandle: status.handle,
+                                       savedDisplayName: status.displayName,
+                                       savedStatusMessage: status.statusMessage)
+    }
+
+    /// Saves the profile on the tray's own editor, then returns to the server's page.
     @discardableResult
     func saveProfile() -> Task<Void, Never>? {
-        guard canSaveProfile, case .profile(let id) = route else { return nil }
-        let draft = profileDraft
-        return act("Saving your profile…", failing: "Couldn’t save your profile.", confirmation: "Profile saved.") { client in
+        guard case .profile(let id) = route else { return nil }
+        return saveProfile(profileDraft, on: id, then: { self.go(.server(id)) })
+    }
+
+    /// Saves your profile on a server from the caller's own draft. `then` runs once it is saved.
+    @discardableResult
+    func saveProfile(_ draft: MultiplayerProfileDraft, on id: String,
+                     report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.problem == nil, draft.hasChanges else { return nil }
+        return act("Saving your profile…", failing: "Couldn’t save your profile.", confirmation: "Profile saved.",
+                   report: report) { client in
             var avatar: String?
             switch draft.avatar {
             case .keep: avatar = nil
@@ -274,7 +292,7 @@ extension MultiplayerModel {
             case .remove: self.avatars[key] = Data()
             }
             self.session(id)?.refresh()
-            self.go(.server(id))
+            then?()
         }
     }
 
@@ -290,12 +308,21 @@ extension MultiplayerModel {
     /// Unknown rights are left to the relay to refuse.
     func canInvite(_ id: String) -> Bool { me[id]?.canInvite ?? true }
 
+    /// Makes a link on the tray's own invite page.
     @discardableResult
     func createInvite() -> Task<Void, Never>? {
-        guard case .invite(let id) = route, canInvite(id) else { return nil }
-        let draft = inviteDraft
-        return act("Creating an invite link…", failing: "Couldn’t create the invite.") { client in
-            self.invite = try await client.scoped(to: id).createInvite(maxUses: draft.maxUses, ttlHours: draft.ttlHours)
+        guard case .invite(let id) = route else { return nil }
+        return createInvite(inviteDraft, on: id, then: { self.invite = $0 })
+    }
+
+    /// Makes an invite link for a server from the caller's own draft. `then` is given the link.
+    @discardableResult
+    func createInvite(_ draft: MultiplayerInviteDraft, on id: String,
+                      report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                      then: @escaping @MainActor (MultiplayerInvite) -> Void) -> Task<Void, Never>? {
+        guard canInvite(id) else { return nil }
+        return act("Creating an invite link…", failing: "Couldn’t create the invite.", report: report) { client in
+            then(try await client.scoped(to: id).createInvite(maxUses: draft.maxUses, ttlHours: draft.ttlHours))
         }
     }
 
@@ -319,13 +346,17 @@ extension MultiplayerModel {
     }
 
     /// Adds the invite's server and starts sign-in with its code. The helper does both.
-    func join(_ link: MultiplayerInviteLink) -> Task<Void, Never>? {
-        act("Joining \(MultiplayerServerAddress.host(link.server).multiplayerDisplay)…", failing: "Couldn’t join the server.") { client in
+    /// `then` is given the saved server, before the confirmation is posted. The tray's own form
+    /// clears itself and returns home there.
+    func join(_ link: MultiplayerInviteLink,
+              report: (@MainActor (_ failure: String?) -> Void)? = nil,
+              then: (@MainActor (MultiplayerServerSummary) -> Void)? = nil) -> Task<Void, Never>? {
+        act("Joining \(MultiplayerServerAddress.host(link.server).multiplayerDisplay)…", failing: "Couldn’t join the server.",
+            report: report) { client in
             let saved = try await client.join(link: link.raw)
             self.merge(saved)
             let request = link.from.isEmpty ? "" : " A friend request goes to \(link.from.multiplayerDisplay) once you’re signed in."
-            self.serverDraft = MultiplayerServerDraft()
-            self.go(.home)
+            then?(saved)
             self.post(notice: "Added \(saved.displayName). Finish signing in in your browser.\(request)")
         }
     }
@@ -340,26 +371,34 @@ extension MultiplayerModel {
     }
 
     func loadMembership() {
-        guard let client, case .membership(let id) = route else { return }
+        guard client != nil, case .membership(let id) = route else { return }
         membershipTask?.cancel()
         membershipToken &+= 1
         let token = membershipToken
         membership = .loading
         membershipTask = Task {
-            let result: Result<MultiplayerMembership, MultiplayerFailure>
-            do { result = .success(try await client.scoped(to: id).membership()) } catch { result = .failure(.from(error)) }
+            let result = await self.loadMembership(on: id)
             // A newer read, or a page change, owns the state now.
             guard token == self.membershipToken else { return }
             self.membershipTask = nil
             guard self.route == .membership(id) else { return }
             switch result {
-            case .success(let current):
+            case .loaded(let current):
                 self.membership = .loaded(current)
                 self.membershipDraft = MultiplayerMembershipDraft(current)
-            case .failure(let failure):
-                self.membership = .failed(failure == .cancelled ? "The read was stopped. Try again." : failure.message)
+            case .failed(let message):
+                self.membership = .failed(message)
+            case .loading:
+                break
             }
         }
+    }
+
+    /// Reads a relay's membership settings for the caller, who keeps the result. The tray's route
+    /// and its own membership page are left alone.
+    func loadMembership(on id: String) async -> MultiplayerLoad<MultiplayerMembership> {
+        guard let client else { return .failed(unavailable?.message ?? "The network helper isn’t available.") }
+        do { return .loaded(try await client.scoped(to: id).membership()) } catch { return .failed(MultiplayerShareModel.readFailure(error)) }
     }
 
     var canSaveMembership: Bool {
@@ -367,15 +406,28 @@ extension MultiplayerModel {
         return membershipDraft.differs(from: current)
     }
 
+    /// Saves the settings on the tray's own membership page.
     @discardableResult
     func saveMembership() -> Task<Void, Never>? {
         guard canSaveMembership, case .membership(let id) = route else { return nil }
-        let draft = membershipDraft
-        return act("Saving membership…", failing: "Couldn’t save membership.", confirmation: "Membership saved.") { client in
-            let saved = try await client.scoped(to: id).setMembership(mode: draft.mode, allowedEmails: draft.allowedList,
-                                                                      admins: draft.adminList)
+        return saveMembership(membershipDraft, on: id, then: { saved in
             self.membership = .loaded(saved)
             self.membershipDraft = MultiplayerMembershipDraft(saved)
+        })
+    }
+
+    /// Saves a relay's membership settings from the caller's own draft. `then` is given what the
+    /// relay now holds.
+    @discardableResult
+    func saveMembership(_ draft: MultiplayerMembershipDraft, on id: String,
+                        report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                        then: (@MainActor (MultiplayerMembership) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.problem == nil else { return nil }
+        return act("Saving membership…", failing: "Couldn’t save membership.", confirmation: "Membership saved.",
+                   report: report) { client in
+            let saved = try await client.scoped(to: id).setMembership(mode: draft.mode, allowedEmails: draft.allowedList,
+                                                                      admins: draft.adminList)
+            then?(saved)
             self.me[id] = nil
         }
     }
