@@ -107,6 +107,7 @@ struct MultiplayerTraceRow: View {
         .overlay(alignment: .leading) { Rectangle().fill(color.opacity(event.kind == .message ? 0.35 : 0.9)).frame(width: 2) }
         .overlay(alignment: .bottom) { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel("\(event.kindTitle): \(event.text)")
         .accessibilityValue(event.at.map { $0.formatted(date: .omitted, time: .standard) } ?? "")
     }
@@ -139,6 +140,7 @@ struct MultiplayerCountdown: View {
                 }
             }
             .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(MultiplayerHandover.spoken(left))
         }
     }
@@ -229,6 +231,7 @@ struct MultiplayerFindingRow: View {
         }
         .overlay(alignment: .bottom) { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel("\(finding.severityTitle), \(finding.file.isEmpty ? "no file" : finding.location). \(finding.text)")
     }
 }
@@ -390,6 +393,7 @@ struct MultiplayerWatchView: View {
                             Text("every \(interval) s").font(MultiplayerTheme.label).foregroundStyle(.inkSecondary)
                         }
                         .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isStaticText)
                         .accessibilityLabel("Reading every \(interval) seconds")
                     }
                 }

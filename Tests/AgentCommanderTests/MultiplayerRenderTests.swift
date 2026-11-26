@@ -73,6 +73,7 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         let home = "s-fixture-home"
         let share = model.share
         let live = model.share.live
+        let teams = model.share.teams
         let pages: [(String, () -> Void)] = [
             // Live work (increment 4).
             ("suggestion", { share.open(.approval("ap-3"), on: home) }),
@@ -118,6 +119,54 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
             ("thread", { share.open(.thread(request: "rq-handoff-1", title: "Fix flaky reconnect test"), on: home) }),
             ("audit", { share.open(.audit(resource: ""), on: home) }),
             ("server", { model.openServer(home) }),
+            // Teams (increment 5).
+            ("groups", { share.open(.groups, on: home); teams.groupDraft = "release-crew" }),
+            ("group", { share.open(.group("grp-relay"), on: home) }),
+            ("group-delete", { share.open(.group("grp-relay"), on: home); teams.ask(.deleteGroup("grp-relay")) }),
+            ("group-member", { share.open(.group("grp-ios"), on: home) }),
+            ("grant-sheet-group", {
+                share.startGrant(on: home, group: "grp-relay", resourceID: "res-2")
+                share.toggleGrantAction("agent.ask")
+            }),
+            ("workspaces", { share.open(.workspaces, on: home) }),
+            ("workspace-new", {
+                teams.startWorkspace(on: home)
+                teams.workspaceDraft.group = "grp-relay"
+                teams.workspaceDraft.name = "Avatar uploads"
+                teams.workspaceDraft.goal = "Retry failed avatar uploads without duplicating them."
+                teams.workspaceDraft.repository = "github.com/example/relay"
+            }),
+            ("workspace", { share.open(.workspace("ws-relay"), on: home) }),
+            ("workspace-pull-requests", { share.open(.workspace("ws-ios"), on: home) }),
+            ("claim", {
+                teams.startClaim(in: "ws-relay", on: home)
+                teams.claimDraft.kind = .paths
+                teams.claimDraft.key = "Sources/Relay/Queue.swift, docs"
+            }),
+            ("queue-add", {
+                teams.startQueueAdd(for: "ws-relay", on: home)
+                teams.queueDraft.branch = "collab/deadline"
+            }),
+            ("hosts", { share.open(.hosts, on: home) }),
+            ("knowledge", { share.open(.knowledge, on: home) }),
+            ("knowledge-share-secret", {
+                teams.startKnowledge(on: home)
+                teams.knowledgeDraft.kind = .mcp
+                teams.knowledgeDraft.name = "github-issues"
+                teams.knowledgeDraft.content = "{\n  \"env\": {\"GITHUB_TOKEN\": \"ghp_abcdefghijklmnopqrstuvwxyz0123\"}\n}"
+                teams.knowledgeDraft.scope = .group
+                teams.knowledgeDraft.target = "grp-relay"
+            }),
+            ("knowledge-item", { share.open(.knowledgeItem("kn-skill"), on: home) }),
+            ("knowledge-item-mcp", { share.open(.knowledgeItem("kn-mcp"), on: home) }),
+            ("reputation", { teams.startReputation("dir-sam-agent", on: home); teams.endorseDraft = "code review" }),
+            ("reputation-hidden", { teams.startReputation("dir-mei-gpu", on: home) }),
+            ("directory-search", {
+                teams.startSearch(on: home)
+                teams.searchDraft = "ios"
+                teams.runSearch(on: home)
+            }),
+            ("policy", { share.open(.policy, on: home) }),
         ]
         for (name, open) in pages {
             model.go(.home)
@@ -130,6 +179,33 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         share.open(.handoffDetail(request: "rq-handoff-1"), on: home)
         if let row = share.handoff("rq-handoff-1", on: home) { await share.check(row, on: home, result: true)?.value }
         try await Self.write(model, "handoff-result", to: folder)
+        // Teams pages that show what an action brought back.
+        model.go(.home)
+        share.open(.workspace("ws-relay"), on: home)
+        await model.settle()
+        if let card = teams.card("card-2") { teams.openCard(card, in: "ws-relay", on: home) }
+        teams.resultDraft = "Waiters are keyed by lease ID. Branch `collab/lease-waiters`, 212 tests pass."
+        try await Self.write(model, "card", to: folder)
+        model.go(.home)
+        teams.startHostRun("dir-jonas-mini", on: home)
+        teams.hostDraft.command = "run-ios-ui-tests"
+        await teams.runOnHost("dir-jonas-mini", on: home)?.value
+        try await Self.write(model, "host-run", to: folder)
+        teams.hostDraft.argumentText = "--fail-fast"
+        await teams.runOnHost("dir-jonas-mini", on: home)?.value
+        try await Self.write(model, "host-run-failed", to: folder)
+        model.go(.home)
+        share.open(.policy, on: home)
+        await model.settle()
+        teams.policyDraft.member = "fixture-noor"
+        teams.policyDraft.directory = false
+        teams.ask(.suspend("fixture-noor"))
+        try await Self.write(model, "policy-suspend", to: folder)
+        model.go(.home)
+        share.open(.workspace("ws-relay"), on: home)
+        await model.settle()
+        await teams.runQueue("ws-relay", on: home)?.value
+        try await Self.write(model, "workspace-queue-merged", to: folder)
         model.close()
         defaults.removePersistentDomain(forName: suite)
     }

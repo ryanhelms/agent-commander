@@ -30,6 +30,7 @@ struct MultiplayerSpinner: View {
         }
         .frame(width: size, height: size)
         .accessibilityElement()
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel("In progress")
     }
 }
@@ -57,12 +58,14 @@ struct MultiplayerMeter: View {
     let used: Int
     let limit: Int
     var cells = 16
+    /// The bar counts something wanted, such as accepted results: it stays `working` when full.
+    var isGood = false
 
     private var fraction: Double { limit > 0 ? min(Double(used) / Double(limit), 1) : 0 }
 
     var body: some View {
         let lit = Int((fraction * Double(cells)).rounded(.up))
-        let color = fraction >= 1 ? MultiplayerTheme.failure : fraction >= 0.8 ? MultiplayerTheme.attention : MultiplayerTheme.working
+        let color = isGood ? MultiplayerTheme.working : fraction >= 1 ? MultiplayerTheme.failure : fraction >= 0.8 ? MultiplayerTheme.attention : MultiplayerTheme.working
         HStack(spacing: 2) {
             ForEach(0..<cells, id: \.self) { index in
                 Rectangle()
@@ -72,7 +75,8 @@ struct MultiplayerMeter: View {
         }
         .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.slow), value: lit)
         .accessibilityElement()
-        .accessibilityLabel("\(Int((fraction * 100).rounded())) percent used")
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityLabel("\(Int((fraction * 100).rounded())) percent\(isGood ? "" : " used")")
     }
 }
 
@@ -124,6 +128,7 @@ struct MultiplayerSegments<Option: Hashable>: View {
                 }
                 .buttonStyle(MultiplayerRowButtonStyle())
                 .accessibilityLabel(title(option))
+                .accessibilityValue(isOn ? "Selected" : "")
                 .accessibilityAddTraits(isOn ? .isSelected : [])
             }
         }
@@ -171,8 +176,11 @@ struct MultiplayerMenuField<Option: Hashable>: View {
         .menuIndicator(.hidden)
         .disabled(!isEnabled || options.isEmpty)
         .opacity(isEnabled && !options.isEmpty ? 1 : 0.5)
+        // The menu and its drawn label would otherwise each be offered as a menu button.
+        .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
         .accessibilityValue(current ?? placeholder)
+        .accessibilityHint("Opens a list to choose from")
     }
 }
 
@@ -304,6 +312,7 @@ struct MultiplayerAgentChip: View {
         .clipShape(shape)
         .overlay { shape.strokeBorder(MultiplayerTheme.border) }
         .accessibilityElement()
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel(capabilities.headline ?? "Agent")
     }
 }
@@ -347,6 +356,7 @@ struct MultiplayerStatusStrip<Trailing: View>: View {
                 .padding(.vertical, 7)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel(cell.spoken ?? "\(cell.label), \(cell.value)")
             }
             trailing
@@ -405,12 +415,15 @@ struct MultiplayerTabBar: View {
                 .keyboardShortcut(tab.id.shortcut, modifiers: .command)
                 .help("\(tab.id.title) (⌘\(String(tab.id.shortcut.character)))")
                 .accessibilityLabel(tab.count > 0 ? "\(tab.id.title), \(tab.count) \(tab.id.countNoun)" : tab.id.title)
+                .accessibilityValue(isOn ? "Selected" : "")
                 .accessibilityAddTraits(isOn ? [.isSelected] : [])
+                .accessibilityHint("Tab \(index + 1) of \(tabs.count)")
             }
         }
         .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: selection)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sections")
+        .accessibilityAddTraits(.isTabBar)
     }
 }
 

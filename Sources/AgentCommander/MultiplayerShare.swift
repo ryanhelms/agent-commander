@@ -184,13 +184,16 @@ struct MultiplayerDirectoryEntry: Decodable, Equatable, Sendable, Identifiable {
     /// The actions already granted to you.
     let granted: [String]
     let capabilities: MultiplayerCapabilities?
+    /// Skills people who used it vouch for (increment 5).
+    let endorsements: [MultiplayerEndorsement]
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, owner, handle, ownerHandle, actions, offered, granted, grantedActions, capabilities
+        case id, name, kind, owner, handle, ownerHandle, actions, offered, granted, grantedActions, capabilities, endorsements
     }
 
     init(id: String, name: String, kind: String, owner: String, offered: [String], granted: [String] = [],
-         capabilities: MultiplayerCapabilities? = nil) {
+         capabilities: MultiplayerCapabilities? = nil, endorsements: [MultiplayerEndorsement] = []) {
+        self.endorsements = endorsements
         self.id = id
         self.name = name
         self.kind = kind
@@ -213,6 +216,7 @@ struct MultiplayerDirectoryEntry: Decodable, Equatable, Sendable, Identifiable {
         offered = MultiplayerUnique.keep((container.strings(.offered, .actions) ?? []) + granted) { $0 }
         let capabilities = (try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil
         self.capabilities = capabilities.flatMap { $0.isEmpty ? nil : $0 }
+        endorsements = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerEndorsement>.self, forKey: .endorsements)) ?? nil)?.items ?? []
     }
 
     /// A row of the older `shared` list: everything it lists is granted.
@@ -660,6 +664,8 @@ struct MultiplayerThread: Decodable, Equatable, Sendable {
 enum MultiplayerSharePolicy {
     static let ask = "agent.ask"
     static let handoff = "agent.handoff"
+    /// Lend hardware (increment 5): run one of a host's enrolled commands.
+    static let hostRun = "host.run"
     static let thread = ["thread.read", "thread.comment"]
     static let tracking = ["agent.status", "agent.result"]
 
@@ -687,6 +693,7 @@ enum MultiplayerSharePolicy {
         switch kind {
         case "agent": [ask, handoff, watch, suggest, review]
         case "repo": ["issue.read", "issue.comment", "issue.close", "git.head", "git.commit", "git.push"]
+        case "host": [hostRun]
         default: []
         }
     }
@@ -828,6 +835,9 @@ struct MultiplayerShareDraft: Equatable {
 
     var server = ""
     var handle = ""
+    /// A group of friends to share with, in place of one friend (increment 5). The relay grants
+    /// every current member, and later members as they join.
+    var group = ""
     var resourceID = ""
     /// Set when the sheet was opened from the cockpit. The resource is added first if it's new.
     var target: MultiplayerShareTarget? = nil
@@ -865,13 +875,17 @@ struct MultiplayerShareDraft: Equatable {
 
     /// One `grant` request per action: the chosen ones and their companions among `offered`.
     func grants(kind: String, offered: [String], now: Date) -> [[String: MultiplayerPayloadValue]] {
-        guard !handle.isEmpty, !resourceID.isEmpty, let budget = budgetTokens else { return [] }
+        guard !handle.isEmpty || !group.isEmpty, !resourceID.isEmpty, let budget = budgetTokens else { return [] }
         let limits = limits(now: now)
         return MultiplayerSharePolicy.granted(chosen: actions, offered: offered).map { action in
-            ["handle": .string(handle), "kind": .string(kind), "resource": .string(resourceID),
-             "capability": .string(action), "maxUses": .number(limits.maxUses),
-             "expiresAt": .string(limits.expiresAtText), "approval": .string(approval.rawValue),
-             "budgetTokens": .number(budget), "attribution": .string(attribution.rawValue)]
+            var grant: [String: MultiplayerPayloadValue] = [
+                "kind": .string(kind), "resource": .string(resourceID),
+                "capability": .string(action), "maxUses": .number(limits.maxUses),
+                "expiresAt": .string(limits.expiresAtText), "approval": .string(approval.rawValue),
+                "budgetTokens": .number(budget), "attribution": .string(attribution.rawValue)]
+            // A group takes the friend's place: the contract names it `group` instead of `handle`.
+            if group.isEmpty { grant["handle"] = .string(handle) } else { grant["group"] = .string(group) }
+            return grant
         }
     }
 

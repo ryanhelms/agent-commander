@@ -32,6 +32,13 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     /// Live work (increment 4). Review requests and suggestions travel through `send`.
     case watch, handover, handback, handovers, fanout
     case reviewPost = "review-post"
+    /// Teams (increment 5). Groups, workspaces, cards, reputation, the directory and admin policy
+    /// travel through `relay`; these act on the device itself.
+    case queue
+    case queueAdd = "queue-add"
+    case queueMerge = "queue-merge"
+    case knowledgeShare = "knowledge-share"
+    case knowledgeInstall = "knowledge-install"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
@@ -225,7 +232,7 @@ enum MultiplayerUnique {
 // MARK: - Resources and capabilities
 
 enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
-    case repo, agent
+    case repo, agent, host
 
     var id: String { rawValue }
 
@@ -233,6 +240,7 @@ enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .repo: "Repository"
         case .agent: "Agent"
+        case .host: "Host"
         }
     }
 
@@ -240,6 +248,7 @@ enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .repo: "folder"
         case .agent: "terminal"
+        case .host: "cpu"
         }
     }
 
@@ -247,6 +256,7 @@ enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .repo: "Checkout path"
         case .agent: "Worker or coordinator ID"
+        case .host: "Command file"
         }
     }
 
@@ -254,6 +264,7 @@ enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .repo: "/path/to/checkout"
         case .agent: "Worker or coordinator ID"
+        case .host: "/path/to/commands.json"
         }
     }
 
@@ -261,6 +272,7 @@ enum MultiplayerResourceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .repo: "Absolute path of a local checkout. You can drop a folder here."
         case .agent: "The exact ID of an enrolled worker or coordinator on this Mac."
+        case .host: "Absolute path of a JSON file: {\"commands\": [{\"name\", \"args\", \"dir\"}]}. Friends can run only the commands it lists."
         }
     }
 
@@ -286,6 +298,7 @@ enum MultiplayerCapability {
         case "agent.watch": "Watch the worker’s output"
         case "agent.suggest": "Suggest messages to the worker"
         case "review.request": "Request code reviews"
+        case "host.run": "Run enrolled commands"
         case "agent.status": "Check a hand-off’s status"
         case "agent.result": "Read a hand-off’s result"
         case "thread.read": "Read request threads"
@@ -308,6 +321,7 @@ enum MultiplayerCapability {
         case "agent.watch": "eye"
         case "agent.suggest": "lightbulb"
         case "review.request": "checklist"
+        case "host.run": "play.rectangle"
         case "agent.status", "agent.result": "list.bullet.clipboard"
         case "thread.read", "thread.comment": "bubble.left.and.bubble.right"
         default: "key"
@@ -335,6 +349,8 @@ enum MultiplayerCapability {
             "Lets them suggest a message for \(name). Every suggestion waits for your approval before the worker sees it."
         case "review.request":
             "Lets them send \(name) a diff or a pull request to review. The worker answers with a summary and findings, and uses your provider quota."
+        case "host.run":
+            "Lets them run the commands you enrolled on \(name), and nothing else. Each run happens on this Mac and returns its exit code and the end of its output."
         case "agent.status", "agent.result": "Lets them follow the hand-offs they started on \(name) and read their results."
         case "thread.read", "thread.comment": "Lets them read and write the thread of each request they sent to \(name)."
         default: "Lets them use “\(capability)” on \(name), as the network service defines it."
@@ -802,6 +818,10 @@ struct MultiplayerResourceDraft: Equatable {
                 return "Worker and coordinator IDs have no spaces."
             }
             if target.count > 200 { return "That ID is too long." }
+        case .host:
+            if target.isEmpty { return "Enter the command file’s absolute path." }
+            if !target.hasPrefix("/") { return "Use an absolute path that starts with /." }
+            if target.split(separator: "/").contains("..") { return "Use a path without .. segments." }
         }
         return nil
     }

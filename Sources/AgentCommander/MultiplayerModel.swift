@@ -663,7 +663,8 @@ final class MultiplayerSessionModel {
         perform(.accept(requestID: request.id, handle: request.handle))
     }
 
-    func startAddResource() {
+    func startAddResource(kind: MultiplayerResourceKind? = nil) {
+        if let kind { resourceDraft.kind = kind }
         go(.addResource)
     }
 

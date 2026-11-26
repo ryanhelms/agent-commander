@@ -417,7 +417,7 @@ enum MultiplayerLiveFixture {
         #expect(live.winners["rq-3"] == "c-1" && MultiplayerWinnerStore(defaults: defaults).all == ["rq-3": "c-1"])
         #expect(live.remoteWork.first { $0.kind == .fanout }?.state == "Winner chosen")
         // Nothing about the choice is sent.
-        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me].contains($0) }.isEmpty)
+        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me, .queue].contains($0) }.isEmpty)
         live.chooseWinner("c-1", of: "rq-3")
         #expect(live.winners["rq-3"] == nil)
         model.close()

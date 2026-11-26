@@ -746,6 +746,8 @@ struct CockpitScreen: View {
                            toggleGroup: { id in toggleGroup(id) }) { worker in
                     tile(worker, variant: .wall)
                 }
+                // Hand-offs running on friends' Macs, as remote workers (network tray).
+                MultiplayerRemoteWorkerBand(model: .shared)
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }

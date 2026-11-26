@@ -234,6 +234,16 @@ enum MultiplayerFilePanel {
         return panel.runModal() == .OK ? panel.urls : []
     }
 
+    /// Where to save a file the person asked for.
+    static func chooseDestination(named name: String) -> String? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
+        panel.message = "Choose where to save \(name)"
+        panel.prompt = "Save"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path(percentEncoded: false)
+    }
+
     static func chooseCheckout(for name: String) -> String? {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -468,6 +478,8 @@ struct MultiplayerAgentRoster: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help(help)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title): choose a server")
         }
     }
 
@@ -498,6 +510,7 @@ struct MultiplayerAgentRoster: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel([name.multiplayerDisplay, badge.text, chip?.headline,
                                      owner.map { "owned by \($0.multiplayerDisplay)" }, "on \(serverName(server))"]
                     .compactMap { $0 }.joined(separator: ", "))
@@ -520,6 +533,9 @@ struct MultiplayerDirectoryPage: View {
     let onRequest: (MultiplayerDirectoryEntry) -> Void
     let onConsult: (MultiplayerDirectoryEntry) -> Void
     let onHandOff: (MultiplayerDirectoryEntry) -> Void
+    /// Opens a resource's reputation and endorsements (increment 5).
+    var onReputation: ((MultiplayerDirectoryEntry) -> Void)? = nil
+    var onRun: ((MultiplayerDirectoryEntry) -> Void)? = nil
 
     private var owners: [String] { MultiplayerUnique.keep(entries.map(\.owner)) { $0 } }
 
@@ -594,11 +610,23 @@ struct MultiplayerDirectoryPage: View {
                         Text("Offers no actions yet.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                     }
                 }
+                MultiplayerEndorsementChips(endorsements: entry.endorsements)
                 HStack(spacing: 6) {
                     if isWaiting(entry.id) {
                         MultiplayerBadge(text: "Request waiting", symbol: "clock")
                     }
                     Spacer(minLength: 0)
+                    if let onReputation {
+                        Button("Reputation") { onReputation(entry) }
+                            .buttonStyle(MultiplayerTrayButtonStyle())
+                            .accessibilityLabel("Reputation of \(entry.name.multiplayerDisplay)")
+                    }
+                    if let onRun, entry.canRunOnHost {
+                        Button("Run…") { onRun(entry) }
+                            .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                            .disabled(isBusy)
+                            .accessibilityLabel("Run a command on \(entry.name.multiplayerDisplay)")
+                    }
                     if !entry.requestable.isEmpty, !isWaiting(entry.id) {
                         Button("Request access") { onRequest(entry) }
                             .buttonStyle(MultiplayerTrayButtonStyle(role: entry.granted.isEmpty ? .primary : .standard))
@@ -766,6 +794,7 @@ struct MultiplayerApprovalPage: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel("Suggested message: \(approval.request)")
             }
         }
@@ -865,6 +894,8 @@ struct MultiplayerGrantSheet: View {
     /// More than one only when the sheet was opened from the cockpit.
     let servers: [MultiplayerServerSummary]
     let friends: [MultiplayerFriend]
+    /// Groups the owner can share with as a whole (increment 5). Empty hides the choice.
+    var groups: [MultiplayerGroup] = []
     let resources: [MultiplayerResource]
     let resource: MultiplayerShareResource?
     let companions: [String]
@@ -872,6 +903,8 @@ struct MultiplayerGrantSheet: View {
     let onResourceChange: () -> Void
     let onToggle: (String) -> Void
     @FocusState private var budgetFocused: Bool
+    /// The owner chose "A group" but hasn't picked one yet.
+    @State private var toGroup = false
 
     var body: some View {
         MultiplayerBand {
@@ -908,10 +941,23 @@ struct MultiplayerGrantSheet: View {
                             .onChange(of: draft.resourceID) { onResourceChange() }
                     }
                 }
-                MultiplayerField(label: "Friend", hint: friends.isEmpty ? "No friends on this server yet." : nil) {
-                    MultiplayerMenuField(label: "Friend", placeholder: "Choose a friend",
-                                         options: friends.map { ($0.handle, $0.handle.multiplayerDisplay) },
-                                         selection: $draft.handle)
+                if !groups.isEmpty {
+                    MultiplayerSegments(label: "Share with", options: [false, true], title: { $0 ? "A group" : "One friend" },
+                                        selection: Binding(get: { !draft.group.isEmpty || toGroup },
+                                                           set: { toGroup = $0; if !$0 { draft.group = "" } else { draft.handle = "" } }))
+                }
+                if !groups.isEmpty, toGroup || !draft.group.isEmpty {
+                    MultiplayerField(label: "Group", hint: "Every member gets this access. People you add later get it too, and people you remove lose it.") {
+                        MultiplayerMenuField(label: "Group", placeholder: "Choose a group",
+                                             options: groups.map { ($0.id, "\($0.name.multiplayerDisplay), \($0.memberTitle)") },
+                                             selection: $draft.group)
+                    }
+                } else {
+                    MultiplayerField(label: "Friend", hint: friends.isEmpty ? "No friends on this server yet." : nil) {
+                        MultiplayerMenuField(label: "Friend", placeholder: "Choose a friend",
+                                             options: friends.map { ($0.handle, $0.handle.multiplayerDisplay) },
+                                             selection: $draft.handle)
+                    }
                 }
             }
         }
@@ -967,7 +1013,8 @@ struct MultiplayerGrantSheet: View {
                     }
                 }
                 MultiplayerChoice(label: "Cost", options: MultiplayerAttribution.allCases, title: \.title,
-                                  selection: $draft.attribution, note: draft.attribution.explanation(handle: draft.handle))
+                                  selection: $draft.attribution,
+                                  note: draft.attribution.explanation(handle: draft.group.isEmpty ? draft.handle : "each member"))
             }
         }
     }
@@ -1157,13 +1204,7 @@ struct MultiplayerHandoffDetail: View {
                 MultiplayerBand {
                     VStack(alignment: .leading, spacing: Space.s) {
                         MultiplayerBandHeading(title: report.report == nil ? "Latest summary" : "Result report")
-                        MultiplayerWell {
-                            Text(text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(MultiplayerTheme.foreground)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
+                        MultiplayerWell { MultiplayerMarkdown(text: text) }
                     }
                 }
             }
@@ -1197,6 +1238,13 @@ struct MultiplayerHandoffDetail: View {
 
 /// A request's comments, oldest first, and the field to add one.
 struct MultiplayerThreadPage: View {
+    /// One comment as VoiceOver reads it: "sam, agent, 2 min ago: text".
+    static func spoken(_ comment: MultiplayerComment, now: Date) -> String {
+        let who = comment.author.isEmpty ? (comment.isAgent ? "Agent" : "Someone") : comment.author.multiplayerDisplay
+        let parts = [who, comment.isAgent && !comment.author.isEmpty ? "agent" : nil, MultiplayerActivityRow.time(comment.at, now: now)]
+        return "\(parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")): \(comment.text)"
+    }
+
     let title: String
     let state: MultiplayerLoad<MultiplayerThread>
     @Binding var draft: String
@@ -1242,7 +1290,9 @@ struct MultiplayerThreadPage: View {
                                 .textSelection(.enabled)
                         }
                         .padding(.vertical, 4)
-                        .accessibilityElement(children: .combine)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isStaticText)
+                        .accessibilityLabel(Self.spoken(comment, now: now))
                         .multiplayerArriving()
                     }
                 }
