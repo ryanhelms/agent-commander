@@ -54,8 +54,17 @@ func TestRemotePairingAndAPI(t *testing.T) {
 	if r, _ = c.Get(en.URL + "/api/watchable"); r.StatusCode != 200 {
 		t.Fatalf("watchable: %d", r.StatusCode)
 	}
+	var devs struct{ Devices []struct{ ID string } }
 	data, _ = call(t, h, "remote-devices", map[string]any{})
-	if !strings.Contains(string(data), `"name":"Phone"`) || strings.Contains(string(data), `"pairing"`) {
+	json.Unmarshal(data, &devs)
+	if _, e := call(t, h, "remote-rename", map[string]any{"device": devs.Devices[0].ID, "name": "Ryan's phone"}); e != "" {
+		t.Fatal(e)
+	}
+	if _, e := call(t, h, "remote-rename", map[string]any{"device": devs.Devices[0].ID, "name": " "}); e == "" {
+		t.Fatal("an empty name was accepted")
+	}
+	data, _ = call(t, h, "remote-devices", map[string]any{})
+	if !strings.Contains(string(data), `"name":"Ryan's phone"`) || strings.Contains(string(data), `"pairing"`) {
 		t.Fatalf("devices: %s", data)
 	}
 }

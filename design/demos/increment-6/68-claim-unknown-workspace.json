@@ -1,0 +1,4 @@
+{"verb": "claim", "request": {"workspace":"no-such-ws","kind":"issue","key":"#1","holder":"ryan/agent"}, "response": {
+ "error": "no workspace no-such-ws in your groups",
+ "ok": false
+}}

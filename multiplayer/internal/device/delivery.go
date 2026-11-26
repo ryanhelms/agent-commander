@@ -440,22 +440,19 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 		cancel()
 	}
 	status := "completed"
+	if denial == "" && actionErr != nil {
+		denial, reason = actions.FailureCode(actionErr), actions.FailureReason(actionErr)
+	}
 	if denial != "" {
 		status = "declined"
+		if errors.Is(actionErr, actions.ErrUncertain) {
+			status = "uncertain"
+		}
 		failure := map[string]string{"code": denial}
 		if reason != "" {
 			failure["reason"] = reason
 		}
 		result, e = json.Marshal(failure)
-		if e != nil {
-			return e
-		}
-	} else if actionErr != nil {
-		status = "declined"
-		if errors.Is(actionErr, actions.ErrUncertain) {
-			status = "uncertain"
-		}
-		result, e = json.Marshal(map[string]string{"code": actions.FailureCode(actionErr)})
 		if e != nil {
 			return e
 		}

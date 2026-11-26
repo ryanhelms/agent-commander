@@ -1,0 +1,4 @@
+{"verb": "queue-add", "request": {"workspace":"1ef01375c2222276ae51bca4121286d8655e10968359d6e7","branch":"feature-ok","checkout":"/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq"}, "response": {
+ "error": "workspace 1ef01375c2222276ae51bca4121286d8655e10968359d6e7 uses pull_request integration",
+ "ok": false
+}}

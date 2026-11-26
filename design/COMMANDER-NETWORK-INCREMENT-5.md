@@ -16,7 +16,7 @@ A workspace is a goal, a repository, a base branch and a member group, on one se
 - **Claims:** `POST /v1/workspaces/{id}/claims` with `{"kind": "issue | paths | card", "key", "holder": "<handle>/<agent>"}`. An overlapping live claim returns 409 with the holder. `DELETE` releases a claim. A claim expires 10 minutes after its holder's device lease ends.
 - **Integration:**
   - *queue:* contributors push branches through the owner's existing `git.push` grant. The owner's device runs a merge queue: tray verb `queue` lists the queue, and `queue-merge` runs the workspace's test command and merges in order.
-  - *pull_request:* contributors open pull requests themselves. Commander links them in the workspace view.
+  - *pull_request:* contributors open pull requests themselves. Commander lists the repository's open pull requests in the workspace view: tray verb `workspace-prs` with `{"server", "workspace"}` runs `gh pr list` with the person's own GitHub login and returns `{"repository", "pullRequests": [{"number", "title", "url", "author", "state", "branch"}]}`. Only GitHub repositories are supported.
 - **Tray verbs:** `workspaces`, `workspace-create`, `claim` and `release`.
 
 ## 3. Task board

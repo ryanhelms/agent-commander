@@ -17,7 +17,7 @@ Sources of truth in code:
 | Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
 | Themes | `themes` in `design/system/tokens.json`, `Theme` in `ThemeTokens.swift` |
 
-The app has two themes. **Console** is the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
+The app has two themes. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. Console is the default. Black glass is chosen in Settings and kept under `appearance.theme`. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
@@ -72,6 +72,8 @@ Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `we
 
 Reduce Transparency forces the opaque fill in both themes. The web Remote page is unaffected.
 
+Black glass draws the same components through its own tokens: the sidebar floats as a glass sheet, groups are separated by space rather than rules, the selected row has a rounded fill and outline with no marker, and a hot count uses the highlight fill.
+
 ### Shape
 
 | Token | Value |
@@ -122,6 +124,13 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | Tray width | 400 pt |
 | Page inset | 24 pt |
 | Table row height | 34 pt |
+| Sidebar row height | 28 pt |
+| Mode rail width | 48 pt |
+| Mode rail cell | 32 pt square, 18 pt icon |
+| Context list width | 196 pt |
+| Place mark | 18 pt |
+| Corner count | 14 pt |
+| Toolbar band | 52 pt |
 
 ### Motion
 
@@ -150,14 +159,16 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Component | What it is |
 |---|---|
 | Lamp | 9 pt state mark: `on` filled circle, `off` outlined circle, `waiting` open arc, `error` diamond, `unknown` focus ring, `busy` square, `away` half-filled circle, `doNotDisturb` circle with a bar. Live lamps pulse. |
-| Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off`. |
+| Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off` (`Tone.lamp`). The hand-off detail's state uses it. |
+| Count | A place's count in `label`, on `hair`. A hot count is filled `attention` with `onAccent` ink. A figure such as "2/3" takes the count's place and is never hot. |
+| Place mark | An 18 pt symbol in `secondary`, or `foreground` when selected. A project or workspace is one letter in `focus` on a square mark. |
 | Spinner | 12 pt arc turning every 1.1 s. Labelled "In progress". |
 | Mark | Square icon tile for a non-person thing: agent, repository, resource. Well fill, border edge, optional tone. |
 | Avatar | Round picture, or the initial on the well when there is no picture. |
 | Swatch | 4 × 12 pt colour bar. |
 | Meter | 16 cells of 5 × 9 pt. Fill is `working`, `attention` at 80% and `failure` at 100%. With `isGood` the bar counts something wanted, such as accepted results, and stays `working` when full. |
 | Field box | Sunken well with a 2 pt-radius edge that turns `focus` when focused. |
-| Badge | Small outlined label. Tinted when it has a tone. |
+| Badge | Small outlined label. Tinted when it has a tone. Its symbol is decoration: the word carries the meaning, so a tick is never spoken as "Selected". |
 | Signed badge | Marks a result sealed by a pinned device key. |
 | Grant badge | An agent row's grant status: Granted is `working` with a check; Offered is outlined. |
 | Holder badge | "<handle> has control", `attention` tone with a hand icon. It names the friend's handle, never an account ID; with no handle it says "A friend". |
@@ -185,32 +196,53 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Band | Padded region with a hairline under it. This is how the tray is divided. |
 | Trace row | Time (`HH:MM:SS`), a kind tag and text, with a 2 pt left rule coloured by kind: message `foreground`, tool `focus`, status `attention`. Hairline under each line. |
 | Countdown | Time left as a mono figure, ticking each second, over a 56 × 2 pt line that drains linearly. `working`, then `attention` under five minutes. When the full length isn't known, the line drains over the shortest offered length that holds what is left. With Reduce Motion the line steps. |
-| Decision row | A request with Deny and Approve (or Decline and Review). The text opens the full review. |
+| Decision row | A request with the answers its source can take: Deny and Approve, Decline and Review, Accept, or Reply. The primary answer is the last cell. A worker's Reply opens the request where it is answered, beside the wall. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
 | Choice card | A selectable card: a thumbnail, a round choice mark, the option's name and one line about it. The selected card is filled `selection` with the leading `focus` marker and the word "Selected" in `working`. |
 | Theme thumbnail | A small window drawn in one theme's own tokens: its rail, two panels with a state mark, and a primary action. |
+| Place row | A place mark, the title in `body` and a trailing count, 28 pt high. The selected row is filled `selection` with the 2 pt `focus` leading marker. Hover tints it 6%. In the tray each of the first nine rows has a ⌘ number shortcut, named in its tooltip; the main window's context list has none. A place that can be shared (a project) offers Share… in its context menu. |
+| Group heading | The group's name in `heading` and secondary ink. A group that folds is a button with a chevron; while folded it shows its hot count beside the name. |
+| Mode cell | A 32 pt square cell with an 18 pt icon. The selected cell is filled `selection` with the leading marker. A hot count sits on the top trailing corner at 14 pt. Each cell has a ⌘ number shortcut. |
+| Toolbar readouts | A status strip sized for the toolbar: `label` over a `data` value, cells split by hairlines on the well inside one hairline frame. `servers` shows "2/3" with a lamp (`on` when all answer, `busy` and `attention` ink when some do, `error` and `failure` ink when none do) and opens Servers. `presence` shows the lamp and word, has a chevron beside its label and opens the presence choices. |
+| Origin cell | Who asks, at a fixed 196 pt so every request starts on one line. A local worker is a 28 pt square mark, its name in `data` and its host in `fingerprint`. A network request is the server's swatch, the friend's round 28 pt avatar, the handle in `data` and the server in `fingerprint`. |
+| Kind tag | question, approval, access or friend, as a badge in `label` beside the request's title. |
+| Clock label | Right-aligned in `data` over a `fingerprint` word: the time left, ticking each second, or the wait. Empty when the source gives no time. |
+| Placeholder page | A page that a later increment brings: the page header with one standard action that reaches the content today ("Open network panel"), then a load note saying what will be here. |
+| Reply field | A field box under a question's row, then Cancel and a primary Send. Send is off while the field is empty. Return sends and Escape cancels. |
 | Alert band | Full-width band under the status strip: `failure` at 12% fill with a 45% lower edge, an error lamp and one sentence, such as "Can't reach your Mac". |
 | Load note | A lamp and one sentence in a hairline-topped row. The lamp is `waiting` while reading, `error` when the read failed, `off` when empty, and `on` for "Nothing is waiting for you". |
-| Outcome well | A well holding a state label ("Approved", "Denied") that replaces a verb strip once its action is done, then fades out. |
+| Outcome well | A well holding a state label that replaces a verb strip once its action is done, then fades out: Approved, Accepted and Replied in `working`, Denied in `failure`, Declined in neutral, In review in `focus`. |
 | Inline confirm | The second press before something that can't be undone: a well with a `failure` edge, one sentence saying what goes with it, then a keep button and a `danger` button. It arrives under the row it belongs to. The review page's "Post this review" confirmation is the same pattern with an `attention` edge and a primary button, and scrolls into view when it opens. |
 | State tally | Counts by state as joined cells that also filter: "open 3, claimed 1, done 4". The chosen cell is filled `focus`; elsewhere a count above zero takes its state's tone. |
-| Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own. |
+| Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own, which opens an inline confirm under the row. |
 | Card row | One card of a board: its state as a lamp and a word, its title, who has it, and the one step that moves it on. The text opens the card. |
-| Queue row | A branch's place in the merge queue as a mono number, the branch, its state, and what stopped it when something did. |
-| Output well | The end of a command's or test run's output in mono on a well, selectable, with its exit state. |
+| Queue row | A branch's place in the merge queue as a mono number, the branch, its state, and what stopped it when something did. Remove takes a queued or settled branch out of the queue, after an inline confirm under the row. |
+| Pull request row | One open pull request: its number as mono data in secondary ink, the title in `name` on up to two lines, then the branch in `fingerprint` and the author's handle in `sub`. An up-right arrow at the trailing edge says it leaves the app. The whole row opens the pull request in the browser; a row without an https address is plain text. |
+| Output well | The end of a command's or test run's output in mono on a well, selectable, with its exit state. The exit state and the time taken are one readout ("Exit 1, 41 seconds"). |
 | Endorsement chips | Skills people vouch for as `working` badges with a seal, each with "×n" when more than one person did. The first four show, then "+n". |
 | Group row | A group: its name, its member count, the first few avatars, and an Owner (`focus`) or Member badge. |
 | Markdown block | Text an agent or friend wrote in Markdown, in the tray's type: headings, paragraphs, lists, fenced code on a well, and rules, with bold, italic, inline code and links. Nothing is fetched; an image stays as its source text. |
-| Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. |
-| Device row | A paired device: a mark, its name, "paired … , ends …" in mono, and Revoke (`danger`), which opens an inline confirm. |
+| Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. The frame clips the system focus ring, so the copy cell draws an inset focus ring. |
+| Inset focus ring | For a control whose frame clips the system focus ring, such as a cell joined to its neighbours: 2 pt of `focus` inside the control's own edge while it has keyboard focus. The control stays a native button. |
+| Device row | A paired device: a mark, its name, "paired … , ends …" in mono, then Rename and Revoke (`danger`). Rename opens a well under the row with a "Device name" field box holding the name, then Cancel and a primary Save name; Return saves and Escape cancels. Revoke opens an inline confirm. One of the two is open at a time, and the row's verbs hide while it is. |
 
 ### Organisms (in the tray today)
+
+The need row is something waiting on the person: the server's swatch, a title in `name`, one line in `sub`, then the answer. A friend request's line names the server and, when the relay says, how long ago it came ("On home, 5m ago"). A request that can be refused has Decline first and the answer after it as the primary button. Declining a friend request takes one press: it refuses, the sender can ask again, and nothing is deleted.
+
+The grant sheet is one form drawn in two places. The tray shows it as a page with the tray's footer. A view outside the tray presents the grant host: the same form in a scroll area over a footer with the hint, Cancel and a primary Share. A refused grant shows its reason in a failure banner at the top of the host and leaves the sheet open.
 
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
+
+The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
+
+The main window adds the mode rail with a context list (the user's choice of sidebar) and the Needs you row.
+
+A Needs you row is an origin cell, a hairline, the request (title in `name` with its kind tag, one or two lines in `sub`), a clock label and a verb strip. Rows share one panel and are ruled off by hairlines.
 
 A decision row for an approval names the worker and its server ("relay-worker on ryan-mac"). A holder row is the Holder badge over the metadata line, then the countdown, then Take back.
 
@@ -225,18 +257,26 @@ Increment 5 (teams) adds:
 - **Workspaces band** (Agents tab): the workspaces you work in, each with its goal and a claim count in tone, then link rows to hosts and the knowledge library.
 - **Groups band** (People tab): group rows, and one action to manage groups.
 - **Server teams band** (server page): link rows into that server's groups, workspaces, hosts, knowledge and, for an admin, policy.
-- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (meter with `isGood`, endorsement chips), directory search and relay policy. Deleting a group, releasing a claim, suspending a member and the like use the inline confirm.
+- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue or pull requests), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
+- **Second presses:** deleting a group, removing a member, releasing a claim, releasing a card you hold, removing a branch from the merge queue, suspending a member and revoking a device each use the inline confirm. The first button ends in "…" and is disabled while its confirm is open. Leaving the page ends the confirm.
+- **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
+- **Pull-request workspace:** a "Pull requests" band in place of the merge queue. Its heading carries the open count and a trailing Repository button that opens the repository's pull-request list. Each open pull request is a pull request row, split by hairlines. The device reads them with the person's own `gh` only as the page opens and when its Refresh is pressed. While reading, the band shows the spinner and "Reading the open pull requests…"; with none open, one `sub` sentence; when the read fails, the reason in `failure` with Try again (a missing or signed-out `gh` says what to check). At the device's limit of 50, a `sub` line points to the repository for the rest.
 - **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in a Remote workers band under the local workers: a hairline frame with the 2 pt tile radius and a mono band heading with its count. The band draws nothing until there is a hand-off.
 - **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note.
 
 Increment 6 (the tray's Remote band, on the Network tab) adds:
-- **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device.
+- **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device. The device agent names its unused code, so a tray that reopens shows the same QR code, code, link and countdown.
+- **Keyboard:** the tray's scrolling page and the Remote band are focus sections. Tab visits every control in one before it moves on, including rows scrolled out of sight, and reaches the footer last.
 - **Motion:** the QR code prints once, the block and rows arrive, the countdown drains, and a copy cell ticks. A device that pairs ends the code and the block leaves.
 
 Increment 6 (the Remote web page) adds:
 - **Touch scale:** controls are 44 px high, type about 15% larger (body 15, name 15, sub 13.5, heading 13, state 12, figure 17, trace 12.5), and the header icon action is a 52 px full-height cell split off by a hairline.
 - **Decision row, phone form:** lamp, title, a countdown on the right, summary, the metadata line with the swatch edge, a 2 px drain line, then Deny (danger) and Approve (primary) as two joined 44 px cells. Under one minute the countdown and line turn `failure`.
 - **Pairing steps:** numbered hairline rows on the not-paired screen.
+- **Watch band:** the workers friends let you watch, each with an eye mark, its name, the owner's handle, the metadata line and a full-width Watch. It is the way into the watch view without a hand-off.
+- **Band action:** a band's one action sits at the trailing edge of its heading as a text verb in `focus` with a 44 px hit area. Activity has Mark seen while something is unseen; a refusal shows under the heading in `failure`.
+- **Stopped watch:** when the Mac refuses a watch, the view stops reading, the footer says Stopped, and the load note has a full-width Try again under it. It keeps retrying only while the Mac can't be reached.
+- **Sentences:** a lead-in and a device's reason are joined as two sentences, each with a capital and a closing mark, as in the tray. The alert band holds one sentence; the time of the last good read is in the header's state label.
 - **Motion:** `arrive` (0.18 s, 6 px travel, ease-out) for new rows and trace lines, `tick` for a changing figure, and a drain line that moves linearly each second. With reduced motion these become fades, and pulses, spinners and the drain stop.
 
 ### What the main window reuses
@@ -255,25 +295,31 @@ The tray keeps its own versions of these:
 
 ## 4. Layout patterns
 
-- **Header:** title, then a one-line state summary, then a single trailing icon action.
+- **Header:** title, then a one-line state summary, then a single trailing icon action. On a page, Back names where it returns: the tab the page was opened from (Agents, Network or People), the parent page, or the server.
 - **Telemetry strip:** a status strip of readouts directly under the header.
-- **Places:** a tab bar or a sidebar of places. Each place shows a count.
+- **Places:** a mode rail and a context column. The rail is 48 pt wide on the `well`, split from the column by a hairline. It holds one 32 pt square cell per mode, each with an 18 pt icon: Agents, Network, People and Teams, with Settings at the foot. A mode cell carries its hot count as a corner count. The selected mode is on `panel` with a 2 pt `focus` leading edge. The context column is 196 pt wide. It shows the mode's title in `title` type with its count, then that mode's places as place rows. The selected place has the 2 pt `focus` leading marker. ⌥⌘1–4 select the modes and ⌥⌘5 opens Settings; ⌘1, ⌘[ and ⌘] keep the coordinator, return and zoom. Needs you is the first place row of the Agents mode, and the Agents mode cell's hot count includes its total. The toolbar's sidebar button puts the context list away and leaves the rail. Changing mode goes to the mode's first place. On the coordinator wall the selected row is the open run's project, and the breadcrumb is the project, the run, then the zoomed worker.
+- **Window toolbar:** the app's name and a breadcrumb at the leading edge; toolbar readouts at the trailing edge. Presence lives in the toolbar presence menu. In the main window the trailing edge reads, in order: the console display menu, adapter updates when there are any, the service state, then the toolbar readouts.
 - **Body:** stacked bands. Each band has a heading with a count and at most one action, and the band's rows follow.
 - **Rows:** mark or avatar (28 pt), or a kind glyph for remote work, then the name, then a metadata line with the swatch edge, then trailing verbs. State words sit right-aligned in tone colour.
 - **Footer:** one line of context on the well, then the page's actions.
 - **Order of urgency:** what needs the person first ("Needs you"), then live work, then what they own, then what others offer.
+- **Needs you order:** a request with under five minutes left comes first whatever its kind; then the person's own stopped workers, longest wait first; then network approvals, soonest end first; then access requests; then friend requests. A decided row keeps its place while its outcome shows.
 - **Preferences.** Sections stack: a mono heading, a `title`, and a trailing scope note. Appearance comes first and offers one choice card per theme, followed by the line "Consoles, terminals and the pretty view look the same in every theme."
 
 ## 5. Behaviour
 
 - **Accessibility.** Every lamp and chip has a spoken label. Readouts speak as one element ("approvals, 2"). Headings carry `.isHeader`.
   - The tab bar is a tab group (`AXTabGroup`, "Sections"). Selected tabs and segments carry `.isSelected` and report the value "Selected".
-  - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value.
+  - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value. In a Markdown block a list is a group named for its kind and length ("Numbered list, 3 items") and each item is one static text.
+  - Only a tab, a segment or a tally cell reports selected. A banner's icon is not an element: its meaning is spoken with the sentence ("Done: Released card-2.").
   - The page's scroll bar is taken out of the accessibility tree (it is four unnamed buttons otherwise). The scroll area still scrolls for VoiceOver and the keyboard.
   - A code is spoken letter by letter. A QR code is an image with a label; its link is also there as text.
-- **Keyboard.** Places switch with ⌘1, ⌘2, ⌘3 and so on. Every custom control is reachable by Tab.
+- **Keyboard.** In the tray, places switch with ⌘1, ⌘2, ⌘3. In the main window ⌘1 focuses the coordinator, ⌘] zooms a worker and ⌘[ returns to the wall, so the mode rail takes ⌥⌘1 to ⌥⌘5 (Agents, Network, People, Teams, Settings) and context-list rows have no number key. ⌘N starts a run and ⇧⌘A goes to the next request from any page. Every custom control is reachable by Tab.
 - **Copy.** Hashes, IDs and trace text can be selected or copied.
+- **Errors.** A failure reads as two sentences: what the tray couldn't do, then the reason the device or relay gave, capitalised and closed with a full stop ("Couldn't claim it. Overlapping claim held by sam/agent."). `MultiplayerSentence.join` writes every one, and drops the "relay HTTP 409:" prefix when a reason follows it.
+- **Counts.** A count takes its noun's singular: "1 claim", "3 claims" (`MultiplayerPlural.count`), drawn and spoken.
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
+- **Refused answers.** When a network answer isn't taken or fails, the row returns to its waiting form and the reason shows in an `error` load note above the list.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
 

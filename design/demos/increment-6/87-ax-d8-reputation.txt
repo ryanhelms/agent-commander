@@ -1,0 +1,21 @@
+2   AXScrollArea 
+3    AXButton Hosts | Hosts (Esc)
+4    AXHeading Reputation
+5    AXScrollArea 
+6     AXStaticText jonas-mac-mini, fixture-jonas
+7     AXStaticText completed, 18
+8     AXStaticText accepted, 15
+9     AXStaticText rejected, 1
+10     AXStaticText median time, 2 min
+11     AXStaticText 94 percent
+12     AXStaticText 94% of judged results accepted
+13     AXHeading Endorsements
+14     AXStaticText 1
+15     AXStaticText ios ui tests, fixture-sam
+16     AXTextField Skill
+17     AXButton Endorse
+18     AXStaticText Open to friends of the owner who have had a request completed here.
+19    AXStaticText Who sees these figures is set by the relay’s policy.
+20    AXButton Refresh
+21    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+22  AXStaticText Agent Commander

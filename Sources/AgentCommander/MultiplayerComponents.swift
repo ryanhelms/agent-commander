@@ -198,6 +198,9 @@ struct MultiplayerBanner: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel(spokenKind.map { "\($0): \(message)" } ?? message)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .buttonStyle(MultiplayerTrayButtonStyle())
@@ -221,11 +224,22 @@ struct MultiplayerBanner: View {
         case .progress:
             MultiplayerSpinner()
         case .success:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.working).accessibilityLabel("Done")
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.working).accessibilityHidden(true)
         case .attention:
-            Image(systemName: "hourglass").foregroundStyle(Palette.attention).accessibilityLabel("Waiting")
+            Image(systemName: "hourglass").foregroundStyle(Palette.attention).accessibilityHidden(true)
         case .failure:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failure).accessibilityLabel("Problem")
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.failure).accessibilityHidden(true)
+        }
+    }
+
+    /// What the icon says, spoken with the sentence. The icon itself is not an element: a tick
+    /// would report as selected.
+    private var spokenKind: String? {
+        switch kind {
+        case .progress: nil
+        case .success: "Done"
+        case .attention: "Waiting"
+        case .failure: "Problem"
         }
     }
 
@@ -283,6 +297,8 @@ struct MultiplayerSummaryLine: View {
     let label: String
     let value: String
     var monospaced = false
+    /// The value is a time: drawn in the `fingerprint` face, as every time is.
+    var isTime = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
@@ -291,7 +307,8 @@ struct MultiplayerSummaryLine: View {
                 .foregroundStyle(.inkSecondary)
                 .frame(width: 72, alignment: .leading)
             Text(value.multiplayerDisplay)
-                .font(monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
+                .font(isTime ? MultiplayerTheme.fingerprint.monospacedDigit()
+                      : monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
                 .foregroundStyle(Palette.foreground)
                 .lineLimit(2)
                 .truncationMode(.middle)

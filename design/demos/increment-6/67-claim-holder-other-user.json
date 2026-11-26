@@ -1,0 +1,4 @@
+{"verb": "claim", "request": {"workspace":"431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b","kind":"issue","key":"#43","holder":"someone-else/agent"}, "response": {
+ "error": "you can only claim work under your own handle",
+ "ok": false
+}}

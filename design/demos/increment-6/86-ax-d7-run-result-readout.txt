@@ -1,0 +1,22 @@
+2   AXScrollArea 
+3    AXButton Hosts | Hosts (Esc)
+4    AXHeading Run on jonas-mac-mini
+5    AXScrollArea 
+6     AXStaticText jonas-mac-mini, fixture-jonas, ios-simulator, xcode-16
+7     AXGroup Command
+8      AXButton run-ios-ui-tests | Selected | [selected]
+9      AXButton build-release
+10     AXStaticText Runs in ios-simulator. Only the commands the owner enrolled.
+11     AXTextField Extra arguments | --fail-fast
+12     AXStaticText Added after the enrolled arguments.
+13     AXHeading Result
+14     AXStaticText Exit 1, 41 seconds
+15     AXScrollArea Output
+16      AXStaticText Test Suite 'OnboardingUITests' started.
+OnboardingUITests.swift:88: error: -[OnboardingUITests testSkipFlow] : XCTAssertTrue failed - the Skip button never appeared
+Executed 14 tests, with 1 failure (0 unexpected) in 39.870 seconds
+** TEST FAILED **
+17    AXStaticText Runs on the owner’s Mac, under their grant and approval rules.
+18    AXButton Run command | Run (⌘Return)
+19    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+20  AXStaticText Agent Commander

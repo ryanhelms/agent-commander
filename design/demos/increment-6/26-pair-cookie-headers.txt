@@ -1,0 +1,11 @@
+== GET /pair (second device, name=curl-demo)
+HTTP/1.1 303 See Other
+Content-Type: text/html; charset=utf-8
+Location: /
+Set-Cookie: ac_remote=REDACTED; Path=/; Expires=Sat, 26 Dec 2026 03:23:53 GMT; HttpOnly; SameSite=Strict
+Date: Thu, 26 Nov 2026 03:23:53 GMT
+Content-Length: 28
+
+== same code again
+This pairing code is invalid or expired. Create a new one in the Agent Commander tray.
+ [403]

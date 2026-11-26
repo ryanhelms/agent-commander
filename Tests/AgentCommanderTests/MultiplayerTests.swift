@@ -485,7 +485,7 @@ extension MultiplayerFixture {
         model.confirmGrant()
         await model.settle()
         #expect(model.notice == nil)
-        #expect(model.actionFailure?.message == "Couldn’t grant access. grant limit reached")
+        #expect(model.actionFailure?.message == "Couldn’t grant access. Grant limit reached.")
         #expect(model.actionFailure?.actionTitle == "Try again")
         #expect(helper.lastRawInput(.grant) == MultiplayerFixture.grantInput(maxUses: 100, expiresAt: "2026-11-24T12:00:00Z"))
     }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -46,7 +47,20 @@ func (a *Agent) teamRelay(ctx context.Context, s identity.Session, method, route
 	}
 	var out any
 	err := a.remote(ctx, s, method, route, payload, &out)
-	return out, err
+	return out, teamRefusal(err)
+}
+
+// The relay can explain a refused team edit with the exact group, resource,
+// or member. Pass that sentence through to the tray.
+func teamRefusal(err error) error {
+	var status statusError
+	if errors.As(err, &status) && status.message != "" {
+		switch status.code {
+		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound:
+			return errors.New(status.message)
+		}
+	}
+	return err
 }
 
 func (a *Agent) namedTeamRelay(ctx context.Context, s identity.Session, verb string, in input) (any, error) {

@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"POST","path":"/v1/endorsements","body":{"resource":"no-such-resource","skill":"go"}}, "response": {
+ "error": "to endorse resource no-such-resource, you must be friends with its owner and have completed a request for it",
+ "ok": false
+}}

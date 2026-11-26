@@ -56,7 +56,7 @@ func (s *Service) readKnowledge(ctx context.Context, p Principal, r *http.Reques
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[knowledgeItem])
 	if id != "" {
 		if err == nil && len(items) == 0 {
-			return nil, missing()
+			return nil, &fault{http.StatusNotFound, "no knowledge item " + id + " available to you"}
 		}
 		return map[string]any{"versions": items}, err
 	}
@@ -135,7 +135,7 @@ func (s *Service) writeKnowledge(ctx context.Context, p Principal, r *http.Reque
 				LEFT JOIN mp_profiles p ON v.scope='friend' AND p.user_id=v.target
 				WHERE k.id=$1 AND k.owner_id=$2 FOR UPDATE OF k`, id, p.User).Scan(&v.Kind, &v.Name, &v.Content, &v.Visibility, &v.Version)
 			if err != nil {
-				return err
+				return missingRow(err, "no knowledge item "+id+" that you can edit")
 			}
 		}
 		if in.Kind != nil {

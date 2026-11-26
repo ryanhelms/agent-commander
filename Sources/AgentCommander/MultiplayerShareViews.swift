@@ -1181,13 +1181,14 @@ struct MultiplayerHandoffDetail: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityAddTraits(.isHeader)
-                    stateText(state.title, state.tone)
+                    // Every state is a lamp plus a word.
+                    MultiplayerStateLabel(lamp: state.tone.lamp, text: state.title, tone: state.tone)
                 }
                 MultiplayerSummaryLine(label: "Handed to", value: target)
-                MultiplayerSummaryLine(label: "Sent", value: MultiplayerActivityRow.time(row.at, now: now))
+                MultiplayerSummaryLine(label: "Sent", value: MultiplayerActivityRow.time(row.at, now: now), isTime: true)
                 if let run = row.run { MultiplayerSummaryLine(label: "Run", value: run, monospaced: true) }
                 if let updated = report?.updatedAt {
-                    MultiplayerSummaryLine(label: "Checked", value: MultiplayerActivityRow.time(updated, now: now))
+                    MultiplayerSummaryLine(label: "Checked", value: MultiplayerActivityRow.time(updated, now: now), isTime: true)
                 }
                 if row.run == nil, let refusal = row.refusal {
                     Text(refusal)

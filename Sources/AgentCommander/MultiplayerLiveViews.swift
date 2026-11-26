@@ -488,7 +488,7 @@ struct MultiplayerWatchView: View {
             .padding(.vertical, 6)
         case .failed(let text):
             VStack(alignment: .leading, spacing: Space.s) {
-                liveNote("Couldn’t read the output. \(text)", failure: true)
+                liveNote(MultiplayerSentence.join("Couldn’t read the output.", text), failure: true)
                 Button("Try again", action: onRetry).buttonStyle(MultiplayerTrayButtonStyle())
             }
             .padding(.vertical, 6)

@@ -98,7 +98,7 @@ struct MultiplayerCredentialFailure: Equatable {
         case .rejected, .invalidInput:
             return "The helper didn’t save the GitHub token for \(name). Check it’s limited to this repository, then enter it again."
         default:
-            return "The GitHub token for \(name) wasn’t saved. \(failure.message)"
+            return MultiplayerSentence.join("The GitHub token for \(name) wasn’t saved.", failure.message)
         }
     }
 
@@ -128,9 +128,9 @@ struct MultiplayerActionFailure: Equatable {
             return "The panel closed before the network helper confirmed the \(command.noun). Check status before trying again."
         }
         if failure.outcomeUnknown {
-            return "\(failure.message) The \(command.noun) may still have gone through, so check status before trying again."
+            return MultiplayerSentence.join(failure.message, "The \(command.noun) may still have gone through, so check status before trying again.")
         }
-        return "\(command.failureTitle) \(failure.message)"
+        return MultiplayerSentence.join(command.failureTitle, failure.message)
     }
 
     /// An unconfirmed outcome is checked, never re-sent.
@@ -500,7 +500,7 @@ final class MultiplayerSessionModel {
             friendDraft = ""
             lookup = .idle
             go(.home)
-        case .accept:
+        case .accept, .decline:
             break
         case .grant:
             grantDraft = MultiplayerGrantDraft()
@@ -659,8 +659,15 @@ final class MultiplayerSessionModel {
         perform(.sendRequest(handle: handle))
     }
 
-    func accept(_ request: MultiplayerIncoming) {
+    @discardableResult
+    func accept(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
         perform(.accept(requestID: request.id, handle: request.handle))
+    }
+
+    /// Refuses a friend request. One press: the sender can ask again, so nothing is lost.
+    @discardableResult
+    func decline(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
+        perform(.decline(handle: request.handle))
     }
 
     func startAddResource(kind: MultiplayerResourceKind? = nil) {

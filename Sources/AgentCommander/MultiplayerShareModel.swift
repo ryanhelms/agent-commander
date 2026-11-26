@@ -198,6 +198,7 @@ final class MultiplayerShareModel {
     /// Returns to the page this one was opened from, or to the server's own page.
     func back() {
         guard let tray else { return }
+        teams.cancelConfirmation()    // a second press belongs to the page it was asked on
         let fallback = tray.route.serverID.map(MultiplayerTrayRoute.server) ?? .home
         let previous = trail.popLast() ?? fallback
         tray.go(previous, keepingShareTrail: true)
@@ -208,7 +209,7 @@ final class MultiplayerShareModel {
     var backTitle: String {
         guard let tray else { return "Back" }
         switch trail.last {
-        case .home?: return "Network"
+        case .home?: return tray.tab.title    // the tab it was opened from: Agents, Network or People
         case .share(_, let page)?: return page.title
         case .server(let id)?: return tray.server(id)?.displayName ?? "Back"
         default: return tray.route.serverID.flatMap { tray.server($0)?.displayName } ?? "Back"
@@ -407,11 +408,13 @@ final class MultiplayerShareModel {
     // MARK: - Approvals
 
     @discardableResult
-    func decide(_ approval: MultiplayerApproval, on server: String, approve: Bool) -> Task<Void, Never>? {
+    func decide(_ approval: MultiplayerApproval, on server: String, approve: Bool,
+                report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         let who = approval.peer.multiplayerDisplay
         return tray?.act(approve ? "Approving \(who)’s request…" : "Denying \(who)’s request…",
                          failing: approve ? "Couldn’t approve the request." : "Couldn’t deny the request.",
-                         confirmation: approve ? "Approved. It runs on this Mac now." : "Denied. \(who) is told.") { client in
+                         confirmation: approve ? "Approved. It runs on this Mac now." : "Denied. \(who) is told.",
+                         report: report) { client in
             try await client.scoped(to: server).decide(approval: approval.id, approve: approve)
             self.approvals[server]?.removeAll { $0.id == approval.id }
             if self.tray?.route == .share(server, .approval(approval.id)) { self.back() }
@@ -441,10 +444,12 @@ final class MultiplayerShareModel {
 
     /// Withdraws a request you sent, or declines one sent to you.
     @discardableResult
-    func remove(_ request: MultiplayerAccessRequest, on server: String, declining: Bool) -> Task<Void, Never>? {
+    func remove(_ request: MultiplayerAccessRequest, on server: String, declining: Bool,
+                report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         tray?.act(declining ? "Declining the request…" : "Withdrawing your request…",
                   failing: declining ? "Couldn’t decline the request." : "Couldn’t withdraw the request.",
-                  confirmation: declining ? "Declined \(request.requester.multiplayerDisplay)’s request." : "Request withdrawn.") { client in
+                  confirmation: declining ? "Declined \(request.requester.multiplayerDisplay)’s request." : "Request withdrawn.",
+                  report: report) { client in
             try await client.scoped(to: server).removeAccessRequest(id: request.id)
             self.accessRequests[server]?.removeAll { $0.id == request.id }
         }
@@ -460,7 +465,16 @@ final class MultiplayerShareModel {
     /// Opens the sheet for a friend, a resource, or both, preselecting any single option.
     func startGrant(on server: String, handle: String? = nil, group: String? = nil, resourceID: String? = nil,
                     actions: Set<String> = []) {
-        guard let status = status(server) else { return }
+        guard prepareGrant(on: server, handle: handle, group: group, resourceID: resourceID, actions: actions) else { return }
+        open(.grant, on: server)
+    }
+
+    /// Fills the sheet's draft without opening a tray page, for a view that hosts the sheet itself
+    /// (`MultiplayerGrantHost`). False when the server has no status to share from.
+    @discardableResult
+    func prepareGrant(on server: String, handle: String? = nil, group: String? = nil, resourceID: String? = nil,
+                      actions: Set<String> = []) -> Bool {
+        guard let status = status(server) else { return false }
         var draft = MultiplayerShareDraft(server: server)
         draft.handle = handle ?? (status.friends.count == 1 && group == nil ? status.friends[0].handle : "")
         draft.group = group ?? ""
@@ -468,7 +482,13 @@ final class MultiplayerShareModel {
         draft.actions = actions
         grantDraft = draft
         reconcileGrantActions()
-        open(.grant, on: server)
+        return true
+    }
+
+    /// The tray is showing the sheet as its own page.
+    private var grantIsTrayPage: Bool {
+        if case .share(_, .grant)? = tray?.route { return true }
+        return false
     }
 
     /// Servers a cockpit worker or repository can be shared on now.
@@ -493,7 +513,8 @@ final class MultiplayerShareModel {
 
     /// Moves the open sheet to another server, keeping the policy the owner chose.
     func setGrantServer(_ server: String) {
-        guard let tray, case .share(let current, .grant) = tray.route, current != server, status(server) != nil else { return }
+        guard let tray, grantDraft.server != server, status(server) != nil else { return }
+        let onTrayPage = grantIsTrayPage
         grantDraft.server = server
         let friends = status(server)?.friends ?? []
         if !friends.contains(where: { $0.handle == grantDraft.handle }) {
@@ -502,7 +523,7 @@ final class MultiplayerShareModel {
         grantDraft.group = ""
         if grantDraft.target == nil { grantDraft.resourceID = "" }
         reconcileGrantActions()
-        tray.go(.share(server, .grant), keepingShareTrail: true)
+        if onTrayPage { tray.go(.share(server, .grant), keepingShareTrail: true) }
     }
 
     /// The resource the sheet is about, with the actions it offers.
@@ -555,14 +576,14 @@ final class MultiplayerShareModel {
 
     /// Adds the resource if it's new, then sends one grant per action with the owner's policy.
     @discardableResult
-    func confirmGrant() -> Task<Void, Never>? {
+    func confirmGrant(report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         guard canGrant, let tray, let resource = grantResource else { return nil }
         let draft = grantDraft
         let now = clock()
         let who = draft.group.isEmpty ? draft.handle.multiplayerDisplay
                                       : "everyone in \(teams.groupName(draft.group, on: draft.server).multiplayerDisplay)"
         let what = resource.name.multiplayerDisplay
-        return tray.act("Sharing \(what) with \(who)…", failing: "Couldn’t share \(what).") { client in
+        return tray.act("Sharing \(what) with \(who)…", failing: "Couldn’t share \(what).", report: report) { client in
             let scoped = client.scoped(to: draft.server)
             var offered = resource.offered
             if resource.isNew, let target = draft.target {
@@ -577,7 +598,8 @@ final class MultiplayerShareModel {
             let limits = draft.limits(now: now)
             self.grantDraft = MultiplayerShareDraft()
             self.tray?.session(draft.server)?.refresh()
-            self.back()
+            // A hosted sheet is closed by its host; only the tray's own page goes back.
+            if self.grantIsTrayPage { self.back() }
             self.tray?.post(notice: "\(who) can use \(what) until \(MultiplayerTime.display(limits.expiresAt)). \(draft.approval == .ask ? "Each use waits for your approval." : "Uses run without asking.")")
         }
     }

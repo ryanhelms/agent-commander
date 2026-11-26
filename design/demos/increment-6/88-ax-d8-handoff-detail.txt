@@ -1,0 +1,14 @@
+2   AXScrollArea 
+3    AXButton Agents | Agents (Esc)
+4    AXHeading Hand-off
+5    AXScrollArea 
+6     AXHeading Fix flaky reconnect test
+7     AXStaticText Started
+8     AXStaticText Handed to, fixture-sam’s sam-agent
+9     AXStaticText Sent, 8:53 PM
+10     AXStaticText Run, run-fixture-1
+11    AXButton Thread
+12    AXButton Check status
+13    AXButton Get result | Reads the run’s report and artifacts. Nothing is applied until you choose to.
+14    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+15  AXStaticText Agent Commander
