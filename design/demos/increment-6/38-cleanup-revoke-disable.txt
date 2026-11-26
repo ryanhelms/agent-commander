@@ -1,0 +1,17 @@
+== remote-revoke curl-demo
+{"data":{},"ok":true}
+
+== curl after revoke
+{"error":"not paired","ok":false}
+ [401]
+== remote-revoke unknown
+{"error":"unknown device","ok":false}
+
+== remote-disable
+{"data":{},"ok":true}
+
+== remote-devices
+{"data":{"devices":[],"running":false,"url":""},"ok":true}
+
+== listeners on 8780
+none

@@ -1,0 +1,20 @@
+== tray switch off (AX press on 'Remote web view')
+0 Remote web view | Stop serving the web view. Paired devices stay paired.
+28     AXStaticText as ryan
+29     AXHeading Remote
+30     AXStaticText 1
+31     AXCheckBox Remote web view | Serve the web view on this Mac’s tailnet address
+32     AXStaticText Off
+33     AXStaticText A web page this Mac serves on your tailnet, for approving and watching from a phone.
+34     AXStaticText curl-demo, paired Nov 25, ends Dec 25
+35     AXButton Revoke curl-demo | Sign this device out of the web view
+36     AXButton Hosting on this Mac. How to run a relay here, with no Docker
+37    AXStaticText Fixture helper | Debug review mode: everything here comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.
+38    AXMenuButton Sign out: choose a server
+39    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+== remote-devices
+{"data":{"devices":[{"expires":"2026-12-25T22:23:53.645681-05:00","id":"5QKO37GV","name":"curl-demo","paired":"2026-11-26T03:23:53.645681Z"}],"running":false,"url":""},"ok":true}
+
+== listeners on 8780
+== curl paired device
+ [000]

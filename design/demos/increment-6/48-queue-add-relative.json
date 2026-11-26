@@ -1,0 +1,4 @@
+{"verb": "queue-add", "request": {"workspace":"431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b","branch":"feature-ok","checkout":"demo6/mq"}, "response": {
+ "error": "queue-add needs a workspace, a branch and the absolute checkout path",
+ "ok": false
+}}

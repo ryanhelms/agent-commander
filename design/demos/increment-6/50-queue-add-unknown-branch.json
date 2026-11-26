@@ -1,0 +1,85 @@
+{"verb": "queue-add", "request": {"workspace":"431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b","branch":"no-such-branch","checkout":"/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq"}, "response": {
+ "data": {
+  "queue": [
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-ok",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.288467Z",
+    "state": "merged"
+   },
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-broken",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.340447Z",
+    "state": "failed",
+    "output": "tests failed: broken.txt present\n"
+   },
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-conflict",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.395559Z",
+    "state": "conflict",
+    "output": "Auto-merging app.txt\nCONFLICT (content): Merge conflict in app.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n"
+   },
+   {
+    "workspace": "does-not-exist",
+    "branch": "feature-ok",
+    "checkout": "/nonexistent/checkout",
+    "test": null,
+    "added": "2026-11-26T02:10:27.41967Z",
+    "state": "conflict"
+   },
+   {
+    "workspace": "431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b",
+    "branch": "feature-ok",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T03:27:03.984366Z",
+    "state": "queued"
+   },
+   {
+    "workspace": "431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b",
+    "branch": "feature-broken",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T03:27:04.03607Z",
+    "state": "queued"
+   },
+   {
+    "workspace": "431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b",
+    "branch": "feature-conflict",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T03:27:04.090926Z",
+    "state": "queued"
+   },
+   {
+    "workspace": "431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b",
+    "branch": "no-such-branch",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo6/mq",
+    "test": null,
+    "added": "2026-11-26T03:27:04.144166Z",
+    "state": "queued"
+   }
+  ]
+ },
+ "ok": true
+}}

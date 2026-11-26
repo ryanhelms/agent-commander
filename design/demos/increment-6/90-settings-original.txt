@@ -1,0 +1,6 @@
+Wed Nov 25 22:31:42 EST 2026
+com.apple.Accessibility ReduceMotionEnabled = 0
+com.apple.universalaccess reduceMotion = Error: Could not find key 'reduceMotion' in domain 'com.apple.universalaccess'.
+com.apple.Accessibility FullKeyboardAccessEnabled = 0
+NSGlobalDomain AppleKeyboardUIMode = Error: Could not find key 'AppleKeyboardUIMode' in domain 'kCFPreferencesAnyApplication'.
+{"reduceMotion":false}

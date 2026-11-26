@@ -1,0 +1,13 @@
+2   AXScrollArea 
+3    AXButton Hosts | Hosts (Esc)
+4    AXHeading Run on jonas-mac-mini
+5    AXScrollArea 
+6     AXStaticText jonas-mac-mini, fixture-jonas, ios-simulator, xcode-16
+7     AXGroup Command
+8      AXButton run-ios-ui-tests
+9      AXButton build-release
+10     AXStaticText Only the commands the owner enrolled.
+11    AXStaticText Runs on the owner’s Mac, under their grant and approval rules.
+12    AXButton Run command | Run (⌘Return)
+13    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+14  AXStaticText Agent Commander

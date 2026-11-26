@@ -1,0 +1,4 @@
+{"verb": "grant", "request": {"resource":"no-such-resource","group":"d29c44d73c7c0e9b3aaf854e29b56c482769cac793f909eb","actions":["agent.ask"]}, "response": {
+ "error": "no resource no-such-resource",
+ "ok": false
+}}

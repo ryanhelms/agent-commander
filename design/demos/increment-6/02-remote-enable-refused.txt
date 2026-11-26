@@ -1,0 +1,15 @@
+listen=0.0.0.0:8780
+{"error":"the remote view listens only on a tailnet or loopback address","ok":false}
+
+listen=[::]:8780
+{"error":"the remote view listens only on a tailnet or loopback address","ok":false}
+
+listen=localhost:8780
+{"error":"the remote view listens only on a tailnet or loopback address","ok":false}
+
+listen=:8780
+{"error":"the remote view listens only on a tailnet or loopback address","ok":false}
+
+listen=192.168.1.10:8780
+{"error":"the remote view listens only on a tailnet or loopback address","ok":false}
+
