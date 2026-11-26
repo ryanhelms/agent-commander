@@ -21,18 +21,27 @@ Keep all design tokens, components, fixtures and assets in this repository. The 
 Any session or agent may use this Mac whenever the work needs it, without asking first. This includes Computer Use, accessibility automation, AppleScript, keyboard and mouse input, screenshots, and launching and driving apps, the user's live Agent Commander among them. It also includes toggling system settings for a test.
 
 - Restore any system setting you change, and say in your report what you changed and restored.
-- Coordinate a quit or relaunch of the user's live app with them first, as described under Native UI.
+- Restart the user's live app on your own when a change is ready to test, as described under Native UI. Coordinate any other quit or relaunch with them first.
 - Report which windows you drove, so other sessions' demos are not confused by it.
 
 ## Native UI
 
-Use the primary checkout’s `dist/Agent Commander.app` for the user-facing cockpit. Its name is **Agent Commander** and its bundle identifier is `local.agentcommander.cockpit`. Run `make run` in that checkout to build it on first use or reopen the existing bundle through Launch Services. Use the same app for interactive QA and session demos. Coordinate an explicit quit and reopen before rebuilding a running app or changing its launch arguments or environment. Preserve the developer’s chosen `CODE_SIGN_IDENTITY` for subsequent builds. Use headless fixtures for independent verification while the user is working in Commander.
+Use the primary checkout’s `dist/Agent Commander.app` for the user-facing cockpit. Its name is **Agent Commander** and its bundle identifier is `local.agentcommander.cockpit`. Run `make run` in that checkout to build it on first use or reopen the existing bundle through Launch Services. Use the same app for interactive QA and session demos. Coordinate an explicit quit and reopen before rebuilding a running app or changing its launch arguments or environment, except for the restart below. Preserve the developer’s chosen `CODE_SIGN_IDENTITY` for subsequent builds. Use headless fixtures for independent verification while the user is working in Commander.
 
 Apply Brad Frost’s Atomic Design strictly to each implemented view. Start with the [component map](design/system/ATOMIC-DESIGN.md) and [local tokens](design/system/tokens.json). Compose native controls and styled atoms into molecules, then feature organisms, layout templates and pages. A standard native control can serve directly as an atom. Share component implementations between the wall, zoom and PiP when they have the same responsibility. Components receive values and emit targeted actions. The API and feature models own domain operations and subscriptions.
 
 When changing a screen, identify its actual Swift components and compare the rendered state with the matching [original screenshot](design/concepts/index.html). Record any visible differences that matter. Use the approved coordinator wall and PiP as the starting point for the local build.
 
-## Design
+### Restart when ready to test
+
+When new or changed functionality is ready for the user to test, rebuild and restart the app without asking. Do it on this Mac, through a Remote Control session when you work from the cloud.
+
+1. Build the branch under test: `make app` in its worktree, with the developer's `CODE_SIGN_IDENTITY`.
+2. Quit the running app: `osascript -e 'quit app id "local.agentcommander.cockpit"'`. Wait until it has exited.
+3. Open the new build: `open "dist/Agent Commander.app"` from that worktree.
+4. If the change touches the relay (`multiplayer/`, `commander-relay`) and the relay runs under launchd, restart it too: `launchctl kickstart -k gui/$(id -u)/local.agentcommander.relay`. Then check `commander-relay host status`.
+5. Tell the user what you restarted and from which branch. If a build, quit or restart fails, say which step failed and include its error output. Leave the previous app running when the build fails.
+
 
 [DESIGN.md](DESIGN.md) is the visual source of truth for every surface: the main window, zoom, PiP and the network tray. Read it before any design or interface task, including new views, restyles, components, tokens, motion, mockups and UI defect fixes.
 
