@@ -123,21 +123,65 @@ struct MultiplayerLenientList<Item: Decodable>: Decodable {
 // MARK: - Capabilities and the directory
 
 /// What an owner says a resource can do: its harness, model, free slots, tools and environments.
+/// One command a host's owner enrolled, as the host publishes it.
+struct MultiplayerHostCommand: Decodable, Equatable, Sendable, Identifiable {
+    let name: String
+    /// The owner lets a caller add arguments after the enrolled ones.
+    let allowArgs: Bool
+    /// Where the command runs, in the owner's words: "ios-simulator". Empty when not said.
+    let environment: String
+
+    var id: String { name }
+
+    private enum CodingKeys: String, CodingKey { case name, allowArgs, environment }
+
+    init(name: String, allowArgs: Bool = false, environment: String = "") {
+        self.name = name
+        self.allowArgs = allowArgs
+        self.environment = environment
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = container.text(.name)
+        allowArgs = ((try? container.decodeIfPresent(Bool.self, forKey: .allowArgs)) ?? nil) ?? false
+        environment = container.text(.environment)
+    }
+}
+
 struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
     let harness: String
     let model: String
     let slots: Int?
     let tools: [String]
     let environments: [String]
+    /// A host's enrolled commands, each with whether it takes extra arguments. Nil from a device
+    /// that doesn't publish them yet; `tools` then names the commands and nothing is known of
+    /// their arguments.
+    let commands: [MultiplayerHostCommand]?
 
-    private enum CodingKeys: String, CodingKey { case harness, model, slots, tools, environments }
+    private enum CodingKeys: String, CodingKey { case harness, model, slots, tools, environments, commands }
 
-    init(harness: String = "", model: String = "", slots: Int? = nil, tools: [String] = [], environments: [String] = []) {
+    init(harness: String = "", model: String = "", slots: Int? = nil, tools: [String] = [], environments: [String] = [],
+         commands: [MultiplayerHostCommand]? = nil) {
         self.harness = harness
         self.model = model
         self.slots = slots
         self.tools = tools
         self.environments = environments
+        self.commands = commands
+    }
+
+    /// The names a host run can choose between.
+    var commandNames: [String] { commands?.map(\.name) ?? tools }
+
+    func command(_ name: String) -> MultiplayerHostCommand? { commands?.first { $0.name == name } }
+
+    /// Whether a run of this command may carry extra arguments. Nil when the host doesn't say,
+    /// and the owner's Mac then decides.
+    func allowsArguments(_ name: String) -> Bool? {
+        guard let commands else { return nil }
+        return commands.first { $0.name == name }?.allowArgs ?? false
     }
 
     init(from decoder: any Decoder) throws {
@@ -147,9 +191,18 @@ struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
         slots = ((try? container.decodeIfPresent(Int.self, forKey: .slots)) ?? nil).flatMap { $0 > 0 ? $0 : nil }
         tools = container.strings(.tools) ?? []
         environments = container.strings(.environments) ?? []
+        // Unreadable rows are dropped; a command with no name can't be run.
+        struct Lenient: Decodable {
+            let value: MultiplayerHostCommand?
+            init(from decoder: any Decoder) throws { value = try? MultiplayerHostCommand(from: decoder) }
+        }
+        commands = ((try? container.decodeIfPresent([Lenient].self, forKey: .commands)) ?? nil)?
+            .compactMap(\.value).filter { !$0.name.isEmpty }
     }
 
-    var isEmpty: Bool { harness.isEmpty && model.isEmpty && slots == nil && tools.isEmpty && environments.isEmpty }
+    var isEmpty: Bool {
+        harness.isEmpty && model.isEmpty && slots == nil && tools.isEmpty && environments.isEmpty && commands?.isEmpty != false
+    }
 
     /// Harness and model, then slots: "Claude, opus, 2 slots".
     var headline: String? {
@@ -161,7 +214,7 @@ struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
     }
 
     /// Tools and environments, as short tags.
-    var tags: [String] { (tools + environments).map(\.multiplayerDisplay) }
+    var tags: [String] { ((tools.isEmpty ? commandNames : tools) + environments).map(\.multiplayerDisplay) }
 
     static func harnessTitle(_ harness: String) -> String {
         switch harness.lowercased() {

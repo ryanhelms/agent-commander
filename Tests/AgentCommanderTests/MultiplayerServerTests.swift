@@ -361,7 +361,7 @@ enum MultiplayerServerFixture {
         await model.refresh()?.value
         model.toggleFavorite(try #require(model.server("s-home")))
         await model.settle()
-        #expect(model.failure == "Couldn’t change the favorite. no such server")
+        #expect(model.failure == "Couldn’t change the favorite. No such server.")
         #expect(model.servers.map(\.id) == ["s-home"])
         #expect(!model.isBusy)
     }

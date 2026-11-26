@@ -419,7 +419,7 @@ struct MultiplayerMembershipPage: View {
         case .failed(let message):
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: Space.s) {
-                    Text("Couldn’t read this relay’s membership. \(message)")
+                    Text(MultiplayerSentence.join("Couldn’t read this relay’s membership.", message))
                         .font(.system(size: 12))
                         .foregroundStyle(MultiplayerTheme.foreground)
                         .fixedSize(horizontal: false, vertical: true)

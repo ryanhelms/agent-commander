@@ -343,6 +343,13 @@ struct MultiplayerQueueEntry: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A count with its noun: "1 claim", "3 claims". Used for what is drawn and what is spoken.
+enum MultiplayerPlural {
+    static func count(_ number: Int, _ one: String, _ many: String? = nil) -> String {
+        "\(number) \(number == 1 ? one : many ?? one + "s")"
+    }
+}
+
 // MARK: - Hosts
 
 extension MultiplayerDirectoryEntry {
@@ -372,6 +379,9 @@ struct MultiplayerHostRun: Equatable, Sendable {
     }
 
     var succeeded: Bool { exitCode == 0 }
+
+    /// The exit state and the time it took, as one readout: "Exit 1, 41 seconds".
+    var spoken: String { "Exit \(exitCode), \(MultiplayerPlural.count(seconds, "second"))" }
 }
 
 /// One run of an enrolled command on a friend's host.
@@ -384,9 +394,12 @@ struct MultiplayerHostRunDraft: Equatable {
 
     var canSend: Bool { !command.trimmingCharacters(in: .whitespaces).isEmpty && arguments.count <= 32 }
 
-    var payload: MultiplayerJSON {
+    var payload: MultiplayerJSON { payload(allowingArguments: true) }
+
+    /// What is sent. Extra arguments are left out for a command the host says takes none.
+    func payload(allowingArguments: Bool) -> MultiplayerJSON {
         var fields: [String: MultiplayerJSON] = ["command": .string(command.trimmingCharacters(in: .whitespaces))]
-        if !arguments.isEmpty { fields["args"] = .array(arguments.map(MultiplayerJSON.string)) }
+        if allowingArguments, !arguments.isEmpty { fields["args"] = .array(arguments.map(MultiplayerJSON.string)) }
         return .object(fields)
     }
 }
@@ -991,6 +1004,16 @@ extension MultiplayerClient {
 
     func queueMerge(workspace: String) async throws -> [MultiplayerQueueEntry] {
         try await queue(.queueMerge, ["workspace": .string(workspace)])
+    }
+
+    /// Takes one branch out of the queue, whatever its state. The device names an entry by its
+    /// workspace and branch.
+    func queueRemove(workspace: String, branch: String) async throws -> [MultiplayerQueueEntry] {
+        let reply = try await fetch(.queueRemove, ["workspace": .string(workspace), "branch": .string(branch)],
+                                    as: MultiplayerJSON.self, allowsEmpty: true) ?? .null
+        // A reply without the queue is read again rather than taken as an empty one.
+        guard let rows = reply["queue"]?.items else { return try await mergeQueue() }
+        return rows.compactMap(MultiplayerQueueEntry.init)
     }
 
     func knowledge() async throws -> [MultiplayerKnowledgeItem] {

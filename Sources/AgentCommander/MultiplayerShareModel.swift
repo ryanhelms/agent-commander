@@ -198,6 +198,7 @@ final class MultiplayerShareModel {
     /// Returns to the page this one was opened from, or to the server's own page.
     func back() {
         guard let tray else { return }
+        teams.cancelConfirmation()    // a second press belongs to the page it was asked on
         let fallback = tray.route.serverID.map(MultiplayerTrayRoute.server) ?? .home
         let previous = trail.popLast() ?? fallback
         tray.go(previous, keepingShareTrail: true)
@@ -208,7 +209,7 @@ final class MultiplayerShareModel {
     var backTitle: String {
         guard let tray else { return "Back" }
         switch trail.last {
-        case .home?: return "Network"
+        case .home?: return tray.tab.title    // the tab it was opened from: Agents, Network or People
         case .share(_, let page)?: return page.title
         case .server(let id)?: return tray.server(id)?.displayName ?? "Back"
         default: return tray.route.serverID.flatMap { tray.server($0)?.displayName } ?? "Back"

@@ -37,6 +37,7 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case queue
     case queueAdd = "queue-add"
     case queueMerge = "queue-merge"
+    case queueRemove = "queue-remove"
     case knowledgeShare = "knowledge-share"
     case knowledgeInstall = "knowledge-install"
     /// Remote (increment 6): the web view this Mac serves on the tailnet. These name no server.
@@ -742,6 +743,37 @@ enum MultiplayerText {
         let core = word.trimmingCharacters(in: .punctuationCharacters)
         return core.count >= 32 && core.unicodeScalars.allSatisfy(opaque.contains)
             && core.contains(where: \.isNumber) && core.contains(where: \.isLetter)
+    }
+}
+
+/// Joins a lead-in the tray wrote to a reason a device or relay gave, as two proper sentences:
+/// "Couldn’t claim it." and "already claimed by sam/agent" read "Couldn’t claim it. Already claimed
+/// by sam/agent." Every place that shows a lead-in with an error goes through here.
+enum MultiplayerSentence {
+    /// One reason as a sentence: no transport prefix, a capital first letter, a closing mark.
+    static func sentence(_ reason: String) -> String {
+        var text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        // "relay HTTP 409: overlapping claim held by …" keeps only what the relay said.
+        if let match = text.firstMatch(of: /^relay HTTP \d{3}:\s*/), match.range.upperBound < text.endIndex {
+            text.removeSubrange(match.range)
+        }
+        guard let first = text.first else { return "" }
+        // A name, a path or a command at the start keeps its own case.
+        let word = text.prefix { !$0.isWhitespace }
+        if first.isLowercase, !word.dropLast().contains(where: { "/\\_.:=@-".contains($0) || $0.isNumber }) {
+            text = first.uppercased() + text.dropFirst()
+        }
+        if let last = text.last, !".!?…".contains(last) {
+            // A closing quote or bracket already ends the thought when a mark sits inside it.
+            let inner = text.dropLast().last
+            if !(")”\"’".contains(last) && inner.map({ ".!?…".contains($0) }) == true) { text += "." }
+        }
+        return text
+    }
+
+    /// The lead-in, then the reason. An empty reason leaves the lead-in alone.
+    static func join(_ lead: String, _ reason: String) -> String {
+        [sentence(lead), sentence(reason)].filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 

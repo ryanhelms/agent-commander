@@ -515,8 +515,8 @@ final class MultiplayerModel {
             } catch {
                 let reason = MultiplayerFailure.from(error)
                 self.failure = reason.outcomeUnknown
-                    ? "\(reason.message) Check the server list before trying again."
-                    : "\(title) \(reason.message)"
+                    ? MultiplayerSentence.join(reason.message, "Check the server list before trying again.")
+                    : MultiplayerSentence.join(title, reason.message)
             }
             self.working = nil
             self.actionTask = nil

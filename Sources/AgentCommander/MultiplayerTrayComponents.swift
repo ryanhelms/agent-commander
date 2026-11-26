@@ -250,7 +250,8 @@ struct MultiplayerBadge: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
         HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)) }
+            // The word carries the meaning. A tick symbol would otherwise be spoken as "Selected".
+            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)).accessibilityHidden(true) }
             Text(text).font(MultiplayerTheme.label)
         }
             .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
@@ -259,6 +260,19 @@ struct MultiplayerBadge: View {
             .frame(minHeight: 15)
             .background(tone == .neutral ? Color.clear : tone.color.opacity(0.12), in: shape)
             .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.border : tone.color.opacity(0.45)) }
+    }
+}
+
+extension Tone {
+    /// The tone lamp (DESIGN.md): the lamp for a state the view knows only by its tone.
+    var lamp: MultiplayerLamp.Kind {
+        switch self {
+        case .working: .on
+        case .attention: .busy
+        case .failure: .error
+        case .focus: .unknown
+        case .neutral: .off
+        }
     }
 }
 
