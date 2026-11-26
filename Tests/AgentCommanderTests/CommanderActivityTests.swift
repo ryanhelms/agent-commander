@@ -73,7 +73,7 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
                 if let name = match.output[1].substring { registered.insert(String(name)) }
             }
         }
-        #expect(registered.count == 20)
+        #expect(registered.count == 23)
         #expect(registered == Set(CommanderTool.allCases.map(\.rawValue)))
     }
 
@@ -136,6 +136,11 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
              "operation op-1 · 1 target · agent.ask", "accepted"),
             (.networkReceipt, #"{"id":"op-1"}"#, #"{"status":"completed","recipients":[{"status":"delivered"},{"status":"failed"}]}"#,
              "operation op-1", "completed · 2 recipients · 1 delivered, 1 failed"),
+            (.networkOnline, nil, #"{"friends":[{"handle":"sam"},{"handle":"mei"}]}"#, nil, "2 contacts"),
+            (.networkThread, #"{"request":"req-1","text":"Looks good"}"#, #"{"request":"req-1","comments":[{"text":"Looks good"}]}"#,
+             "request req-1 · “Looks good”", "1 comment"),
+            (.networkBoard, #"{"op":"complete","workspace":"ws-1","card":"card-2"}"#, #"{"cards":[{"id":"card-2"}]}"#,
+             "complete · ws-1 · card-2", "1 card"),
             (.frontendTools, nil, #"{"tools":[{"name":"pick"}]}"#, nil, "1 tool"),
             (.callFrontend, #"{"name":"pick_color","arguments":{}}"#, "Picked plum", "pick_color", nil),
         ]

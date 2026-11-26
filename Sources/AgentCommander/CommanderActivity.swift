@@ -336,7 +336,11 @@ struct CommanderCall: Equatable {
                                 actions.isEmpty ? nil : actions.joined(separator: ", "))
         case .networkReceipt:
             summary = operationID.map(Self.operation)
-        case .listTools, .frontendTools, .networkInbox, .networkDiscover:
+        case .networkThread:
+            summary = Self.join(argument("request").map(Self.request), argument("text").map(Self.quote))
+        case .networkBoard:
+            summary = Self.join(argument("op") ?? "list", argument("workspace"), argument("card"))
+        case .listTools, .frontendTools, .networkInbox, .networkDiscover, .networkOnline:
             summary = plainDetail
         }
         return summary ?? plainDetail
@@ -377,6 +381,12 @@ struct CommanderCall: Equatable {
             return Self.count(response.arrayValue != nil ? response : (response["resources"] ?? response["peers"]), "resource")
         case .networkInbox:
             return Self.count(response.arrayValue != nil ? response : response["messages"], "message")
+        case .networkOnline:
+            return Self.count(response["friends"], "contact")
+        case .networkThread:
+            return Self.count(response["comments"] ?? response["thread"], "comment")
+        case .networkBoard:
+            return Self.count(response["cards"] ?? response["workspaces"], response["cards"] != nil ? "card" : "workspace") ?? field("state")
         case .networkSubmit, .networkReceipt:
             var outcomes: [String: Int] = [:]
             for item in recipients {

@@ -34,6 +34,9 @@ enum CommanderTool: String, CaseIterable, Sendable {
     case networkDiscover = "commander_network_discover"
     case networkSubmit = "commander_network_submit"
     case networkReceipt = "commander_network_receipt"
+    case networkOnline = "commander_network_online"
+    case networkThread = "commander_network_thread"
+    case networkBoard = "commander_network_board"
     // frontend.go: every managed session
     case frontendTools = "commander_frontend_tools"
     case callFrontend = "commander_call_frontend"
@@ -94,6 +97,9 @@ enum CommanderTool: String, CaseIterable, Sendable {
         case .networkDiscover: "Discover network"
         case .networkSubmit: "Submit operation"
         case .networkReceipt: "Read receipt"
+        case .networkOnline: "See who is online"
+        case .networkThread: "Read request thread"
+        case .networkBoard: "Work task board"
         case .frontendTools: "List app tools"
         case .callFrontend: "Call app tool"
         }
@@ -134,6 +140,9 @@ enum CommanderTool: String, CaseIterable, Sendable {
         case .networkDiscover: "network"
         case .networkSubmit: "arrow.up.forward.circle"
         case .networkReceipt: "envelope.open"
+        case .networkOnline: "person.2.wave.2"
+        case .networkThread: "text.bubble"
+        case .networkBoard: "rectangle.split.3x1"
         case .frontendTools: "macwindow"
         case .callFrontend: "macwindow.badge.plus"
         }
@@ -147,7 +156,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
         case .status: .status
         case .listTools, .callTool: .extensions
         case .frontendTools, .callFrontend: .app
-        case .networkInbox, .networkDiscover, .networkSubmit, .networkReceipt: .network
+        case .networkInbox, .networkDiscover, .networkSubmit, .networkReceipt, .networkOnline, .networkThread, .networkBoard: .network
         }
     }
 
