@@ -11,6 +11,8 @@ import Observation
 /// One helper verb. Each invocation is `commander-network tray <verb>` with one JSON object on stdin.
 enum MultiplayerVerb: String, Sendable, CaseIterable {
     case status, login, logout, profile, search, request, accept, grant, revoke
+    /// Refuses a friend request sent to you. The relay drops the pending pair.
+    case decline
     case resourceAdd = "resource-add"
     /// Stores a repository's GitHub token in the helper's Keychain. Never a `MultiplayerCommand`.
     case repoCredential = "repo-credential"
@@ -88,6 +90,33 @@ struct MultiplayerFriend: Decodable, Equatable, Sendable, Identifiable {
 struct MultiplayerIncoming: Decodable, Equatable, Sendable, Identifiable {
     let id: String
     let handle: String
+    /// When the request arrived. Nil when the relay doesn't say; older relays don't.
+    let requestedAt: Date?
+
+    private enum CodingKeys: String, CodingKey { case id, handle, requestedAt }
+
+    init(id: String, handle: String, requestedAt: Date? = nil) {
+        self.id = id
+        self.handle = handle
+        self.requestedAt = requestedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        handle = try container.decode(String.self, forKey: .handle)
+        // A time Commander can't read is left out, never guessed.
+        requestedAt = ((try? container.decodeIfPresent(String.self, forKey: .requestedAt)) ?? nil).flatMap(MultiplayerTime.parse)
+    }
+
+    /// "5m ago", or nil when the relay gave no time or one that hasn't happened yet.
+    func arrival(now: Date = Date()) -> String? {
+        guard let requestedAt, requestedAt <= now else { return nil }
+        if now.timeIntervalSince(requestedAt) < 60 { return "just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: requestedAt, relativeTo: now)
+    }
 }
 
 struct MultiplayerGrant: Decodable, Equatable, Sendable, Identifiable {
@@ -524,6 +553,8 @@ enum MultiplayerCommand: Equatable, Sendable {
     case claimHandle(String)
     case sendRequest(handle: String)
     case accept(requestID: String, handle: String)
+    /// Refuses a friend request. Nothing is deleted that the sender can't send again.
+    case decline(handle: String)
     /// The limits are the reviewed ones, sent exactly as the owner confirmed them.
     case grant(handle: String, kind: String, resourceID: String, resourceName: String, capability: String,
                limits: MultiplayerGrantLimits)
@@ -537,6 +568,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle: .profile
         case .sendRequest: .request
         case .accept: .accept
+        case .decline: .decline
         case .grant: .grant
         case .revoke: .revoke
         case .addResource: .resourceAdd
@@ -550,6 +582,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle(let handle): ["handle": .string(handle)]
         case .sendRequest(let handle): ["handle": .string(handle)]
         case .accept(let id, _): ["id": .string(id)]
+        case .decline(let handle): ["handle": .string(handle)]
         case .grant(let handle, let kind, let resource, _, let capability, let limits):
             ["handle": .string(handle), "kind": .string(kind), "resource": .string(resource),
              "capability": .string(capability), "maxUses": .number(limits.maxUses),
@@ -568,6 +601,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle(let handle): "Claiming \(handle.multiplayerDisplay)…"
         case .sendRequest(let handle): "Sending a friend request to \(handle.multiplayerDisplay)…"
         case .accept(_, let handle): "Accepting \(handle.multiplayerDisplay)’s request…"
+        case .decline(let handle): "Declining \(handle.multiplayerDisplay)’s request…"
         case .grant(let handle, _, _, _, _, _): "Granting access to \(handle.multiplayerDisplay)…"
         case .revoke(_, let handle, _, _): "Revoking \(handle.multiplayerDisplay)’s access…"
         case .addResource(_, let name, _, _): "Adding \(name.multiplayerDisplay)…"
@@ -582,6 +616,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle(let handle): "Your handle is \(handle.multiplayerDisplay)."
         case .sendRequest(let handle): "Friend request sent to \(handle.multiplayerDisplay)."
         case .accept(_, let handle): "You and \(handle.multiplayerDisplay) are now friends."
+        case .decline(let handle): "Declined \(handle.multiplayerDisplay)’s friend request."
         case .grant(let handle, _, _, let name, let capability, let limits):
             "\(handle.multiplayerDisplay) can now \(MultiplayerCapability.title(capability).lowercased()) on \(name.multiplayerDisplay), up to \(limits.usesTitle) until \(MultiplayerTime.display(limits.expiresAt))."
         case .revoke(_, let handle, let name, _): "Revoked \(handle.multiplayerDisplay)’s access to \(name.multiplayerDisplay)."
@@ -597,6 +632,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle: "Couldn’t claim that handle."
         case .sendRequest: "Couldn’t send the friend request."
         case .accept: "Couldn’t accept the request."
+        case .decline: "Couldn’t decline the request."
         case .grant: "Couldn’t grant access."
         case .revoke: "Couldn’t revoke access."
         case .addResource: "Couldn’t add the resource."
@@ -611,6 +647,7 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .claimHandle: "handle claim"
         case .sendRequest: "friend request"
         case .accept: "acceptance"
+        case .decline: "decline"
         case .grant: "grant"
         case .revoke: "revocation"
         case .addResource: "new resource"

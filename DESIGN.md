@@ -229,6 +229,10 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 
 ### Organisms (in the tray today)
 
+The need row is something waiting on the person: the server's swatch, a title in `name`, one line in `sub`, then the answer. A friend request's line names the server and, when the relay says, how long ago it came ("On home, 5m ago"). A request that can be refused has Decline first and the answer after it as the primary button. Declining a friend request takes one press: it refuses, the sender can ask again, and nothing is deleted.
+
+The grant sheet is one form drawn in two places. The tray shows it as a page with the tray's footer. A view outside the tray presents the grant host: the same form in a scroll area over a footer with the hint, Cancel and a primary Share. A refused grant shows its reason in a failure banner at the top of the host and leaves the sheet open.
+
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
