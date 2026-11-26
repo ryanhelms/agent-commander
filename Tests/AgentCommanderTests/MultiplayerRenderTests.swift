@@ -216,4 +216,67 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         model.close()
         try? FileManager.default.removeItem(at: winners.file)
     }
+
+    /// Draws one view at the tray's width and its own height into a PNG.
+    static func write<Content: View>(view: Content, _ name: String, to folder: URL, settling model: MultiplayerModel) async throws {
+        let host = NSHostingView(rootView: view.frame(width: MultiplayerLayout.width).preferredColorScheme(.dark))
+        let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: MultiplayerLayout.width, height: 900),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        for _ in 0..<4 {
+            host.layoutSubtreeIfNeeded()
+            window.setContentSize(host.fittingSize)
+            try await Task.sleep(for: .milliseconds(120))
+            await model.settle()
+        }
+        host.layoutSubtreeIfNeeded()
+        window.setContentSize(host.fittingSize)
+        try await Task.sleep(for: .milliseconds(200))
+        let bounds = host.bounds
+        let image = try #require(host.bitmapImageRepForCachingDisplay(in: bounds))
+        host.cacheDisplay(in: bounds, to: image)
+        let png = try #require(image.representation(using: .png, properties: [:]))
+        try png.write(to: folder.appendingPathComponent("\(name).png"))
+        window.contentView = nil
+    }
+
+    /// The composers as a view outside the tray hosts them, each at its full height (`scrolls: false`).
+    @Test(.enabled(if: multiplayerRenderDirectory != nil)) func drawsTheHostedComposers() async throws {
+        let folder = URL(fileURLWithPath: try #require(multiplayerRenderDirectory), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let state = folder.appendingPathComponent("fixture-state-hosts.json")
+        try? FileManager.default.removeItem(at: state)
+        setenv("COMMANDER_NETWORK_FIXTURE_STATE", state.path, 1)
+        _ = NSApplication.shared
+        let model = MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: Self.fixture)),
+                                     usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600))
+        model.open()
+        await model.settle()
+        model.refresh()
+        await model.settle()
+        let home = "s-fixture-home", agent = "dir-sam-agent"
+        let cancel = {}, finish: (MultiplayerActionResult) -> Void = { _ in }
+        model.share.prepareGrant(on: home)
+        let hosts: [(String, AnyView)] = [
+            ("host-grant", AnyView(MultiplayerGrantHost(model: model, scrolls: false, onCancel: cancel, onFinish: finish))),
+            ("host-consult", AnyView(MultiplayerConsultHost(model: model, server: home, resource: agent, scrolls: false,
+                                                            onCancel: cancel, onFinish: finish, onThread: { _ in }))),
+            ("host-handoff", AnyView(MultiplayerHandoffHost(model: model, server: home, resource: agent, scrolls: false,
+                                                            onCancel: cancel, onFinish: finish))),
+            ("host-review-request", AnyView(MultiplayerReviewRequestHost(model: model, server: home, resource: agent, scrolls: false,
+                                                                         onCancel: cancel, onFinish: finish))),
+            ("host-watch", AnyView(MultiplayerWatchHost(model: model, server: home, resource: agent, scrolls: false,
+                                                        onCancel: cancel, onFinish: finish))),
+            ("host-add-friend", AnyView(MultiplayerAddFriendHost(model: model, server: home, scrolls: false, onCancel: cancel, onFinish: finish))),
+            ("host-invite", AnyView(MultiplayerInviteHost(model: model, server: home, scrolls: false, onCancel: cancel, onFinish: finish))),
+            ("host-membership", AnyView(MultiplayerMembershipHost(model: model, server: home, scrolls: false, onCancel: cancel, onFinish: finish))),
+            ("host-add-server", AnyView(MultiplayerAddServerHost(model: model, scrolls: false, onCancel: cancel, onFinish: finish,
+                                                                 onOpenExisting: { _ in }))),
+        ]
+        for (name, host) in hosts { try await Self.write(view: host, name, to: folder, settling: model) }
+        // Hosting every composer left the tray where it was.
+        #expect(model.route == .home)
+        model.close()
+    }
 }

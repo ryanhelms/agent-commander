@@ -7,6 +7,11 @@ import Foundation
 // - Every call runs through the same one-at-a-time action the tray uses. A call that can't start
 //   says why and sends nothing.
 // - A failure's reason is a full sentence, built with `MultiplayerSentence.join`.
+// - Every call names its target. None reads or moves the tray's route, so the tray can be on any
+//   page, or closed, while a view outside it acts. Drafts are the caller's own.
+// - A call that makes something new (a hand-off, a review, a fan-out, a saved server) reports the
+//   new thing's ID. A call that brings a value back (a consult's reply, an invite link) returns a
+//   `MultiplayerLoad` of it: `.loaded` or `.failed`, never `.loading`.
 
 /// What one answer came to, for the request it was about.
 enum MultiplayerActionResult: Equatable, Sendable {
@@ -50,6 +55,14 @@ enum MultiplayerActionResult: Equatable, Sendable {
 @MainActor
 private final class MultiplayerActionReport {
     var failure: String?
+    /// The ID of what the action made, when it made something.
+    var made: String?
+}
+
+/// A value an action brought back, kept until the action's task ends.
+@MainActor
+private final class MultiplayerActionValue<Value> {
+    var value: Value?
 }
 
 extension MultiplayerModel {
@@ -85,13 +98,14 @@ extension MultiplayerModel {
         await answerFriend(.decline(handle: request.handle), id: request.id, on: server)
     }
 
-    private func answerFriend(_ command: MultiplayerCommand, id: String, on server: String) async -> MultiplayerActionResult {
+    private func answerFriend(_ command: MultiplayerCommand, id: String, on server: String,
+                              keepingPage: Bool = false) async -> MultiplayerActionResult {
         guard let session = session(server), session.isOnline else {
             let name = self.server(server)?.displayName ?? "that server"
             return .failed(id: id, server: server,
                            reason: MultiplayerSentence.join(command.failureTitle, "Sign in to \(name) first."))
         }
-        guard let task = session.perform(command) else {
+        guard let task = session.perform(command, keepingPage: keepingPage) else {
             return .failed(id: id, server: server, reason: notSent(command.failureTitle))
         }
         await task.value
@@ -132,5 +146,229 @@ extension MultiplayerModel {
         return await result(id: draft.resourceID, server: draft.server, failing: "Couldn’t share it.") {
             share.confirmGrant(report: $0)
         }
+    }
+}
+
+// MARK: - Actions that name their target
+
+extension MultiplayerModel {
+    /// Runs one tray action that makes something new, and reports the new thing's ID.
+    private func made(server: String, failing lead: String,
+                      _ start: (_ report: @escaping @MainActor (String?) -> Void,
+                                _ made: @escaping @MainActor (String) -> Void) -> Task<Void, Never>?) async -> MultiplayerActionResult {
+        let report = MultiplayerActionReport()
+        guard let task = start({ report.failure = $0 }, { report.made = $0 }) else {
+            return .failed(id: "", server: server, reason: notSent(lead))
+        }
+        await task.value
+        if let failure = report.failure { return .failed(id: "", server: server, reason: failure) }
+        return .done(id: report.made ?? "", server: server, message: notice)
+    }
+
+    /// Runs one tray action that brings a value back.
+    private func brought<Value: Equatable>(failing lead: String,
+                                           _ start: (_ report: @escaping @MainActor (String?) -> Void,
+                                                     _ keep: @escaping @MainActor (Value) -> Void) -> Task<Void, Never>?) async -> MultiplayerLoad<Value> {
+        let report = MultiplayerActionReport()
+        let box = MultiplayerActionValue<Value>()
+        guard let task = start({ report.failure = $0 }, { box.value = $0 }) else { return .failed(notSent(lead)) }
+        await task.value
+        if let failure = report.failure { return .failed(failure) }
+        guard let value = box.value else { return .failed(MultiplayerSentence.join(lead, "The network helper sent no answer.")) }
+        return .loaded(value)
+    }
+
+    private func refused(_ id: String, _ server: String, _ lead: String, _ why: String) -> MultiplayerActionResult {
+        .failed(id: id, server: server, reason: MultiplayerSentence.join(lead, why))
+    }
+
+    // MARK: Threads
+
+    /// Posts a comment to a request's thread. The ID is the request's. Read the thread again with
+    /// `share.loadThread(_:on:)` to show it.
+    func postComment(_ text: String, to request: String, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t post the comment."
+        guard MultiplayerShareModel.canPost(comment: text) else {
+            return refused(request, server, lead, text.count > 4000 ? "Keep it under 4,000 characters." : "Write a comment first.")
+        }
+        return await result(id: request, server: server, failing: lead) {
+            share.postComment(text, to: request, on: server, report: $0)
+        }
+    }
+
+    // MARK: Access requests
+
+    /// Asks a resource's owner for access. The ID is the resource's.
+    func sendAccessRequest(_ draft: MultiplayerAccessDraft, for resource: String, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t send the request."
+        guard draft.canSend else { return refused(resource, server, lead, draft.problem ?? "Choose at least one action.") }
+        guard share.entry(resource, on: server) != nil else {
+            return refused(resource, server, lead, "That resource is no longer in the shared directory.")
+        }
+        return await result(id: resource, server: server, failing: lead) {
+            share.sendAccessRequest(draft, for: resource, on: server, report: $0)
+        }
+    }
+
+    // MARK: Consult, hand off and review
+
+    /// Sends one prompt to a friend's worker and brings back its reply.
+    func sendConsult(_ draft: MultiplayerConsultDraft, to resource: String, on server: String) async -> MultiplayerLoad<MultiplayerSentRequest> {
+        let lead = "Couldn’t send the prompt."
+        guard draft.canSend else { return .failed(MultiplayerSentence.join(lead, draft.problem ?? "Write a prompt first.")) }
+        return await brought(failing: lead) { share.sendConsult(draft, to: resource, on: server, report: $0, then: $1) }
+    }
+
+    /// Hands a task to a friend's agent. The ID is the new hand-off's request.
+    func sendHandoff(_ draft: MultiplayerHandoffDraft, to resource: String, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t hand off the task."
+        guard draft.canSend else { return refused("", server, lead, draft.problem ?? "Give the task a title and say what to do.") }
+        return await made(server: server, failing: lead) { report, made in
+            share.sendHandoff(draft, to: resource, on: server, report: report, then: { made($0.request) })
+        }
+    }
+
+    /// Asks how a hand-off's run is going, or for its result and artifacts. The ID is the
+    /// hand-off's request; what came back is in `share.reports` under it.
+    func checkHandoff(_ row: MultiplayerSentRequest, on server: String, result wanted: Bool) async -> MultiplayerActionResult {
+        let lead = wanted ? "Couldn’t read the result." : "Couldn’t check the run."
+        guard row.run != nil else { return refused(row.request, server, lead, row.refusal ?? "This hand-off has no run yet.") }
+        return await result(id: row.request, server: server, failing: lead) {
+            share.check(row, on: server, result: wanted, report: $0)
+        }
+    }
+
+    /// Asks a friend's worker for a review. The ID is the new review's request.
+    func sendReview(_ draft: MultiplayerReviewDraft, to resource: String, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t send the review request."
+        guard draft.canSend else {
+            return refused("", server, lead, draft.problem ?? "Give it a title, and a diff or a pull request.")
+        }
+        return await made(server: server, failing: lead) { report, made in
+            share.live.sendReview(draft, to: resource, on: server, report: report, then: { made($0.request) })
+        }
+    }
+
+    /// Posts a review's findings to the pull request the caller names. The caller shows what will
+    /// be posted and where, and asks the person to confirm, before calling this. The ID is the
+    /// review's request.
+    func postReview(_ request: String, on server: String, to link: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t post the review."
+        if let problem = share.live.postProblem(request, on: server, link: link) { return refused(request, server, lead, problem) }
+        return await result(id: request, server: server, failing: lead) {
+            share.live.postReview(request, on: server, to: link, report: $0)
+        }
+    }
+
+    /// Sends a suggestion for a friend's worker and brings back the reply.
+    func sendSuggestion(_ text: String, to resource: String, on server: String) async -> MultiplayerLoad<MultiplayerSentRequest> {
+        let lead = "Couldn’t send the suggestion."
+        guard MultiplayerLiveModel.canSend(suggestion: text) else {
+            return .failed(MultiplayerSentence.join(lead, "Write a suggestion of at most 4,096 bytes."))
+        }
+        return await brought(failing: lead) { share.live.sendSuggestion(text, to: resource, on: server, report: $0, then: $1) }
+    }
+
+    // MARK: Fan-out
+
+    /// Sends one prompt to several friends' workers. The ID is the new fan-out's request.
+    func sendFanout(_ draft: MultiplayerFanoutDraft, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t send the fan-out."
+        guard draft.canSend else { return refused("", server, lead, draft.problem ?? "Choose at least 2 workers and write a prompt.") }
+        let reachable = share.live.fanoutTargets(on: server).filter { draft.targets.contains($0.id) }.count
+        guard reachable >= MultiplayerFanoutDraft.targetRange.lowerBound else {
+            return refused("", server, lead, "Fewer than 2 of the chosen workers can be prompted now.")
+        }
+        return await made(server: server, failing: lead) { report, made in
+            share.live.sendFanout(draft, on: server, report: report, then: { made($0.request) })
+        }
+    }
+
+    // MARK: Servers
+
+    /// Renames a saved server. The ID and the server are the server's own ID.
+    func rename(_ server: MultiplayerServerSummary, to name: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t rename the server."
+        if let problem = renameProblem(server.id, to: name) { return refused(server.id, server.id, lead, problem) }
+        return await result(id: server.id, server: server.id, failing: lead) { rename(server.id, to: name, report: $0) }
+    }
+
+    /// Pins a blocked server's new key: the one the person confirmed, after the caller showed it
+    /// from `checkCertificate(of:)` and asked twice, as the tray does. The model checks the server
+    /// once more itself. Nothing is sent unless that check shows the confirmed key, and the key is
+    /// not the one already pinned.
+    func trust(_ server: MultiplayerServerSummary, confirming pin: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t trust the new certificate."
+        guard let saved = self.server(server.id), saved.state == .certChanged else {
+            return refused(server.id, server.id, lead, "This server isn’t blocked by a changed certificate.")
+        }
+        guard !isBusy else { return .failed(id: server.id, server: server.id, reason: notSent(lead)) }
+        let check = await checkCertificate(of: saved)
+        if let failure = check.failure { return refused(server.id, server.id, lead, failure) }
+        guard let shown = check.value?.step(.tls)?.pin, !shown.isEmpty, shown == pin, shown != saved.pin else {
+            return refused(server.id, server.id, lead, "The server no longer shows the certificate you confirmed. Check it again.")
+        }
+        return await result(id: server.id, server: server.id, failing: lead) { trust(saved, pin: shown, report: $0) }
+    }
+
+    /// Saves a server from the caller's draft and the check that passed for its address, or joins
+    /// it when the draft carries an invite. The ID and the server are the saved server's ID.
+    func saveServer(_ draft: MultiplayerServerDraft, checked check: MultiplayerProbe) async -> MultiplayerActionResult {
+        let lead = draft.invite == nil ? "Couldn’t save the server." : "Couldn’t join the server."
+        let form = MultiplayerServerForm(draft: draft, probe: .finished(check, address: draft.trimmedAddress), servers: servers)
+        guard form.canSave else { return refused("", "", lead, form.hint) }
+        let report = MultiplayerActionReport()
+        guard let task = saveServer(draft, checked: check, report: { report.failure = $0 }, then: { report.made = $0.id }) else {
+            return .failed(id: "", server: "", reason: notSent(lead))
+        }
+        await task.value
+        if let failure = report.failure { return .failed(id: "", server: "", reason: failure) }
+        return .done(id: report.made ?? "", server: report.made ?? "", message: notice)
+    }
+
+    // MARK: Profile, invites and membership
+
+    /// Saves your profile on one server. The ID is the server's.
+    func saveProfile(_ draft: MultiplayerProfileDraft, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t save your profile."
+        if let problem = draft.problem { return refused(server, server, lead, problem) }
+        guard draft.hasChanges else { return refused(server, server, lead, "Nothing changed yet.") }
+        return await result(id: server, server: server, failing: lead) { saveProfile(draft, on: server, report: $0) }
+    }
+
+    /// Makes an invite link for a server and brings it back.
+    func createInvite(_ draft: MultiplayerInviteDraft, on server: String) async -> MultiplayerLoad<MultiplayerInvite> {
+        let lead = "Couldn’t create the invite."
+        guard canInvite(server) else { return .failed(MultiplayerSentence.join(lead, "Only an admin can invite people to this server.")) }
+        return await brought(failing: lead) { createInvite(draft, on: server, report: $0, then: $1) }
+    }
+
+    /// Saves a relay's membership settings and brings back what the relay now holds.
+    func saveMembership(_ draft: MultiplayerMembershipDraft, on server: String) async -> MultiplayerLoad<MultiplayerMembership> {
+        let lead = "Couldn’t save membership."
+        if let problem = draft.problem { return .failed(MultiplayerSentence.join(lead, problem)) }
+        return await brought(failing: lead) { saveMembership(draft, on: server, report: $0, then: $1) }
+    }
+
+    // MARK: Friends and grants
+
+    /// Looks the handle up exactly, then sends that person a friend request. Nothing is sent
+    /// unless the network returns the same handle. The ID is the handle.
+    func sendFriendRequest(to handle: String, on server: String) async -> MultiplayerActionResult {
+        let handle = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = MultiplayerCommand.sendRequest(handle: handle)
+        guard let session = session(server), session.isOnline else {
+            return await answerFriend(command, id: handle, on: server)    // says to sign in first
+        }
+        if let failure = await session.lookUp(handle).failure { return refused(handle, server, command.failureTitle, failure) }
+        return await answerFriend(command, id: handle, on: server, keepingPage: true)
+    }
+
+    /// Ends one grant, by value. It needs no page: the server's own page, its confirm step and the
+    /// tray's route stay as they are. The caller asks the person to confirm first. The ID is the grant's.
+    func revoke(_ grant: MultiplayerGrant, on server: String) async -> MultiplayerActionResult {
+        let command = session(server)?.revokeCommand(grant)
+            ?? .revoke(grantID: grant.id, handle: grant.handle, resourceName: grant.resource, capability: grant.capability)
+        return await answerFriend(command, id: grant.id, on: server, keepingPage: true)
     }
 }
