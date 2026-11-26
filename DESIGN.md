@@ -72,6 +72,8 @@ Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `we
 
 Reduce Transparency forces the opaque fill in both themes. The web Remote page is unaffected.
 
+Black glass draws the same components through its own tokens: the sidebar floats as a glass sheet, groups are separated by space rather than rules, the selected row has a rounded fill and outline with no marker, and a hot count uses the highlight fill.
+
 ### Shape
 
 | Token | Value |
@@ -122,6 +124,14 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | Tray width | 400 pt |
 | Page inset | 24 pt |
 | Table row height | 34 pt |
+| Sidebar width | 224 pt |
+| Sidebar row height | 28 pt |
+| Mode rail width | 48 pt |
+| Mode rail cell | 32 pt square, 18 pt icon |
+| Context list width | 196 pt |
+| Place mark | 18 pt |
+| Corner count | 14 pt |
+| Toolbar band | 52 pt |
 
 ### Motion
 
@@ -151,6 +161,8 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 |---|---|
 | Lamp | 9 pt state mark: `on` filled circle, `off` outlined circle, `waiting` open arc, `error` diamond, `unknown` focus ring, `busy` square, `away` half-filled circle, `doNotDisturb` circle with a bar. Live lamps pulse. |
 | Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off`. |
+| Count | A place's count in `label`, on `hair`. A hot count is filled `attention` with `onAccent` ink. A figure such as "2/3" takes the count's place and is never hot. |
+| Place mark | An 18 pt symbol in `secondary`, or `foreground` when selected. A project or workspace is one letter in `focus` on a square mark. |
 | Spinner | 12 pt arc turning every 1.1 s. Labelled "In progress". |
 | Mark | Square icon tile for a non-person thing: agent, repository, resource. Well fill, border edge, optional tone. |
 | Avatar | Round picture, or the initial on the well when there is no picture. |
@@ -185,15 +197,25 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Band | Padded region with a hairline under it. This is how the tray is divided. |
 | Trace row | Time (`HH:MM:SS`), a kind tag and text, with a 2 pt left rule coloured by kind: message `foreground`, tool `focus`, status `attention`. Hairline under each line. |
 | Countdown | Time left as a mono figure, ticking each second, over a 56 × 2 pt line that drains linearly. `working`, then `attention` under five minutes. When the full length isn't known, the line drains over the shortest offered length that holds what is left. With Reduce Motion the line steps. |
-| Decision row | A request with Deny and Approve (or Decline and Review). The text opens the full review. |
+| Decision row | A request with Deny and Approve, Decline and Review, Decline and Accept, or Reply for a question. The primary answer is the last cell. The text opens the full review. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
 | Choice card | A selectable card: a thumbnail, a round choice mark, the option's name and one line about it. The selected card is filled `selection` with the leading `focus` marker and the word "Selected" in `working`. |
 | Theme thumbnail | A small window drawn in one theme's own tokens: its rail, two panels with a state mark, and a primary action. |
+| Place row | A place mark, the title in `body` and a trailing count, 28 pt high. The selected row is filled `selection` with the 2 pt `focus` leading marker. Hover tints it 6%. Each of the first nine rows has a ⌘ number shortcut, named in its tooltip. |
+| Group heading | The group's name in `heading` and secondary ink. A group that folds is a button with a chevron; while folded it shows its hot count beside the name. |
+| Mode cell | A 32 pt square cell with an 18 pt icon. The selected cell is filled `selection` with the leading marker. A hot count sits on the top trailing corner at 14 pt. Each cell has a ⌘ number shortcut. |
+| Inbox cell | The pinned inbox: a tray mark, "Needs you" in `name`, one `sub` line saying where requests come from ("3 from your workers, 4 from the network") and the total as a `figure` in `attention`. While something waits it is filled `attention` at 12% with a 45% edge. Empty, it has a `hair` edge and says "Nothing is waiting for you" beside an `on` lamp. Selected, it looks like a selected place row. |
+| Profile row | A round avatar, the person's name in `name`, and a lamp with the presence word in `state`. The whole row opens the presence choices in a native menu. |
+| Toolbar readouts | A status strip sized for the toolbar: `label` over a `data` value, cells split by hairlines on the well inside one hairline frame. `servers` shows "2/3" with a lamp (`on` when all answer, `busy` and `attention` ink when some do, `error` and `failure` ink when none do) and opens Servers. `presence` shows the lamp and word, has a chevron beside its label and opens the presence choices. |
+| Origin cell | Who asks, at a fixed 196 pt so every request starts on one line. A local worker is a 28 pt square mark, its name in `data` and its host in `fingerprint`. A network request is the server's swatch, the friend's round 28 pt avatar, the handle in `data` and the server in `fingerprint`. |
+| Kind tag | question, approval, access or friend, as a badge in `label` beside the request's title. |
+| Clock label | Right-aligned in `data` over a `fingerprint` word: the time left ("4:12 left", `working`, then `attention` under five minutes) or the wait ("6m waiting"). |
+| Reply field | A field box under a question's row, then Cancel and a primary Send. Send is off while the field is empty. Return sends and Escape cancels. |
 | Alert band | Full-width band under the status strip: `failure` at 12% fill with a 45% lower edge, an error lamp and one sentence, such as "Can't reach your Mac". |
 | Load note | A lamp and one sentence in a hairline-topped row. The lamp is `waiting` while reading, `error` when the read failed, `off` when empty, and `on` for "Nothing is waiting for you". |
-| Outcome well | A well holding a state label ("Approved", "Denied") that replaces a verb strip once its action is done, then fades out. |
+| Outcome well | A well holding a state label that replaces a verb strip once its action is done, then fades out: Approved, Accepted and Replied in `working`, Denied in `failure`, Declined in neutral, In review in `focus`. |
 | Inline confirm | The second press before something that can't be undone: a well with a `failure` edge, one sentence saying what goes with it, then a keep button and a `danger` button. It arrives under the row it belongs to. The review page's "Post this review" confirmation is the same pattern with an `attention` edge and a primary button, and scrolls into view when it opens. |
 | State tally | Counts by state as joined cells that also filter: "open 3, claimed 1, done 4". The chosen cell is filled `focus`; elsewhere a count above zero takes its state's tone. |
 | Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own. |
@@ -211,6 +233,10 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
+
+The main window adds three sidebar organisms, each a prototype pending the user's pick: a grouped sidebar, a mode rail with a context list, and a Needs you sidebar. Two will be dropped once one is chosen. It also adds the Needs you row.
+
+A Needs you row is an origin cell, a hairline, the request (title in `name` with its kind tag, one or two lines in `sub`), a clock label and a verb strip. Rows share one panel and are ruled off by hairlines.
 
 A decision row for an approval names the worker and its server ("relay-worker on ryan-mac"). A holder row is the Holder badge over the metadata line, then the countdown, then Take back.
 
@@ -257,11 +283,15 @@ The tray keeps its own versions of these:
 
 - **Header:** title, then a one-line state summary, then a single trailing icon action.
 - **Telemetry strip:** a status strip of readouts directly under the header.
-- **Places:** a tab bar or a sidebar of places. Each place shows a count.
+- **Places:** a tab bar or a sidebar of places. Each place shows a count. A sidebar is docked: a `well` against the window's leading edge with a hairline against the canvas. Its groups are ruled off by hairlines and headed in `heading`. Places that are always needed (Hosts, Settings) sit at the foot under a hairline.
+- **Mode rail** (prototype, pending the user's pick): a 48 pt rail of mode cells with Settings at the foot, a hairline, then a 196 pt context list headed by the mode's name in `title` with its hot count. The context list holds every page of the mode.
+- **Needs you first:** the inbox cell is pinned above the groups. The queues it stands in for (Attention, Approvals, Friend requests) are not listed. A count is never shown twice: a total that includes the inbox leaves those queues out.
+- **Window toolbar:** the app's name and a breadcrumb at the leading edge; toolbar readouts at the trailing edge. Presence moves to the sidebar footer where the sidebar has a profile row.
 - **Body:** stacked bands. Each band has a heading with a count and at most one action, and the band's rows follow.
 - **Rows:** mark or avatar (28 pt), or a kind glyph for remote work, then the name, then a metadata line with the swatch edge, then trailing verbs. State words sit right-aligned in tone colour.
 - **Footer:** one line of context on the well, then the page's actions.
 - **Order of urgency:** what needs the person first ("Needs you"), then live work, then what they own, then what others offer.
+- **Needs you order:** a request with under five minutes left comes first whatever its kind; then the person's own stopped workers, longest wait first; then network approvals, soonest end first; then access requests; then friend requests. A decided row keeps its place while its outcome shows.
 - **Preferences.** Sections stack: a mono heading, a `title`, and a trailing scope note. Appearance comes first and offers one choice card per theme, followed by the line "Consoles, terminals and the pretty view look the same in every theme."
 
 ## 5. Behaviour
@@ -271,7 +301,7 @@ The tray keeps its own versions of these:
   - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value.
   - The page's scroll bar is taken out of the accessibility tree (it is four unnamed buttons otherwise). The scroll area still scrolls for VoiceOver and the keyboard.
   - A code is spoken letter by letter. A QR code is an image with a label; its link is also there as text.
-- **Keyboard.** Places switch with ⌘1, ⌘2, ⌘3 and so on. Every custom control is reachable by Tab.
+- **Keyboard.** Places switch with ⌘1, ⌘2, ⌘3 and so on, down the visible rows of a sidebar (the pinned inbox is ⌘1) or down the modes of a rail. Rows past the ninth and the foot places have none. Every custom control is reachable by Tab.
 - **Copy.** Hashes, IDs and trace text can be selected or copied.
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
