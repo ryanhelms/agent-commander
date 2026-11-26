@@ -592,7 +592,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.namedTeamRelay(ctx, s, verb, in)
 	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
 		return a.liveVerb(ctx, s, verb, in)
-	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
+	case "send", "sent", "handoffs", "threads", "thread", "comment", "apply-artifact":
 		return a.requesterVerb(ctx, s, verb, in)
 	case "approvals":
 		return a.approvals(ctx, s), nil

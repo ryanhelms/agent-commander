@@ -13,7 +13,9 @@ import Foundation
 //   new thing's ID. A call that brings a value back (a consult's reply, an invite link) returns a
 //   `MultiplayerLoad` of it: `.loaded` or `.failed`, never `.loading`.
 
-/// What one answer came to, for the request it was about.
+/// What one answer came to, for the request it was about. After `.done` for an approval or an
+/// access request, the live app keeps the answered row in the share model's lists for
+/// `MultiplayerShareModel.answeredHold`, so the caller's row can show the outcome before it leaves.
 enum MultiplayerActionResult: Equatable, Sendable {
     /// The helper confirmed it. `message` is the confirmation the tray shows, when there is one.
     case done(id: String, server: String, message: String?)
@@ -119,7 +121,12 @@ extension MultiplayerModel {
 
     /// Approves or denies one use of a resource that waits under Ask each time.
     func decide(_ approval: MultiplayerApproval, on server: String, approve: Bool) async -> MultiplayerActionResult {
-        await result(id: approval.id, server: server,
+        if let answer = share.answer(for: approval, on: server) {
+            return .failed(id: approval.id, server: server,
+                           reason: MultiplayerSentence.join(approve ? "Couldn’t approve the request." : "Couldn’t deny the request.",
+                                                            "It was already \(answer.title.lowercased())."))
+        }
+        return await result(id: approval.id, server: server,
                      failing: approve ? "Couldn’t approve the request." : "Couldn’t deny the request.") {
             share.decide(approval, on: server, approve: approve, report: $0)
         }
@@ -127,7 +134,12 @@ extension MultiplayerModel {
 
     /// Declines an access request sent to you, or withdraws one you sent.
     func remove(_ request: MultiplayerAccessRequest, on server: String, declining: Bool) async -> MultiplayerActionResult {
-        await result(id: request.id, server: server,
+        if let answer = share.answer(for: request, on: server) {
+            return .failed(id: request.id, server: server,
+                           reason: MultiplayerSentence.join(declining ? "Couldn’t decline the request." : "Couldn’t withdraw the request.",
+                                                            "It was already \(answer.title.lowercased())."))
+        }
+        return await result(id: request.id, server: server,
                      failing: declining ? "Couldn’t decline the request." : "Couldn’t withdraw the request.") {
             share.remove(request, on: server, declining: declining, report: $0)
         }

@@ -223,6 +223,8 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			}
 		}
 		return map[string]any{verb: out}, nil
+	case "threads":
+		return a.threads(ctx, s), nil
 	case "thread", "comment":
 		if !idPattern.MatchString(in.Request) {
 			return nil, errors.New("name a request")
@@ -361,6 +363,101 @@ func (a *Agent) applyArtifact(ctx context.Context, s identity.Session, in input)
 		return nil, errors.New("fetch the branch " + art.Name + " from the owner's repository into your checkout")
 	}
 	return nil, errors.New("this artifact kind cannot be applied locally")
+}
+
+// threads lists every thread the signed-in user takes part in: requests this
+// device sent and requests it received, newest first. It reads only local
+// state, plus one friend lookup for the received rows' handles.
+func (a *Agent) threads(ctx context.Context, s identity.Session) map[string]any {
+	type row struct {
+		at  time.Time
+		out map[string]any
+	}
+	var rows []row
+	for _, r := range a.sentLog(s.User) {
+		if actions.IsFollowUp(r.Action) {
+			continue
+		}
+		out := map[string]any{"request": r.ID, "resource": r.Resource, "action": r.Action, "title": r.Title,
+			"at": r.At, "direction": "sent", "peer": "", "handle": ""}
+		if len(r.Children) > 0 {
+			children := make([]map[string]string, 0, len(r.Children))
+			for _, c := range r.Children {
+				children = append(children, map[string]string{"request": c.ID, "resource": c.Resource})
+			}
+			out["children"] = children
+		}
+		rows = append(rows, row{r.At, out})
+	}
+	type received struct {
+		peer, resource, action string
+		at                     time.Time
+	}
+	got := map[string]received{}
+	keep := func(id string, r received) {
+		if old, ok := got[id]; !ok || r.at.After(old.at) {
+			got[id] = r
+		}
+	}
+	a.mu.Lock()
+	for id, p := range a.pending {
+		if p.child.Owner == s.User && !actions.IsFollowUp(p.child.Action) {
+			keep(id, received{p.child.Sender, p.child.Resource, p.child.Action, p.arrived})
+		}
+	}
+	a.mu.Unlock()
+	cfg := a.localConfig(s)
+	_ = a.walkOwnerAudit(func(e AuditEntry) bool {
+		if e.Unverified || e.Request == "" || actions.IsFollowUp(e.Action) {
+			return true
+		}
+		// The same recipient rules as receivedRequest: older rows without a
+		// recipient count when the receipt is in this user's state directory.
+		if e.Recipient != s.User && (e.Recipient != "" || !actions.HasRequestReceipt(cfg, e.Peer, e.Resource, e.Request)) {
+			return true
+		}
+		at := e.Started
+		if at.IsZero() {
+			at = e.Ended
+		}
+		keep(e.Request, received{e.Peer, e.Resource, e.Action, at})
+		return true
+	})
+	if len(got) > 0 {
+		handles := a.friendHandles(ctx, s)
+		for id, r := range got {
+			out := map[string]any{"request": id, "resource": r.resource, "action": r.action, "title": r.action,
+				"at": r.at, "direction": "received", "peer": r.peer, "handle": handles[r.peer], "comments": 0}
+			if thread, e := actions.ReadThread(cfg, id); e == nil {
+				if comments, _ := thread["comments"].([]actions.Comment); len(comments) > 0 {
+					out["comments"] = len(comments)
+					last := comments[0].At
+					for _, c := range comments[1:] {
+						if c.At.After(last) {
+							last = c.At
+						}
+					}
+					out["lastCommentAt"] = last
+				}
+			}
+			rows = append(rows, row{r.at, out})
+		}
+	}
+	slices.SortStableFunc(rows, func(x, y row) int { return y.at.Compare(x.at) })
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		id, _ := r.out["request"].(string)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, r.out)
+		if len(out) == 50 {
+			break
+		}
+	}
+	return map[string]any{"threads": out}
 }
 
 func (a *Agent) receivedRequest(user, peer, resource, id string) bool {
