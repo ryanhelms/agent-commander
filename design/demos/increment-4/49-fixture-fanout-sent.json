@@ -1,0 +1,32 @@
+{
+ "request": "rq-2bc59c8a05",
+ "child": "",
+ "resource": "dir-mei-agent",
+ "action": "fanout:agent.ask",
+ "title": "Should reconnect backoff reset after a successful lease renewal?",
+ "at": "2026-11-26T01:41:36Z",
+ "status": "ok",
+ "value": {
+  "text": "Put it in the relay. Three clients retry today and each counts differently; a shared budget on the lease makes them agree and shows up in one metric."
+ },
+ "children": [
+  {
+   "id": "c-2bc59c8a05-0",
+   "resource": "dir-mei-agent",
+   "action": "agent.ask",
+   "status": "ok",
+   "value": {
+    "text": "Put it in the relay. Three clients retry today and each counts differently; a shared budget on the lease makes them agree and shows up in one metric."
+   }
+  },
+  {
+   "id": "c-2bc59c8a05-1",
+   "resource": "dir-sam-agent",
+   "action": "agent.ask",
+   "status": "ok",
+   "value": {
+    "text": "Keep the budget in the client. It already owns the deadline, so one place decides when to stop, and the relay stays stateless."
+   }
+  }
+ ]
+}

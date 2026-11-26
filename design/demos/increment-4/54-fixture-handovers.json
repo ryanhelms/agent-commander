@@ -1,0 +1,14 @@
+{
+ "s-fixture-home": [
+  {
+   "user": "u-sam",
+   "resource": "res-2",
+   "until": "2026-11-26T02:01:33Z"
+  },
+  {
+   "user": "u-jonas",
+   "resource": "res-2",
+   "until": "2026-11-26T01:57:27Z"
+  }
+ ]
+}

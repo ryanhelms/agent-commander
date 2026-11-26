@@ -1,0 +1,47 @@
+{
+  "network_tools": [
+    "commander_network_board",
+    "commander_network_discover",
+    "commander_network_inbox",
+    "commander_network_online",
+    "commander_network_receipt",
+    "commander_network_submit",
+    "commander_network_thread"
+  ],
+  "descriptions": {
+    "commander_network_board": "List shared workspaces, their claims and task-board cards, and claim, release, complete or comment on cards in workspaces your owner belongs to. Agents cannot accept friends or create or change grants.",
+    "commander_network_discover": "List granted peer resources and actions, with descriptions and JSON Schema payloads in actionContracts. Select the action from the chosen resource's actions list.",
+    "commander_network_inbox": "Read recent private messages addressed to this coordinator. A paired coordinator can reply with agent.message on a peer resource that grants it.",
+    "commander_network_online": "List contacts with their presence and shared resources. Agents cannot accept friends or create or change grants.",
+    "commander_network_receipt": "Read per-recipient outcomes and results for an operation previously submitted by this coordinator.",
+    "commander_network_submit": "Send one authorized operation to one or more shared resources. Reuse the same ID to reconcile an uncertain reply.",
+    "commander_network_thread": "Read a request's thread. Include text to add a comment. Agents cannot accept friends or create or change grants."
+  },
+  "commander_network_online": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Commander API (400 Bad Request): {\"error\":\"coordinator identity denied\",\"ok\":false}"
+      }
+    ],
+    "isError": true
+  },
+  "commander_network_thread": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Commander API (400 Bad Request): {\"error\":\"coordinator identity denied\",\"ok\":false}"
+      }
+    ],
+    "isError": true
+  },
+  "commander_network_board": {
+    "content": [
+      {
+        "type": "text",
+        "text": "unknown coordinator network operation"
+      }
+    ],
+    "isError": true
+  }
+}

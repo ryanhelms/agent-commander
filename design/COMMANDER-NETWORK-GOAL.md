@@ -19,7 +19,7 @@ Agent Commander users can join any relay they can resolve, see their friends gro
 | 1. Connect | Server list, several connections, pinning, health check, friends by server, native host mode, sign-in | Done | 2d569d5 | `dist/Agent Commander.app` in the worktree (debug) | [12 of 12 steps passed, 7 defects](demos/increment-1/demo.md) |
 | 2. Social | Profiles, presence, linked contacts, invites, notifications, feed, membership | Done | f4e832c | `dist/Agent Commander.app` in the worktree (debug) | [15 of 18 steps passed, 7 defects](demos/increment-2/demo.md) |
 | 3. Share and consult | Capabilities, directory, share from cockpit, approvals, budgets, audit, Consult, Hand off; tabbed console redesign | Done | 05942f8 | `dist/Agent Commander.app` in the worktree (debug) | [17 of 30 steps passed, 14 defects](demos/increment-3/demo.md) |
-| 4. Live work | Watch, Co-pilot, Review exchange, Fan-out, agent network access | Demo running | 1698292 | `dist/Agent Commander.app` in the worktree (debug) | Demo running |
+| 4. Live work | Watch, Co-pilot, Review exchange, Fan-out, agent network access | Done | 1698292 | `dist/Agent Commander.app` in the worktree (debug) | [25 of 33 steps passed, 12 defects](demos/increment-4/demo.md) |
 | 5. Teams | Groups, shared workspaces, task board, lend hardware, knowledge, reputation, admin | Backend done; tray in progress | — | — | — |
 | 6. Remote | Tailnet web view for approvals and watching | Backend done; page in progress, tray section planned | — | — | — |
 
