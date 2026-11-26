@@ -35,9 +35,37 @@ enum TeamsLiveMapper {
         }
     }
 
-    /// A host you lend. Its enrolled commands are not in the resource the relay lists.
+    /// A host you lend, with the commands enrolled for it on this Mac.
     static func host(_ resource: MultiplayerResource, grants: [MultiplayerGrant]) -> TeamsHost {
-        TeamsHost(id: resource.id, name: resource.name, grants: grants.filter { $0.resource == resource.id }.count)
+        TeamsHost(id: resource.id, name: resource.name, environment: resource.capabilities?.environments.first ?? "",
+                  commands: resource.capabilities?.commands ?? [], grants: grants.filter { $0.resource == resource.id }.count)
+    }
+
+    /// The relay's combined view as the page's rows. A field the relay has no source for stays
+    /// empty: no branch is a dash, and checks that aren't reported are never shown as zero.
+    static func work(_ view: MultiplayerCombinedView) -> [TeamsMemberWork] {
+        view.members.map { member in
+            TeamsMemberWork(handle: member.handle, isOnline: member.online ?? false, workers: member.workers.map { worker in
+                let tone: Tone = switch worker.knownState {
+                case .working: .working
+                case .online: .focus
+                case .offline, nil: .neutral
+                }
+                let checks = worker.checks.map { TeamsChecks(passed: $0.passed, failed: $0.failed, isRunning: $0.running > 0) }
+                return TeamsWorker(id: worker.id, name: worker.name,
+                                   capabilities: MultiplayerCapabilities(harness: worker.harness, model: worker.model),
+                                   state: worker.stateTitle, tone: tone, branch: worker.branch, checks: checks, claims: worker.claims)
+            })
+        }
+    }
+
+    /// The relay's members and devices as the Admin page's rows.
+    static func members(_ roster: MultiplayerRelayRoster) -> [TeamsMember] {
+        roster.members.map { TeamsMember(handle: $0.handle, isSuspended: $0.suspended, isAdmin: $0.admin, key: $0.id) }
+    }
+
+    static func devices(_ roster: MultiplayerRelayRoster) -> [TeamsDevice] {
+        roster.devices.map { TeamsDevice(id: $0.id, name: $0.title, owner: $0.owner, lastSeen: $0.lastSeen, isOnline: $0.online) }
     }
 
     /// How a run of the merge queue ended, as one result: how many merged, and what stopped the rest.
@@ -67,6 +95,15 @@ final class TeamsPagesLiveState {
     var pullRequests: [String: MultiplayerLoad<MultiplayerPullRequestList>] = [:]
     var versions: [String: MultiplayerLoad<[MultiplayerKnowledgeItem]>] = [:]
     var reputation: [String: MultiplayerLoad<MultiplayerReputation>] = [:]
+    /// A workspace's combined view, by workspace key. Missing until it is read; the page then
+    /// shows the members and claim holders it can work out from the lists it has.
+    var combined: [String: MultiplayerCombinedView] = [:]
+    /// What each server tells a member: how widely its policy lets knowledge travel.
+    var me: [String: MultiplayerMe] = [:]
+    /// For a server the person administers: its policy, and its members and devices.
+    var policies: [String: MultiplayerRelayPolicy] = [:]
+    var rosters: [String: MultiplayerRelayRoster] = [:]
+    var adminProblems: [String: String] = [:]
     var merging: Set<String> = []
 
     // MARK: Content
@@ -87,6 +124,13 @@ final class TeamsPagesLiveState {
             server.knowledge = teams.knowledge[id] ?? []
             server.hosts = teams.myHosts(on: id).map { TeamsLiveMapper.host($0, grants: status?.grants ?? []) }
             server.offeredHosts = teams.friendHosts(on: id)
+            server.knowledgeWidest = me[id]?.knowledgeWidestScope
+            server.policy = policies[id]
+            if let roster = rosters[id] {
+                server.members = TeamsLiveMapper.members(roster)
+                server.devices = TeamsLiveMapper.devices(roster)
+            }
+            server.adminProblem = adminProblems[id]
             return server
         }
         for server in content.servers {
@@ -103,7 +147,7 @@ final class TeamsPagesLiveState {
                     content.pullRequests[key] = pullRequests[key] ?? .loading
                 }
                 let members = server.groups.first { $0.id == workspace.group }?.members ?? []
-                content.work[key] = TeamsLiveMapper.work(members: members, claims: workspace.claims) { handle in
+                content.work[key] = combined[key].map(TeamsLiveMapper.work) ?? TeamsLiveMapper.work(members: members, claims: workspace.claims) { handle in
                     handle == server.handle || server.friends.first { $0.handle == handle }?.online == true
                 }
             }
@@ -123,11 +167,41 @@ final class TeamsPagesLiveState {
         if let key = TeamsPlace.workspaceKey(of: place) { await readWorkspace(key, model) }
         if place == TeamsPlace.knowledge, let key = pages.selection.knowledge { await readVersions(key, model) }
         if place == TeamsPlace.directory, let key = pages.selection.hit { await readReputation(key, model) }
+        if place == TeamsPlace.knowledge { await readMe(model) }
+        if place == TeamsPlace.admin, let server = adminServer(model) { await readAdmin(server, model) }
+    }
+
+    /// The server the Admin page shows: the one chosen, or the first the person administers.
+    func adminServer(_ model: MultiplayerModel) -> String? {
+        let admin = model.share.teams.servers.map(\.id).filter { model.isAdmin($0) }
+        return pages.selection.adminServer.flatMap { admin.contains($0) ? $0 : nil } ?? admin.first
+    }
+
+    /// Reads what each server tells its members, so a share can name the widest scope allowed.
+    func readMe(_ model: MultiplayerModel) async {
+        for server in model.share.teams.servers.map(\.id) {
+            if case .loaded(let found) = await model.share.teams.loadMe(on: server) { me[server] = found }
+        }
+    }
+
+    /// Reads a server's policy and its members and devices. The policy form starts from the saved
+    /// policy the first time it is read; after that the draft is the person's own.
+    func readAdmin(_ server: String, _ model: MultiplayerModel, resetsDraft: Bool = false) async {
+        let teams = model.share.teams
+        let policy = await teams.loadPolicy(on: server)
+        if let saved = policy.value {
+            if policies[server] == nil || resetsDraft { pages.drafts.policy = MultiplayerPolicyDraft(saved) }
+            policies[server] = saved
+        }
+        let roster = await teams.loadRoster(on: server)
+        if let found = roster.value { rosters[server] = found }
+        adminProblems[server] = policy.failure ?? roster.failure
     }
 
     func readWorkspace(_ key: String, _ model: MultiplayerModel) async {
         guard let parts = TeamsKey.split(key) else { return }
         await readCards(key, model)
+        await readCombined(key, model)
         if model.share.teams.workspace(parts.id, on: parts.server)?.usesQueue == false {
             if pullRequests[key]?.value == nil { pullRequests[key] = .loading }
             pullRequests[key] = await model.share.teams.loadPullRequests(in: parts.id, on: parts.server)
@@ -139,6 +213,12 @@ final class TeamsPagesLiveState {
         guard let parts = TeamsKey.split(key) else { return }
         let next = await model.share.teams.loadCards(in: parts.id, on: parts.server)
         if next.value != nil || cards[key]?.value == nil { cards[key] = next }
+    }
+
+    /// Reads a workspace's combined view. A failed read keeps what was shown.
+    func readCombined(_ key: String, _ model: MultiplayerModel) async {
+        guard let parts = TeamsKey.split(key) else { return }
+        if case .loaded(let view) = await model.share.teams.loadCombinedView(of: parts.id, on: parts.server) { combined[key] = view }
     }
 
     func readVersions(_ key: String, _ model: MultiplayerModel) async {
@@ -167,12 +247,27 @@ final class TeamsPagesLiveState {
         var actions = TeamsPageActions()
 
         // Workspace
-        actions.claim = { draft, workspace, server in NetworkActionResult(await model.claim(draft, in: workspace, on: server)) }
+        actions.editWorkspace = { edit, workspace, server in NetworkActionResult(await model.editWorkspace(workspace, to: edit, on: server)) }
+        actions.leaveWorkspace = { [self] workspace, server in
+            let name = teams.workspace(workspace, on: server)?.name.multiplayerDisplay ?? "the workspace"
+            let result = NetworkActionResult(await model.leaveWorkspace(workspace, on: server))
+            guard result.isDone else { return result }
+            let key = TeamsKey.make(workspace, on: server)
+            (cards[key], combined[key], pullRequests[key]) = (nil, nil, nil)
+            return .done(id: workspace, server: server, message: result.message ?? "Left \(name). Your claims in it have ended.")
+        }
+        // The answer names who stopped a refused claim, so the page can mark that claim's row.
+        actions.claim = { [self] draft, workspace, server in
+            let answer = await model.claimAnswer(draft, in: workspace, on: server)
+            await readCombined(TeamsKey.make(workspace, on: server), model)
+            return TeamsClaimOutcome(result: NetworkActionResult(answer.result), refusal: answer.refusal)
+        }
         actions.release = { [self] id, workspace, server in
             guard let claim = teams.workspace(workspace, on: server)?.claims.first(where: { $0.id == id }) else { return gone(id, server, "claim") }
             let result = NetworkActionResult(await model.release(claim, in: workspace, on: server))
             // Releasing a card's claim reopens the card.
             if claim.kind == MultiplayerClaim.Kind.card.rawValue { await readCards(TeamsKey.make(workspace, on: server), model) }
+            await readCombined(TeamsKey.make(workspace, on: server), model)
             return result
         }
         actions.createCard = { [self] draft, workspace, server in
@@ -180,16 +275,18 @@ final class TeamsPagesLiveState {
             await readCards(TeamsKey.make(workspace, on: server), model)
             return result
         }
-        func move(_ id: String, _ workspace: String, _ server: String, to state: MultiplayerCard.State, result text: String = "") async -> NetworkActionResult {
+        func move(_ id: String, _ workspace: String, _ server: String, to state: MultiplayerCard.State, result text: String = "") async -> TeamsClaimOutcome {
             let key = TeamsKey.make(workspace, on: server)
-            guard let card = self.cards[key]?.value?.first(where: { $0.id == id }) else { return gone(id, server, "card") }
-            let result = NetworkActionResult(await model.updateCard(card, in: workspace, on: server, to: state, result: text))
+            guard let card = self.cards[key]?.value?.first(where: { $0.id == id }) else { return TeamsClaimOutcome(result: gone(id, server, "card")) }
+            let answer = state == .done ? await model.completeCardAnswer(card, in: workspace, on: server, result: text)
+                                        : await model.updateCardAnswer(card, in: workspace, on: server, to: state, result: text)
             // A refused claim says who holds the card; the board read again shows it in their name.
             await self.readCards(key, model)
-            return result
+            await self.readCombined(key, model)
+            return TeamsClaimOutcome(result: NetworkActionResult(answer.result), refusal: answer.refusal)
         }
         actions.claimCard = { id, workspace, server in await move(id, workspace, server, to: .claimed) }
-        actions.releaseCard = { id, workspace, server in await move(id, workspace, server, to: .open) }
+        actions.releaseCard = { id, workspace, server in await move(id, workspace, server, to: .open).result }
         actions.completeCard = { id, text, workspace, server in await move(id, workspace, server, to: .done, result: text) }
         actions.queueAdd = { draft, workspace, server in NetworkActionResult(await model.addToQueue(draft, for: workspace, on: server)) }
         actions.removeQueued = { id, workspace, server in
@@ -251,12 +348,23 @@ final class TeamsPagesLiveState {
             return result
         }
 
-        // Admin. The live page hosts the model's own policy form; these serve a caller without it.
-        actions.setPolicy = { draft, saved, server in
-            NetworkActionResult(await model.savePolicy(draft, from: saved, on: server).result(id: server, server: server))
+        // Admin. The page draws the policy form and the member and device lists itself, so each
+        // change is followed by a read of what it changed.
+        actions.setPolicy = { [self] draft, saved, server in
+            let result = NetworkActionResult(await model.savePolicy(draft, from: saved, on: server).result(id: server, server: server))
+            if result.isDone { await readAdmin(server, model, resetsDraft: true) }
+            return result
         }
-        actions.setSuspended = { handle, server, suspended in NetworkActionResult(await model.setSuspended(suspended, member: handle, on: server)) }
-        actions.revokeDevice = { device, server in NetworkActionResult(await model.revokeDevice(device, on: server)) }
+        actions.setSuspended = { [self] handle, server, suspended in
+            let result = NetworkActionResult(await model.setSuspended(suspended, member: handle, on: server))
+            await readAdmin(server, model)
+            return result
+        }
+        actions.revokeDevice = { [self] device, server in
+            let result = NetworkActionResult(await model.revokeDevice(device, on: server))
+            await readAdmin(server, model)
+            return result
+        }
         return actions
     }
 
@@ -264,13 +372,19 @@ final class TeamsPagesLiveState {
 
     /// The model's own teams hosts. Each keeps its draft and its refusal, names its target and
     /// never moves the tray. None scrolls: the page does.
-    func host(_ model: MultiplayerModel) -> (TeamsHosted) -> AnyView {
+    /// `place` is the page the hosts are shown on: what a host confirms is said there alone.
+    func host(_ model: MultiplayerModel, place: String? = nil) -> (TeamsHosted) -> AnyView {
         { [self] hosted in
+            // Every host is given `onCancel`, so Cancel puts it away and the page is as it was.
             let cancel = { [self] in pages.hostCancelled(hosted) }
             let finish: (MultiplayerActionResult) -> Void = { [self] result in
-                pages.hostFinished(hosted, NetworkActionResult(result))
+                pages.hostFinished(hosted, NetworkActionResult(result), from: place)
                 // A card's change is read again here, because the board is this window's own read.
-                if case .card(_, let workspace) = hosted { Task { await readCards(workspace, model) } }
+                switch hosted {
+                case .card(_, let workspace): Task { await readCards(workspace, model); await readCombined(workspace, model) }
+                case .claim(let workspace): Task { await readCombined(workspace, model) }
+                default: break
+                }
             }
             switch hosted {
             case .workspace(let server):
@@ -311,11 +425,16 @@ struct LiveTeamsPage: View {
 
     var body: some View {
         let actions = state.actions(model, share: share, requestAccess: { _, _ in go(NetworkPlace.directory) })
-        let pages = state.pages.pages(state.content(model), through: actions, go: go, host: state.host(model))
+        let pages = state.pages.pages(state.content(model), place: place, through: actions, go: go, host: state.host(model, place: place))
         TeamsPageView(place: place, pages: pages)
             // Reads again when the place or the open row changes.
-            .task(id: [place, state.pages.selection.knowledge ?? "", state.pages.selection.hit ?? ""]) {
+            .task(id: [place, state.pages.selection.knowledge ?? "", state.pages.selection.hit ?? "",
+                       state.pages.selection.adminServer ?? ""]) {
                 await state.read(place: place, model: model)
             }
+            // What a page said stays on that page: it is cleared when the window leaves it, for
+            // another Teams page or for any other place.
+            .onChange(of: place) { old, _ in state.pages.left(old) }
+            .onDisappear { state.pages.left(place) }
     }
 }

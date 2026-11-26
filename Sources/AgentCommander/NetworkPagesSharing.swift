@@ -224,10 +224,11 @@ struct NetworkApprovalTable: View {
                     .shellCell(Self.wants)
                 NeedsYouClockLabel(waiting: row.waiting, expiresIn: row.expiresIn).shellCell(Self.clock)
             } verbs: {
+                // An answer is never refused for being second: it waits its turn (NetworkAnswerQueue).
                 NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
-                    MultiplayerRowVerb(id: "deny", title: "Deny", isEnabled: !isBusy,
+                    MultiplayerRowVerb(id: "deny", title: "Deny",
                                        hint: "Deny \(row.who)’s request", action: { decide(row, false) }),
-                    MultiplayerRowVerb(id: "approve", title: "Approve", isPrimary: true, isEnabled: !isBusy,
+                    MultiplayerRowVerb(id: "approve", title: "Approve", isPrimary: true,
                                        hint: "Approve \(row.who)’s request", action: { decide(row, true) })
                 ])
             }
@@ -272,14 +273,14 @@ struct NetworkAccessTable: View {
             } verbs: {
                 if row.isIncoming {
                     NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
-                        MultiplayerRowVerb(id: "decline", title: "Decline", isEnabled: !isBusy,
+                        MultiplayerRowVerb(id: "decline", title: "Decline",
                                            hint: "Decline \(row.who)’s request", action: { remove(row) }),
                         MultiplayerRowVerb(id: "review", title: "Review", isPrimary: true, isEnabled: !isBusy,
                                            hint: "Review \(row.who)’s request in the share sheet", action: { review(row) })
                     ])
                 } else if request.isPending {
                     NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
-                        MultiplayerRowVerb(id: "withdraw", title: "Withdraw", isEnabled: !isBusy,
+                        MultiplayerRowVerb(id: "withdraw", title: "Withdraw",
                                            hint: "Withdraw your request for \(row.resourceName)", action: { remove(row) })
                     ])
                 } else {

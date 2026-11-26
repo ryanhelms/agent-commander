@@ -53,10 +53,10 @@ struct PeopleRequestTable: View {
     private func verbs(_ row: NetworkFriendRow) -> [MultiplayerRowVerb] {
         var verbs: [MultiplayerRowVerb] = []
         if let decline {
-            verbs.append(MultiplayerRowVerb(id: "decline", title: "Decline", isEnabled: !isBusy,
+            verbs.append(MultiplayerRowVerb(id: "decline", title: "Decline",
                                             hint: "Decline \(row.who)’s friend request", action: { decline(row) }))
         }
-        verbs.append(MultiplayerRowVerb(id: "accept", title: "Accept", isPrimary: true, isEnabled: !isBusy,
+        verbs.append(MultiplayerRowVerb(id: "accept", title: "Accept", isPrimary: true,
                                         hint: "Accept \(row.who)’s friend request", action: { accept(row) }))
         return verbs
     }

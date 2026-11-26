@@ -134,7 +134,10 @@ import Testing
         navigation.apply(.selectMode("agents"))
         #expect(navigation.selection == LiveShell.needsYou)
         navigation.apply(.selectMode("teams"))
-        #expect(navigation.crumbs == ["Workspaces", "Relay launch"])
+        // Teams leads its own crumbs, for a workspace and for a team tool.
+        #expect(navigation.crumbs == ["Teams", "Workspaces", "Relay launch"])
+        navigation.apply(.select(TeamsPlace.hosts))
+        #expect(navigation.crumbs == ["Teams", "Team tools", "Hosts"])
         // A place named like its mode is said once.
         navigation.apply(.selectMode("people"))
         #expect(navigation.crumbs == ["People"])

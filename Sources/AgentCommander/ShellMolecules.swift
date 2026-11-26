@@ -219,16 +219,20 @@ struct ShellPlaceRow: View {
         Button { select(item.place.id) } label: {
             HStack(spacing: Space.s + 1) {
                 ShellPlaceMark(mark: item.place.mark, isSelected: item.isSelected)
+                // A long name takes a second line before it is cut: "Relay reconnect", not "Relay reconne…".
                 Text(item.place.title)
                     .themeType(theme.type.body)
                     .foregroundStyle(.theme(item.isSelected ? \.color.foreground : \.surface.softInk))
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: Space.xs)
                 if let badge = item.place.badge {
                     ShellCount(text: badge, isHot: item.place.isHot)
                 }
             }
             .padding(.horizontal, Space.s + 1)
+            .padding(.vertical, 2)
             .frame(maxWidth: .infinity, minHeight: theme.space.rowIcon, alignment: .leading)
         }
         .buttonStyle(ShellRowButtonStyle(isSelected: item.isSelected))
@@ -482,6 +486,9 @@ struct ShellPresencePullDown: NSViewRepresentable {
         let button = NSPopUpButton(frame: .zero, pullsDown: true)
         button.isBordered = false
         button.isTransparent = true
+        // The readout under it draws the one chevron. A pull-down in a toolbar draws its own arrow
+        // even while transparent, so the cell is told to draw none.
+        (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
         button.autoenablesItems = false
         button.identifier = NSUserInterfaceItemIdentifier("shell-presence")
         button.setAccessibilityIdentifier("shell-presence")
