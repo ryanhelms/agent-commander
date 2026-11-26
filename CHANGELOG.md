@@ -12,6 +12,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Run the Commander service headless on a Linux server. `agentctl host install` installs it as a systemd user unit, keeps earlier versions and switches back when a new version does not report healthy. `agentctl host doctor` lists what the server still needs.
 - Publish the headless service for Linux amd64 and arm64 with each release, with `install.sh` for a one-line install on the server: `gh release download TAG -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- TAG`.
 - Deploy, upgrade, check, roll back and remove the headless service from a Mac with `agentctl host releases|deploy|status|rollback|remove DESTINATION`. A deploy verifies the checksum and any build attestation, refuses an incompatible API version and rolls back a version that does not become healthy.
+- `agentctl host connect DESTINATION` forwards a headless host's service socket to this Mac over SSH and reconnects after a drop. `agentctl host list` shows the hosts this Mac deployed to.
 
 ### Changed
 

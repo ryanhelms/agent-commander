@@ -84,6 +84,7 @@ type Report struct {
 	API      int      `json:"api,omitempty"`
 	State    string   `json:"state,omitempty"`
 	Linger   bool     `json:"linger"`
+	Socket   string   `json:"socket,omitempty"`
 	Versions []string `json:"versions,omitempty"`
 	Steps    []Step   `json:"steps,omitempty"`
 	OK       bool     `json:"ok"`
@@ -392,6 +393,7 @@ func (l Layout) Status(ctx context.Context) Report {
 	r.Previous, _ = l.Link(l.Previous)
 	r.Versions, _ = l.Installed()
 	r.Linger, _ = systemd.Linger(currentUser())
+	r.Socket = l.Paths.Socket
 	state, err := systemd.State(UnitName, false)
 	r.State = state
 	r.add(stepFrom("unit", err, state, true))

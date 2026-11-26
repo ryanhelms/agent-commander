@@ -16,6 +16,7 @@ import (
 	"agentcommander/internal/buildinfo"
 	"agentcommander/internal/headless"
 	"agentcommander/internal/hostdeploy"
+	"agentcommander/internal/localapi"
 )
 
 const hostUsage = `usage:
@@ -29,6 +30,9 @@ const hostUsage = `usage:
     agentctl host deploy DESTINATION [--version V] [--force] [--sudo-linger] [--install-prerequisites]
                          [--archive FILE --sums SHA256SUMS]
     agentctl host status | rollback | remove DESTINATION
+    agentctl host list                     Headless hosts this Mac deployed to
+    agentctl host forget DESTINATION
+    agentctl host connect DESTINATION      Forward the host's service socket; one JSON event per line
   DESTINATION is an OpenSSH destination such as ops@server or a host alias.
   SSH options: --ssh-port N, -i KEY, -F CONFIG, -o NAME=VALUE.`
 
@@ -156,7 +160,49 @@ func remoteHostCommand(ctx context.Context, verb string, args []string) (bool, e
 		if !result.OK {
 			return true, fmt.Errorf("deploy to %s failed", target.Destination)
 		}
+		if reg, err := registry(); err == nil && result.Server != nil {
+			if err := reg.Save(hostdeploy.Host{Destination: target.Destination, Options: target.Options,
+				Version: result.Server.Version, API: result.Server.API}); err != nil {
+				fmt.Fprintln(os.Stderr, "agentctl: could not save the host:", err)
+			}
+		}
 		return true, nil
+	case "list":
+		if len(args) != 0 {
+			return true, errors.New(hostUsage)
+		}
+		reg, err := registry()
+		if err != nil {
+			return true, err
+		}
+		hosts, err := reg.List()
+		if err != nil {
+			return true, err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return true, enc.Encode(hosts)
+	case "forget":
+		if len(args) != 1 {
+			return true, errors.New(hostUsage)
+		}
+		reg, err := registry()
+		if err != nil {
+			return true, err
+		}
+		return true, reg.Forget(args[0])
+	case "connect":
+		fs := flag.NewFlagSet("host connect", flag.ContinueOnError)
+		target, err := parseTarget(fs, args)
+		if err != nil {
+			return true, err
+		}
+		target = savedTarget(target)
+		paths, err := localapi.Config()
+		if err != nil {
+			return true, err
+		}
+		return true, hostdeploy.Connect(ctx, paths.State, target, os.Stdout)
 	case "status", "rollback", "remove":
 		if len(args) == 0 {
 			return false, nil
@@ -166,13 +212,33 @@ func remoteHostCommand(ctx context.Context, verb string, args []string) (bool, e
 		if err != nil {
 			return true, err
 		}
-		report, err := hostdeploy.Remote(ctx, target, verb)
+		report, err := hostdeploy.Remote(ctx, savedTarget(target), verb)
 		if err != nil {
 			return true, err
 		}
 		return true, printReport(report)
 	}
 	return false, nil
+}
+
+func registry() (hostdeploy.Registry, error) {
+	paths, err := localapi.Config()
+	if err != nil {
+		return hostdeploy.Registry{}, err
+	}
+	return hostdeploy.NewRegistry(paths.State), nil
+}
+
+// savedTarget fills in the SSH options saved for a known host when the
+// command gave none.
+func savedTarget(t sshx.Target) sshx.Target {
+	if len(t.Options) > 0 {
+		return t
+	}
+	if reg, err := registry(); err == nil {
+		return reg.Find(t.Destination).Target()
+	}
+	return t
 }
 
 func releaseFlags(name string) (*flag.FlagSet, *release.Source) {
