@@ -139,12 +139,34 @@ struct MultiplayerShareResource: Equatable {
     var choices: [String] { offered.filter { !MultiplayerSharePolicy.isCompanion($0) } }
 }
 
+/// How a request the person answered came out. Its row stays in the model's lists for a moment
+/// with this, so a live row can say so before it leaves.
+enum MultiplayerAnswer: String, Equatable, Sendable {
+    case approved, denied, declined, withdrawn
+
+    var title: String {
+        switch self {
+        case .approved: "Approved"
+        case .denied: "Denied"
+        case .declined: "Declined"
+        case .withdrawn: "Withdrawn"
+        }
+    }
+}
+
 @Observable @MainActor
 final class MultiplayerShareModel {
+    /// How long the live app keeps an answered row: long enough to read one word. The row's own
+    /// arrival and exit still use the motion tokens.
+    nonisolated static let answeredHold: Duration = .seconds(2)
+
     @ObservationIgnored weak var tray: MultiplayerModel?
 
     private(set) var approvals: [String: [MultiplayerApproval]] = [:]
     private(set) var accessRequests: [String: [MultiplayerAccessRequest]] = [:]
+    /// The approvals and access requests just answered, by `answerKey`. Each is still in the lists
+    /// above and leaves them, and this, once the hold ends.
+    private(set) var answered: [String: MultiplayerAnswer] = [:]
     private(set) var handoffs: [String: [MultiplayerSentRequest]] = [:]
     /// The latest status or result of a hand-off, by the hand-off's request ID.
     private(set) var reports: [String: MultiplayerHandoffReport] = [:]
@@ -168,6 +190,9 @@ final class MultiplayerShareModel {
 
     private let client: MultiplayerClient?
     private let clock: () -> Date
+    /// How long an answered row stays. Zero removes it at once.
+    private let hold: Duration
+    @ObservationIgnored private var holdTasks: [String: Task<Void, Never>] = [:]
     /// The pages Back returns through.
     @ObservationIgnored private var trail: [MultiplayerTrayRoute] = []
     @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
@@ -177,9 +202,10 @@ final class MultiplayerShareModel {
     @ObservationIgnored private var pageToken = 0
 
     init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, winners: MultiplayerWinnerStore = .scratch(),
-         watchInterval: Duration = .seconds(2)) {
+         watchInterval: Duration = .seconds(2), answeredHold: Duration = .zero) {
         self.client = client
         self.clock = now
+        self.hold = answeredHold
         self.live = MultiplayerLiveModel(client: client, now: now, winners: winners,
                                          watchInterval: watchInterval)
         self.teams = MultiplayerTeamsModel(client: client, now: now)
@@ -277,8 +303,12 @@ final class MultiplayerShareModel {
         quietTask = Task {
             for id in ids where !Task.isCancelled {
                 let scoped = client.scoped(to: id)
-                if let next = try? await scoped.approvals() { self.approvals[id] = next }
-                if let next = try? await scoped.accessRequests() { self.accessRequests[id] = next }
+                if let next = try? await scoped.approvals() {
+                    self.approvals[id] = self.keepingAnswered(next, from: self.approvals[id], kind: .approval, on: id)
+                }
+                if let next = try? await scoped.accessRequests() {
+                    self.accessRequests[id] = self.keepingAnswered(next, from: self.accessRequests[id], kind: .access, on: id)
+                }
                 if let next = try? await scoped.handoffs() { self.handoffs[id] = next }
             }
             self.quietTask = nil
@@ -348,7 +378,71 @@ final class MultiplayerShareModel {
         Set((status(server)?.grants ?? []).filter { $0.resource == resource }.map(\.handle)).count
     }
 
-    /// Every approval waiting on the person, oldest first within each server.
+    // MARK: - Answered rows
+
+    enum AnswerKind: String { case approval, access }
+
+    /// An approval and an access request can share an ID, and an ID is only unique on its server.
+    nonisolated static func answerKey(_ kind: AnswerKind, _ id: String, on server: String) -> String {
+        "\(kind.rawValue)/\(server)/\(id)"
+    }
+
+    /// How an approval came out, while its answered row is still listed. Nil while it waits.
+    func answer(for approval: MultiplayerApproval, on server: String) -> MultiplayerAnswer? {
+        answered[Self.answerKey(.approval, approval.id, on: server)]
+    }
+
+    /// How an access request came out, while its answered row is still listed. Nil while it waits.
+    func answer(for request: MultiplayerAccessRequest, on server: String) -> MultiplayerAnswer? {
+        answered[Self.answerKey(.access, request.id, on: server)]
+    }
+
+    /// The approvals that still wait: `pendingApprovals` without the answered rows. Counts use this.
+    var waitingApprovals: [MultiplayerPending<MultiplayerApproval>] {
+        pendingApprovals.filter { answer(for: $0.item, on: $0.server) == nil }
+    }
+
+    func waitingApprovals(on server: String) -> [MultiplayerApproval] {
+        (approvals[server] ?? []).filter { answer(for: $0, on: server) == nil }
+    }
+
+    /// The access requests that still wait on the person: `pendingAccess` without the answered rows.
+    var waitingAccess: [MultiplayerPending<MultiplayerAccessRequest>] {
+        pendingAccess.filter { answer(for: $0.item, on: $0.server) == nil }
+    }
+
+    /// The given access requests without the ones just answered.
+    func unanswered(_ requests: [MultiplayerAccessRequest], on server: String) -> [MultiplayerAccessRequest] {
+        requests.filter { answer(for: $0, on: server) == nil }
+    }
+
+    /// Marks a row answered and removes it when the hold ends, or at once with no hold.
+    private func leave(_ answer: MultiplayerAnswer, key: String, remove: @escaping @MainActor () -> Void) {
+        guard hold > .zero else { return remove() }
+        answered[key] = answer
+        holdTasks[key]?.cancel()
+        holdTasks[key] = Task { [weak self, hold] in
+            try? await Task.sleep(for: hold)
+            guard let self else { return }
+            self.holdTasks[key] = nil
+            self.answered[key] = nil
+            remove()
+        }
+    }
+
+    /// A fresh read no longer lists an answered row. It stays, in its place, until its hold ends.
+    private func keepingAnswered<Item: Identifiable>(_ next: [Item], from old: [Item]?, kind: AnswerKind,
+                                                     on server: String) -> [Item] where Item.ID == String {
+        var rows = next
+        for (index, row) in (old ?? []).enumerated()
+        where answered[Self.answerKey(kind, row.id, on: server)] != nil && !rows.contains(where: { $0.id == row.id }) {
+            rows.insert(row, at: min(index, rows.count))
+        }
+        return rows
+    }
+
+    /// Every approval listed for the person, oldest first within each server. One just answered
+    /// stays for a moment; `answer(for:on:)` says so.
     var pendingApprovals: [MultiplayerPending<MultiplayerApproval>] {
         (tray?.servers ?? []).flatMap { server in
             (approvals[server.id] ?? []).map { MultiplayerPending(server: server.id, item: $0) }
@@ -379,7 +473,7 @@ final class MultiplayerShareModel {
 
     /// The request you already sent for a resource and that still waits.
     func waitingRequest(for resource: String, on server: String) -> MultiplayerAccessRequest? {
-        outgoingAccess(server).first { $0.resource == resource && $0.isPending }
+        unanswered(outgoingAccess(server), on: server).first { $0.resource == resource && $0.isPending }
     }
 
     /// Every hand-off you sent, newest first, with its server.
@@ -414,12 +508,15 @@ final class MultiplayerShareModel {
     func decide(_ approval: MultiplayerApproval, on server: String, approve: Bool,
                 report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         let who = approval.peer.multiplayerDisplay
+        guard answer(for: approval, on: server) == nil else { return nil }
         return tray?.act(approve ? "Approving \(who)’s request…" : "Denying \(who)’s request…",
                          failing: approve ? "Couldn’t approve the request." : "Couldn’t deny the request.",
                          confirmation: approve ? "Approved. It runs on this Mac now." : "Denied. \(who) is told.",
                          report: report) { client in
             try await client.scoped(to: server).decide(approval: approval.id, approve: approve)
-            self.approvals[server]?.removeAll { $0.id == approval.id }
+            self.leave(approve ? .approved : .denied, key: Self.answerKey(.approval, approval.id, on: server)) {
+                self.approvals[server]?.removeAll { $0.id == approval.id }
+            }
             if self.tray?.route == .share(server, .approval(approval.id)) { self.back() }
         }
     }
@@ -452,7 +549,9 @@ final class MultiplayerShareModel {
                         confirmation: "Request sent. \(entry.owner.multiplayerDisplay) decides whether to share \(entry.name.multiplayerDisplay).",
                         report: report) { client in
             try await client.scoped(to: server).requestAccess(body)
-            if let next = try? await client.scoped(to: server).accessRequests() { self.accessRequests[server] = next }
+            if let next = try? await client.scoped(to: server).accessRequests() {
+                self.accessRequests[server] = self.keepingAnswered(next, from: self.accessRequests[server], kind: .access, on: server)
+            }
             then?()
         }
     }
@@ -461,12 +560,15 @@ final class MultiplayerShareModel {
     @discardableResult
     func remove(_ request: MultiplayerAccessRequest, on server: String, declining: Bool,
                 report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
-        tray?.act(declining ? "Declining the request…" : "Withdrawing your request…",
+        guard answer(for: request, on: server) == nil else { return nil }
+        return tray?.act(declining ? "Declining the request…" : "Withdrawing your request…",
                   failing: declining ? "Couldn’t decline the request." : "Couldn’t withdraw the request.",
                   confirmation: declining ? "Declined \(request.requester.multiplayerDisplay)’s request." : "Request withdrawn.",
                   report: report) { client in
             try await client.scoped(to: server).removeAccessRequest(id: request.id)
-            self.accessRequests[server]?.removeAll { $0.id == request.id }
+            self.leave(declining ? .declined : .withdrawn, key: Self.answerKey(.access, request.id, on: server)) {
+                self.accessRequests[server]?.removeAll { $0.id == request.id }
+            }
         }
     }
 
@@ -790,6 +892,14 @@ final class MultiplayerShareModel {
     func loadThread(_ request: String, on server: String) async -> MultiplayerLoad<MultiplayerThread> {
         guard let client else { return .failed(unavailableText) }
         do { return .loaded(try await client.scoped(to: server).thread(request: request)) } catch { return .failed(Self.readFailure(error)) }
+    }
+
+    /// Reads the threads the person takes part in on one server, sent and received, consults
+    /// included, newest first, for the caller, who keeps the result. It reads and changes nothing
+    /// of the tray: not its route, and no list on the model.
+    func loadThreads(on server: String) async -> MultiplayerLoad<[MultiplayerThreadSummary]> {
+        guard let client else { return .failed(unavailableText) }
+        do { return .loaded(try await client.scoped(to: server).threads()) } catch { return .failed(Self.readFailure(error)) }
     }
 
     /// The tray's thread page: the same read, kept on the model for the page now open.

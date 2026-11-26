@@ -270,7 +270,7 @@ struct MultiplayerActivityEvent: Decodable, Equatable, Sendable, Identifiable {
         case "approval.pending":
             // The detail is the action's identifier; say it in words instead.
             let wants = detail.isEmpty ? "use a resource you shared" : MultiplayerCapability.title(detail).lowercasedFirst
-            base = "\(who) wants to \(wants). Approve or deny it in the tray"
+            base = "\(who) wants to \(wants). Approve or deny it under Needs you"
             return serverName.map { "\(base), on \($0)" } ?? base
         default: base = "\(who): \(kind.multiplayerDisplay)"
         }

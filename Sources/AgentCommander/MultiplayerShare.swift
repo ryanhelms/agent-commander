@@ -710,6 +710,121 @@ struct MultiplayerThread: Decodable, Equatable, Sendable {
     }
 }
 
+/// One thread the person takes part in: a request they sent, or one a friend sent to a resource
+/// of theirs. `request` works with the thread and comment verbs.
+struct MultiplayerThreadSummary: Decodable, Equatable, Sendable, Identifiable {
+    enum Direction: String, Equatable, Sendable { case sent, received }
+
+    /// One request a fan-out made.
+    struct Child: Decodable, Equatable, Sendable, Identifiable {
+        let request: String
+        let resource: String
+
+        var id: String { request }
+
+        private enum CodingKeys: String, CodingKey { case request, resource }
+
+        init(request: String, resource: String = "") {
+            self.request = request
+            self.resource = resource
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let request = container.text(.request)
+            guard !request.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .request, in: container, debugDescription: "missing request")
+            }
+            self.request = request
+            resource = container.text(.resource)
+        }
+    }
+
+    let request: String
+    let resource: String
+    /// For example agent.ask, agent.suggest, agent.handoff, agent.review or agent.fanout.
+    let action: String
+    let title: String
+    let at: Date?
+    /// Nil when the device names a direction this build doesn't know.
+    let direction: Direction?
+    /// Who sent a received request. Empty on a sent row: name its resource instead.
+    let peer: String
+    let handle: String
+    /// How many comments a received row's thread holds. Nil on a sent row.
+    let comments: Int?
+    /// The newest comment's time, when the thread has one.
+    let lastCommentAt: Date?
+    /// A fan-out's requests. Empty for anything else.
+    let children: [Child]
+
+    var id: String { request }
+
+    private enum CodingKeys: String, CodingKey {
+        case request, resource, action, title, at, direction, peer, handle, comments, lastCommentAt, children
+    }
+
+    init(request: String, resource: String = "", action: String = "", title: String = "", at: Date? = nil,
+         direction: Direction? = .sent, peer: String = "", handle: String = "", comments: Int? = nil,
+         lastCommentAt: Date? = nil, children: [Child] = []) {
+        self.request = request
+        self.resource = resource
+        self.action = action
+        self.title = title
+        self.at = at
+        self.direction = direction
+        self.peer = peer
+        self.handle = handle
+        self.comments = comments
+        self.lastCommentAt = lastCommentAt
+        self.children = children
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let request = container.text(.request)
+        guard !request.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .request, in: container, debugDescription: "missing request")
+        }
+        self.request = request
+        resource = container.text(.resource)
+        action = container.text(.action)
+        title = container.text(.title)
+        at = container.date(.at)
+        direction = Direction(rawValue: container.text(.direction))
+        peer = container.text(.peer)
+        handle = container.text(.handle)
+        comments = ((try? container.decodeIfPresent(Int.self, forKey: .comments)) ?? nil).map { max($0, 0) }
+        lastCommentAt = container.date(.lastCommentAt)
+        let list = (try? container.decodeIfPresent(MultiplayerLenientList<Child>.self, forKey: .children)) ?? nil
+        children = MultiplayerUnique.keep(list?.items ?? []) { $0.request }
+    }
+
+    var isSent: Bool { direction == .sent }
+    var isReceived: Bool { direction == .received }
+    /// One prompt and its reply.
+    var isConsult: Bool { action == MultiplayerSharePolicy.ask }
+    var isFanout: Bool { !children.isEmpty || action == "agent.fanout" }
+    /// The action in words: "Send prompts to the worker".
+    var actionTitle: String { MultiplayerCapability.title(action) }
+    /// Who sent a received request, by handle when the device gives one.
+    var sender: String { handle.isEmpty ? peer : handle }
+}
+
+/// The reply to `threads`: newest first, at most 50 rows.
+struct MultiplayerThreadList: Decodable {
+    static let limit = 50
+    let threads: [MultiplayerThreadSummary]
+
+    private enum CodingKeys: String, CodingKey { case threads }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let list = (try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerThreadSummary>.self, forKey: .threads)) ?? nil
+        threads = Array(MultiplayerUnique.keep(list?.items ?? []) { $0.request }.prefix(Self.limit))
+    }
+}
+
 // MARK: - Grant policy
 
 /// Which actions travel together, and the action lists a resource has before the device agent has
@@ -1099,6 +1214,11 @@ extension MultiplayerClient {
 
     func handoffs() async throws -> [MultiplayerSentRequest] {
         try await fetch(.handoffs, [:], as: MultiplayerSentList.self).rows
+    }
+
+    /// Every thread the person takes part in on this server, newest first.
+    func threads() async throws -> [MultiplayerThreadSummary] {
+        try await fetch(.threads, [:], as: MultiplayerThreadList.self).threads
     }
 
     func thread(request: String) async throws -> MultiplayerThread {

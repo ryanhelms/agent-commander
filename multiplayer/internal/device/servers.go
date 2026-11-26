@@ -622,7 +622,7 @@ func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 
 var readOnlyVerbs = map[string]bool{"workspace-prs": true,
 	"status": true, "avatar": true, "approvals": true, "audit": true, "me": true, "membership": true,
-	"groups": true, "workspaces": true, "knowledge": true, "queue": true,
+	"groups": true, "workspaces": true, "knowledge": true, "queue": true, "threads": true,
 }
 
 // Handler serves the tray and coordinator APIs for every server.
