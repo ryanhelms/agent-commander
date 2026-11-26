@@ -4,11 +4,13 @@ import Testing
 @testable import AgentCommander
 
 // The triage tray (design/MAIN-WINDOW-INCREMENT-6-PLAN.md, issue #26):
-//   1. Each tray page that moves builds the request for its window page: place, server and item.
-//   2. A page that stays in the tray has no row.
+//   1. Each tray page that has a window page builds the request for it: place, server and item.
+//   2. A quick action or a composer has no row.
 //   3. The row sends the request, then closes the panel. No real window opens: the opener's two
 //      steps and the router's `present` are the seams.
 //   4. Requests 1 to 4 of design/demos/main-window-6/TRAY-REQUESTS.md.
+//   5. A page that passed its running-window check is gone from the tray: every entry point sends
+//      its request and the tray's route stays. The pages the tray keeps still open in it.
 
 @MainActor @Suite struct MultiplayerOpenInWindowTests {
     static let server = "srv-studio"
@@ -27,8 +29,9 @@ import Testing
         (.audit(resource: "res-relay"), NetworkPlace.audit, .audit(resource: "res-relay"), "Network › Audit › this resource"),
         (.fanout, NetworkPlace.fanout, nil, "Network › Fan-out"),
         (.compare(request: "fo-1"), NetworkPlace.fanout, .fanout(request: "fo-1"), "Network › Fan-out › this fan-out"),
-        (.watch(resource: "res-1"), LiveShell.wall, nil, "Agents › Runs"),
-        (.review(request: "rq-2"), LiveShell.wall, nil, "Agents › Runs"),
+        (.watch(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Runs › this worker"),
+        (.control(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Runs › this worker"),
+        (.review(request: "rq-2"), LiveShell.wall, .review(request: "rq-2"), "Agents › Runs › this review"),
         (.groups, TeamsPlace.groups, nil, "Teams › Team tools › Groups"),
         (.group("g-1"), TeamsPlace.groups, .group("g-1"), "Teams › Team tools › Groups › this group"),
         (.workspaces, TeamsPlace.workspaces, nil, "Teams › Workspaces"),
@@ -50,11 +53,24 @@ import Testing
         (.policy, TeamsPlace.admin, .server, "Teams › Team tools › Admin › this server’s policy")
     ]
 
-    /// The pages that stay in the tray: quick actions and composers.
+    /// The pages with no window page: quick actions and composers.
     static let kept: [MultiplayerSharePage] = [
-        .requestAccess(resource: "r"), .grant, .consult(resource: "r"), .handoff(resource: "r"), .control(resource: "r"),
+        .requestAccess(resource: "r"), .grant, .consult(resource: "r"), .handoff(resource: "r"),
         .reviewRequest(resource: "r"), .workspaceCreate
     ]
+
+    /// Pages with a row that the tray still draws under it: their window pages have not passed.
+    static func pending(_ page: MultiplayerSharePage) -> Bool {
+        switch page {
+        case .watch, .control, .review, .policy: true
+        default: false
+        }
+    }
+
+    /// The pages the tray no longer draws.
+    static var removed: [(page: MultiplayerSharePage, place: String, item: CommanderOpenRequest.Item?, crumb: String)] {
+        moved.filter { !pending($0.page) }
+    }
 
     // MARK: 1. The request
 
@@ -152,6 +168,155 @@ import Testing
         #expect(window.isVisible)
         MultiplayerWindowOpener(open: { _ in }).closing { panel.close() }.send(CommanderOpenRequest(place: NetworkPlace.audit))
         #expect(!window.isVisible)
+    }
+
+    // MARK: 5. Removed pages
+
+    @Test func theTrayKeepsItsQuickActionsAndThePagesStillToPass() {
+        for page in Self.kept { #expect(page.staysInTray, "\(page)") }
+        for row in Self.moved where Self.pending(row.page) { #expect(row.page.staysInTray, "\(row.page)") }
+        for row in Self.removed { #expect(!row.page.staysInTray, "\(row.page)") }
+        // 23 pages left the tray; 10 are still drawn in it.
+        #expect(Self.removed.count == 24)    // audit is listed twice, with and without a resource
+        #expect(Self.kept.count + Self.moved.filter { Self.pending($0.page) }.count == 10)
+    }
+
+    /// A model on one online server, with an opener that records what it is sent.
+    private func tray() async -> (model: MultiplayerModel, pages: MultiplayerPageOpener, sent: () -> [CommanderOpenRequest], closed: () -> Int) {
+        let (model, _) = await MultiplayerTeamsFixture.model()
+        final class Log { var sent: [CommanderOpenRequest] = []; var closed = 0 }
+        let log = Log()
+        let opener = MultiplayerWindowOpener(open: { log.sent.append($0) }, close: { log.closed += 1 })
+        return (model, MultiplayerPageOpener(share: model.share, window: opener), { log.sent }, { log.closed })
+    }
+
+    @Test func aRemovedPagesEntryPointSendsItsRequestAndLeavesTheTrayWhereItWas() async {
+        let (model, pages, sent, closed) = await tray()
+        let home = MultiplayerTeamsFixture.home
+        for row in Self.removed {
+            pages.show(row.page, on: home)
+            #expect(sent().last == CommanderOpenRequest(place: row.place, server: home, item: row.item), "\(row.page)")
+            #expect(model.route == .home, "\(row.page) moved the tray")
+        }
+        #expect(sent().count == Self.removed.count && closed() == Self.removed.count)
+        model.close()
+    }
+
+    @Test func aKeptPageStillOpensInTheTray() async {
+        let (model, pages, sent, _) = await tray()
+        let home = MultiplayerTeamsFixture.home
+        let stay: [MultiplayerSharePage] = [
+            .requestAccess(resource: "dir-h"), .grant, .consult(resource: "dir-h"), .handoff(resource: "dir-h"),
+            .watch(resource: "dir-h"), .control(resource: "res-9"), .reviewRequest(resource: "dir-h"), .review(request: "rq-1"),
+            .workspaceCreate, .policy
+        ]
+        for page in stay {
+            model.go(.home)
+            pages.show(page, on: home)
+            #expect(model.route == .share(home, page), "\(page)")
+        }
+        #expect(sent().isEmpty)
+        model.close()
+    }
+
+    @Test func liveRemoteWorkOpensInTheWindowExceptAReview() async {
+        let (model, pages, sent, _) = await tray()
+        let home = MultiplayerTeamsFixture.home
+        func work(_ kind: MultiplayerRemoteWork.Kind) -> MultiplayerRemoteWork {
+            MultiplayerRemoteWork(kind: kind, server: home, request: "rq-7", title: "", detail: "", state: "", tone: .neutral, at: nil)
+        }
+        pages.show(work(.handoff))
+        pages.show(work(.fanout))
+        #expect(sent() == [CommanderOpenRequest(place: NetworkPlace.handoffs, server: home, item: .handoff(request: "rq-7")),
+                           CommanderOpenRequest(place: NetworkPlace.fanout, server: home, item: .fanout(request: "rq-7"))])
+        #expect(model.route == .home)
+        pages.show(work(.review))
+        #expect(sent().count == 2 && model.route == .share(home, .review(request: "rq-7")))
+        model.close()
+    }
+
+    @Test func eachTabsCompactRowsSendTheirPlaces() {
+        func requests(_ rows: [MultiplayerWindowShortcut]) -> [CommanderOpenRequest] { rows.map(\.link.request) }
+        // Agents and People: one row per place, for every server.
+        #expect(requests(MultiplayerWindowShortcut.agents()) == [CommanderOpenRequest(place: NetworkPlace.directory),
+                                                                 CommanderOpenRequest(place: NetworkPlace.fanout)])
+        let teams = MultiplayerWindowShortcut.teams(workspaces: 2, hosts: 0, knowledge: 5)
+        #expect(requests(teams) == [CommanderOpenRequest(place: TeamsPlace.workspaces), CommanderOpenRequest(place: TeamsPlace.hosts),
+                                    CommanderOpenRequest(place: TeamsPlace.knowledge)])
+        #expect(teams.map(\.title) == ["Workspaces", "Hosts", "Knowledge"] && teams.map(\.count) == [2, 0, 5])
+        #expect(requests(MultiplayerWindowShortcut.groups(3)) == [CommanderOpenRequest(place: TeamsPlace.groups)])
+
+        // A server's page: the same places, on that server.
+        let server = Self.server
+        let sharing = MultiplayerWindowShortcut.sharing(on: server, directory: 4, waiting: 2, handoffs: 1)
+        #expect(requests(sharing) == [CommanderOpenRequest(place: NetworkPlace.directory, server: server),
+                                      CommanderOpenRequest(place: NetworkPlace.approvals, server: server),
+                                      CommanderOpenRequest(place: NetworkPlace.handoffs, server: server),
+                                      CommanderOpenRequest(place: NetworkPlace.audit, server: server, item: .audit(resource: ""))])
+        #expect(sharing.map(\.title) == ["Directory", "Approvals", "Hand-offs", "Audit"])
+        #expect(sharing[1].isHot && sharing[1].count == 2)
+        let serverTeams = MultiplayerWindowShortcut.serverTeams(on: server, groups: 1, workspaces: 1, hosts: 1, knowledge: 1)
+        #expect(requests(serverTeams) == [TeamsPlace.groups, TeamsPlace.workspaces, TeamsPlace.hosts, TeamsPlace.knowledge,
+                                          TeamsPlace.directory].map { CommanderOpenRequest(place: $0, server: server) })
+        // Relay policy is not a link: the tray still has that page.
+        #expect(!serverTeams.contains { $0.link.request.place == TeamsPlace.admin })
+    }
+
+    @Test func aCompactRowSaysWhereItLandsAndHowMuchIsThere() throws {
+        let row = try #require(MultiplayerWindowShortcut(.handoffs, on: Self.server, symbol: "arrow.up.right", count: 3))
+        #expect(row.title == "Hand-offs" && row.link.path == "Agent Commander › Network › Hand-offs")
+        #expect(row.label == "Open Hand-offs in Agent Commander, 3")
+        #expect(MultiplayerWindowShortcut(.hosts, symbol: "cpu")?.label == "Open Hosts in Agent Commander")
+        // A page with no window page has no compact row.
+        #expect(MultiplayerWindowShortcut(.grant, symbol: "square.and.arrow.up") == nil)
+    }
+
+    @Test func theTabsOfferCompactRowsWhereTheirDensePagesWere() async throws {
+        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("triage-tabs")
+        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        func buttons() async throws -> [String] {
+            await model.settle()
+            return try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model, closesOnOpen: false))
+                .filter { $0.role == "AXButton" }.map(\.label)
+        }
+        func opens(_ place: String, in labels: [String]) -> Bool { labels.contains { $0.hasPrefix("Open \(place) in Agent Commander") } }
+
+        model.tab = .agents
+        var labels = try await buttons()
+        for place in ["Directory", "Fan-out", "Workspaces", "Hosts", "Knowledge"] { #expect(opens(place, in: labels), "\(place)\n\(labels)") }
+        // What the tray keeps is still there: decisions, quick actions and New workspace.
+        #expect(labels.contains { $0.hasPrefix("Approve: ") } && labels.contains { $0.hasPrefix("Deny: ") }, "\(labels)")
+        #expect(labels.contains { $0.hasPrefix("Consult ") } && labels.contains { $0.hasPrefix("Share ") }, "\(labels)")
+        #expect(labels.contains("New workspace"), "\(labels)")
+
+        model.tab = .people
+        labels = try await buttons()
+        #expect(opens("Groups", in: labels), "\(labels)")
+
+        model.openServer(MultiplayerFixesTests.home)
+        labels = try await buttons()
+        for place in ["Directory", "Approvals", "Hand-offs", "Audit", "Groups", "Workspaces", "Hosts", "Knowledge"] {
+            #expect(opens(place, in: labels), "\(place)\n\(labels)")
+        }
+    }
+
+    @Test func aRemovedPageIsItsRowAlone() async throws {
+        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("triage-page")
+        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let home = MultiplayerFixesTests.home
+        // The model can still be put on the page; the tray draws the row and nothing of the page.
+        model.share.open(.handoffs, on: home)
+        await model.settle()
+        var nodes = try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model, closesOnOpen: false))
+        #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Hand-offs in Agent Commander" })
+        #expect(!nodes.contains { ($0.label + $0.value).contains("Fix flaky reconnect test") })
+        // A page still to pass keeps its content under the row.
+        model.go(.home)
+        model.share.open(.policy, on: home)
+        await model.settle()
+        nodes = try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model, closesOnOpen: false))
+        #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Admin in Agent Commander" })
+        #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Save policy" })
     }
 
     // MARK: 4. Tray requests 1 to 4

@@ -6,16 +6,18 @@ import SwiftUI
 // the Inc 3 rows of the command-center tray).
 //   Molecules:  MultiplayerDecisionRow, MultiplayerLinkRow, MultiplayerActionCheck, MultiplayerChoice,
 //               MultiplayerContextField, MultiplayerLoadNote
-//   Organisms:  MultiplayerRemoteWorkBand, MultiplayerSharingBand, MultiplayerDirectoryPage,
+//   Organisms:  MultiplayerRemoteWorkBand, MultiplayerAgentRoster, MultiplayerDirectoryPage,
 //               MultiplayerRequestAccessPage, MultiplayerAccessRequestsPage, MultiplayerApprovalPage,
 //               MultiplayerGrantSheet, MultiplayerConsultPage, MultiplayerHandoffComposer,
-//               MultiplayerHandoffList, MultiplayerHandoffDetail, MultiplayerThreadPage, MultiplayerAuditPage
-// Each takes values and emits actions; MultiplayerPanel wires them to MultiplayerShareModel.
+//               MultiplayerHandoffDetail, MultiplayerThreadPage, MultiplayerAuditPage
+// Each takes values and emits actions. The tray draws the bands, Request access, the grant sheet,
+// Consult and the hand-off composer (DESIGN.md, "The triage tray"); the main window draws the rest.
 
 // MARK: - Molecules
 
-/// A request that waits for a yes or a no. The text opens the full review. Once answered, the row
-/// shows its outcome in place of its verbs for the moment it stays (DESIGN.md, "Row outcome").
+/// A request that waits for a yes or a no. The text opens the full review, which `openHint` names.
+/// Once answered, the row shows its outcome in place of its verbs for the moment it stays
+/// (DESIGN.md, "Row outcome").
 struct MultiplayerDecisionRow: View {
     let color: Color
     let title: String
@@ -25,6 +27,8 @@ struct MultiplayerDecisionRow: View {
     /// How the request came out, while its answered row is still listed. Nil while it waits.
     var outcome: MultiplayerAnswer? = nil
     let isBusy: Bool
+    /// Where the text goes, for the tooltip and VoiceOver.
+    var openHint = "Opens the full request"
     let onOpen: () -> Void
     let onDecline: () -> Void
     let onAccept: () -> Void
@@ -50,9 +54,9 @@ struct MultiplayerDecisionRow: View {
             }
             .buttonStyle(.plain)
             .disabled(outcome != nil)
-            .help(outcome == nil ? "Review this request" : "")
+            .help(outcome == nil ? openHint : "")
             .accessibilityLabel("\(title). \(detail)")
-            .accessibilityHint(outcome == nil ? "Opens the full request" : "")
+            .accessibilityHint(outcome == nil ? openHint : "")
             if let outcome {
                 MultiplayerRowOutcome(answer: outcome)
                     .accessibilityLabel("\(outcome.title): \(title)")
@@ -302,6 +306,8 @@ struct MultiplayerRemoteWorkBand: View {
         let color: Color
         let state: String
         let tone: Tone
+        /// The row leaves the tray for the main window.
+        var opensWindow = false
         let open: () -> Void
     }
 
@@ -335,6 +341,8 @@ struct MultiplayerRemoteWorkBand: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 stateText(item.state, item.tone)
+                                // Every row keeps the mark's place, so the states line up.
+                                MultiplayerLeavesTrayMark().opacity(item.opensWindow ? 1 : 0)
                             }
                             .frame(minHeight: 32)
                             .contentShape(Rectangle())
@@ -343,7 +351,7 @@ struct MultiplayerRemoteWorkBand: View {
                         .multiplayerArriving()
                         .help(item.kind)
                         .accessibilityLabel("\(item.kind): \(item.title), \(item.detail), \(item.state)")
-                        .accessibilityHint("Opens it")
+                        .accessibilityHint(item.opensWindow ? "Opens it in Agent Commander and closes this panel." : "Opens it")
                     }
                     if items.count > Self.preview {
                         Button(showsAll ? "Show fewer" : "Show all \(items.count)") { showsAll.toggle() }
@@ -357,51 +365,10 @@ struct MultiplayerRemoteWorkBand: View {
     }
 }
 
-/// One server's ways into share and consult.
-struct MultiplayerSharingBand: View {
-    let directoryCount: Int
-    let requestCount: Int
-    let approvalCount: Int
-    let handoffCount: Int
-    let canShare: Bool
-    let onShare: () -> Void
-    let onDirectory: () -> Void
-    let onRequests: () -> Void
-    let onApprovals: () -> Void
-    let onHandoffs: () -> Void
-    let onAudit: () -> Void
-
-    var body: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: 0) {
-                MultiplayerBandHeading(title: "Share and consult") {
-                    Button(action: onShare) { Label("Share…", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .disabled(!canShare)
-                        .help(canShare ? "Give a friend access to one of your resources" : "Add a friend and a resource first")
-                }
-                MultiplayerLinkRow(symbol: "square.grid.2x2", title: "Shared directory",
-                                   caption: directoryCount == 0 ? "Nothing from friends yet" : "What friends offer, and what you can use",
-                                   count: directoryCount, action: onDirectory)
-                if approvalCount > 0 {
-                    MultiplayerLinkRow(symbol: "hand.raised", title: "Waiting for your approval",
-                                       caption: "Requests under Ask each time", count: approvalCount, isHot: true,
-                                       action: onApprovals)
-                }
-                MultiplayerLinkRow(symbol: "tray.2", title: "Access requests", caption: "Sent to you and by you",
-                                   count: requestCount, isHot: true, action: onRequests)
-                MultiplayerLinkRow(symbol: "arrow.up.right", title: "Hand-offs", caption: "Tasks you gave a friend’s agent",
-                                   count: handoffCount, action: onHandoffs)
-                MultiplayerLinkRow(symbol: "list.bullet.rectangle", title: "Audit",
-                                   caption: "Every use of what you shared, and what you sent", action: onAudit)
-            }
-        }
-    }
-}
-
 /// Agents as first-class entries: yours with who holds access and control, and friends' with what
 /// runs them and what you can do with each. A row's actions sit under its text as one strip, so
-/// the text keeps the row's full width.
+/// the text keeps the row's full width. Under friends' agents, compact rows open what moved to
+/// the main window: the directory and fan-out.
 struct MultiplayerAgentRoster: View {
     let mine: [MultiplayerPending<MultiplayerResource>]
     let theirs: [MultiplayerPending<MultiplayerDirectoryEntry>]
@@ -411,8 +378,8 @@ struct MultiplayerAgentRoster: View {
     var holder: (MultiplayerPending<MultiplayerResource>) -> String? = { _ in nil }
     let isWaiting: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Bool
     let isBusy: Bool
-    /// Servers where one prompt can go to several workers.
-    var fanoutServers: [String] = []
+    /// What opens in the main window, under friends' agents.
+    var shortcuts: [MultiplayerWindowShortcut] = []
     let onShare: (MultiplayerPending<MultiplayerResource>) -> Void
     let onAudit: (MultiplayerPending<MultiplayerResource>) -> Void
     var onControl: (MultiplayerPending<MultiplayerResource>) -> Void = { _ in }
@@ -421,8 +388,6 @@ struct MultiplayerAgentRoster: View {
     var onWatch: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void = { _ in }
     var onReview: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void = { _ in }
     let onRequest: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void
-    let onDirectory: (String) -> Void
-    var onFanout: (String) -> Void = { _ in }
 
     var body: some View {
         MultiplayerBand {
@@ -446,18 +411,15 @@ struct MultiplayerAgentRoster: View {
                             MultiplayerRowVerb(id: "share", title: "Share…", isEnabled: !isBusy, hint: "Share \(name)") { onShare(agent) },
                             MultiplayerRowVerb(id: "control", title: "Control", isEnabled: count > 0,
                                             hint: count > 0 ? "Hand over control of \(name)" : "Share \(name) before handing over control") { onControl(agent) },
-                            MultiplayerRowVerb(id: "audit", title: "Audit", hint: "Audit for \(name)") { onAudit(agent) },
+                            MultiplayerRowVerb(id: "audit", title: "Audit", opensWindow: true,
+                                            hint: "Open the audit for \(name) in Agent Commander") { onAudit(agent) },
                         ])
                 }
             }
         }
         MultiplayerBand {
             VStack(alignment: .leading, spacing: 2) {
-                MultiplayerBandHeading(title: "Friends’ agents", count: theirs.isEmpty ? nil : "\(theirs.count)") {
-                    serverMenu("Fan out", fanoutServers, help: "Send one prompt to several workers", action: onFanout)
-                    serverMenu("Directory", MultiplayerUnique.keep(theirs.map(\.server)) { $0 }, help: "Everything friends offer",
-                               action: onDirectory)
-                }
+                MultiplayerBandHeading(title: "Friends’ agents", count: theirs.isEmpty ? nil : "\(theirs.count)")
                 if theirs.isEmpty {
                     Text("When a friend publishes an agent, it shows up here with what runs it and what it offers.")
                         .font(MultiplayerTheme.sub)
@@ -485,26 +447,11 @@ struct MultiplayerAgentRoster: View {
                                                   isEnabled: !isBusy, hint: "Request access to \(name)") { onRequest(agent) } : nil,
                         ].compactMap { $0 })
                 }
+                if !shortcuts.isEmpty {
+                    Rectangle().fill(MultiplayerTheme.hair).frame(height: 1).padding(.top, 4)
+                    MultiplayerWindowLinkRows(shortcuts: shortcuts)
+                }
             }
-        }
-    }
-
-    /// A heading action that names a server: a button for one, a menu for several, nothing for none.
-    @ViewBuilder private func serverMenu(_ title: String, _ servers: [String], help: String,
-                                         action: @escaping (String) -> Void) -> some View {
-        if servers.count == 1, let only = servers.first {
-            Button(title) { action(only) }.buttonStyle(MultiplayerTrayButtonStyle()).help(help)
-        } else if servers.count > 1 {
-            Menu {
-                ForEach(servers, id: \.self) { id in Button(serverName(id)) { action(id) } }
-            } label: { Text(title) }
-            .menuStyle(.button)
-            .buttonStyle(MultiplayerTrayButtonStyle())
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(help)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(title): choose a server")
         }
     }
 
@@ -1137,52 +1084,6 @@ struct MultiplayerHandoffComposer: View {
                                     onChoose: onChoose, onDrop: onDrop, onDetach: onDetach)
         }
         .onAppear { focus = .title }
-    }
-}
-
-/// The hand-offs you sent on one server, newest first.
-struct MultiplayerHandoffList: View {
-    let rows: [MultiplayerSentRequest]
-    let state: (MultiplayerSentRequest) -> (title: String, tone: Tone)
-    let target: (MultiplayerSentRequest) -> String
-    let now: Date
-    let onOpen: (MultiplayerSentRequest) -> Void
-
-    var body: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: 2) {
-                if rows.isEmpty {
-                    Text("You haven’t handed anything off on this server. Open the shared directory and choose Hand off on an agent you’ve been granted.")
-                        .font(MultiplayerTheme.sub)
-                        .foregroundStyle(.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(rows) { row in
-                    let state = state(row)
-                    Button { onOpen(row) } label: {
-                        HStack(spacing: Space.s) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(row.title.isEmpty ? "Untitled hand-off" : row.title.multiplayerDisplay)
-                                    .font(MultiplayerTheme.name)
-                                    .foregroundStyle(MultiplayerTheme.foreground)
-                                    .lineLimit(1)
-                                Text("\(target(row)), \(MultiplayerActivityRow.time(row.at, now: now))")
-                                    .font(MultiplayerTheme.sub)
-                                    .foregroundStyle(.inkSecondary)
-                                    .lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            stateText(state.title, state.tone)
-                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.inkSecondary)
-                        }
-                        .frame(minHeight: 34)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(MultiplayerRowButtonStyle())
-                    .accessibilityLabel("\(row.title.multiplayerDisplay), \(target(row)), \(state.title)")
-                }
-            }
-        }
     }
 }
 

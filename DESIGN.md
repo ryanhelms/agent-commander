@@ -251,6 +251,8 @@ The descriptions below are the console form. In another theme the same atom take
 | Decision row | A request with the answers its source can take: Deny and Approve, Decline and Review, Accept, or Reply. The primary answer is the last cell. A worker's Reply opens the request where it is answered, beside the wall. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Open-in-window row | "Open in Agent Commander": the first row of a tray page that has a main-window page (`MultiplayerOpenInWindowRow`). On the footer fill with a hairline under it, 40 pt high: a window mark in `focus`, the title in `name`, where it lands in `fingerprint` as the window's own breadcrumb ("Network › Hand-offs › this hand-off"), and an up-right arrow because the row leaves the tray. The whole row is one native button. It sends a `CommanderOpenRequest` and then closes the panel. VoiceOver reads "Open Hand-offs in Agent Commander", with the hint "Shows this hand-off there and closes this panel." |
+| Window link row | The compact form of the open-in-window row, inside a band where a tab's section used to be (`MultiplayerWindowLinkRow`). 34 pt high, on the band's inset: the place's mark in `secondary`, the place's own name in `name` ("Hand-offs"), where it lands from the app down in `fingerprint` ("Agent Commander › Network › Hand-offs"), a count in `heading` when there is one (`attention` when it waits on the person), and the same up-right arrow with the same motion. One native button; it sends a `CommanderOpenRequest` and closes the panel. VoiceOver reads "Open Hand-offs in Agent Commander, 3". |
+| Leaves-tray mark | An 8 pt up-right arrow in `secondary` after a verb or a row state that opens the main window instead of a tray page: Audit in an agent's verb strip, a hand-off or a fan-out in Live remote work. A row that stays keeps the mark's place empty, so states line up. |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
 | Choice card | A selectable card: a thumbnail, a round choice mark, the option's name and one line about it. The selected card is filled `selection` with the leading `focus` marker and the word "Selected" in `working`. |
@@ -351,32 +353,46 @@ The grant sheet is one form drawn in two places. The tray shows it as a page wit
 - **Second press.** A host that can undo or remove something (release a card, suspend a member, revoke a device) asks with the composer's own inline confirm and keeps that step itself. The tray's pending confirm is never used or cleared.
 - **One route.** The tray has one route, and only the tray's own calls read or move it. Each change has two forms. The tray's form reads the tray's draft and sends nothing unless the tray is on that page. The form a host uses names its server and target and takes the host's own values. It never reads or moves the route, and leaves the tray's drafts and the list on its open page alone. Reads work the same way: a host or a window page reads for itself (`loadCards(in:on:)`, `loadPolicy(on:)` and the like) and keeps the result. Lists kept per server (groups, workspaces, the knowledge library, the merge queue) are shared, so a change made anywhere shows everywhere.
 
-Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
+Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, agent roster, certificate notice, window link bands (a band heading over window link rows) and Remote band.
 
-The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
+The tray's own pages are the watch view, the control page, consult, the hand-off composer, request access, the grant sheet, request review, review, New workspace and Relay policy. The directory, access requests, approval, hand-off detail, thread, audit, fan-out composer and compare views are drawn by the main window only ("What the main window reuses").
 
 The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
 
-**The triage tray.** The tray keeps decisions and quick actions. A page that has a main-window page starts with the open-in-window row, directly under the header and above the page's own bands, on every such page in the same place.
+**The triage tray.** The tray keeps decisions and quick actions. A page whose main-window page has passed a running-window check is gone from the tray: what is left of it is a link that opens the window page and closes the panel.
 
-| Tray page | Row lands on | Item opened |
-|---|---|---|
-| Access requests, an approval | Network › Approvals | The approval |
-| Shared directory | Network › Directory | — |
-| Hand-offs, a hand-off | Network › Hand-offs | The hand-off |
-| Thread | Network › Threads | The thread |
-| Audit | Network › Audit | The resource's entries |
-| Fan-out, compare | Network › Fan-out | The fan-out |
-| Watch, review | Agents › Runs (the worker wall) | — |
-| Groups, a group | Teams › Team tools › Groups | The group |
-| Workspaces, a workspace, claim, card, queue a branch | The workspace's own place under Teams › Workspaces | The workspace, on Board, Claims or Integration, with the card open |
-| Hosts, run on host | Teams › Team tools › Hosts | The host |
-| Knowledge library, share knowledge, a knowledge item | Teams › Team tools › Knowledge | The item |
-| Reputation, directory search | Teams › Team tools › Directory | The resource's reputation |
-| Relay policy | Teams › Team tools › Admin | The server's policy |
+What stays in the tray:
 
-- **Stays, with no row:** home (status strip, presence, server health and trust, friend and server rows), Needs you (approve, deny, accept and decline inline), the grant sheet, Consult, Request access, the hand-off composer, Request review, the control page with Take back, New workspace, Add server, hosting, profile, invite and membership.
-- **Stays for now, with a row:** every page in the table. A page leaves the tray only after its window page has passed a running-window check; until then the row sits above the page and the page works as before. Relay policy and moderation stay until the window's Admin page has passed that check.
+- **Home:** the status strip, presence, server health and trust, friend and server rows, and the Remote band.
+- **Decisions, inline:** Needs you answers approvals (Approve, Deny), access requests (Review opens the grant sheet, Decline) and friend requests (Accept, Decline) on the row. An approval's text opens that approval in the window.
+- **Quick actions:** Consult, Share (the grant sheet), Request access, Hand off, Request review and New workspace, each a composer page with no row.
+- **Take back control:** the control band and the control page.
+- **Servers and you:** Add server, hosting, a server's page, profile, invite and membership.
+- **Still to pass, page and row:** Watch, Control, Review and Relay policy. Each keeps its page with the open-in-window row above it, until the wall and the window's Admin page pass their checks. Then they become links as the others did.
+
+What is now only a link:
+
+| Was a tray page | Opens | Item opened | Where the link is |
+|---|---|---|---|
+| Shared directory | Network › Directory | — | Agents tab, under Friends’ agents; a server's page |
+| Access requests, an approval | Network › Approvals | The approval | A server's page; an approval's text in Needs you |
+| Hand-offs, a hand-off | Network › Hand-offs | The hand-off | A server's page; a hand-off in Live remote work; a remote worker's zoom |
+| Thread | Network › Threads | The thread | "Open thread" on a consult's reply; Thread on a review |
+| Audit | Network › Audit | The resource's entries | A server's page; Audit on one of your agents or resources |
+| Fan-out, compare | Network › Fan-out | The fan-out | Agents tab, under Friends’ agents; a fan-out in Live remote work |
+| Groups, a group | Teams › Team tools › Groups | — | People tab; a server's page |
+| Workspaces, a workspace, claim, card, queue a branch | Teams › Workspaces | — | Agents tab; a server's page |
+| Hosts, run on host | Teams › Team tools › Hosts | — | Agents tab; a server's page |
+| Knowledge library, share knowledge, a knowledge item | Teams › Team tools › Knowledge | — | Agents tab; a server's page |
+| Reputation, directory search | Teams › Team tools › Directory | — | A server's page |
+
+The pages still to pass, with their rows: Watch and Control land on Agents › Runs zoomed to the worker, Review on Agents › Runs with the review open, and Relay policy on Teams › Team tools › Admin with the server's policy.
+
+- **Where a link sits.** A tab's dense section becomes a band of window link rows in the same place, under the section's heading: "Teams" on the Agents tab (Workspaces, Hosts, Knowledge, with New… as the heading's action), "Groups" on the People tab, and "Share and consult" (Directory, Approvals, Hand-offs, Audit, with Share… as the heading's action) and "Teams" on a server's page. Directory and Fan-out sit under Friends’ agents, below a hairline. A tab's row stands for every server and opens the place alone; a row on a server's page names that server. A row shows the count the section showed. Approvals and access requests are answered on one window page, so they share a row and a count.
+- **A verb or a row that leaves.** Where one thing in a kept row opens the window, it carries the leaves-tray mark and says so in its hint.
+- **After a composer sends.** Hand off and New workspace return to where they were opened and say what was made in the notice. The hand-off shows in Live remote work, which opens it in the window.
+- **A route to a removed page.** The route cases remain, because the window's own pages and the router name items by them. If the tray is put on one, it draws the open-in-window row alone, with "This page is in the main window now." in the footer. `MultiplayerSharePage.staysInTray` says which pages the tray draws, and `MultiplayerPageOpener` sends every entry point to the tray page or the window page accordingly.
+- **No tray page maps to Network › Shared.** The server page's "Access you’ve given" and "Shared with you" lists stay as server rows.
 - **Motion.** Under the pointer the row takes the row tint and the arrow leans out a third of `travel` (2 pt up and right) and turns `focus`, at `fast`. Pressed, the arrow goes the full `travel` and fades, at `fast`. With Reduce Motion the arrow stays where it is and only its ink changes. Nothing delays the press: the request is sent at once.
 - **Seams.** The row reads `multiplayerWindowOpener` from the environment (`MultiplayerWindowOpener`: open, then close). The shared router is the default; `MultiplayerPanel` adds the close of its own window. The review stage draws the panel inside the cockpit window and passes `closesOnOpen: false`.
 
@@ -394,15 +410,13 @@ Increment 4 (merged at `341215d`) adds:
 - **Live remote work rows:** a leading kind glyph (hand-off ↗, fan-out fork, review list) and a right-aligned state in tone, such as "2 of 2 answered" or "2 important, 1 nit".
 
 Increment 5 (teams) adds:
-- **Workspaces band** (Agents tab): the workspaces you work in, each with its goal and a claim count in tone, then link rows to hosts and the knowledge library.
-- **Groups band** (People tab): group rows, and one action to manage groups.
-- **Server teams band** (server page): link rows into that server's groups, workspaces, hosts, knowledge and, for an admin, policy.
-- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue or pull requests), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
+- **Teams band** (Agents tab), **Groups band** (People tab) and **Teams band** (server page): window link rows since the triage tray; the server page's band keeps a link row to Relay policy for an admin.
+- **Pages** (drawn by the main window and the hosts since the triage tray; the tray keeps New workspace and Relay policy): groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue or pull requests), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
 - **Second presses:** deleting a group, removing a member, releasing a claim, releasing a card you hold, removing a branch from the merge queue, suspending a member and revoking a device each use the inline confirm. The first button ends in "…" and is disabled while its confirm is open. Leaving the page ends the confirm.
 - **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
 - **Pull-request workspace:** a "Pull requests" band in place of the merge queue. Its heading carries the open count and a trailing Repository button that opens the repository's pull-request list. Each open pull request is a pull request row, split by hairlines. The device reads them with the person's own `gh` only as the page opens and when its Refresh is pressed. While reading, the band shows the spinner and "Reading the open pull requests…"; with none open, one `sub` sentence; when the read fails, the reason in `failure` with Try again (a missing or signed-out `gh` says what to check). At the device's limit of 50, a `sub` line points to the repository for the rest.
 - **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in the remote band under the local workers (see "The wall's frame"). The band draws nothing until there is a hand-off, a review or a fan-out to show.
-- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with one button, "Open in tray" unless the caller titles it or leaves it out (`footerTitle`). It reads while it is on screen. It sends nothing unless the caller allows suggestions (`allowsSuggestion`) and the owner shared Suggest on the worker: then the watch view's suggestion field shows under the trace with the caller's draft, the footer adds a primary "Send suggestion" (⌘Return), and the footer's note says the owner approves each one. Without a Watch grant it says so in a load note. In the main window the bar over it is a wall crumb with a Read-only badge and one standard action, "Open hand-off", which goes to the hand-off on its page; the zoom view then has no footer button of its own, and it takes a suggestion where the owner shared Suggest.
+- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with one button, "Open hand-off" (it opens the hand-off's window page) unless the caller titles it or leaves it out (`footerTitle`). It reads while it is on screen. It sends nothing unless the caller allows suggestions (`allowsSuggestion`) and the owner shared Suggest on the worker: then the watch view's suggestion field shows under the trace with the caller's draft, the footer adds a primary "Send suggestion" (⌘Return), and the footer's note says the owner approves each one. Without a Watch grant it says so in a load note. In the main window the bar over it is a wall crumb with a Read-only badge and one standard action, "Open hand-off", which goes to the hand-off on its page; the zoom view then has no footer button of its own, and it takes a suggestion where the owner shared Suggest.
 
 Increment 6 (the tray's Remote band, on the Network tab) adds:
 - **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device. The device agent names its unused code, so a tray that reopens shows the same QR code, code, link and countdown.

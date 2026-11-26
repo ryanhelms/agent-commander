@@ -77,10 +77,6 @@ extension MultiplayerShareModel {
         .map(\.element.worker)
     }
 
-    /// Opens the tray's page for one remote worker.
-    func open(_ worker: MultiplayerRemoteWorker) {
-        open(.handoffDetail(request: worker.request), on: worker.server)
-    }
 }
 
 /// A remote worker on the wall: a console tile with no terminal, since the run is on a friend's Mac.
@@ -203,7 +199,7 @@ struct RemoteWorkerZoom: View {
     let now: Date
     /// The footer button's title. Nil leaves the button out, for a caller with its own way to the
     /// hand-off's page.
-    var footerTitle: String? = "Open in tray"
+    var footerTitle: String? = "Open hand-off"
     /// Shows the suggestion field under the trace when the owner shared Suggest on the worker.
     var allowsSuggestion = false
     /// The caller's draft.
@@ -299,7 +295,7 @@ struct RemoteWorkerZoom: View {
 /// The cockpit's view of the tray's hand-offs. Draws nothing until there is one.
 struct MultiplayerRemoteWorkerBand: View {
     var model: MultiplayerModel
-    /// Zooms a remote worker in the cockpit. Without it, a tile opens the tray.
+    /// Zooms a remote worker in the cockpit. Without it, a tile opens its hand-off's window page.
     var onZoom: ((MultiplayerRemoteWorker) -> Void)? = nil
 
     var body: some View {
@@ -308,10 +304,10 @@ struct MultiplayerRemoteWorkerBand: View {
             if !workers.isEmpty {
                 RemoteWorkerGroup(workers: workers, now: model.currentDate(),
                                   onOpen: { worker in
-                                      if let onZoom { onZoom(worker) } else { MultiplayerRemoteWorkerLauncher.open(worker, in: model) }
+                                      if let onZoom { onZoom(worker) } else { MultiplayerRemoteWorkerLauncher.open(worker) }
                                   },
                                   onOpenAll: workers.first.map { first in
-                                      { MultiplayerRemoteWorkerLauncher.openList(on: first.server, in: model) }
+                                      { MultiplayerRemoteWorkerLauncher.openList(on: first.server) }
                                   })
                     .padding(.top, Metric.wallRowGap)
                     .transition(.opacity)
@@ -330,7 +326,7 @@ struct MultiplayerRemoteWorkerZoomHost: View {
     var model: MultiplayerModel
     let workerID: String
     /// The footer button's title; nil leaves it out.
-    var footerTitle: String? = "Open in tray"
+    var footerTitle: String? = "Open hand-off"
     var allowsSuggestion = false
     let onGone: () -> Void
     @State private var suggestion = ""
@@ -358,7 +354,7 @@ struct MultiplayerRemoteWorkerZoomHost: View {
                                  footerTitle: footerTitle, allowsSuggestion: allowsSuggestion, suggestion: $suggestion,
                                  reply: reply, isBusy: model.isBusy, onSuggest: { send(to: worker) },
                                  onRetry: { live.beginZoomWatch(worker.resource, on: worker.server) },
-                                 onOpenTray: { MultiplayerRemoteWorkerLauncher.open(worker, in: model) })
+                                 onOpenTray: { MultiplayerRemoteWorkerLauncher.open(worker) })
                     .onAppear { if worker.canWatch { live.beginZoomWatch(worker.resource, on: worker.server) } }
                     .onChange(of: worker.canWatch) { _, can in
                         if can { live.beginZoomWatch(worker.resource, on: worker.server) } else { live.endZoomWatch() }
@@ -375,18 +371,15 @@ struct MultiplayerRemoteWorkerZoomHost: View {
     }
 }
 
-/// Opens the tray in its own window on a hand-off chosen on the wall.
+/// Opens the main window's Hand-offs page on a hand-off chosen on the wall. The tray had these
+/// pages once; they are window pages now (DESIGN.md, "The triage tray").
 @MainActor
 enum MultiplayerRemoteWorkerLauncher {
-    static func open(_ worker: MultiplayerRemoteWorker, in model: MultiplayerModel) {
-        MultiplayerLinkWindow.show(model)
-        model.go(.home)
-        model.share.open(worker)
+    static func open(_ worker: MultiplayerRemoteWorker, with opener: MultiplayerWindowOpener = MultiplayerWindowOpener()) {
+        MultiplayerWindowLink(page: .handoffDetail(request: worker.request), server: worker.server).map { opener.send($0.request) }
     }
 
-    static func openList(on server: String, in model: MultiplayerModel) {
-        MultiplayerLinkWindow.show(model)
-        model.go(.home)
-        model.share.open(.handoffs, on: server)
+    static func openList(on server: String, with opener: MultiplayerWindowOpener = MultiplayerWindowOpener()) {
+        MultiplayerWindowLink(page: .handoffs, server: server).map { opener.send($0.request) }
     }
 }

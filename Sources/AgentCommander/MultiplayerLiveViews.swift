@@ -22,6 +22,8 @@ struct MultiplayerRowVerb: Identifiable {
     let title: String
     var isPrimary = false
     var isEnabled = true
+    /// The verb leaves the tray for the main window, and is marked with the out arrow.
+    var opensWindow = false
     /// Said by VoiceOver and shown as the tooltip: the verb with its subject.
     let hint: String
     let action: () -> Void
@@ -38,10 +40,13 @@ struct MultiplayerVerbStrip: View {
             ForEach(Array(verbs.enumerated()), id: \.element.id) { index, verb in
                 if index > 0 { Rectangle().fill(MultiplayerTheme.border).frame(width: 1) }
                 Button(action: verb.action) {
-                    Text(verb.title)
-                        .font(.system(size: 11, weight: verb.isPrimary ? .semibold : .medium, design: .monospaced))
-                        .foregroundStyle(verb.isPrimary ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(verb.title)
+                            .font(.system(size: 11, weight: verb.isPrimary ? .semibold : .medium, design: .monospaced))
+                            .foregroundStyle(verb.isPrimary ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
+                            .lineLimit(1)
+                        if verb.opensWindow { MultiplayerLeavesTrayMark() }
+                    }
                         .padding(.horizontal, 9)
                         .frame(minHeight: 22)
                         .background(verb.isPrimary ? MultiplayerTheme.focus : Color.clear)

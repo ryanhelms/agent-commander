@@ -179,6 +179,8 @@ struct MultiplayerNeedsYou: View {
     /// The moment arrival times are measured from.
     var now = Date()
     var onOpenApproval: (MultiplayerPending<MultiplayerApproval>) -> Void = { _ in }
+    /// Where an approval's text goes. The tray says it leaves for the main window.
+    var approvalOpenHint = "Opens the full request"
     var onDecide: (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Void = { _, _ in }
     var onReviewAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
     var onDeclineAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
@@ -211,6 +213,7 @@ struct MultiplayerNeedsYou: View {
                                                    : approval.request.isEmpty ? "\(name). Grant is set to Ask each time."
                                                                               : "\(name): \(approval.request)",
                                                outcome: approvalAnswer(pending), isBusy: isBusy,
+                                               openHint: approvalOpenHint,
                                                onOpen: { onOpenApproval(pending) },
                                                onDecline: { onDecide(pending, false) },
                                                onAccept: { onDecide(pending, true) })
@@ -793,8 +796,16 @@ private struct MultiplayerPanelContent: View {
     var body: some View {
         shell
             .background { MultiplayerPanelWindowProbe(panel: panelWindow).accessibilityHidden(true) }
-            .environment(\.multiplayerWindowOpener, closesOnOpen ? opener.closing { [panelWindow] in panelWindow.close() } : opener)
+            .environment(\.multiplayerWindowOpener, windowOpener)
     }
+
+    /// How this panel opens a window page: the opener it was given, closing its own window after.
+    private var windowOpener: MultiplayerWindowOpener {
+        closesOnOpen ? opener.closing { [panelWindow] in panelWindow.close() } : opener
+    }
+
+    /// Shows a page where it lives: in the tray, or in the main window.
+    private var pages: MultiplayerPageOpener { MultiplayerPageOpener(share: model.share, window: windowOpener) }
 
     private var shell: some View {
         MultiplayerPanelShell {
@@ -986,21 +997,21 @@ private struct MultiplayerPanelContent: View {
             MultiplayerMembershipPage(state: model.membership, draft: $model.membershipDraft,
                                       onRetry: { model.loadMembership() })
         case .share(let id, let page):
-            // A page that has a window page says so first. The page itself stays until its window
-            // page has passed a running-window check (DESIGN.md, "The triage tray").
+            // A page that has a window page says so first. One that passed its running-window check
+            // is that row alone; the others keep their page under it (DESIGN.md, "The triage tray").
             if let link = MultiplayerWindowLink(page: page, server: id) {
                 MultiplayerOpenInWindowRow(link: link)
             }
-            sharePage(page, on: id)
+            if page.staysInTray { sharePage(page, on: id) }
         }
     }
 
     // MARK: Share and consult
 
+    /// The pages the tray still draws. A page that moved is the open-in-window row alone.
     @ViewBuilder private func sharePage(_ page: MultiplayerSharePage, on id: String) -> some View {
         @Bindable var share = model.share
         let now = model.currentDate()
-        let color = MultiplayerTheme.swatch(for: id)
         if model.session(id)?.isOnline != true {
             MultiplayerBand {
                 Text("\(routedServer?.displayName ?? "This server") is offline. Sharing resumes when it’s back.")
@@ -1009,41 +1020,9 @@ private struct MultiplayerPanelContent: View {
             }
         } else {
             switch page {
-            case .directory:
-                MultiplayerDirectoryPage(entries: share.directory(id), isBusy: model.isBusy,
-                                         isWaiting: { share.waitingRequest(for: $0, on: id) != nil },
-                                         onRequest: { share.startRequestAccess($0, on: id) },
-                                         onConsult: { share.startConsult($0.id, on: id) },
-                                         onHandOff: { share.startHandoff($0.id, on: id) },
-                                         onReputation: { share.teams.startReputation($0.id, on: id) },
-                                         onRun: { share.teams.startHostRun($0.id, on: id) })
             case .requestAccess(let resource):
                 if let entry = share.entry(resource, on: id) {
                     MultiplayerRequestAccessPage(entry: entry, draft: $share.accessDraft)
-                }
-            case .requests:
-                MultiplayerAccessRequestsPage(incoming: share.unanswered(share.incomingAccess(id), on: id),
-                                              outgoing: share.unanswered(share.outgoingAccess(id), on: id),
-                                              resourceName: { share.resourceName($0, on: id) }, color: color, now: now,
-                                              isBusy: model.isBusy,
-                                              onReview: { share.review($0, on: id) },
-                                              onDecline: { share.remove($0, on: id, declining: true) },
-                                              onWithdraw: { share.remove($0, on: id, declining: false) })
-            case .approval(let approvalID):
-                if let approval = share.approval(approvalID, on: id) {
-                    let status = model.session(id)?.status
-                    MultiplayerApprovalPage(approval: approval, serverName: routedServer?.displayName ?? "this server",
-                                            color: color, resourceName: share.resourceName(approval.resource, on: id),
-                                            kind: status?.resources.first { $0.id == approval.resource }?.kind ?? "",
-                                            grant: status?.grants.first {
-                                                $0.resource == approval.resource && $0.capability == approval.action
-                                                    && (approval.peer.isEmpty || $0.handle == approval.peer)
-                                            },
-                                            now: now)
-                } else {
-                    MultiplayerBand {
-                        Text("This request was answered or expired.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                    }
                 }
             case .grant:
                 MultiplayerGrantForm(model: model)
@@ -1053,166 +1032,33 @@ private struct MultiplayerPanelContent: View {
                                        onChoose: { share.attach(MultiplayerFilePanel.chooseFiles()) },
                                        onDrop: { share.attach($0) },
                                        onDetach: { share.detach($0) },
-                                       onThread: { share.open(.thread(request: $0.request, title: $0.title), on: id) })
+                                       onThread: { pages.show(.thread(request: $0.request, title: $0.title), on: id) })
             case .handoff(let resource):
                 MultiplayerHandoffComposer(draft: $share.handoffDraft, entry: share.entry(resource, on: id),
                                            attachProblem: share.attachProblem,
                                            onChoose: { share.attach(MultiplayerFilePanel.chooseFiles()) },
                                            onDrop: { share.attach($0) },
                                            onDetach: { share.detach($0) })
-            case .handoffs:
-                MultiplayerHandoffList(rows: share.handoffs[id] ?? [], state: { share.handoffState($0) },
-                                       target: { share.handoffTarget($0, on: id) }, now: now,
-                                       onOpen: { share.open(.handoffDetail(request: $0.request), on: id) })
-            case .handoffDetail(let request):
-                if let row = share.handoff(request, on: id) {
-                    MultiplayerHandoffDetail(row: row, target: share.handoffTarget(row, on: id),
-                                             state: share.handoffState(row), report: share.reports[request], now: now,
-                                             isBusy: model.isBusy,
-                                             onApply: { index, artifact in
-                                                 if let checkout = MultiplayerFilePanel.chooseCheckout(for: artifact.name.multiplayerDisplay) {
-                                                     share.apply(artifact: index, of: row, on: id, checkout: checkout)
-                                                 }
-                                             })
-                } else {
-                    MultiplayerBand {
-                        Text("Commander can’t find this hand-off any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                    }
-                }
-            case .thread(_, let title):
-                MultiplayerThreadPage(title: title, state: share.thread, draft: $share.commentDraft, now: now,
-                                      onRetry: { share.reloadPage() })
-            case .audit:
-                MultiplayerAuditPage(state: share.audit, resourceName: { share.resourceName($0, on: id) }, now: now,
-                                     onRetry: { share.reloadPage() })
-            case .watch, .control, .reviewRequest, .review, .fanout, .compare:
+            case .watch, .control, .reviewRequest, .review:
                 livePage(page, on: id, now: now)
-            case .groups, .group, .workspaces, .workspaceCreate, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
-                 .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search, .policy:
-                teamsPage(page, on: id, now: now)
+            case .workspaceCreate, .policy:
+                teamsPage(page, on: id)
+            case .directory, .requests, .approval, .handoffs, .handoffDetail, .thread, .audit, .fanout, .compare,
+                 .groups, .group, .workspaces, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
+                 .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search:
+                EmptyView()
             }
         }
     }
 
     // MARK: Teams
 
-    private func gone(_ what: String) -> some View {
-        MultiplayerBand {
-            Text("Commander can’t find this \(what) any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-        }
-    }
-
-    @ViewBuilder private func teamsPage(_ page: MultiplayerSharePage, on id: String, now: Date) -> some View {
+    @ViewBuilder private func teamsPage(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         @Bindable var teams = model.share.teams
-        let me = teams.handle(on: id)
-        let status = model.session(id)?.status
         switch page {
-        case .groups:
-            MultiplayerGroupsPage(groups: teams.groups[id] ?? [], handle: me, draft: $teams.groupDraft,
-                                  canCreate: teams.canCreateGroup, onCreate: { teams.createGroup(on: id) },
-                                  onOpen: { share.open(.group($0.id), on: id) })
-        case .group(let groupID):
-            if let group = teams.group(groupID, on: id) {
-                MultiplayerGroupPage(group: group, handle: me, addable: teams.addable(to: group, on: id), isBusy: model.isBusy,
-                                     confirmingDelete: teams.confirming == .deleteGroup(groupID),
-                                     confirmingRemoval: { if case .removeMember(groupID, let handle)? = teams.confirming { handle } else { nil } }(),
-                                     onAdd: { teams.setMember($0, in: group, on: id, isMember: true) },
-                                     onRemove: { teams.ask(.removeMember(group: groupID, handle: $0)) },
-                                     onConfirmRemove: { teams.setMember($0, in: group, on: id, isMember: false) },
-                                     onCancelDelete: { teams.cancelConfirmation() },
-                                     onConfirmDelete: { teams.deleteGroup(group, on: id) })
-            } else { gone("group") }
-        case .workspaces:
-            MultiplayerWorkspacesPage(workspaces: teams.workspaces[id] ?? [], handle: me,
-                                      groupName: { teams.groupName($0, on: id) },
-                                      onOpen: { share.open(.workspace($0.id), on: id) })
         case .workspaceCreate:
             MultiplayerWorkspaceForm(draft: $teams.workspaceDraft, groups: teams.groups[id] ?? [])
-        case .workspace(let workspaceID):
-            if let workspace = teams.workspace(workspaceID, on: id) {
-                MultiplayerWorkspacePage(workspace: workspace, group: teams.group(workspace.group, on: id), handle: me,
-                                         cards: teams.cards, queue: teams.queue(for: workspaceID), pullRequests: teams.pullRequests,
-                                         cardDraft: $teams.cardDraft,
-                                         canAddCard: teams.canAddCard, now: now, isBusy: model.isBusy,
-                                         confirming: teams.confirming,
-                                         onClaim: { teams.startClaim(in: workspaceID, on: id) },
-                                         onRelease: { teams.ask(.releaseClaim($0.id)) },
-                                         onConfirmRelease: { teams.release($0, in: workspaceID, on: id) },
-                                         onRemoveQueued: { teams.ask(.removeQueued($0.id)) },
-                                         onConfirmRemoveQueued: { teams.removeQueued($0, on: id) },
-                                         onCancelConfirmation: { teams.cancelConfirmation() },
-                                         onAddCard: { teams.addCard(to: workspaceID, on: id) },
-                                         onOpenCard: { teams.openCard($0, in: workspaceID, on: id) },
-                                         onClaimCard: { teams.move($0, in: workspaceID, on: id, to: .claimed) },
-                                         onQueueAdd: { teams.startQueueAdd(for: workspaceID, on: id) },
-                                         onRunQueue: { teams.runQueue(workspaceID, on: id) },
-                                         onRetryCards: { share.reloadPage() },
-                                         onRetryPullRequests: { share.reloadPage() })
-            } else { gone("workspace") }
-        case .claim(let workspaceID):
-            if let workspace = teams.workspace(workspaceID, on: id) {
-                MultiplayerClaimForm(draft: $teams.claimDraft, workspace: workspace, handle: me)
-            } else { gone("workspace") }
-        case .card(let workspaceID, let cardID):
-            if let card = teams.card(cardID) {
-                MultiplayerCardPage(card: card, handle: me, result: $teams.resultDraft,
-                                    confirmingRelease: teams.confirming == .releaseCard(cardID), isBusy: model.isBusy,
-                                    onCancelRelease: { teams.cancelConfirmation() },
-                                    onConfirmRelease: { teams.move(card, in: workspaceID, on: id, to: .open) })
-            } else if teams.cards.value == nil {
-                MultiplayerBand {
-                    MultiplayerLoadNote(loading: "Reading the card…",
-                                        failure: teams.cards.failure,
-                                        onRetry: { share.reloadPage() })
-                }
-            } else { gone("card") }
-        case .queueAdd(let workspaceID):
-            if let workspace = teams.workspace(workspaceID, on: id) {
-                MultiplayerQueueForm(draft: $teams.queueDraft, workspace: workspace, onChooseCheckout: {
-                    if let checkout = MultiplayerFilePanel.chooseCheckout(for: workspace.name.multiplayerDisplay) {
-                        teams.queueDraft.checkout = checkout
-                    }
-                })
-            } else { gone("workspace") }
-        case .hosts:
-            MultiplayerHostsPage(mine: teams.myHosts(on: id), theirs: teams.friendHosts(on: id),
-                                 grantCount: { share.grantCount($0, on: id) },
-                                 isWaiting: { share.waitingRequest(for: $0, on: id) != nil },
-                                 isBusy: model.isBusy,
-                                 onShare: { share.startGrant(on: id, resourceID: $0.id) },
-                                 onAudit: { share.open(.audit(resource: $0.id), on: id) },
-                                 onRun: { teams.startHostRun($0.id, on: id) },
-                                 onRequest: { share.startRequestAccess($0, on: id) },
-                                 onReputation: { teams.startReputation($0.id, on: id) })
-        case .hostRun(let resource):
-            MultiplayerHostRunPage(draft: $teams.hostDraft, entry: share.entry(resource, on: id), reply: teams.hostReply)
-        case .knowledge:
-            MultiplayerKnowledgeLibrary(items: teams.knowledge[id] ?? [], groupName: { teams.group($0, on: id)?.name }, now: now,
-                                        onOpen: { share.open(.knowledgeItem($0.id), on: id) })
-        case .knowledgeShare:
-            MultiplayerKnowledgeForm(draft: $teams.knowledgeDraft, friends: status?.friends ?? [],
-                                     groups: teams.groups[id] ?? [], refusal: teams.secretRefusal)
-        case .knowledgeItem(let itemID):
-            if let item = teams.item(itemID, on: id) {
-                MultiplayerKnowledgeItemPage(item: item, versions: teams.versions, groupName: { teams.group($0, on: id)?.name },
-                                             now: now, onRetry: { share.reloadPage() })
-            } else { gone("item") }
-        case .reputation(let resource):
-            let entry = share.entry(resource, on: id)
-            let own = status?.resources.first { $0.id == resource }
-            MultiplayerReputationPage(name: entry?.name ?? own?.name ?? resource, owner: entry?.owner ?? (own == nil ? "" : me),
-                                      kind: entry?.kind ?? own?.kind ?? "", state: teams.reputation,
-                                      endorsements: entry?.endorsements ?? [], judgeable: teams.judgeable(resource, on: id),
-                                      outcomes: teams.outcomes, skill: $teams.endorseDraft, canEndorse: teams.canEndorse,
-                                      now: now, isBusy: model.isBusy,
-                                      onEndorse: { teams.endorse(resource, on: id) },
-                                      onReport: { teams.report($0, on: id, accepted: $1) },
-                                      onRetry: { share.reloadPage() })
-        case .search:
-            MultiplayerDirectorySearchPage(query: $teams.searchDraft, state: teams.search,
-                                           onSearch: { teams.runSearch(on: id) },
-                                           onReputation: { teams.startReputation($0.id, on: id) })
         case .policy:
             MultiplayerPolicyPage(state: teams.policy, draft: $teams.policyDraft, confirming: teams.confirming,
                                   isBusy: model.isBusy, onRetry: { share.reloadPage() },
@@ -1231,137 +1077,13 @@ private struct MultiplayerPanelContent: View {
     @ViewBuilder private func teamsFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         let teams = model.share.teams
-        let me = teams.handle(on: id)
         switch page {
-        case .groups:
-            MultiplayerTrayFooter(note: "Share a resource with a whole group from the Share sheet.") { EmptyView() }
-        case .group(let groupID):
-            MultiplayerTrayFooter {
-                if let group = teams.group(groupID, on: id), group.isOwned(by: me) {
-                    Button("Delete group…") { teams.ask(.deleteGroup(groupID)) }
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .danger))
-                        .disabled(model.isBusy || teams.confirming == .deleteGroup(groupID))
-                    Spacer(minLength: 0)
-                    Button("Share with group…") { share.startGrant(on: id, group: groupID) }
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                        .disabled(model.isBusy || model.session(id)?.status?.resources.isEmpty != false)
-                        .help("Give every member access to one of your resources")
-                }
-            }
-        case .workspaces:
-            MultiplayerTrayFooter(note: "The relay keeps only names and claims. Code never crosses it.") {
-                Button("New workspace") { teams.startWorkspace(on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-            }
         case .workspaceCreate:
             MultiplayerTrayFooter(note: teams.workspaceDraft.hint) {
                 Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
                 Button("Create workspace") { teams.createWorkspace(on: id) }
                     .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .disabled(!teams.canCreateWorkspace)
-            }
-        case .workspace:
-            MultiplayerTrayFooter(note: "A claim lapses 10 minutes after its holder’s Mac disconnects.") {
-                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
-            }
-        case .claim(let workspaceID):
-            MultiplayerTrayFooter(note: "Refused if someone already holds an overlapping claim.") {
-                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
-                Button("Claim") { teams.sendClaim(in: workspaceID, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .keyboardShortcut(teams.canClaim ? KeyboardShortcut.defaultAction : nil)
-                    .disabled(!teams.canClaim)
-            }
-        case .card(let workspaceID, let cardID):
-            MultiplayerTrayFooter {
-                if let card = teams.card(cardID) {
-                    switch card.known {
-                    case .open:
-                        Button("Claim card") { teams.move(card, in: workspaceID, on: id, to: .claimed) }
-                            .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                            .disabled(model.isBusy)
-                    case .claimed:
-                        if card.isAssigned(to: me) {
-                            Button("Release…") { teams.ask(.releaseCard(cardID)) }
-                                .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(model.isBusy || teams.confirming == .releaseCard(cardID))
-                            Button("Complete card") { teams.move(card, in: workspaceID, on: id, to: .done) }
-                                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                                .keyboardShortcut(.return, modifiers: .command)
-                                .disabled(model.isBusy)
-                                .help("Complete (⌘Return)")
-                        }
-                    case .done:
-                        Button("Reopen") { teams.move(card, in: workspaceID, on: id, to: .open) }
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .disabled(model.isBusy)
-                    }
-                }
-            }
-        case .queueAdd(let workspaceID):
-            MultiplayerTrayFooter(note: "Nothing merges until you run the queue.") {
-                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
-                Button("Queue branch") { teams.addToQueue(workspaceID, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .disabled(!teams.canQueue)
-            }
-        case .hosts:
-            MultiplayerTrayFooter(note: "A host runs only the commands its owner enrolled.") {
-                Button("Add a host") { model.go(.server(id)); model.session(id)?.startAddResource(kind: .host) }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-                    .help("Add a resource of kind Host on this server")
-            }
-        case .hostRun(let resource):
-            MultiplayerTrayFooter(note: "Runs on the owner’s Mac, under their grant and approval rules.") {
-                Button("Run command") { teams.runOnHost(resource, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!teams.canRunOnHost)
-                    .help("Run (⌘Return)")
-            }
-        case .knowledge:
-            MultiplayerTrayFooter(note: "Secrets never travel: share ${NAME} placeholders instead.") {
-                Button("Share knowledge") { teams.startKnowledge(on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-            }
-        case .knowledgeShare:
-            MultiplayerTrayFooter(note: teams.knowledgeDraft.secretProblem == nil ? nil : "Remove the secret to share this.") {
-                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
-                Button(teams.knowledgeDraft.editing.isEmpty ? "Share" : "Save new version") { teams.shareKnowledge(on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .disabled(!teams.canShareKnowledge)
-            }
-        case .knowledgeItem(let itemID):
-            MultiplayerTrayFooter {
-                if let item = teams.item(itemID, on: id) {
-                    let kind = MultiplayerKnowledgeKind(rawValue: item.kind)
-                    Button("New version…") { teams.startKnowledge(on: id, editing: item) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .help("Only the item’s owner can save a new version")
-                    Spacer(minLength: 0)
-                    Button(kind?.installTitle ?? "Copy") {
-                        switch kind {
-                        case .skill: teams.install(item, on: id)
-                        case .mcp:
-                            if let path = MultiplayerFilePanel.chooseDestination(named: "\(item.name).json") {
-                                teams.install(item, on: id, destination: path)
-                            }
-                        default:
-                            MultiplayerHashChip.copy(item.content)
-                            model.post(notice: "Copied \(item.name.multiplayerDisplay).")
-                        }
-                    }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .disabled(model.isBusy)
-                }
-            }
-        case .reputation:
-            MultiplayerTrayFooter(note: "Who sees these figures is set by the relay’s policy.") {
-                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
-            }
-        case .search:
-            MultiplayerTrayFooter(note: "Only resources their owners listed are found.") {
-                Button("Shared directory") { share.open(.directory, on: id) }.buttonStyle(MultiplayerTrayButtonStyle())
             }
         case .policy:
             MultiplayerTrayFooter(note: teams.policy.value == nil ? nil
@@ -1411,28 +1133,6 @@ private struct MultiplayerPanelContent: View {
                     Text("Commander can’t find this review any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                 }
             }
-        case .fanout:
-            MultiplayerFanoutComposer(draft: $live.fanoutDraft, targets: live.fanoutTargets(on: id),
-                                      onToggle: { live.toggleFanoutTarget($0) })
-        case .compare(let request):
-            if let fanout = live.fanout(request, on: id) {
-                MultiplayerComparePage(fanout: fanout,
-                                       columns: fanout.children.map { child in
-                                           let entry = share.entry(child.resource, on: id)
-                                           return MultiplayerComparePage.Column(child: child, name: entry?.name ?? child.resource,
-                                                                                owner: entry?.owner ?? "", capabilities: entry?.capabilities)
-                                       },
-                                       winner: live.winner(of: request, on: id), now: now,
-                                       onChoose: { live.chooseWinner($0.id, of: request, on: id) },
-                                       onThread: { child in
-                                           let name = share.entry(child.resource, on: id)?.name ?? child.resource
-                                           share.open(.thread(request: child.id, title: "\(name.multiplayerDisplay): \(fanout.title)"), on: id)
-                                       })
-            } else {
-                MultiplayerBand {
-                    Text("Commander can’t find this fan-out any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                }
-            }
         default:
             EmptyView()
         }
@@ -1475,8 +1175,13 @@ private struct MultiplayerPanelContent: View {
         case .review(let request):
             MultiplayerTrayFooter {
                 if let row = live.review(request, on: id) {
-                    Button("Thread") { share.open(.thread(request: row.request, title: row.title), on: id) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
+                    // The thread is a window page now, so this button leaves the tray.
+                    Button { pages.show(.thread(request: row.request, title: row.title), on: id) } label: {
+                        Label("Thread", systemImage: "arrow.up.right")
+                    }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .help("Open this thread in Agent Commander")
+                    .accessibilityLabel("Open this thread in Agent Commander")
                     Button("Refresh") { model.refresh() }
                         .buttonStyle(MultiplayerTrayButtonStyle())
                         .disabled(!model.canRefresh)
@@ -1487,21 +1192,6 @@ private struct MultiplayerPanelContent: View {
                         .help(live.postProblem(request, on: id) ?? "Shows what will be posted, then asks you to confirm")
                 }
             }
-        case .fanout:
-            MultiplayerTrayFooter(note: live.fanoutDraft.targets.count < 2 ? "Choose at least 2 workers." : nil) {
-                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
-                Button("Send to \(max(live.fanoutDraft.targets.count, 2))") { live.sendFanout() }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!live.canSendFanout)
-                    .help("Send the prompt to every chosen worker (⌘Return)")
-            }
-        case .compare:
-            MultiplayerTrayFooter(note: "The winner is a note on this Mac. Nothing is sent.") {
-                Button("Refresh") { model.refresh() }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-                    .disabled(!model.canRefresh)
-            }
         default:
             EmptyView()
         }
@@ -1510,42 +1200,16 @@ private struct MultiplayerPanelContent: View {
     @ViewBuilder private func shareFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         switch page {
-        case .watch, .control, .reviewRequest, .review, .fanout, .compare:
+        case .watch, .control, .reviewRequest, .review:
             liveFooter(page, on: id)
-        case .groups, .group, .workspaces, .workspaceCreate, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
-             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search, .policy:
+        case .workspaceCreate, .policy:
             teamsFooter(page, on: id)
-        case .directory:
-            MultiplayerTrayFooter(note: "Granted actions work now. Ask the owner for the rest.") {
-                Button("Access requests") { share.open(.requests, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-            }
         case .requestAccess:
             MultiplayerTrayFooter(note: share.accessDraft.actions.isEmpty ? "Choose at least one action." : nil) {
                 Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
                 Button("Send request") { share.sendAccessRequest() }
                     .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .disabled(model.isBusy || !share.accessDraft.canSend)
-            }
-        case .requests:
-            MultiplayerTrayFooter(note: "Review opens the share sheet. Granting it answers the request.") {
-                Button("Shared directory") { share.open(.directory, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-            }
-        case .approval(let approvalID):
-            MultiplayerTrayFooter {
-                if let approval = share.approval(approvalID, on: id) {
-                    Button("Audit") { share.open(.audit(resource: approval.resource), on: id) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .help("See earlier uses of this resource")
-                    Spacer(minLength: 0)
-                    Button("Deny") { share.decide(approval, on: id, approve: false) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .disabled(model.isBusy)
-                    Button("Approve") { share.decide(approval, on: id, approve: true) }
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                        .disabled(model.isBusy)
-                }
             }
         case .grant:
             MultiplayerTrayFooter(note: share.grantHint) {
@@ -1571,38 +1235,10 @@ private struct MultiplayerPanelContent: View {
                     .disabled(!share.canSendHandoff)
                     .help("Hand off (⌘Return)")
             }
-        case .handoffs:
-            MultiplayerTrayFooter(note: "Open one to check its run or read its result.") {
-                Button("Shared directory") { share.open(.directory, on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-            }
-        case .handoffDetail(let request):
-            MultiplayerTrayFooter {
-                if let row = share.handoff(request, on: id) {
-                    Button("Thread") { share.open(.thread(request: row.request, title: row.title), on: id) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                    Spacer(minLength: 0)
-                    Button("Check status") { share.check(row, on: id, result: false) }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .disabled(model.isBusy || row.run == nil)
-                    Button("Get result") { share.check(row, on: id, result: true) }
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                        .disabled(model.isBusy || row.run == nil)
-                        .help("Reads the run’s report and artifacts. Nothing is applied until you choose to.")
-                }
-            }
-        case .thread:
-            MultiplayerTrayFooter {
-                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
-                Button("Post comment") { share.postComment() }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!share.canComment)
-            }
-        case .audit:
-            MultiplayerTrayFooter(note: "The latest 200 entries, kept on this Mac.") {
-                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
-            }
+        case .directory, .requests, .approval, .handoffs, .handoffDetail, .thread, .audit, .fanout, .compare,
+             .groups, .group, .workspaces, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
+             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search:
+            MultiplayerTrayFooter(note: "This page is in the main window now.") { EmptyView() }
         }
     }
 
@@ -1659,7 +1295,8 @@ private struct MultiplayerPanelContent: View {
                             resourceName: { share.resourceName($0, on: $1) },
                             isBusy: model.isBusy,
                             onAccept: { model.accept($0, on: $1) },
-                            onOpenApproval: { share.open(.approval($0.item.id), on: $0.server) },
+                            onOpenApproval: { pages.show(.approval($0.item.id), on: $0.server) },
+                            approvalOpenHint: "Opens the full request in Agent Commander and closes this panel.",
                             onDecide: { share.decide($0.item, on: $0.server, approve: $1) },
                             onReviewAccess: { share.review($0.item, on: $0.server) },
                             onDeclineAccess: { share.remove($0.item, on: $0.server, declining: true) },
@@ -1675,7 +1312,8 @@ private struct MultiplayerPanelContent: View {
         MultiplayerRemoteWorkBand(items: live.remoteWork.map { work in
             MultiplayerRemoteWorkBand.Item(id: work.id, symbol: work.symbol, kind: work.kindTitle, title: work.title,
                                            detail: work.detail, color: MultiplayerTheme.swatch(for: work.server),
-                                           state: work.state, tone: work.tone, open: { live.open(work) })
+                                           state: work.state, tone: work.tone, opensWindow: !work.page.staysInTray,
+                                           open: { pages.show(work) })
         })
         MultiplayerAgentRoster(mine: share.myAgents, theirs: share.friendAgents,
                                serverName: { model.server($0)?.displayName ?? "a server" },
@@ -1683,26 +1321,29 @@ private struct MultiplayerPanelContent: View {
                                holder: { live.holders(of: $0.item.id, on: $0.server).first?.handle },
                                isWaiting: { share.waitingRequest(for: $0.item.id, on: $0.server) != nil },
                                isBusy: model.isBusy,
-                               fanoutServers: live.fanoutServers,
+                               shortcuts: MultiplayerWindowShortcut.agents(),
                                onShare: { share.startGrant(on: $0.server, resourceID: $0.item.id) },
-                               onAudit: { share.open(.audit(resource: $0.item.id), on: $0.server) },
+                               onAudit: { pages.show(.audit(resource: $0.item.id), on: $0.server) },
                                onControl: { live.startControl($0.item.id, on: $0.server) },
                                onConsult: { share.startConsult($0.item.id, on: $0.server) },
                                onHandOff: { share.startHandoff($0.item.id, on: $0.server) },
                                onWatch: { live.startWatch($0.item.id, on: $0.server) },
                                onReview: { live.startReview($0.item.id, on: $0.server) },
-                               onRequest: { share.startRequestAccess($0.item, on: $0.server) },
-                               onDirectory: { share.open(.directory, on: $0) },
-                               onFanout: { live.startFanout(on: $0) })
+                               onRequest: { share.startRequestAccess($0.item, on: $0.server) })
+        // Workspaces, hosts and the knowledge library are window pages. New workspace is still here.
         let teams = share.teams
-        MultiplayerTeamsBand(workspaces: teams.allWorkspaces, hostCount: teams.hostCount, knowledgeCount: teams.knowledgeCount,
-                             handle: { teams.handle(on: $0) },
-                             serverName: { model.server($0)?.displayName ?? "a server" },
-                             servers: teams.servers,
-                             onOpen: { share.open(.workspace($0.item.id), on: $0.server) },
-                             onNew: { teams.startWorkspace(on: $0) },
-                             onHosts: { share.open(.hosts, on: $0) },
-                             onKnowledge: { share.open(.knowledge, on: $0) })
+        if !teams.servers.isEmpty {
+            MultiplayerBand {
+                VStack(alignment: .leading, spacing: 0) {
+                    MultiplayerBandHeading(title: "Teams") {
+                        MultiplayerServerAction(title: "New…", symbol: "plus", label: "New workspace", servers: teams.servers,
+                                                perform: { teams.startWorkspace(on: $0) })
+                    }
+                    MultiplayerWindowLinkRows(shortcuts: MultiplayerWindowShortcut.teams(
+                        workspaces: teams.allWorkspaces.count, hosts: teams.hostCount, knowledge: teams.knowledgeCount))
+                }
+            }
+        }
     }
 
     /// Network: the servers, their state and the keys they are known by.
@@ -1743,11 +1384,16 @@ private struct MultiplayerPanelContent: View {
                                 onAddFriend: { model.addFriend(on: $0) },
                                 onShare: { model.share(with: $0, on: $1) },
                                 available: model.friendsAvailable)
+        // Groups are a window page.
         let teams = model.share.teams
-        MultiplayerGroupsBand(groups: teams.allGroups, handle: { teams.handle(on: $0) },
-                              serverName: { model.server($0)?.displayName ?? "a server" }, servers: teams.servers,
-                              onOpen: { model.share.open(.group($0.item.id), on: $0.server) },
-                              onManage: { model.share.open(.groups, on: $0) })
+        if !teams.servers.isEmpty {
+            MultiplayerBand {
+                VStack(alignment: .leading, spacing: 0) {
+                    MultiplayerBandHeading(title: "Groups")
+                    MultiplayerWindowLinkRows(shortcuts: MultiplayerWindowShortcut.groups(teams.allGroups.count))
+                }
+            }
+        }
         MultiplayerActivityBand(events: model.filteredActivity, hasAny: !model.activity.isEmpty,
                                 unseen: model.unseen, servers: model.servers, actors: model.activityActors,
                                 server: $model.activityServer, friend: $model.activityFriend,
@@ -1793,36 +1439,45 @@ private struct MultiplayerPanelContent: View {
             }
             if let session, session.route == .home, session.isOnline, let status = session.status {
                 let share = model.share
-                MultiplayerSharingBand(directoryCount: status.directoryEntries.count,
-                                       requestCount: share.unanswered(share.incomingAccess(server.id), on: server.id).count,
-                                       approvalCount: share.waitingApprovals(on: server.id).count,
-                                       handoffCount: share.handoffs[server.id]?.count ?? 0,
-                                       canShare: !model.isBusy && !status.friends.isEmpty && !status.resources.isEmpty,
-                                       onShare: { share.startGrant(on: server.id) },
-                                       onDirectory: { share.open(.directory, on: server.id) },
-                                       onRequests: { share.open(.requests, on: server.id) },
-                                       onApprovals: {
-                                           if let first = share.waitingApprovals(on: server.id).first { share.open(.approval(first.id), on: server.id) }
-                                       },
-                                       onHandoffs: { share.open(.handoffs, on: server.id) },
-                                       onAudit: { share.open(.audit(resource: ""), on: server.id) })
+                // What moved to the main window is a compact row each. Share… and Relay policy stay.
+                let waiting = share.unanswered(share.incomingAccess(server.id), on: server.id).count
+                    + share.waitingApprovals(on: server.id).count
+                MultiplayerBand {
+                    VStack(alignment: .leading, spacing: 0) {
+                        MultiplayerBandHeading(title: "Share and consult") {
+                            let canShare = !model.isBusy && !status.friends.isEmpty && !status.resources.isEmpty
+                            Button { share.startGrant(on: server.id) } label: { Label("Share…", systemImage: "square.and.arrow.up") }
+                                .buttonStyle(MultiplayerTrayButtonStyle())
+                                .disabled(!canShare)
+                                .help(canShare ? "Give a friend access to one of your resources" : "Add a friend and a resource first")
+                        }
+                        MultiplayerWindowLinkRows(shortcuts: MultiplayerWindowShortcut.sharing(
+                            on: server.id, directory: status.directoryEntries.count, waiting: waiting,
+                            handoffs: share.handoffs[server.id]?.count ?? 0))
+                    }
+                }
                 let teams = share.teams
-                MultiplayerServerTeamsBand(groupCount: teams.groups[server.id]?.count ?? 0,
-                                           workspaceCount: teams.workspaces[server.id]?.count ?? 0,
-                                           hostCount: teams.myHosts(on: server.id).count + teams.friendHosts(on: server.id).count,
-                                           knowledgeCount: teams.knowledge[server.id]?.count ?? 0,
-                                           isAdmin: model.isAdmin(server.id),
-                                           onGroups: { share.open(.groups, on: server.id) },
-                                           onWorkspaces: { share.open(.workspaces, on: server.id) },
-                                           onHosts: { share.open(.hosts, on: server.id) },
-                                           onKnowledge: { share.open(.knowledge, on: server.id) },
-                                           onSearch: { teams.startSearch(on: server.id) },
-                                           onPolicy: { share.open(.policy, on: server.id) })
+                MultiplayerBand {
+                    VStack(alignment: .leading, spacing: 0) {
+                        MultiplayerBandHeading(title: "Teams")
+                        MultiplayerWindowLinkRows(shortcuts: MultiplayerWindowShortcut.serverTeams(
+                            on: server.id, groups: teams.groups[server.id]?.count ?? 0,
+                            workspaces: teams.workspaces[server.id]?.count ?? 0,
+                            hosts: teams.myHosts(on: server.id).count + teams.friendHosts(on: server.id).count,
+                            knowledge: teams.knowledge[server.id]?.count ?? 0))
+                        if model.isAdmin(server.id) {
+                            MultiplayerLinkRow(symbol: "slider.horizontal.3", title: "Relay policy",
+                                               caption: "Sharing limits, retention, members and devices") {
+                                share.open(.policy, on: server.id)
+                            }
+                        }
+                    }
+                }
             }
             if let session {
                 MultiplayerSessionContent(model: session,
                                           onShare: { model.share.startGrant(on: server.id, handle: $0, resourceID: $1) },
-                                          onAudit: { model.share.open(.audit(resource: $0), on: server.id) })
+                                          onAudit: { pages.show(.audit(resource: $0), on: server.id) })
             }
         }
     }

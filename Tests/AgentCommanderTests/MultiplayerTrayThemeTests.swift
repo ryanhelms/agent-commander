@@ -150,18 +150,18 @@ import Testing
                              suggestion: .constant("Pin the clock."), onSuggest: {}, onRetry: {}, onOpenTray: {})
                 .frame(height: 560).environment(\.theme, .console)
         }
-        // As before: read-only, with the tray's button.
+        // As before: read-only, with the button that opens the hand-off's window page.
         let plain = try await MultiplayerAX.nodes(of: RemoteWorkerZoom(worker: worker, watch: MultiplayerWatchState(), entry: entry,
                                                                         color: .pink, interval: 2, now: Date(), onRetry: {}, onOpenTray: {})
             .frame(height: 560).environment(\.theme, .console))
-        #expect(plain.contains { $0.role == "AXButton" && $0.label == "Open in tray" })
+        #expect(plain.contains { $0.role == "AXButton" && $0.label == "Open hand-off" })
         #expect(!plain.contains { $0.label == "Send suggestion" || $0.label == "Suggestion" })
 
-        let titled = try await MultiplayerAX.nodes(of: zoom(footer: "Open hand-off", suggests: false, entry: entry))
-        #expect(titled.contains { $0.role == "AXButton" && $0.label == "Open hand-off" } && !titled.contains { $0.label == "Open in tray" })
+        let titled = try await MultiplayerAX.nodes(of: zoom(footer: "Show hand-off", suggests: false, entry: entry))
+        #expect(titled.contains { $0.role == "AXButton" && $0.label == "Show hand-off" } && !titled.contains { $0.label == "Open hand-off" })
 
         let suggesting = try await MultiplayerAX.nodes(of: zoom(footer: nil, suggests: true, entry: entry))
-        #expect(!suggesting.contains { $0.label == "Open in tray" || $0.label == "Open hand-off" })
+        #expect(!suggesting.contains { $0.label == "Open hand-off" })
         #expect(suggesting.contains { $0.role == "AXButton" && $0.label == "Send suggestion" })
         #expect(suggesting.contains { $0.label == "Suggestion" })
 

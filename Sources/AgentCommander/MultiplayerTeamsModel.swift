@@ -337,7 +337,8 @@ final class MultiplayerTeamsModel {
         guard canCreateWorkspace, tray?.route == .share(server, .workspaceCreate) else { return nil }
         return createWorkspace(workspaceDraft, on: server, then: { id in
             self.workspaceDraft = MultiplayerWorkspaceDraft()
-            if !id.isEmpty { self.share?.replace(with: .workspace(id), on: server) } else { self.share?.back() }
+            // The workspace itself is a window page: the composer closes and the notice names it.
+            if self.tray?.route == .share(server, .workspaceCreate) { self.share?.back() }
         })
     }
 
