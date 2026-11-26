@@ -672,6 +672,7 @@ struct CockpitScreen: View {
             VStack(spacing: 0) {
                 banners
                 shellCanvas(shell, navigation).frame(maxWidth: .infinity, maxHeight: .infinity)
+                AppVersionFooter()
             }
         }
         // A countdown drawn by the network's own rows counts from the window's fixed time, when it has one.

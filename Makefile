@@ -24,6 +24,7 @@ app: cli network relay postgres
 	cp dist/commander-relay "$(MACOS)/commander-relay"
 	rm -rf "$(RESOURCES)/postgres" && ditto dist/postgres "$(RESOURCES)/postgres"
 	cp packaging/Info.plist "$(APP)/Contents/Info.plist"
+	sh packaging/stamp-version.sh "$(APP)/Contents/Info.plist"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/agentctl"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-network"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-relay"
