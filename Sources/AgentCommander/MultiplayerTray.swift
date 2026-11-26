@@ -802,9 +802,9 @@ struct MultiplayerPanel: View {
             }
           }
         case .addServer:
-            MultiplayerTrayHeader(title: "Add server", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
+            MultiplayerTrayHeader(title: "Add server", back: model.tab.title, onBack: { model.go(.home) }) { EmptyView() }
         case .hosting:
-            MultiplayerTrayHeader(title: "Hosting on this Mac", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
+            MultiplayerTrayHeader(title: "Hosting on this Mac", back: model.tab.title, onBack: { model.go(.home) }) { EmptyView() }
         case .server:
             if let server = routedServer {
                 // Inside one of the server's editors, Back returns to the server's own page.
@@ -812,7 +812,7 @@ struct MultiplayerPanel: View {
                 let inEditor = server.state != .certChanged && session.map { $0.route != .home } == true
                 MultiplayerTrayHeader(title: server.displayName, color: MultiplayerTheme.swatch(for: server.id),
                                       state: (server.state.lamp, server.stateTitle(now: model.currentDate()), server.state.tone),
-                                      back: inEditor ? "Back" : "Servers",
+                                      back: inEditor ? server.displayName : model.tab.title,
                                       onBack: { if inEditor { session?.go(.home) } else { model.go(.home) } }) { EmptyView() }
             }
         case .profile: subpageHeader("Your profile")
@@ -890,7 +890,7 @@ struct MultiplayerPanel: View {
                     MultiplayerBanner(kind: .success, message: notice, onDismiss: { model.dismissNotice() })
                 }
                 if model.hasLoaded, let unavailable = model.unavailable {
-                    MultiplayerBanner(kind: .failure, message: "Couldn’t update the server list. \(unavailable.message)",
+                    MultiplayerBanner(kind: .failure, message: MultiplayerSentence.join("Couldn’t update the server list.", unavailable.message),
                                       actionTitle: unavailable.canRetry ? "Try again" : nil,
                                       action: { model.refresh() })
                 }
@@ -1064,8 +1064,10 @@ struct MultiplayerPanel: View {
             if let group = teams.group(groupID, on: id) {
                 MultiplayerGroupPage(group: group, handle: me, addable: teams.addable(to: group, on: id), isBusy: model.isBusy,
                                      confirmingDelete: teams.confirming == .deleteGroup(groupID),
+                                     confirmingRemoval: { if case .removeMember(groupID, let handle)? = teams.confirming { handle } else { nil } }(),
                                      onAdd: { teams.setMember($0, in: group, on: id, isMember: true) },
-                                     onRemove: { teams.setMember($0, in: group, on: id, isMember: false) },
+                                     onRemove: { teams.ask(.removeMember(group: groupID, handle: $0)) },
+                                     onConfirmRemove: { teams.setMember($0, in: group, on: id, isMember: false) },
                                      onCancelDelete: { teams.cancelConfirmation() },
                                      onConfirmDelete: { teams.deleteGroup(group, on: id) })
             } else { gone("group") }
@@ -1080,8 +1082,13 @@ struct MultiplayerPanel: View {
                 MultiplayerWorkspacePage(workspace: workspace, group: teams.group(workspace.group, on: id), handle: me,
                                          cards: teams.cards, queue: teams.queue(for: workspaceID), cardDraft: $teams.cardDraft,
                                          canAddCard: teams.canAddCard, now: now, isBusy: model.isBusy,
+                                         confirming: teams.confirming,
                                          onClaim: { teams.startClaim(in: workspaceID, on: id) },
-                                         onRelease: { teams.release($0, in: workspaceID, on: id) },
+                                         onRelease: { teams.ask(.releaseClaim($0.id)) },
+                                         onConfirmRelease: { teams.release($0, in: workspaceID, on: id) },
+                                         onRemoveQueued: { teams.ask(.removeQueued($0.id)) },
+                                         onConfirmRemoveQueued: { teams.removeQueued($0, on: id) },
+                                         onCancelConfirmation: { teams.cancelConfirmation() },
                                          onAddCard: { teams.addCard(to: workspaceID, on: id) },
                                          onOpenCard: { teams.openCard($0, in: workspaceID, on: id) },
                                          onClaimCard: { teams.move($0, in: workspaceID, on: id, to: .claimed) },
@@ -1093,9 +1100,12 @@ struct MultiplayerPanel: View {
             if let workspace = teams.workspace(workspaceID, on: id) {
                 MultiplayerClaimForm(draft: $teams.claimDraft, workspace: workspace, handle: me)
             } else { gone("workspace") }
-        case .card(_, let cardID):
+        case .card(let workspaceID, let cardID):
             if let card = teams.card(cardID) {
-                MultiplayerCardPage(card: card, handle: me, result: $teams.resultDraft)
+                MultiplayerCardPage(card: card, handle: me, result: $teams.resultDraft,
+                                    confirmingRelease: teams.confirming == .releaseCard(cardID), isBusy: model.isBusy,
+                                    onCancelRelease: { teams.cancelConfirmation() },
+                                    onConfirmRelease: { teams.move(card, in: workspaceID, on: id, to: .open) })
             } else if teams.cards.value == nil {
                 MultiplayerBand {
                     MultiplayerLoadNote(loading: "Reading the card…",
@@ -1218,9 +1228,9 @@ struct MultiplayerPanel: View {
                             .disabled(model.isBusy)
                     case .claimed:
                         if card.isAssigned(to: me) {
-                            Button("Release") { teams.move(card, in: workspaceID, on: id, to: .open) }
+                            Button("Release…") { teams.ask(.releaseCard(cardID)) }
                                 .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(model.isBusy)
+                                .disabled(model.isBusy || teams.confirming == .releaseCard(cardID))
                             Button("Complete card") { teams.move(card, in: workspaceID, on: id, to: .done) }
                                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                                 .keyboardShortcut(.return, modifiers: .command)

@@ -46,7 +46,10 @@ endorsements, a directory search and an admin policy. A grant may name `group` i
 `host.run` answers with exit 0; a command or argument containing "fail" exits 1 and one containing
 "wait" stays pending. Sharing knowledge whose content looks like a secret is refused. A claim that
 overlaps a live one is refused with its holder. `queue-merge` merges each queued branch, except one
-whose name contains "fail" (tests fail) or "conflict". `knowledge-install` writes nothing. Suspending
+whose name contains "fail" (tests fail) or "conflict". `queue-remove` takes one entry out by its
+workspace and branch. jonas-mac-mini and studio-mac publish `capabilities.commands` (run-ios-ui-tests
+allows extra arguments, build-release doesn't); mei-gpu-box publishes only `tools`, as an older
+device does. `knowledge-install` writes nothing. Suspending
 "fixture-nobody" or revoking device "d-unknown" is refused as not found.
 
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
@@ -100,7 +103,8 @@ def seed():
              "capabilities": {"harness": "claude", "model": "opus", "slots": 2, "tools": ["gh", "xcodebuild"],
                               "environments": ["ios-simulator"]}},
             {"id": "res-3", "name": "studio-mac", "kind": "host", "actions": ["host.run"],
-             "capabilities": {"tools": ["run-relay-benchmarks"], "environments": ["apple-silicon", "128gb"]}}]},
+             "capabilities": {"tools": ["run-relay-benchmarks"], "environments": ["apple-silicon", "128gb"],
+                              "commands": [{"name": "run-relay-benchmarks", "allowArgs": False, "environment": "apple-silicon"}]}}]},
         "groups": {"s-fixture-home": [
             {"id": "grp-relay", "name": "relay-team", "owner": "u-ryan", "ownerHandle": "fixture-ryan",
              "members": ["fixture-ryan", "fixture-sam", "fixture-mei"]},
@@ -311,7 +315,9 @@ DIRECTORY = {
          "name": "mei-docs", "actions": ["issue.comment", "issue.read"], "grantedActions": []},
         {"id": "dir-jonas-mini", "owner": "u-jonas", "handle": "fixture-jonas", "device": "d-jonas", "kind": "host",
          "name": "jonas-mac-mini", "actions": ["host.run"], "grantedActions": ["host.run"], "listed": True,
-         "capabilities": {"tools": ["run-ios-ui-tests", "build-release"], "environments": ["ios-simulator", "xcode-16"]}},
+         "capabilities": {"tools": ["run-ios-ui-tests", "build-release"], "environments": ["ios-simulator", "xcode-16"],
+                          "commands": [{"name": "run-ios-ui-tests", "allowArgs": True, "environment": "ios-simulator"},
+                                       {"name": "build-release", "allowArgs": False, "environment": "xcode-16"}]}},
         {"id": "dir-mei-gpu", "owner": "u-mei", "handle": "fixture-mei", "device": "d-mei", "kind": "host",
          "name": "mei-gpu-box", "actions": ["host.run"], "grantedActions": [], "listed": True,
          "capabilities": {"tools": ["train-eval", "render-batch", "run-benchmarks"], "environments": ["gpu", "linux", "cuda-12"]}}],
@@ -754,7 +760,7 @@ def teams_relay(state, server, method, path, body):
                     raise ValueError("holder must be handle/agent")
                 for claim in workspace["claims"]:
                     if claim["kind"] == kind and overlaps(kind, key, claim["key"]):
-                        raise ValueError("already claimed by %s" % claim["holder"])
+                        raise ValueError("relay HTTP 409: overlapping claim held by %s" % claim["holder"])
                 claim = {"id": "cl-%s" % hashlib.sha256((key + now()).encode()).hexdigest()[:8], "kind": kind, "key": key,
                          "holder": holder, "expiresAt": now(60)}
                 workspace["claims"].append(claim)
@@ -789,7 +795,7 @@ def teams_relay(state, server, method, path, body):
             if body.get("state") not in (None, "open", "claimed", "done"):
                 raise ValueError("state must be open, claimed or done")
             if card["state"] == "claimed" and not card["assignee"].startswith("fixture-ryan/"):
-                raise ValueError("already claimed by %s" % card["assignee"])
+                raise ValueError("relay HTTP 409: overlapping claim held by %s" % card["assignee"])
             was = card["state"]
             card["state"] = body.get("state", was)
             if "result" in body:
@@ -937,6 +943,11 @@ def teams(state, verb, request):
             raise ValueError("queue-add needs a workspace, a branch and the absolute checkout path")
         rows.append({"workspace": request["workspace"], "branch": request["branch"], "checkout": request["checkout"],
                      "test": request.get("testCommand") or [], "added": now(), "state": "queued", "output": ""})
+    if verb == "queue-remove":
+        found = [row for row in rows if row["workspace"] == request.get("workspace") and row["branch"] == request.get("branch")]
+        if not found:
+            raise ValueError("no queued branch %s in that workspace" % (request.get("branch") or ""))
+        rows.remove(found[0])
     if verb == "queue-merge":
         for row in rows:
             if row["state"] != "queued" or (request.get("workspace") and row["workspace"] != request["workspace"]):
@@ -1135,7 +1146,7 @@ def run(verb, request):
         return sharing(state, verb, request)
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
-    if verb in ("queue", "queue-add", "queue-merge", "knowledge-share", "knowledge-install"):
+    if verb in ("queue", "queue-add", "queue-merge", "queue-remove", "knowledge-share", "knowledge-install"):
         return teams(state, verb, request)
     return {}
 

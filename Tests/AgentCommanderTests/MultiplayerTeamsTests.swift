@@ -113,6 +113,7 @@ enum MultiplayerTeamsFixture {
         #expect(Set(["relay", "queue", "queue-add", "queue-merge", "knowledge-share", "knowledge-install"])
             .isSubset(of: Set(MultiplayerVerb.allCases.map(\.rawValue))))
         #expect(MultiplayerVerb.queueMerge.arguments == ["tray", "queue-merge"])
+        #expect(MultiplayerVerb.queueRemove.arguments == ["tray", "queue-remove"])
         #expect(MultiplayerResourceKind(rawValue: "host")?.title == "Host")
         #expect(MultiplayerSharePolicy.expected(kind: "host") == ["host.run"])
         #expect(MultiplayerCapability.title("host.run") == "Run enrolled commands")
@@ -306,8 +307,11 @@ enum MultiplayerTeamsFixture {
         #expect(teams.addable(to: group, on: home).map(\.handle) == ["fixture-cy"])
         await teams.setMember("fixture-cy", in: group, on: home, isMember: true)?.value
         #expect(helper.relays("PUT").last?.path == "/v1/groups/grp-1/members/fixture-cy")
+        // Removing a member takes the group's grants away, so the first press only asks.
+        #expect(teams.setMember("fixture-bo", in: group, on: home, isMember: false) == nil && helper.relays("DELETE").isEmpty)
+        teams.ask(.removeMember(group: "grp-1", handle: "fixture-bo"))
         await teams.setMember("fixture-bo", in: group, on: home, isMember: false)?.value
-        #expect(helper.relays("DELETE").last?.path == "/v1/groups/grp-1/members/fixture-bo")
+        #expect(helper.relays("DELETE").last?.path == "/v1/groups/grp-1/members/fixture-bo" && teams.confirming == nil)
 
         teams.ask(.deleteGroup("grp-1"))
         #expect(teams.confirming == .deleteGroup("grp-1") && helper.relays("DELETE").count == 1)
@@ -359,7 +363,7 @@ enum MultiplayerTeamsFixture {
         teams.claimDraft.kind = .paths
         teams.claimDraft.key = "Sources/Relay"
         await teams.sendClaim(in: "ws-1", on: home)?.value
-        #expect(model.failure?.contains("fixture-bo/bo-agent") == true && model.route == .share(home, .claim(workspace: "ws-1")))
+        #expect(model.failure == "Couldn’t claim it. Already claimed by fixture-bo/bo-agent." && model.route == .share(home, .claim(workspace: "ws-1")))
         teams.claimDraft.key = "docs"
         await teams.sendClaim(in: "ws-1", on: home)?.value
         #expect(helper.relays("POST").last?.body == .object(["kind": .string("paths"), "key": .string("docs"),
@@ -367,8 +371,13 @@ enum MultiplayerTeamsFixture {
         #expect(model.route == .share(home, .workspace("ws-1")))
 
         let mine = teams.workspace("ws-1", on: home)!.claims[1]
+        #expect(teams.release(mine, in: "ws-1", on: home) == nil && helper.relays("DELETE").isEmpty)   // the first press only asks
+        teams.ask(.releaseClaim("cl-2"))
+        teams.cancelConfirmation()
+        #expect(teams.release(mine, in: "ws-1", on: home) == nil)
+        teams.ask(.releaseClaim("cl-2"))
         await teams.release(mine, in: "ws-1", on: home)?.value
-        #expect(helper.relays("DELETE").last?.path == "/v1/workspaces/ws-1/claims/cl-2")
+        #expect(helper.relays("DELETE").last?.path == "/v1/workspaces/ws-1/claims/cl-2" && teams.confirming == nil)
         model.close()
     }
 

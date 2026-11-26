@@ -160,7 +160,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Component | What it is |
 |---|---|
 | Lamp | 9 pt state mark: `on` filled circle, `off` outlined circle, `waiting` open arc, `error` diamond, `unknown` focus ring, `busy` square, `away` half-filled circle, `doNotDisturb` circle with a bar. Live lamps pulse. |
-| Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off`. |
+| Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off` (`Tone.lamp`). The hand-off detail's state uses it. |
 | Count | A place's count in `label`, on `hair`. A hot count is filled `attention` with `onAccent` ink. A figure such as "2/3" takes the count's place and is never hot. |
 | Place mark | An 18 pt symbol in `secondary`, or `foreground` when selected. A project or workspace is one letter in `focus` on a square mark. |
 | Spinner | 12 pt arc turning every 1.1 s. Labelled "In progress". |
@@ -169,7 +169,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Swatch | 4 × 12 pt colour bar. |
 | Meter | 16 cells of 5 × 9 pt. Fill is `working`, `attention` at 80% and `failure` at 100%. With `isGood` the bar counts something wanted, such as accepted results, and stays `working` when full. |
 | Field box | Sunken well with a 2 pt-radius edge that turns `focus` when focused. |
-| Badge | Small outlined label. Tinted when it has a tone. |
+| Badge | Small outlined label. Tinted when it has a tone. Its symbol is decoration: the word carries the meaning, so a tick is never spoken as "Selected". |
 | Signed badge | Marks a result sealed by a pinned device key. |
 | Grant badge | An agent row's grant status: Granted is `working` with a check; Offered is outlined. |
 | Holder badge | "<handle> has control", `attention` tone with a hand icon. It names the friend's handle, never an account ID; with no handle it says "A friend". |
@@ -218,10 +218,10 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Outcome well | A well holding a state label that replaces a verb strip once its action is done, then fades out: Approved, Accepted and Replied in `working`, Denied in `failure`, Declined in neutral, In review in `focus`. |
 | Inline confirm | The second press before something that can't be undone: a well with a `failure` edge, one sentence saying what goes with it, then a keep button and a `danger` button. It arrives under the row it belongs to. The review page's "Post this review" confirmation is the same pattern with an `attention` edge and a primary button, and scrolls into view when it opens. |
 | State tally | Counts by state as joined cells that also filter: "open 3, claimed 1, done 4". The chosen cell is filled `focus`; elsewhere a count above zero takes its state's tone. |
-| Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own. |
+| Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own, which opens an inline confirm under the row. |
 | Card row | One card of a board: its state as a lamp and a word, its title, who has it, and the one step that moves it on. The text opens the card. |
-| Queue row | A branch's place in the merge queue as a mono number, the branch, its state, and what stopped it when something did. |
-| Output well | The end of a command's or test run's output in mono on a well, selectable, with its exit state. |
+| Queue row | A branch's place in the merge queue as a mono number, the branch, its state, and what stopped it when something did. Remove takes a queued or settled branch out of the queue, after an inline confirm under the row. |
+| Output well | The end of a command's or test run's output in mono on a well, selectable, with its exit state. The exit state and the time taken are one readout ("Exit 1, 41 seconds"). |
 | Endorsement chips | Skills people vouch for as `working` badges with a seal, each with "×n" when more than one person did. The first four show, then "+n". |
 | Group row | A group: its name, its member count, the first few avatars, and an Owner (`focus`) or Member badge. |
 | Markdown block | Text an agent or friend wrote in Markdown, in the tray's type: headings, paragraphs, lists, fenced code on a well, and rules, with bold, italic, inline code and links. Nothing is fetched; an image stays as its source text. |
@@ -233,6 +233,8 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
+
+The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
 
 The main window adds three sidebar organisms, each a prototype pending the user's pick: a grouped sidebar, a mode rail with a context list, and a Needs you sidebar. Two will be dropped once one is chosen. It also adds the Needs you row.
 
@@ -251,7 +253,10 @@ Increment 5 (teams) adds:
 - **Workspaces band** (Agents tab): the workspaces you work in, each with its goal and a claim count in tone, then link rows to hosts and the knowledge library.
 - **Groups band** (People tab): group rows, and one action to manage groups.
 - **Server teams band** (server page): link rows into that server's groups, workspaces, hosts, knowledge and, for an admin, policy.
-- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (meter with `isGood`, endorsement chips), directory search and relay policy. Deleting a group, releasing a claim, suspending a member and the like use the inline confirm.
+- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
+- **Second presses:** deleting a group, removing a member, releasing a claim, releasing a card you hold, removing a branch from the merge queue, suspending a member and revoking a device each use the inline confirm. The first button ends in "…" and is disabled while its confirm is open. Leaving the page ends the confirm.
+- **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
+- **Pull-request workspace:** links the repository's pull-request list. Listing each open pull request waits for the device to provide them.
 - **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in a Remote workers band under the local workers: a hairline frame with the 2 pt tile radius and a mono band heading with its count. The band draws nothing until there is a hand-off.
 - **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note.
 
@@ -281,7 +286,7 @@ The tray keeps its own versions of these:
 
 ## 4. Layout patterns
 
-- **Header:** title, then a one-line state summary, then a single trailing icon action.
+- **Header:** title, then a one-line state summary, then a single trailing icon action. On a page, Back names where it returns: the tab the page was opened from (Agents, Network or People), the parent page, or the server.
 - **Telemetry strip:** a status strip of readouts directly under the header.
 - **Places:** a tab bar or a sidebar of places. Each place shows a count. A sidebar is docked: a `well` against the window's leading edge with a hairline against the canvas. Its groups are ruled off by hairlines and headed in `heading`. Places that are always needed (Hosts, Settings) sit at the foot under a hairline.
 - **Mode rail** (prototype, pending the user's pick): a 48 pt rail of mode cells with Settings at the foot, a hairline, then a 196 pt context list headed by the mode's name in `title` with its hot count. The context list holds every page of the mode.
@@ -298,11 +303,14 @@ The tray keeps its own versions of these:
 
 - **Accessibility.** Every lamp and chip has a spoken label. Readouts speak as one element ("approvals, 2"). Headings carry `.isHeader`.
   - The tab bar is a tab group (`AXTabGroup`, "Sections"). Selected tabs and segments carry `.isSelected` and report the value "Selected".
-  - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value.
+  - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value. In a Markdown block a list is a group named for its kind and length ("Numbered list, 3 items") and each item is one static text.
+  - Only a tab, a segment or a tally cell reports selected. A banner's icon is not an element: its meaning is spoken with the sentence ("Done: Released card-2.").
   - The page's scroll bar is taken out of the accessibility tree (it is four unnamed buttons otherwise). The scroll area still scrolls for VoiceOver and the keyboard.
   - A code is spoken letter by letter. A QR code is an image with a label; its link is also there as text.
 - **Keyboard.** Places switch with ⌘1, ⌘2, ⌘3 and so on, down the visible rows of a sidebar (the pinned inbox is ⌘1) or down the modes of a rail. Rows past the ninth and the foot places have none. Every custom control is reachable by Tab.
 - **Copy.** Hashes, IDs and trace text can be selected or copied.
+- **Errors.** A failure reads as two sentences: what the tray couldn't do, then the reason the device or relay gave, capitalised and closed with a full stop ("Couldn't claim it. Overlapping claim held by sam/agent."). `MultiplayerSentence.join` writes every one, and drops the "relay HTTP 409:" prefix when a reason follows it.
+- **Counts.** A count takes its noun's singular: "1 claim", "3 claims" (`MultiplayerPlural.count`), drawn and spoken.
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
