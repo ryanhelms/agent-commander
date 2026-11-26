@@ -27,6 +27,14 @@ type networkThread struct {
 	Text    string `json:"text,omitempty" jsonschema:"comment to add to the thread"`
 }
 
+type networkBoard struct {
+	Op        string `json:"op,omitempty" jsonschema:"list (default), claim, release, complete or comment"`
+	Workspace string `json:"workspace,omitempty" jsonschema:"workspace ID; omit with op list to list workspaces and claims"`
+	Card      string `json:"card,omitempty" jsonschema:"card ID for claim, release, complete or comment"`
+	Result    string `json:"result,omitempty" jsonschema:"result summary when completing a card"`
+	Text      string `json:"text,omitempty" jsonschema:"comment text"`
+}
+
 func registerNetworkTools(s *mcp.Server, run, actor string) error {
 	path := os.Getenv("COMMANDER_NETWORK_SOCKET")
 	if path == "" {
@@ -58,6 +66,10 @@ func registerNetworkTools(s *mcp.Server, run, actor string) error {
 	mcp.AddTool(s, &mcp.Tool{Name: "commander_network_thread", Description: "Read a request's thread. Include text to add a comment." + limits}, func(ctx context.Context, req *mcp.CallToolRequest, _ networkThread) (*mcp.CallToolResult, any, error) {
 		// Forward the validated arguments so an explicitly supplied empty text survives.
 		return textResult(device.post(ctx, "thread", req.Params.Arguments))
+	})
+	register(s, "commander_network_board", "List shared workspaces, their claims and task-board cards, and claim, release, complete or comment on cards in workspaces your owner belongs to."+limits, func(ctx context.Context, in networkBoard) (json.RawMessage, error) {
+		b, _ := json.Marshal(in)
+		return device.post(ctx, "board", b)
 	})
 	return nil
 }

@@ -533,6 +533,11 @@ func (a *Agent) Handler() http.Handler {
 			if e = body(r, &empty); e == nil {
 				res, e = a.online(r.Context(), s)
 			}
+		case "board":
+			var in boardInput
+			if e = body(r, &in); e == nil {
+				res, e = a.board(r.Context(), s, r.Header.Get("X-Commander-Worker"), in)
+			}
 		case "thread":
 			var in struct {
 				Request string `json:"request"`
