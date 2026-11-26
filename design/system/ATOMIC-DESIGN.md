@@ -56,6 +56,16 @@ The three sidebars take one `CommanderNavigation` and emit `CommanderNavigationA
 
 The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
 
+### Headless hosts
+
+| Level | Component | File |
+| --- | --- | --- |
+| Value | `ServiceEndpoint`: the one selected service socket, This Mac's or a host's forwarded one. Every request, both event streams and every `agentctl` child read it. | `ServiceClient.swift` |
+| Feature model | `CommanderHostsModel`: the host list from `agentctl host list`, the `agentctl host connect` child, its connection state and the choice. The only writer of `ServiceEndpoint`. | `CommanderHosts.swift` |
+| Molecules | `HostListRow` (shared with the concept Hosts page, with an optional In use badge), `ConnectionIndicator` with an optional host | `Molecules.swift`, `SetupPages.swift` |
+| Organisms | `CommanderHostList`, `CommanderHostDetail` | `CommanderHostsPage.swift` |
+| Pages | `CommanderHostsPage`, on `WorkspacePage` with `CollectionInspector` | `CommanderHostsPage.swift` |
+
 ## Native composition and ownership
 
 The focused native terminal window reuses the existing console title bar and surface. `NativeTerminalWell` is the AppKit leaf for a read-only SwiftTerm grid, and `NativeTerminalHeader` combines worker identity with detach, reconnect and close. The `NativeTerminalViewer` organism receives the attachment state from `NativeTerminalViewerModel`. The existing console display menu opens the matching worker’s window by value. [Terminal well](../../Sources/AgentCommander/NativeTerminalWell.swift) · [Window components](../../Sources/AgentCommander/NativeTerminalComponents.swift)

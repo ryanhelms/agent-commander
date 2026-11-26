@@ -1320,19 +1320,21 @@ struct AttentionPresentationMenu: View {
 /// Local service state in the title bar.
 struct ConnectionIndicator: View {
     let connection: CockpitModel.Connection
+    /// The headless host whose service this is. Nil for this Mac's own service.
+    var host: String? = nil
 
     var body: some View {
         HStack(spacing: 7) {
             switch connection {
             case .online:
                 Circle().fill(Color(hex: 0x96D8B0)).frame(width: 7, height: 7)
-                Text("Service online")
+                Text(host.map { "\($0) online" } ?? "Service online")
             case .connecting:
                 ProgressView().controlSize(.mini)
                 Text("Connecting…")
             case .offline:
                 Image(systemName: "exclamationmark.circle.fill").font(.system(size: 10)).foregroundStyle(Palette.failure)
-                Text("Service offline")
+                Text(host.map { "\($0) offline" } ?? "Service offline")
             }
         }
         .font(.system(size: 12))
@@ -1343,10 +1345,11 @@ struct ConnectionIndicator: View {
     }
 
     private var label: String {
+        let service = host.map { "Service on \($0)" } ?? "Local service"
         switch connection {
-        case .online: "Local service online"
-        case .connecting: "Connecting to local service"
-        case .offline(let reason): "Local service offline. \(reason)"
+        case .online: return "\(service) online"
+        case .connecting: return "Connecting to \(service.prefix(1).lowercased() + service.dropFirst())"
+        case .offline(let reason): return "\(service) offline. \(reason)"
         }
     }
 }

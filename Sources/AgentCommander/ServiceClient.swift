@@ -575,23 +575,88 @@ struct ServiceStatusError: LocalizedError, Equatable {
     var isWithdrawn: Bool { status == 404 || status == 409 }
 }
 
-// All GUI operations use the local HTTP API. The serialized client keeps short
-// requests off the UI thread and sends project paths and prompt text as JSON data.
-actor ServiceClient {
-    private let socket: String
-    private let command: URL?
+/// The service the app talks to now: this Mac's own, or a headless host's through its
+/// SSH-forwarded socket. One value is shared by every client path (requests, the two event
+/// streams and the agentctl children), and each reads it when it starts a request, so a change
+/// reaches all of them. `CommanderHostsModel` is the only writer.
+final class ServiceEndpoint: @unchecked Sendable {
+    /// A headless host's service, reached through the socket `agentctl host connect` forwards.
+    struct Remote: Equatable, Sendable {
+        let destination: String
+        let socket: String
+    }
+
+    /// The endpoint the running app uses.
+    static let live = ServiceEndpoint()
+
+    /// This Mac's service socket.
+    let localSocket: String
+    private let lock = NSLock()
+    private var selected: Remote?
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         let home = environment["AGENT_COMMANDER_HOME"].map { URL(filePath: $0, directoryHint: .isDirectory) } ??
             FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Agent Commander")
-        socket = environment["AGENT_COMMANDER_SOCKET"] ?? environment["AC_SOCKET"] ?? home.appending(path: "service.sock").path
-        if let path = environment["AGENT_COMMANDER_CLI"] ?? environment["AC_CLI"] {
-            command = URL(filePath: path)
-        } else {
-            command = Bundle.main.url(forAuxiliaryExecutable: "agentctl") ??
-                Bundle.main.executableURL?.deletingLastPathComponent().appending(path: "agentctl")
-        }
+        localSocket = environment["AGENT_COMMANDER_SOCKET"] ?? environment["AC_SOCKET"] ?? home.appending(path: "service.sock").path
     }
+
+    /// The selected host, or nil while the app uses this Mac's service.
+    var remote: Remote? {
+        lock.lock()
+        defer { lock.unlock() }
+        return selected
+    }
+
+    /// The socket every request goes to.
+    var socket: String { remote?.socket ?? localSocket }
+
+    /// Points every client path at a host's forwarded socket, or back at this Mac with nil.
+    /// Returns whether the socket changed.
+    @discardableResult func select(_ remote: Remote?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let changed = selected?.socket != remote?.socket
+        selected = remote
+        return changed
+    }
+
+    /// The environment for an agentctl child that must reach the selected service: a remote
+    /// host's forwarded socket replaces the socket setting. This Mac's settings are left as given.
+    func agentctlEnvironment(from base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        guard let remote else { return base }
+        var values = base
+        values.removeValue(forKey: "AC_SOCKET")
+        values["AGENT_COMMANDER_SOCKET"] = remote.socket
+        return values
+    }
+
+    /// The agentctl the app runs: the named override, else the one bundled beside the executable.
+    static func agentctl(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        if let path = environment["AGENT_COMMANDER_CLI"] ?? environment["AC_CLI"] { return URL(filePath: path) }
+        return Bundle.main.url(forAuxiliaryExecutable: "agentctl") ??
+            Bundle.main.executableURL?.deletingLastPathComponent().appending(path: "agentctl")
+    }
+}
+
+// All GUI operations use the service's HTTP API over the selected endpoint's socket. The
+// serialized client keeps short requests off the UI thread and sends project paths and prompt
+// text as JSON data.
+actor ServiceClient {
+    private let endpoint: ServiceEndpoint
+    private let command: URL?
+
+    /// The selected service's socket, read for each request.
+    private nonisolated var socket: String { endpoint.socket }
+
+    /// `endpoint` is the shared selection. Without one the client keeps to the local service the
+    /// environment names.
+    init(environment: [String: String] = ProcessInfo.processInfo.environment, endpoint: ServiceEndpoint? = nil) {
+        self.endpoint = endpoint ?? ServiceEndpoint(environment: environment)
+        command = ServiceEndpoint.agentctl(environment: environment)
+    }
+
+    /// The socket a request started now would use.
+    nonisolated var currentSocket: String { socket }
 
     func runs() throws -> [Run] {
         try Run.list(json: request("/v1/runs"))
@@ -826,6 +891,10 @@ actor ServiceClient {
     }
 
     func startService() throws {
+        // A headless host's service is started on that host. Only this Mac's is started from here.
+        if let remote = endpoint.remote {
+            throw ServiceError.offline("The service on \(remote.destination) is unreachable.")
+        }
         guard let command, FileManager.default.isExecutableFile(atPath: command.path) else {
             throw ServiceError.offline("Start the local service with agentctl start, or open the built Agent Commander app.")
         }
@@ -875,7 +944,7 @@ actor ServiceClient {
         let bytes = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw ServiceError.offline("The local service is unreachable at \(socket).")
+            throw ServiceError.offline("The service is unreachable at \(socket).")
         }
         guard let separator = bytes.lastIndex(of: 10), let status = Int(String(decoding: bytes.suffix(from: separator + 1), as: UTF8.self)) else {
             throw ServiceError.rejected("The service returned an unreadable response.")

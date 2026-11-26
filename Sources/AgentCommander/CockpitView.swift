@@ -345,6 +345,8 @@ struct WorkspaceToolbar: ToolbarContent {
     @Binding var sidebarExpanded: Bool
     let crumbs: [String]
     let connection: CockpitModel.Connection
+    /// The headless host whose service is in use. Nil for this Mac's.
+    var serviceHost: String? = nil
     /// Workspace search is offered only where a search action exists.
     var search: (@MainActor () -> Void)? = nil
     var accessory: AnyView? = nil
@@ -412,7 +414,7 @@ struct WorkspaceToolbar: ToolbarContent {
             AdapterUpdateToolbarItem(feed: adapterUpdates)
         }
         ToolbarItem(placement: .primaryAction) {
-            ConnectionIndicator(connection: connection)
+            ConnectionIndicator(connection: connection, host: serviceHost)
         }
         .sharedBackgroundVisibility(capsule)
         if let readouts {
@@ -572,6 +574,7 @@ struct CockpitScreen: View {
                     WorkspaceToolbar(sidebarExpanded: Binding(get: { !ui.contextListHidden },
                                                               set: { ui.contextListHidden = !$0 }),
                                      crumbs: [], connection: content.connection,
+                                     serviceHost: shell.hosts?.serviceName,
                                      search: actions.searchWorkspace, accessory: toolbarAccessory,
                                      adapterUpdates: adapterUpdates,
                                      // Toolbar items don't inherit the window's theme, so it is handed on.
@@ -626,7 +629,8 @@ struct CockpitScreen: View {
                                     decided: ui.needsYouDecided)
         return LiveShell.navigation(runs: content.runs, openRunPath: run?.path, composing: ui.composingRun,
                                     place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network,
-                                    isOnline: isOnline)
+                                    isOnline: isOnline, showsHosts: shell.hosts != nil,
+                                    serviceHost: shell.hosts?.serviceName)
     }
 
     /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
@@ -665,7 +669,7 @@ struct CockpitScreen: View {
             ShellToolbarTitle(crumbs: shellCrumbs(navigation))
         } toolbarTrailing: {
             HStack(spacing: Space.m) {
-                ConnectionIndicator(connection: content.connection)
+                ConnectionIndicator(connection: content.connection, host: shell.hosts?.serviceName)
                 shellReadouts(shell)
             }
         } canvas: {
@@ -695,6 +699,8 @@ struct CockpitScreen: View {
                             chooseTheme: { id in ThemeChoice.select(id) },
                             presentations: AttentionPresentationMenu.options, showsRecording: false,
                             openAppSettings: { openSettings() })
+        } else if selection == LiveShell.hosts, let hosts = shell.hosts {
+            CommanderHostsPage(hosts: hosts)
         } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
             page(selection) { place in show(place: place) }
         } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
@@ -1739,8 +1745,14 @@ struct CockpitView: View {
                                           },
                                           // The wall's live work, read from the network model as values.
                                           wall: WallLiveWork(model: network, workers: CockpitContent(model: model).selected?.wall.workers.map(\.id) ?? []),
-                                          wallActions: .live(network, pages: ui.networkPages)))
-            .task { await model.follow() }
+                                          wallActions: .live(network, pages: ui.networkPages),
+                                          hosts: CommanderHostsContext(
+                                              entries: model.hosts.entries(local: .init(model.connection)),
+                                              listError: model.hosts.listError,
+                                              use: { model.hosts.use($0) },
+                                              refresh: { await model.hosts.refresh() })))
+            // Both subscriptions start again when the service changes, on the new socket.
+            .task(id: model.serviceGeneration) { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }
             .onDisappear { network.close() }
@@ -1758,7 +1770,7 @@ struct CockpitView: View {
                 routerAttachment = nil
             }
             // Its own task: a missing or old catalog endpoint never holds up the workspace feed.
-            .task { await model.adapterUpdates.follow() }
+            .task(id: model.serviceGeneration) { await model.adapterUpdates.follow() }
             .onAppear {
                 guard floatingPanel == nil else { return }
                 let controller = FloatingAttentionController(model: model, ui: ui, actions: actions, consoleModes: consoleModes,
