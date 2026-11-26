@@ -16,7 +16,7 @@ The universal app requires macOS 26 or later and supports Intel and Apple silico
 
 ## Build and open from source
 
-Use macOS 26 or later with Xcode's macOS 26 SDK and Swift 6.2 or later, Go 1.26 or later, Git, and Make. For local agent runs, install tmux and the harness you want to use. For source development, place the `agent-acp` and `agent-acp-transport` checkouts beside `agent-commander`. The Go module resolves them at `../agent-acp/sdks/go` and `../agent-acp-transport`.
+Use macOS 26 or later with Xcode's macOS 26 SDK and Swift 6.2 or later, Go 1.26 or later, Git, and Make. For local agent runs, install tmux and the harness you want to use. For source development, place the `agent-acp` and `agent-acp-transport` checkouts beside `agent-commander`, or set `AGENT_ACP_DIR` and `AGENT_ACP_TRANSPORT_DIR`. The Makefile finds them from any checkout or linked worktree and builds with a generated `dist/go.work`. To use plain `go` commands in a worktree, run `eval "$(make -s sdk-paths)"` first.
 
 ```sh
 make run

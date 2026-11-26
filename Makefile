@@ -7,8 +7,10 @@ CODE_SIGN_IDENTITY ?= -
 NATIVE_TEST_JOBS ?= 3
 
 PG_FORMULA ?= postgresql@17
+# Resolves the agent-acp SDK checkouts from any checkout or worktree.
+SDK_GOWORK := $(shell sh packaging/sdk-workspace.sh)
 
-.PHONY: app cli network relay postgres pilot-macos test test-native test-multiplayer-docker smoke run
+.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-multiplayer-docker smoke run
 
 app: cli network relay postgres
 	swift build -c $(CONFIG) --product AgentCommander
@@ -44,6 +46,9 @@ postgres: dist/postgres/bin/postgres
 dist/postgres/bin/postgres:
 	python3 -I packaging/bundle-postgres.py "$(CURDIR)/dist/postgres" --formula $(PG_FORMULA)
 
+sdk-paths:
+	@echo 'export GOWORK="$(SDK_GOWORK)"'
+
 cli:
 	mkdir -p dist
 ifneq ($(strip $(SDK_RELEASE)),)
@@ -51,11 +56,11 @@ ifneq ($(strip $(SDK_RELEASE)),)
 else ifeq ($(CONFIG),release)
 	python3 packaging/go-with-sdk.py build -o dist/agentctl ./cmd/agentctl
 else
-	go build -o dist/agentctl ./cmd/agentctl
+	GOWORK="$(SDK_GOWORK)" go build -o dist/agentctl ./cmd/agentctl
 endif
 
 test:
-	go test ./...
+	GOWORK="$(SDK_GOWORK)" go test ./...
 	cd multiplayer && go test ./...
 
 test-multiplayer-docker:
