@@ -601,7 +601,7 @@ func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tray/{verb}", func(w http.ResponseWriter, r *http.Request) {
 		var in input
-		r.Body = http.MaxBytesReader(w, r.Body, 98304)
+		r.Body = http.MaxBytesReader(w, r.Body, 196608)
 		if e := body(r, &in); e != nil {
 			reply(w, nil, e)
 			return

@@ -1,10 +1,12 @@
 package device
 
 import (
+	"agentcommander.network/pilot/internal/actions"
 	"context"
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +30,17 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		if e != nil {
 			return nil, e
 		}
+		if peer == s.User {
+			return nil, errors.New("hand control to a friend, not to yourself")
+		}
+		a.mu.Lock()
+		granted := slices.ContainsFunc(a.policy.Grants, func(g actions.Grant) bool {
+			return g.Peer == peer && g.Resource == in.Resource && (g.Action == "agent.ask" || g.Action == "agent.suggest")
+		})
+		a.mu.Unlock()
+		if !granted {
+			return nil, errors.New("that friend has no Consult or Suggest grant on this worker")
+		}
 		until := time.Now().Add(time.Duration(in.Minutes) * time.Minute)
 		a.mu.Lock()
 		if a.handovers == nil {
@@ -37,9 +50,16 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		a.mu.Unlock()
 		return map[string]any{"handle": in.Handle, "resource": in.Resource, "until": until}, nil
 	case "handback":
-		peer, e := a.userID(ctx, s, in.Handle)
-		if e != nil {
-			return nil, e
+		// The tray may name the holder by handle or by the account ID handovers lists.
+		a.mu.Lock()
+		_, byID := a.handovers[in.Handle+"|"+in.Resource]
+		a.mu.Unlock()
+		peer := in.Handle
+		if !byID {
+			var e error
+			if peer, e = a.userID(ctx, s, in.Handle); e != nil {
+				return nil, e
+			}
 		}
 		a.mu.Lock()
 		delete(a.handovers, peer+"|"+in.Resource)

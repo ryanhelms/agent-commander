@@ -619,7 +619,7 @@ var readOnlyVerbs = map[string]bool{"status": true, "avatar": true, "approvals":
 func (m *Manager) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tray/{verb}", func(w http.ResponseWriter, r *http.Request) {
-		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 98304))
+		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 196608))
 		if e != nil {
 			reply(w, nil, errors.New("invalid request"))
 			return

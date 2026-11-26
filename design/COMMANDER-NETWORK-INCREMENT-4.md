@@ -4,7 +4,7 @@ Scope from [the spec](COMMANDER-NETWORK-SERVERS.md), increment 4: Watch, Co-pilo
 
 ## Watch
 
-New action `agent.watch` on `agent` resources, with payload `{"after": "<cursor or empty>"}`. The owner's device reads the shared worker's output from the local Commander service (`GET /v1/workers/{worker}/output`). It returns events after the cursor: `{"events": [{"at", "kind": "message | tool | status", "text"}], "cursor", "state"}`. It returns at most 64 KiB per call.
+New action `agent.watch` on `agent` resources, with payload `{"after": "<cursor or empty>"}`. The owner's device reads the shared worker's live history from the local Commander service (`GET /v1/workers/{worker}/history?source=live&view=acp`) and turns agent messages, tool calls and tool failures into events. The history carries no per-record time, so `at` is when the owner's device read the page. It returns events after the cursor: `{"events": [{"at", "kind": "message | tool | status", "text"}], "cursor", "state"}`. It returns at most 64 KiB per call.
 
 - Granting `agent.watch` is how an owner makes a worker watchable.
 - The requester's tray polls every 2 seconds while a watch view is open. The tray verb `watch` with `{"server", "resource", "after"}` sends the request and waits up to 8 seconds for the result.
@@ -16,7 +16,7 @@ New action `agent.suggest` on `agent` resources, with payload `{"text"}` of at m
 
 - The owner's device always queues a suggestion for approval, whatever the grant's approval mode. The approvals list shows it as "Suggestion from sam".
 - On approval, the device sends the text to the worker as an `agent.ask` turn from the owner. The suggester's result is the worker's answer. Denial returns `denied`.
-- **Control:** tray verb `handover` with `{"resource", "peer", "minutes"}` temporarily switches that peer's `agent.suggest` and `agent.ask` grants to `auto`. They return to `ask` when the time ends, or at once with `handback`. The tray shows who has control and how long is left.
+- **Control:** tray verb `handover` with `{"resource", "handle", "minutes"}` (1–240; the friend must hold `agent.ask` or `agent.suggest` on the resource) temporarily switches that peer's `agent.suggest` and `agent.ask` grants to `auto`. They return to `ask` when the time ends, or at once with `handback`. The tray shows who has control and how long is left.
 
 ## Review exchange
 

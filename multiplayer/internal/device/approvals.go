@@ -61,7 +61,7 @@ func (a *Agent) needsApproval(c control.Child) bool {
 	if actions.IsFollowUp(c.Action) {
 		return false
 	}
-	if until, ok := a.handovers[c.Sender+"|"+c.Resource]; ok && time.Now().Before(until) && c.Action == "agent.ask" {
+	if until, ok := a.handovers[c.Sender+"|"+c.Resource]; ok && time.Now().Before(until) && (c.Action == "agent.ask" || c.Action == "agent.suggest") {
 		return false
 	}
 	if c.Action == "agent.suggest" {
