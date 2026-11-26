@@ -1332,6 +1332,12 @@ struct PreferencesPage: View {
     /// The themes on offer. The current one comes from the environment.
     let themes: [Theme]
     let chooseTheme: (ThemeID) -> Void
+    /// The presentations on offer. The live window offers the ones the cockpit can show.
+    var presentations = AttentionPresentation.allCases
+    /// Recording and retention are shown only where they can be set.
+    var showsRecording = true
+    /// Opens the app's own Settings window (launch settings), where there is one.
+    var openAppSettings: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @Environment(\.usesOpaqueSurfaces) private var opaqueSurfaces
@@ -1341,7 +1347,12 @@ struct PreferencesPage: View {
 
     init(projectName: String, retention: String, retentionOptions: [String], showsSystemAppearance: Bool,
          presentation: AttentionPresentation, choosePresentation: @escaping (AttentionPresentation) -> Void,
-         themes: [Theme] = ThemeID.allCases.map(Theme.named), chooseTheme: @escaping (ThemeID) -> Void = { _ in }) {
+         themes: [Theme] = ThemeID.allCases.map(Theme.named), chooseTheme: @escaping (ThemeID) -> Void = { _ in },
+         presentations: [AttentionPresentation] = AttentionPresentation.allCases, showsRecording: Bool = true,
+         openAppSettings: (() -> Void)? = nil) {
+        self.presentations = presentations
+        self.showsRecording = showsRecording
+        self.openAppSettings = openAppSettings
         self.projectName = projectName
         self.retentionOptions = retentionOptions
         self.showsSystemAppearance = showsSystemAppearance
@@ -1355,8 +1366,13 @@ struct PreferencesPage: View {
     var body: some View {
         WorkspacePage {
             PageHeader(kicker: "Workspace / Settings", title: "Preferences",
-                       subtitle: "Set how Commander looks, presents pending decisions and records project activity.") {
-                EmptyView()
+                       subtitle: showsRecording
+                           ? "Set how Commander looks, presents pending decisions and records project activity."
+                           : "Set how Commander looks and how it presents pending decisions.") {
+                if let openAppSettings {
+                    Button("Launch settings…", action: openAppSettings).buttonStyle(ThemeButtonStyle())
+                        .help("Open Agent Commander’s Settings window (⌘,)")
+                }
             }
         } content: {
             if showsSystemAppearance { systemAppearance }
@@ -1370,10 +1386,16 @@ struct PreferencesPage: View {
                 .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
             heading("Attention", "When a worker needs you", note: "Workspace preference", symbol: "desktopcomputer")
             HStack(alignment: .top, spacing: 14) {
-                ForEach(AttentionPresentation.allCases) { mode in
+                ForEach(presentations) { mode in
                     PresentationChoiceCard(mode: mode, isSelected: mode == presentation) { choosePresentation(mode) }
                 }
             }
+            if showsRecording { recordingSection }
+        }
+        .animation(theme.motion.animation(theme.motion.standard), value: theme.id)
+    }
+
+    @ViewBuilder private var recordingSection: some View {
             heading("Transcripts", "Recording & retention", note: "\(projectName) project", symbol: "folder")
             VStack(spacing: 0) {
                 SettingRow(title: "Record terminal output",
@@ -1395,8 +1417,6 @@ struct PreferencesPage: View {
             Label("Transcripts are private to your local user. Recording captures terminal output and excludes raw input keystrokes.",
                   systemImage: "lock")
                 .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
-        }
-        .animation(theme.motion.animation(theme.motion.standard), value: theme.id)
     }
 
     private func heading(_ kicker: String, _ title: String, note: String, symbol: String) -> some View {
