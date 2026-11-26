@@ -231,7 +231,8 @@ import Testing
         state.decide("N-114", .approved)
         #expect(state.inbox.items.first { $0.id == "N-114" }?.decision == .approved)
         #expect(state.navigation(attention: 2, answered: []).place("needs-you")?.count == 6)
-        try await Task.sleep(for: .milliseconds(400))
+        // The row leaves after its dwell. Waited for, not timed: the suites run side by side.
+        for _ in 0..<200 where state.inbox.items.contains(where: { $0.id == "N-114" }) { try await Task.sleep(for: .milliseconds(25)) }
         #expect(!state.inbox.items.contains { $0.id == "N-114" })
         // A question answered in the Attention queue leaves the inbox and its count.
         #expect(state.inbox(answered: ["Q-018"]).pendingCount == 5)

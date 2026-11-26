@@ -121,5 +121,4 @@ The clickable preview is `--design-preview shell-b`, on Runs: the wall shows the
 - **Composers open above the page's bands,** not in the inspector beside the row they came from.
 - **The wall's controls are not themed yet:** the run header, "Group by parent", the presentation menu and the key hints.
 - **The preview's remote tiles don't zoom.** They go to Hand-offs. The zoom is in the live cockpit and in the renders.
-- **`previewStateDecidesShowsTheOutcomeThenClears` failed once in six full runs** on a 400 ms wait. It predates this increment.
 - **Increment 3's renders in `../main-window-3/` were not redrawn.** At 1440 pt they are unchanged.
