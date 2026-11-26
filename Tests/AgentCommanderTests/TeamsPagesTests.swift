@@ -676,6 +676,27 @@ import Testing
     }
 }
 
+// The merge queue's figures (TeamsPagesWorkspace.swift): the tab, the readout and the heading agree.
+@MainActor @Suite struct TeamsQueueCountTests {
+    @Test func theHeadingCountsWhatTheTabAndTheReadoutCount() async {
+        #expect(TeamsIntegrationBand.queueCount(queued: 4, of: 4) == "4")
+        #expect(TeamsIntegrationBand.queueCount(queued: 2, of: 4) == "2 queued of 4")
+        #expect(TeamsIntegrationBand.queueCount(queued: 0, of: 3) == "0 queued of 3")
+        #expect(TeamsIntegrationBand.queueCount(queued: 0, of: 0) == "0")
+
+        // In the sample, the readout's figure is the heading's first figure before and after a merge.
+        let state = TeamsPagesTests.preview(TeamsPlace.workspace("ws-relay", on: TeamsPagesTests.studio))
+        func figures() -> (readout: String?, heading: String) {
+            let content = state.pages(go: { _ in }).content, entries = content.queue[TeamsPagesTests.relay] ?? []
+            let place = TeamsPlace.workspace("ws-relay", on: TeamsPagesTests.studio)
+            return (content.readouts(for: place).first { $0.id == "queue" }?.value,
+                    TeamsIntegrationBand.queueCount(queued: entries.filter(\.isQueued).count, of: entries.count))
+        }
+        let before = figures()
+        #expect(before.readout != nil && before.heading.hasPrefix(before.readout ?? "?"))
+    }
+}
+
 // A table cell's second line (NetworkPageMolecules.swift). Laid out, never drawn.
 @MainActor @Suite struct ShellCellTextTests {
     static func height(_ wraps: Bool, width: CGFloat) -> CGFloat {
