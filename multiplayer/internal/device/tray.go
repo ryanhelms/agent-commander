@@ -39,6 +39,10 @@ type input struct {
 	Admins        []string  `json:"admins"`
 	TTLHours      int       `json:"ttlHours"`
 	Invite        string    `json:"invite"`
+	Approval      string    `json:"approval"`
+	BudgetTokens  int       `json:"budgetTokens"`
+	Attribution   string    `json:"attribution"`
+	Reason        string    `json:"reason"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -220,7 +224,17 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		if !expiry.After(time.Now()) || limit < 1 || limit > 1000000 {
 			return errors.New("invalid expiry or use limit")
 		}
-		next = append(next, actions.Grant{ID: grantID(resource, peer.User, action), Peer: peer.User, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit})
+		if in.Approval != "" && in.Approval != "ask" && in.Approval != "auto" {
+			return errors.New("approval must be ask or auto")
+		}
+		if in.Attribution != "" && in.Attribution != "owner" && in.Attribution != "requester" {
+			return errors.New("attribution must be owner or requester")
+		}
+		if in.BudgetTokens < 0 {
+			return errors.New("invalid token budget")
+		}
+		next = append(next, actions.Grant{ID: grantID(resource, peer.User, action), Peer: peer.User, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit,
+			Approval: in.Approval, BudgetTokens: in.BudgetTokens, Attribution: in.Attribution})
 	}
 	// Both sides apply the same per-action policy. Updating a different action
 	// must preserve this capability's remaining uses and expiry.
@@ -289,6 +303,12 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
+	case "approvals":
+		return a.approvals(), nil
+	case "approve", "deny":
+		return nil, a.decide(ctx, nil, in.ID, verb == "approve", in.Reason)
+	case "audit":
+		return a.audit(in.Resource, in.Handle)
 	case "avatar", "membership", "membership-set", "invite-create", "me":
 		return a.socialVerb(ctx, s, verb, in)
 	case "search", "request", "accept", "unfriend":

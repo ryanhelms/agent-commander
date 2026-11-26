@@ -36,6 +36,10 @@ type Grant struct {
 	Action    string    `json:"action"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	MaxUses   int       `json:"maxUses,omitempty"`
+	// Approval is "ask" (each use waits for the owner) or "auto"/empty (runs within limits).
+	Approval     string `json:"approval,omitempty"`
+	BudgetTokens int    `json:"budgetTokens,omitempty"`
+	Attribution  string `json:"attribution,omitempty"`
 }
 type Request struct {
 	ID       string          `json:"id"`

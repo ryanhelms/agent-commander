@@ -353,15 +353,33 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 	if !claim.Claimed {
 		return nil
 	}
+	if verify == nil && a.needsApproval(c) {
+		a.queueApproval(c, payload, peer)
+		return nil
+	}
+	return a.finish(ctx, s, l, c, payload, peer, verify, "")
+}
+
+// finish runs a claimed request (unless denial is set), seals the result and
+// queues its receipt.
+func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease, c control.Child, payload []byte, peer devicekeys.Public, verify error, denial string) error {
+	started := time.Now()
 	actionErr := actions.ErrInvalid
 	var result json.RawMessage
-	if verify == nil {
+	var e error
+	if verify == nil && denial == "" {
 		task, cancel := context.WithDeadline(ctx, c.ExpiresAt)
-		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: id, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: payload})
+		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: payload})
 		cancel()
 	}
 	status := "completed"
-	if actionErr != nil {
+	if denial != "" {
+		status = "declined"
+		result, e = json.Marshal(map[string]string{"code": denial})
+		if e != nil {
+			return e
+		}
+	} else if actionErr != nil {
 		status = "declined"
 		if errors.Is(actionErr, actions.ErrUncertain) {
 			status = "uncertain"
@@ -373,6 +391,7 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 	} else if len(result) == 0 {
 		result = json.RawMessage("null")
 	}
+	a.record(AuditEntry{Request: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Started: started, Ended: time.Now(), Outcome: status, Summary: summarize(result)})
 	signed, e := json.Marshal(map[string]any{"status": status, "value": result})
 	if e != nil {
 		return e
