@@ -30,3 +30,11 @@ func TestPostgresPoolUsesOnlyHostSocket(t *testing.T) {
 		t.Fatalf("expected a dial to the host's Unix socket, got %v", err)
 	}
 }
+
+func TestConfigLinesQuoteValues(t *testing.T) {
+	got := configLines([]string{"-c", "listen_addresses=", "-c", `unix_socket_directories="/srv/o'neil, inc/run"`})
+	want := "\n# Agent Commander host relay\nlisten_addresses = ''\nunix_socket_directories = '\"/srv/o''neil, inc/run\"'\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

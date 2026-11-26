@@ -2,6 +2,8 @@
 
 One Docker Compose host runs two Go relay processes, PostgreSQL, three private NATS servers running JetStream and a TCP ingress. Each device makes outbound HTTPS connections to one hostname. The edge checks its device certificate even during enrollment. Any edge can renew the same session, deliver work or accept a receipt.
 
+For a single-process relay on one remote server, as a Docker container or a systemd service, use [the remote deployment guide](remote/README.md).
+
 ## Prepare the host
 
 Use Docker Engine with Compose v2, Python 3.10 or newer with TLS 1.3 support, OpenSSL with P-256 support and a directory on persistent disk for service keys. Run the setup as a regular service operator with access to Docker. The host needs outbound access to the OIDC provider and the image and Go module registries during setup. Give both Macs network access to the relay hostname and OIDC provider.
