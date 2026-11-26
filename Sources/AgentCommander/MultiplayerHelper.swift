@@ -64,6 +64,10 @@ enum MultiplayerHelperLocator {
 /// `MultiplayerFailure`.
 struct MultiplayerClient: Sendable {
     static let inputLimit = 16 * 1024
+    /// `profile` may carry an avatar: a data URL of at most 64 KiB, plus the other fields.
+    static let profileInputLimit = MultiplayerAvatarEncoder.limit + 8 * 1024
+
+    static func inputLimit(for verb: MultiplayerVerb) -> Int { verb == .profile ? profileInputLimit : inputLimit }
 
     let helper: any MultiplayerHelper
     /// The server every request acts on, sent as `"server"`. Nil for the server-list verbs.
@@ -129,10 +133,10 @@ struct MultiplayerClient: Sendable {
     }
 
     /// The exact stdin bytes for one request: a sorted JSON object, at most `inputLimit` bytes.
-    static func encode(_ payload: [String: MultiplayerPayloadValue]) throws -> Data {
+    static func encode(_ payload: [String: MultiplayerPayloadValue], limit: Int = inputLimit) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let input = try? encoder.encode(payload), input.count <= inputLimit else {
+        guard let input = try? encoder.encode(payload), input.count <= limit else {
             throw MultiplayerFailure.invalidInput("That entry is too long to send.")
         }
         return input
@@ -184,7 +188,78 @@ struct MultiplayerClient: Sendable {
         try await fetch(.serverTrust, ["server": .string(id), "pin": .string(pin)], as: MultiplayerServerSummary.self)
     }
 
-    private func fetch<Reply: Decodable>(_ verb: MultiplayerVerb, _ payload: [String: MultiplayerPayloadValue],
+    // MARK: Social (increment 2)
+
+    private struct ContactList: Decodable {
+        let contacts: [MultiplayerContact]
+    }
+
+    private func send(_ verb: MultiplayerVerb, _ payload: [String: MultiplayerPayloadValue]) async throws {
+        do {
+            let output = try await call(verb, payload: payload)
+            _ = try MultiplayerEnvelope.decode(MultiplayerIgnored.self, from: output)
+        } catch {
+            throw MultiplayerFailure.from(error)
+        }
+    }
+
+    /// Sends only the profile fields that are given. An empty `avatar` removes the picture.
+    func setProfile(handle: String? = nil, displayName: String? = nil, statusMessage: String? = nil,
+                    avatar: String? = nil) async throws {
+        var payload: [String: MultiplayerPayloadValue] = [:]
+        if let handle { payload["handle"] = .string(handle) }
+        if let displayName { payload["displayName"] = .string(displayName) }
+        if let statusMessage { payload["statusMessage"] = .string(statusMessage) }
+        if let avatar { payload["avatar"] = .string(avatar) }
+        try await send(.profile, payload)
+    }
+
+    func setPresence(_ choice: MultiplayerPresenceChoice) async throws -> MultiplayerPresenceReply {
+        try await fetch(.presence, ["presence": .string(choice.rawValue)], as: MultiplayerPresenceReply.self)
+    }
+
+    /// Friends across every server, linked by contact key.
+    func contacts() async throws -> [MultiplayerContact] {
+        try await fetch(.contacts, [:], as: ContactList.self).contacts
+    }
+
+    /// The feed across servers; with a cursor, the events after it.
+    func activity(after cursor: String? = nil) async throws -> MultiplayerActivityFeed {
+        try await fetch(.activity, cursor.map { ["after": .string($0)] } ?? [:], as: MultiplayerActivityFeed.self)
+    }
+
+    func markActivitySeen(cursor: String) async throws {
+        try await send(.activitySeen, ["cursor": .string(cursor)])
+    }
+
+    func avatar(handle: String) async throws -> MultiplayerAvatarImage {
+        try await fetch(.avatar, ["handle": .string(handle)], as: MultiplayerAvatarImage.self)
+    }
+
+    func me() async throws -> MultiplayerMe {
+        try await fetch(.me, [:], as: MultiplayerMe.self)
+    }
+
+    func membership() async throws -> MultiplayerMembership {
+        try await fetch(.membership, [:], as: MultiplayerMembership.self)
+    }
+
+    func setMembership(mode: String, allowedEmails: [String], admins: [String]) async throws -> MultiplayerMembership {
+        try await fetch(.membershipSet, ["mode": .string(mode), "allowedEmails": .strings(allowedEmails),
+                                         "admins": .strings(admins)], as: MultiplayerMembership.self)
+    }
+
+    func createInvite(maxUses: Int, ttlHours: Int) async throws -> MultiplayerInvite {
+        try await fetch(.inviteCreate, ["maxUses": .number(maxUses), "ttlHours": .number(ttlHours)],
+                        as: MultiplayerInvite.self)
+    }
+
+    /// Adds the invite's server with its pin and starts sign-in carrying the invite code.
+    func join(link: String) async throws -> MultiplayerServerSummary {
+        try await fetch(.join, ["link": .string(link)], as: MultiplayerServerSummary.self)
+    }
+
+    func fetch<Reply: Decodable>(_ verb: MultiplayerVerb, _ payload: [String: MultiplayerPayloadValue],
                                          as type: Reply.Type) async throws -> Reply {
         do {
             let output = try await call(verb, payload: payload)
@@ -197,10 +272,10 @@ struct MultiplayerClient: Sendable {
         }
     }
 
-    private func call(_ verb: MultiplayerVerb, payload: [String: MultiplayerPayloadValue]) async throws -> MultiplayerHelperOutput {
+    func call(_ verb: MultiplayerVerb, payload: [String: MultiplayerPayloadValue]) async throws -> MultiplayerHelperOutput {
         var payload = payload
         if let server, payload["server"] == nil { payload["server"] = .string(server) }
-        let input = try Self.encode(payload)
+        let input = try Self.encode(payload, limit: Self.inputLimit(for: verb))
         try Task.checkCancellation()
         return try await helper.run(verb: verb, input: input)
     }
@@ -233,12 +308,14 @@ struct MultiplayerProcessHelper: MultiplayerHelper {
         let arguments = verb.arguments
         let timeout = timeout
         let limit = outputLimit
+        let inputLimit = MultiplayerClient.inputLimit(for: verb)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MultiplayerHelperOutput, any Error>) in
                 DispatchQueue.global(qos: .userInitiated).async {
                     continuation.resume(with: Result {
                         try MultiplayerProcessRun.execute(executable: executable, arguments: arguments, input: input,
-                                                          timeout: timeout, limit: limit, stop: stop)
+                                                          timeout: timeout, limit: limit, stop: stop,
+                                                          inputLimit: inputLimit)
                     })
                 }
             }
@@ -251,9 +328,10 @@ struct MultiplayerProcessHelper: MultiplayerHelper {
 /// One blocking invocation on a background queue. The `Process` never leaves this function.
 enum MultiplayerProcessRun {
     static func execute(executable: URL, arguments: [String], input: Data, timeout: Duration,
-                        limit: Int, stop: MultiplayerStopSignal) throws -> MultiplayerHelperOutput {
+                        limit: Int, stop: MultiplayerStopSignal,
+                        inputLimit: Int = MultiplayerClient.inputLimit) throws -> MultiplayerHelperOutput {
         if stop.reason != nil { throw MultiplayerFailure.cancelled }
-        guard input.count <= MultiplayerClient.inputLimit else {
+        guard input.count <= inputLimit else {
             throw MultiplayerFailure.invalidInput("That entry is too long to send.")
         }
 

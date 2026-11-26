@@ -10,7 +10,8 @@ import Observation
 // - A server is saved only from a health check that passed for the address still in the field,
 //   and, when the system doesn't trust the certificate, only after the person confirms the pin.
 // - A changed certificate is trusted only from a fresh check of that server and a second confirmation.
-// - Polling runs only while a panel is open.
+// - Sessions poll only while a panel is open. With notifications available, the list and the feed
+//   are also read every other poll interval while it is closed (MultiplayerSocialModel.swift).
 
 enum MultiplayerTrayRoute: Equatable {
     case home
@@ -18,6 +19,30 @@ enum MultiplayerTrayRoute: Equatable {
     /// One server: its settings and its session, or the certificate review while it is blocked.
     case server(String)
     case hosting
+    /// One server's profile editor, invite link and admin membership settings (increment 2).
+    case profile(String)
+    case invite(String)
+    case membership(String)
+
+    /// The saved server this page belongs to.
+    var serverID: String? {
+        switch self {
+        case .server(let id), .profile(let id), .invite(let id), .membership(let id): id
+        case .home, .addServer, .hosting: nil
+        }
+    }
+}
+
+/// The admin membership page's read of the relay's settings.
+enum MultiplayerMembershipState: Equatable {
+    case loading
+    case loaded(MultiplayerMembership)
+    case failed(String)
+
+    var membership: MultiplayerMembership? {
+        if case .loaded(let membership) = self { return membership }
+        return nil
+    }
 }
 
 enum MultiplayerProbeState: Equatable {
@@ -52,7 +77,11 @@ struct MultiplayerTally: Equatable {
     let needsYou: Int
 
     var summary: String {
-        servers == 0 ? "No servers yet" : "\(serversOnline) of \(servers) \(servers == 1 ? "server" : "servers") online"
+        switch servers {
+        case 0: "No servers yet"
+        case 1: serversOnline == 1 ? "Your server is online" : "Your server is offline"
+        default: "\(serversOnline) of \(servers) servers online"
+        }
     }
 }
 
@@ -65,9 +94,13 @@ struct MultiplayerFriendGroup: Equatable, Identifiable {
     let isOnline: Bool
     /// This server has a resource of yours to share.
     var canShare = false
+    /// The same friends as the tray draws them: presence, status and links to other servers.
+    var people: [MultiplayerContactEntry] = []
 
     var id: String { server.id }
-    var onlineCount: Int { friends.filter { $0.online == true }.count }
+    var onlineCount: Int {
+        people.isEmpty ? friends.filter { $0.online == true }.count : people.filter(\.presence.isConnected).count
+    }
 
     var caption: String {
         if !isOnline {
@@ -113,15 +146,47 @@ final class MultiplayerModel {
     /// The nickname field on a server's page.
     var renameDraft = ""
 
+    // Social (increment 2). The intents are in MultiplayerSocialModel.swift.
+    /// Linked contacts, once a `contacts` reply has arrived.
+    var contacts: [MultiplayerContact]?
+    /// The feed across servers, newest first.
+    var activity: [MultiplayerActivityEvent] = []
+    var activityCursor = ""
+    var unseen = 0
+    /// The feed's filters: one server's ID and one friend's handle, or nil for all.
+    var activityServer: String?
+    var activityFriend: String?
+    /// Whether this account administers each server, and how people join it.
+    var me: [String: MultiplayerMe] = [:]
+    /// The person's presence choice, once a `presence` reply has said it.
+    var presenceChoice: MultiplayerPresenceChoice?
+    /// Avatar image bytes by `server/handle`.
+    var avatars: [String: Data] = [:]
+    var profileDraft = MultiplayerProfileDraft()
+    var inviteDraft = MultiplayerInviteDraft()
+    /// The link made on the invite page now open.
+    var invite: MultiplayerInvite?
+    var membership: MultiplayerMembershipState = .loading
+    var membershipDraft = MultiplayerMembershipDraft()
+    @ObservationIgnored var socialTask: Task<Void, Never>?
+    @ObservationIgnored var membershipTask: Task<Void, Never>?
+    @ObservationIgnored var membershipToken = 0
+    /// Avatar and `me` reads in flight, by what they read.
+    @ObservationIgnored var sideTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var watchTask: Task<Void, Never>?
+    /// A feed reply has arrived, so later events are new ones.
+    @ObservationIgnored var activityLoaded = false
+    @ObservationIgnored let notifier: (any MultiplayerNotifying)?
+
     let usesFixtureHelper: Bool
     let setupFailure: MultiplayerFailure?
 
-    private let client: MultiplayerClient?
-    private let steadyPoll: Duration
+    let client: MultiplayerClient?
+    let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
     private var sessions: [String: MultiplayerSessionModel] = [:]
-    @ObservationIgnored private var viewers = 0
+    @ObservationIgnored private(set) var viewers = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var actionTask: Task<Void, Never>?
@@ -134,8 +199,10 @@ final class MultiplayerModel {
          usesFixtureHelper: Bool = false,
          steadyPoll: Duration = .seconds(15),
          fastPoll: Duration = .seconds(3),
+         notifier: (any MultiplayerNotifying)? = nil,
          now: @escaping () -> Date = { Date() }) {
         self.client = client
+        self.notifier = notifier
         self.setupFailure = setupFailure
         self.usesFixtureHelper = usesFixtureHelper
         self.steadyPoll = steadyPoll
@@ -143,12 +210,15 @@ final class MultiplayerModel {
         self.clock = now
     }
 
+    /// The one live model: the menu bar panel, the review window and invite links all use it.
+    static let shared = MultiplayerModel.live()
+
     /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in debug review mode.
     static func live() -> MultiplayerModel {
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
             MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
-                             usesFixtureHelper: location.isFixture)
+                             usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess())
         case .failure(let failure):
             MultiplayerModel(client: nil, setupFailure: failure)
         }
@@ -184,7 +254,11 @@ final class MultiplayerModel {
                                           friends: MultiplayerFriendGroup.sorted(status?.friends ?? []),
                                           incoming: status?.incoming ?? [],
                                           isOnline: status != nil,
-                                          canShare: !(status?.resources.isEmpty ?? true))
+                                          canShare: !(status?.resources.isEmpty ?? true),
+                                          people: MultiplayerContactGrouping.entries(friends: status?.friends ?? [],
+                                                                                     on: server.id,
+                                                                                     contacts: contacts ?? [],
+                                                                                     servers: servers))
         }
     }
 
@@ -222,20 +296,53 @@ final class MultiplayerModel {
     }
 
     var canSaveServer: Bool {
-        guard !isBusy, let result = currentProbe.probe, result.passed else { return false }
+        guard !isBusy, let result = currentProbe.probe, result.passed, existingServer == nil else { return false }
+        if activeInvite != nil { return invitePinProblem == nil }
         return !result.needsPinConfirmation || serverDraft.pinConfirmed
+    }
+
+    /// The saved server the checked address already belongs to, by the helper's word or by address.
+    var existingServer: MultiplayerServerSummary? {
+        guard route == .addServer else { return nil }
+        if let id = currentProbe.probe?.existing, let saved = server(id) { return saved }
+        guard let checked = currentProbe.probe?.url else { return nil }
+        let host = MultiplayerServerAddress.host(checked).lowercased()
+        return servers.first { MultiplayerServerAddress.host($0.url).lowercased() == host }
+    }
+
+    /// The invite the form was opened from, while the address is still its server.
+    var activeInvite: MultiplayerInviteLink? {
+        guard route == .addServer, let invite = serverDraft.invite,
+              MultiplayerServerAddress.host(invite.server) == MultiplayerServerAddress.host(serverDraft.trimmedAddress)
+        else { return nil }
+        return invite
+    }
+
+    /// Why the invite's fingerprint can't stand in for the person's own check, when it can't.
+    var invitePinProblem: String? {
+        guard let invite = activeInvite, let result = currentProbe.probe, let tls = result.step(.tls), tls.ok else { return nil }
+        let presented = tls.pin ?? ""
+        if !invite.pin.isEmpty {
+            return presented == invite.pin ? nil
+                : "This server’s certificate doesn’t match the invite. Don’t join. Ask the person who invited you for a new link."
+        }
+        return result.needsPinConfirmation
+            ? "The invite carries no fingerprint, and macOS doesn’t already trust this certificate. Ask for a new invite link."
+            : nil
     }
 
     /// What stands between the form and Save, in one line.
     var addServerHint: String {
         switch currentProbe {
-        case .idle: return "Check the server before you save it."
+        case .idle: return activeInvite == nil ? "Check the server before you save it." : "Check the server before you join it."
         case .running: return "Checking…"
         case .failed: return "The check didn’t run. Try again."
         case .finished(let result, _):
             if let stage = result.stoppedAt, let index = MultiplayerProbeStage.allCases.firstIndex(of: stage) {
                 return "Fix step \(index + 1) to finish."
             }
+            if let saved = existingServer { return "\(saved.displayName) is already in your list." }
+            if activeInvite != nil { return invitePinProblem == nil ? "Ready to join." : "This invite can’t be used." }
             if result.needsPinConfirmation, !serverDraft.pinConfirmed { return "Confirm the fingerprint to finish." }
             return "Ready to save."
         }
@@ -284,6 +391,7 @@ final class MultiplayerModel {
         cancelRefresh()
         cancelProbe()
         actionTask?.cancel()
+        cancelSocial()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -327,6 +435,7 @@ final class MultiplayerModel {
             hasLoaded = true
             listFailure = nil
             apply(next)
+            refreshSocial()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -358,20 +467,22 @@ final class MultiplayerModel {
             sessions[id] = session
             if viewers > 0 { session.open() }
         }
-        if case .server(let id) = route, !ids.contains(id) { go(.home) }
+        if let id = route.serverID, !ids.contains(id) { go(.home) }
+        me = me.filter { ids.contains($0.key) }
+        if let id = activityServer, !ids.contains(id) { activityServer = nil }
         if let id = confirmingRemoval, !ids.contains(id) { confirmingRemoval = nil }
         if let id = confirmingTrust, server(id)?.state != .certChanged { confirmingTrust = nil }
     }
 
     /// Replaces one row with the helper's reply, ahead of the list read that follows.
-    private func merge(_ summary: MultiplayerServerSummary) {
+    func merge(_ summary: MultiplayerServerSummary) {
         apply(servers.filter { $0.id != summary.id } + [summary])
     }
 
     // MARK: - Server actions
 
     @discardableResult
-    private func act(_ progress: String, failing title: String, confirmation: String? = nil,
+    func act(_ progress: String, failing title: String, confirmation: String? = nil,
                      _ work: @escaping @MainActor (MultiplayerClient) async throws -> Void) -> Task<Void, Never>? {
         guard let client, !isBusy else { return nil }
         cancelRefresh()
@@ -395,6 +506,10 @@ final class MultiplayerModel {
         actionTask = task
         return task
     }
+
+    /// A result or a refusal from an intent that didn't go through `act`.
+    func post(notice text: String) { notice = text }
+    func post(failure text: String?) { failure = text }
 
     func dismissNotice() { notice = nil }
     func dismissFailure() { failure = nil }
@@ -523,6 +638,7 @@ final class MultiplayerModel {
     @discardableResult
     func saveServer() -> Task<Void, Never>? {
         guard canSaveServer, let result = currentProbe.probe else { return nil }
+        if let invite = activeInvite { return join(invite) }
         let draft = serverDraft
         let pin = result.pin
         return act("Saving the server…", failing: "Couldn’t save the server.") { client in
@@ -542,8 +658,12 @@ final class MultiplayerModel {
 
     func go(_ next: MultiplayerTrayRoute) {
         guard route != next else { return }
-        if case .server(let id) = route { sessions[id]?.go(.home) }
+        if case .server(let id) = route, next.serverID != id { sessions[id]?.go(.home) }
         cancelProbe()
+        membershipTask?.cancel()
+        membershipTask = nil
+        membershipToken &+= 1
+        invite = nil
         probe = .idle
         confirmingRemoval = nil
         confirmingTrust = nil
@@ -552,6 +672,7 @@ final class MultiplayerModel {
         if case .server(let id) = next, let server = server(id) {
             renameDraft = server.name
             if server.state == .certChanged { checkCertificate(server) }
+            refreshMe(id)
         }
     }
 
@@ -596,12 +717,13 @@ final class MultiplayerModel {
     /// Waits until no helper call started by this model or its sessions is in flight.
     func settle() async {
         while true {
-            if let task = actionTask ?? refreshTask ?? probeTask {
+            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first {
                 await task.value
                 continue
             }
             for session in sessions.values { await session.settle() }
-            if actionTask == nil, refreshTask == nil, probeTask == nil { return }
+            if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
+               sideTasks.isEmpty { return }
         }
     }
 }

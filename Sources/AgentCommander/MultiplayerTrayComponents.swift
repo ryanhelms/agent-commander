@@ -1,7 +1,8 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Tokens, atoms and molecules for the network tray
-// (design/mockups/commander-network-tray.html, increment 1).
+// (design/mockups/commander-network-tray.html, increments 1 and 2).
 // `MultiplayerTheme` is the tray's token layer, mapped from design/system/tokens.json the way the
 // mockup's `--ac-*` layer is. Tray components read only these roles, so a later skin redefines
 // this one enum. Each component takes values and emits a targeted action; none reads the model.
@@ -49,7 +50,7 @@ enum MultiplayerTheme {
 
 /// A status lamp. Each state has its own shape as well as its colour, and a word always sits beside it.
 struct MultiplayerLamp: View {
-    enum Kind: Equatable { case on, off, waiting, error, unknown }
+    enum Kind: Equatable { case on, off, waiting, error, unknown, busy, away, doNotDisturb }
 
     let kind: Kind
     var size: CGFloat = 9
@@ -71,6 +72,17 @@ struct MultiplayerLamp: View {
                     .rotationEffect(.degrees(45))
             case .unknown:
                 Circle().strokeBorder(MultiplayerTheme.focus, lineWidth: 1.5)
+            case .busy:
+                RoundedRectangle(cornerRadius: 2).fill(MultiplayerTheme.attention)
+            case .away:
+                Circle().strokeBorder(MultiplayerTheme.attention, lineWidth: 1.5)
+                    .background {
+                        Circle().fill(MultiplayerTheme.attention)
+                            .mask(alignment: .leading) { Rectangle().frame(width: size / 2) }
+                    }
+            case .doNotDisturb:
+                Circle().strokeBorder(MultiplayerTheme.failure, lineWidth: 1.5)
+                    .overlay { Rectangle().fill(MultiplayerTheme.failure).frame(height: 2).padding(.horizontal, 1.5) }
             }
         }
         .frame(width: size, height: size)
@@ -90,13 +102,75 @@ extension MultiplayerServerState {
     }
 }
 
-extension MultiplayerFriend {
+extension MultiplayerPersonPresence {
     var lamp: MultiplayerLamp.Kind {
-        switch online {
-        case true?: .on
-        case false?: .off
-        case nil: .unknown
+        switch self {
+        case .online: .on
+        case .busy: .busy
+        case .away: .away
+        case .dnd: .doNotDisturb
+        case .offline: .off
+        case .unknown: .unknown
         }
+    }
+}
+
+/// The tray's switch. The track is green when on and an outline when off, in a key window or not,
+/// so the two states never look alike. It draws no label; the label is still spoken.
+struct MultiplayerSwitchStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Capsule()
+                .fill(configuration.isOn ? MultiplayerTheme.working : Color.clear)
+                .overlay { Capsule().strokeBorder(configuration.isOn ? MultiplayerTheme.working : Palette.secondary, lineWidth: 1.5) }
+                .overlay(alignment: configuration.isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(configuration.isOn ? MultiplayerTheme.panel : Palette.secondary)
+                        .padding(3)
+                }
+                .frame(width: 30, height: 18)
+                .contentShape(Capsule())
+                .animation(.easeOut(duration: 0.12), value: configuration.isOn)
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
+    }
+}
+
+/// A person's picture in a rounded square, or their initial when they have none.
+struct MultiplayerAvatar: View {
+    /// PNG or JPEG bytes.
+    let image: Data?
+    let name: String
+    var size: CGFloat = 22
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size > 30 ? MultiplayerTheme.tileRadius : 5, style: .continuous)
+        Group {
+            if let picture = image.flatMap(NSImage.init(data:)) {
+                Image(nsImage: picture)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Text(name.multiplayerDisplay.prefix(1).uppercased())
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(.inkSecondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(MultiplayerTheme.well)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(MultiplayerTheme.border) }
+        .accessibilityHidden(true)
     }
 }
 
@@ -154,10 +228,13 @@ struct MultiplayerTrayButtonStyle: ButtonStyle {
 /// A small outlined note beside a name.
 struct MultiplayerBadge: View {
     let text: String
+    var symbol: String? = nil
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10.5, weight: .medium))
+        HStack(spacing: 3) {
+            if let symbol { Image(systemName: symbol).font(.system(size: 8.5, weight: .semibold)) }
+            Text(text).font(.system(size: 10.5, weight: .medium))
+        }
             .foregroundStyle(.inkSecondary)
             .lineLimit(1)
             .padding(.horizontal, 6)
@@ -290,8 +367,9 @@ struct MultiplayerTallyBand: View {
         let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
         HStack(spacing: 1) {
             cell(tally.servers == 0 ? "0" : "\(tally.serversOnline)/\(tally.servers)",
-                 tally.servers == 0 ? "servers" : "servers online")
-            cell("\(tally.friendsOnline)", "friends online")
+                 tally.servers == 0 ? "servers" : tally.servers == 1 ? "server online" : "servers online",
+                 spoken: tally.summary)
+            cell("\(tally.friendsOnline)", tally.friendsOnline == 1 ? "friend online" : "friends online")
             cell("\(tally.needsYou)", tally.needsYou == 1 ? "needs you" : "need you", hot: tally.needsYou > 0)
         }
         .background(MultiplayerTheme.hair)
@@ -299,7 +377,7 @@ struct MultiplayerTallyBand: View {
         .overlay { shape.strokeBorder(MultiplayerTheme.hair) }
     }
 
-    private func cell(_ figure: String, _ label: String, hot: Bool = false) -> some View {
+    private func cell(_ figure: String, _ label: String, hot: Bool = false, spoken: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(figure)
                 .font(MultiplayerTheme.figure)
@@ -313,7 +391,7 @@ struct MultiplayerTallyBand: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(MultiplayerTheme.well)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(figure.replacingOccurrences(of: "/", with: " of ")) \(label)")
+        .accessibilityLabel(spoken ?? "\(figure) \(label)")
     }
 }
 
@@ -323,6 +401,8 @@ struct MultiplayerServerRow: View {
     let server: MultiplayerServerSummary
     let now: Date
     let isBusy: Bool
+    /// This Mac hosts the relay.
+    var hostedHere = false
     let onOpen: () -> Void
     let onFavorite: () -> Void
     let onSignIn: () -> Void
@@ -350,6 +430,7 @@ struct MultiplayerServerRow: View {
                             .foregroundStyle(MultiplayerTheme.foreground)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        if hostedHere { MultiplayerBadge(text: "Hosted here") }
                     }
                     Text(server.host)
                         .font(MultiplayerTheme.mono)
@@ -362,7 +443,7 @@ struct MultiplayerServerRow: View {
             }
             .buttonStyle(.plain)
             .help("Open \(server.displayName)")
-            .accessibilityLabel("\(server.displayName), \(server.host)")
+            .accessibilityLabel("\(server.displayName), \(server.host)\(hostedHere ? ", hosted on this Mac" : "")")
             .accessibilityHint("Opens this server’s settings, friends and sharing")
 
             if server.state == .signedOut {
@@ -408,38 +489,103 @@ struct MultiplayerCertificateNotice: View {
     }
 }
 
-/// A friend on one server, with Share.
+/// A friend on one server: presence lamp, picture, name, the other servers they're on, and Share.
 struct MultiplayerFriendRow: View {
-    let friend: MultiplayerFriend
+    let person: MultiplayerContactEntry
+    let avatar: Data?
     let canShare: Bool
     let isBusy: Bool
     let onShare: () -> Void
 
     var body: some View {
         HStack(spacing: Space.s) {
-            MultiplayerLamp(kind: friend.lamp)
+            MultiplayerLamp(kind: person.presence.lamp)
                 .frame(width: 20)
+            MultiplayerAvatar(image: avatar, name: person.title)
             VStack(alignment: .leading, spacing: 1) {
-                Text(friend.handle.multiplayerDisplay)
-                    .font(MultiplayerTheme.name)
-                    .foregroundStyle(MultiplayerTheme.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let presence = friend.presenceTitle {
-                    Text(presence)
-                        .font(MultiplayerTheme.sub)
-                        .foregroundStyle(.inkSecondary)
+                HStack(spacing: 6) {
+                    Text(person.title)
+                        .font(MultiplayerTheme.name)
+                        .foregroundStyle(MultiplayerTheme.foreground)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
+                    if let badge = person.linkBadge {
+                        MultiplayerBadge(text: badge, symbol: "link")
+                    }
                 }
+                Text([person.handleCaption, person.caption].compactMap { $0 }.joined(separator: ", "))
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             Button("Share", action: onShare)
                 .buttonStyle(MultiplayerTrayButtonStyle())
                 .disabled(isBusy || !canShare)
-                .help(canShare ? "Share a resource with \(friend.handle.multiplayerDisplay)" : "Add a resource on this server first")
-                .accessibilityLabel("Share with \(friend.handle.multiplayerDisplay)")
+                .help(canShare ? "Share a resource with \(person.title)" : "Add a resource on this server first")
+                .accessibilityLabel("Share with \(person.title)")
         }
-        .frame(minHeight: 30)
+        .frame(minHeight: 32)
+    }
+}
+
+/// One line of the activity feed: when, on which server, and what happened.
+struct MultiplayerActivityRow: View {
+    let event: MultiplayerActivityEvent
+    let serverName: String?
+    let color: Color
+    let isNew: Bool
+    let now: Date
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            Text(Self.time(event.at, now: now))
+                .font(MultiplayerTheme.mono)
+                .foregroundStyle(.inkSecondary)
+                .frame(width: 58, alignment: .leading)
+            MultiplayerSwatch(color: color)
+            Text(event.line(on: serverName))
+                .font(.system(size: 12, weight: isNew ? .semibold : .regular))
+                .foregroundStyle(MultiplayerTheme.foreground)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(isNew ? "New. " : "")\(Self.time(event.at, now: now)), \(event.line(on: serverName))")
+    }
+
+    /// The clock time today, the day and month before that.
+    static func time(_ date: Date?, now: Date) -> String {
+        guard let date else { return "" }
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(Date.FormatStyle().day().month(.abbreviated))
+    }
+}
+
+/// Several lines of plain text in the tray's well, for a list the person edits.
+struct MultiplayerTextArea: View {
+    let label: String
+    @Binding var text: String
+    var lines = 3
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius, style: .continuous)
+        TextEditor(text: $text)
+            .font(MultiplayerTheme.mono)
+            .foregroundStyle(MultiplayerTheme.foreground)
+            .scrollContentBackground(.hidden)
+            .autocorrectionDisabled()
+            .padding(.horizontal, 5)
+            .padding(.vertical, 6)
+            .frame(height: CGFloat(lines) * 16 + 14)
+            .background(MultiplayerTheme.well, in: shape)
+            .overlay { shape.strokeBorder(MultiplayerTheme.border) }
+            .accessibilityLabel(label)
     }
 }
 
