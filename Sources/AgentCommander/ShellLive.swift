@@ -216,8 +216,10 @@ enum LiveShell {
         let selection: String
         if composing {
             selection = newRun
+        } else if isTeamsPlace(place), !known.contains(place) {
+            // A workspace that is gone, or the empty Teams place once workspaces arrive, stays in Teams.
+            selection = teams.first?.id ?? workspaces
         } else if place == wall || !known.contains(place) {
-            // A workspace that is gone leaves the window on the wall.
             selection = openRunPath.map(project).flatMap { known.contains($0) ? $0 : nil } ?? wall
         } else {
             selection = place
@@ -226,6 +228,9 @@ enum LiveShell {
                                    inbox: CommanderInbox(placeID: Self.needsYou, absorbs: [approvals]),
                                    groups: [], modes: modes, footer: [], profile: network.profile, selection: selection)
     }
+
+    /// A place of the Teams mode: a workspace, or the row shown while there is none.
+    static func isTeamsPlace(_ id: String) -> Bool { id == workspaces || id.hasPrefix("team:") }
 
     /// True while the selected row means the coordinator wall, the new-run form or the empty state.
     static func showsWall(_ selection: String) -> Bool {

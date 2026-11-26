@@ -109,8 +109,10 @@ import Testing
         #expect(Self.navigation(place: LiveShell.needsYou, composing: true).selection == LiveShell.newRun)
         #expect(Self.navigation(place: LiveShell.needsYou).selection == LiveShell.needsYou)
         #expect(Self.navigation(place: LiveShell.settings).selectedModeID == "settings")
-        // A workspace that is gone leaves the window on the wall.
-        #expect(Self.navigation(place: "team:srv-studio/gone").selection == LiveShell.project("/code/relay"))
+        // A workspace that is gone leaves the window in Teams, on the first workspace there is.
+        #expect(Self.navigation(place: "team:srv-studio/gone").selection == LiveShell.team(Self.network.workspaces[0]))
+        // A place that no longer exists anywhere leaves it on the wall.
+        #expect(Self.navigation(place: "nowhere").selection == LiveShell.project("/code/relay"))
         for id in [LiveShell.wall, LiveShell.newRun, LiveShell.project("/code/relay")] { #expect(LiveShell.showsWall(id)) }
         for id in [LiveShell.needsYou, LiveShell.settings, LiveShell.servers] { #expect(!LiveShell.showsWall(id)) }
     }

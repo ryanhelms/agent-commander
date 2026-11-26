@@ -359,8 +359,8 @@ struct NetworkAuditTable: View {
 
     private static let when = ShellColumn(title: "when", width: NetworkLayout.timeColumn)
     private static let who = ShellColumn(title: "who", width: NetworkLayout.personColumn)
-    private static let action = ShellColumn(title: "did", width: 148)
-    private static let resource = ShellColumn(title: "on", width: 148)
+    private static let action = ShellColumn(title: "did", width: 136)
+    private static let resource = ShellColumn(title: "on", width: 136)
     private static let summary = ShellColumn(title: "summary")
     private static let took = ShellColumn(title: "took", width: 60, alignment: .trailing)
     private static let tokens = ShellColumn(title: "tokens", width: 72, alignment: .trailing)

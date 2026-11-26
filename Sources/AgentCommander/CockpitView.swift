@@ -53,6 +53,16 @@ final class CockpitPresentationState {
     let networkPages = NetworkPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
+    /// The last key command pressed and how many there have been. The page runs each one from
+    /// its current state (CockpitShortcuts.swift).
+    private(set) var keyCommand: CockpitCommand?
+    private(set) var keyCommandCount = 0
+
+    /// Records a key command for the page to run.
+    func press(_ command: CockpitCommand) {
+        keyCommand = command
+        keyCommandCount += 1
+    }
     var composingRun = false
     var newRunDraft = NewRunDraft()
     var showingRunChooser = false
@@ -389,7 +399,7 @@ struct WorkspaceToolbar: ToolbarContent {
                     .foregroundStyle(Color(hex: 0xE0E1EA))
                     .padding(.horizontal, 6)
                 }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut(KeyEquivalent(CockpitShortcuts.search.key), modifiers: CockpitShortcuts.search.modifiers)
                 .accessibilityLabel("Search workspace")
             }
             .sharedBackgroundVisibility(capsule)
@@ -510,6 +520,8 @@ struct CockpitScreen: View {
         chrome
             .consoleRecordAccess(actions, openSource: openSource)
             .onChange(of: run?.id) { _, _ in runChanged() }
+            // A key command is run here, where the page's values are current.
+            .onChange(of: ui.keyCommandCount) { _, _ in if let command = ui.keyCommand { perform(command) } }
             .onChange(of: paneFocus) { _, focus in
                 if let focus { ui.returnFocusWorkerID = focus }
             }
@@ -796,7 +808,7 @@ struct CockpitScreen: View {
                            action: { ui.showingRunChooser.toggle() }),
             NavigationItem(id: "attention", title: "Attention", mark: .symbol("bell"),
                            badge: content.pending.count, isEnabled: !content.pending.isEmpty,
-                           shortcut: KeyboardShortcut("a", modifiers: [.command, .shift]),
+                           shortcut: CockpitShortcuts.nextRequest.shortcut,
                            action: { nextRequest() })
         ]
 
@@ -825,7 +837,7 @@ struct CockpitScreen: View {
         if let fixtureNavigation { return fixtureNavigation.footer }
         return [NavigationItem(id: "new-run", title: "New run", mark: .symbol("plus"),
                                isActive: ui.composingRun, isEnabled: isOnline,
-                               shortcut: KeyboardShortcut("n", modifiers: .command),
+                               shortcut: CockpitShortcuts.newRun.shortcut,
                                action: { startComposing() })]
     }
 
@@ -847,40 +859,56 @@ struct CockpitScreen: View {
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
-    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return. ⌘N and ⇧⌘A live on their navigation rows.
+    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘5. Each
+    /// button only records its command; `perform` runs it from the page's current state, so a
+    /// shortcut never acts on values captured when the window opened.
     private var shortcuts: some View {
         Group {
-            // The shell's modes: ⌥⌘1 to ⌥⌘5. They come before ⌘1 and name the digit itself on every
-            // keyboard layout, so ⌥ is never read as another key or dropped.
-            if let shell {
-                let navigation = shellNavigation(shell)
-                ForEach(navigation.modeItems) { item in
-                    if let number = item.shortcut, let key = "\(number)".first {
-                        Button(item.mode.title) { act(.selectMode(item.mode.id), in: navigation, shell) }
-                            .keyboardShortcut(KeyboardShortcut(KeyEquivalent(key), modifiers: LiveShell.modeModifiers,
-                                                               localization: .custom))
-                    }
+            // The shell's modes come before ⌘1.
+            if shell != nil {
+                ForEach(CockpitShortcuts.modes) { key in
+                    Button(key.title) { ui.press(key.command) }.keyboardShortcut(key.shortcut)
                 }
             }
-            Button("Focus coordinator") { focusCoordinator() }
-                .keyboardShortcut(KeyboardShortcut("1", modifiers: .command, localization: .custom))
-            Button("Zoom worker") { zoomFocused() }.keyboardShortcut("]", modifiers: .command)
-            Button("Return to wall") { returnToWall() }.keyboardShortcut("[", modifiers: .command)
-                .disabled(ui.zoomedWorkerID == nil && ui.zoomedRemoteWorkerID == nil)
+            Button(CockpitShortcuts.focusCoordinator.title) { ui.press(.focusCoordinator) }
+                .keyboardShortcut(CockpitShortcuts.focusCoordinator.shortcut)
+            Button(CockpitShortcuts.zoomWorker.title) { ui.press(.zoomWorker) }
+                .keyboardShortcut(CockpitShortcuts.zoomWorker.shortcut)
+            Button(CockpitShortcuts.returnToWall.title) { ui.press(.returnToWall) }
+                .keyboardShortcut(CockpitShortcuts.returnToWall.shortcut)
             // The live Attention row carries ⇧⌘A. A supplied navigation model has its own rows, so
             // the shortcut is kept here.
             if fixtureNavigation != nil || shell != nil {
-                Button("Next request") { nextRequest() }.keyboardShortcut("a", modifiers: [.command, .shift])
+                Button(CockpitShortcuts.nextRequest.title) { ui.press(.nextRequest) }
+                    .keyboardShortcut(CockpitShortcuts.nextRequest.shortcut)
             }
             // The shell's New run row has no key of its own, so ⌘N is kept here.
             if shell != nil {
-                Button("New run") { show(place: LiveShell.newRun) }.keyboardShortcut("n", modifiers: .command)
-                    .disabled(!isOnline)
+                Button(CockpitShortcuts.newRun.title) { ui.press(.newRun) }
+                    .keyboardShortcut(CockpitShortcuts.newRun.shortcut)
             }
         }
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+
+    /// Runs a key command against what the page shows now.
+    private func perform(_ command: CockpitCommand) {
+        switch command {
+        case .mode(let index):
+            guard let shell else { return }
+            let navigation = shellNavigation(shell)
+            let modes = navigation.modeItems
+            guard modes.indices.contains(index) else { return }
+            act(.selectMode(modes[index].mode.id), in: navigation, shell)
+        case .focusCoordinator: focusCoordinator()
+        case .zoomWorker: zoomFocused()
+        case .returnToWall: returnToWall()
+        case .nextRequest: nextRequest()
+        // No run can start while the service is offline; `show` leaves the window where it is.
+        case .newRun: if shell != nil { show(place: LiveShell.newRun) }
+        }
     }
 
     // MARK: Canvas
