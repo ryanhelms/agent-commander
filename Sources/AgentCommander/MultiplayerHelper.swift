@@ -66,6 +66,13 @@ struct MultiplayerClient: Sendable {
     static let inputLimit = 16 * 1024
 
     let helper: any MultiplayerHelper
+    /// The server every request acts on, sent as `"server"`. Nil for the server-list verbs.
+    var server: String? = nil
+
+    /// The same helper, acting on one server.
+    func scoped(to server: String) -> MultiplayerClient {
+        MultiplayerClient(helper: helper, server: server)
+    }
 
     private struct Found: Decodable {
         let handle: String
@@ -131,7 +138,68 @@ struct MultiplayerClient: Sendable {
         return input
     }
 
+    // MARK: Server list
+
+    private struct ServerList: Decodable {
+        let servers: [MultiplayerServerSummary]
+    }
+
+    /// The saved servers, favorites first, then most recently used.
+    func servers() async throws -> [MultiplayerServerSummary] {
+        MultiplayerServerSummary.ordered(try await fetch(.servers, [:], as: ServerList.self).servers)
+    }
+
+    /// The staged health check for an address the person typed. Nothing is saved.
+    func probe(url: String) async throws -> MultiplayerProbe {
+        try await fetch(.serverProbe, ["url": .string(url)], as: MultiplayerProbe.self)
+    }
+
+    func addServer(url: String, name: String, pin: String) async throws -> MultiplayerServerSummary {
+        var payload: [String: MultiplayerPayloadValue] = ["url": .string(url), "pin": .string(pin)]
+        if !name.isEmpty { payload["name"] = .string(name) }
+        return try await fetch(.serverAdd, payload, as: MultiplayerServerSummary.self)
+    }
+
+    /// Sends only the settings that are given.
+    func updateServer(id: String, name: String? = nil, favorite: Bool? = nil,
+                      autoConnect: Bool? = nil) async throws -> MultiplayerServerSummary {
+        var payload: [String: MultiplayerPayloadValue] = ["server": .string(id)]
+        if let name { payload["name"] = .string(name) }
+        if let favorite { payload["favorite"] = .bool(favorite) }
+        if let autoConnect { payload["autoConnect"] = .bool(autoConnect) }
+        return try await fetch(.serverUpdate, payload, as: MultiplayerServerSummary.self)
+    }
+
+    func removeServer(id: String) async throws {
+        do {
+            let output = try await call(.serverRemove, payload: ["server": .string(id)])
+            _ = try MultiplayerEnvelope.decode(MultiplayerIgnored.self, from: output)
+        } catch {
+            throw MultiplayerFailure.from(error)
+        }
+    }
+
+    /// Accepts the key a pinned server now presents.
+    func trustServer(id: String, pin: String) async throws -> MultiplayerServerSummary {
+        try await fetch(.serverTrust, ["server": .string(id), "pin": .string(pin)], as: MultiplayerServerSummary.self)
+    }
+
+    private func fetch<Reply: Decodable>(_ verb: MultiplayerVerb, _ payload: [String: MultiplayerPayloadValue],
+                                         as type: Reply.Type) async throws -> Reply {
+        do {
+            let output = try await call(verb, payload: payload)
+            guard let reply = try MultiplayerEnvelope.decode(Reply.self, from: output) else {
+                throw MultiplayerFailure.invalidResponse
+            }
+            return reply
+        } catch {
+            throw MultiplayerFailure.from(error)
+        }
+    }
+
     private func call(_ verb: MultiplayerVerb, payload: [String: MultiplayerPayloadValue]) async throws -> MultiplayerHelperOutput {
+        var payload = payload
+        if let server, payload["server"] == nil { payload["server"] = .string(server) }
         let input = try Self.encode(payload)
         try Task.checkCancellation()
         return try await helper.run(verb: verb, input: input)

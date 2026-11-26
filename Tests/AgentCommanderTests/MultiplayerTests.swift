@@ -386,8 +386,8 @@ extension MultiplayerFixture {
 }
 
 @MainActor @Suite struct MultiplayerModelTests {
-    static func model(_ helper: ScriptedMultiplayerHelper, clock: MultiplayerFixtureClock? = nil) -> MultiplayerModel {
-        MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600),
+    static func model(_ helper: ScriptedMultiplayerHelper, clock: MultiplayerFixtureClock? = nil) -> MultiplayerSessionModel {
+        MultiplayerSessionModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600),
                          fastPoll: .seconds(3600), directoryExists: { _ in true },
                          now: { clock?.now ?? Date() })
     }
@@ -420,7 +420,7 @@ extension MultiplayerFixture {
     }
 
     @Test func missingHelperIsUnavailableWithoutRetry() {
-        let model = MultiplayerModel(client: nil, setupFailure: .helperMissing)
+        let model = MultiplayerSessionModel(client: nil, setupFailure: .helperMissing)
         #expect(model.presence == .unavailable(MultiplayerFailure.helperMissing.message))
         #expect(model.refresh() == nil)
     }
@@ -492,7 +492,7 @@ extension MultiplayerFixture {
 
     /// Opens the share form for fixture-bo on relay with git.push chosen, at the fixture clock.
     static func grantModel(_ grantReply: MultiplayerHelperOutput = MultiplayerFixture.ok)
-        async -> (MultiplayerModel, ScriptedMultiplayerHelper, MultiplayerFixtureClock)
+        async -> (MultiplayerSessionModel, ScriptedMultiplayerHelper, MultiplayerFixtureClock)
     {
         let helper = ScriptedMultiplayerHelper([.status: [MultiplayerFixture.status], .grant: [grantReply]])
         let clock = MultiplayerFixtureClock()
@@ -769,7 +769,7 @@ extension MultiplayerFixture {
 }
 
 @MainActor @Suite struct MultiplayerCredentialTests {
-    static func onlineModel() async -> (MultiplayerModel, ScriptedMultiplayerHelper) {
+    static func onlineModel() async -> (MultiplayerSessionModel, ScriptedMultiplayerHelper) {
         let helper = ScriptedMultiplayerHelper([
             .status: [MultiplayerFixture.status],
             .repoCredential: [MultiplayerFixture.ok],

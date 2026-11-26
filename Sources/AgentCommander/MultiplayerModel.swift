@@ -1,8 +1,9 @@
 import Foundation
 import Observation
 
-// FEATURE MODEL: the network panel.
-// Owns the helper calls, the poll while a panel is open, drafts and the panel route. Components
+// FEATURE MODEL: one server's session (account, friends, resources and grants on that relay).
+// The tray's MultiplayerModel keeps one of these per saved server, each with a client scoped to it.
+// Owns the helper calls, the poll while a panel is open, drafts and the session route. Components
 // receive its values and call its intents. Rules it keeps:
 // - Online is shown only from a definite status reply; a failed or missing reply is never online.
 // - One mutation at a time. Starting one drops any status read in flight; success triggers a fresh
@@ -140,7 +141,7 @@ struct MultiplayerActionFailure: Equatable {
 }
 
 @Observable @MainActor
-final class MultiplayerModel {
+final class MultiplayerSessionModel {
     private(set) var status: MultiplayerStatus?
     private(set) var statusFailure: MultiplayerFailure?
     private(set) var isRefreshing = false
@@ -188,7 +189,7 @@ final class MultiplayerModel {
          usesFixtureHelper: Bool = false,
          steadyPoll: Duration = .seconds(15),
          fastPoll: Duration = .seconds(3),
-         directoryExists: @escaping (String) -> Bool = MultiplayerModel.isDirectory,
+         directoryExists: @escaping (String) -> Bool = MultiplayerSessionModel.isDirectory,
          now: @escaping () -> Date = { Date() }) {
         self.client = client
         self.setupFailure = setupFailure
@@ -198,17 +199,6 @@ final class MultiplayerModel {
         self.directoryExists = directoryExists
         self.clock = now
         self.credentialEntry = MultiplayerSecretEntry()
-    }
-
-    /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in debug review mode.
-    static func live() -> MultiplayerModel {
-        switch MultiplayerHelperLocator.resolve() {
-        case .success(let location):
-            MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
-                             usesFixtureHelper: location.isFixture)
-        case .failure(let failure):
-            MultiplayerModel(client: nil, setupFailure: failure)
-        }
     }
 
     nonisolated static func isDirectory(_ path: String) -> Bool {
