@@ -187,7 +187,7 @@ enum MultiplayerShareFixture {
     @Test func activityNamesApprovalsAndAccessRequests() {
         let pending = MultiplayerActivityEvent(server: "s-home", seq: 0, kind: "approval.pending", actor: "fixture-bo",
                                                resource: "res-1", detail: "agent.ask")
-        #expect(pending.sentence == "fixture-bo wants to send prompts to the worker. Approve or deny it in the tray")
+        #expect(pending.sentence == "fixture-bo wants to send prompts to the worker. Approve or deny it under Needs you")
         let asked = MultiplayerActivityEvent(server: "s-home", seq: 7, kind: "access.requested", actor: "fixture-cy")
         #expect(asked.line(on: "home") == "fixture-cy asked for access on home")
         // The device agent's own events have no sequence, so two of them are still two rows.
@@ -355,7 +355,7 @@ enum MultiplayerShareFixture {
         #expect(model.tally.needsYou == 2)    // the friend request and the approval
 
         model.share.open(.approval("ap-1"), on: "s-home")
-        #expect(model.route == .share("s-home", .approval("ap-1")) && model.share.backTitle == "Network")
+        #expect(model.route == .share("s-home", .approval("ap-1")) && model.share.backTitle == "Agents")
         await model.share.decide(pending.item, on: "s-home", approve: true)?.value
         #expect(helper.lastInput(.approve) == ["id": "ap-1", "server": "s-home"])
         #expect(model.route == .home && model.notice == "Approved. It runs on this Mac now.")
@@ -369,7 +369,7 @@ enum MultiplayerShareFixture {
         await model.settle()
         let pending = try #require(model.share.pendingApprovals.first)
         await model.share.decide(pending.item, on: "s-home", approve: false)?.value
-        #expect(model.failure == "Couldn’t deny the request. no such request")
+        #expect(model.failure == "Couldn’t deny the request. No such request.")
         #expect(model.share.approvals["s-home"]?.count == 1)
         model.close()
     }
@@ -433,7 +433,8 @@ enum MultiplayerShareFixture {
         #expect(!model.share.canSendHandoff)
         model.share.handoffDraft.task = "Make it pass."
         await model.share.sendHandoff()?.value
-        #expect(model.route == .share("s-home", .handoffDetail(request: "rq-1")))
+        // The hand-off is a window page: the composer closes and the tray is back where it was.
+        #expect(model.route == .home)
         let row = try #require(model.share.handoff("rq-1", on: "s-home"))
         #expect(row.run == "run-1" && model.share.handoffState(row).title == "Started")
         #expect(model.share.handoffTarget(row, on: "s-home") == "fixture-bo’s bo-agent")

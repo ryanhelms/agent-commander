@@ -1,0 +1,6 @@
+{"verb": "workspaces", "request": {}, "response": {
+ "data": {
+  "workspaces": []
+ },
+ "ok": true
+}}

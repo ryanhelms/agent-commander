@@ -1,0 +1,5 @@
+unseen before: 2
+== POST /api/activity/seen {cursor: eyJzLWYwMWZjZmY1IjoyfQ}
+{"data":{},"ok":true}
+unseen after: 0
+tray servers unseen: 0

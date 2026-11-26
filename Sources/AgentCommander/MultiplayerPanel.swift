@@ -170,6 +170,10 @@ struct MultiplayerHomeLists: View {
     let isBusy: Bool
     let resourceName: (String) -> String
     let onAccept: (MultiplayerIncoming) -> Void
+    /// Refuses a friend request. Nil leaves Accept as the one answer.
+    var onDecline: ((MultiplayerIncoming) -> Void)? = nil
+    /// The moment arrival times are measured from.
+    var now = Date()
     let onAddFriend: () -> Void
     let onAddResource: () -> Void
     let onShare: (_ handle: String?, _ resourceID: String?) -> Void
@@ -184,7 +188,15 @@ struct MultiplayerHomeLists: View {
                 MultiplayerSection(title: "Friend requests", count: status.incoming.count) {
                     MultiplayerRows(items: status.incoming, empty: "") { request in
                         MultiplayerRow(symbol: "person.badge.plus", tone: .attention, title: request.handle,
-                                       monospacedTitle: true, caption: "Wants to be your friend") {
+                                       monospacedTitle: true,
+                                       caption: request.arrival(now: now).map { "Wants to be your friend, asked \($0)" }
+                                           ?? "Wants to be your friend") {
+                            if let onDecline {
+                                Button("Decline") { onDecline(request) }
+                                    .buttonStyle(MultiplayerTrayButtonStyle())
+                                    .disabled(isBusy)
+                                    .accessibilityLabel("Decline friend request from \(request.handle.multiplayerDisplay)")
+                            }
                             Button("Accept") { onAccept(request) }
                                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                                 .disabled(isBusy)
@@ -231,14 +243,14 @@ struct MultiplayerHomeLists: View {
                             SymbolButton(symbol: "key", label: "Set GitHub token for \(resource.name.multiplayerDisplay)") {
                                 onSetCredential(resource.id)
                             }
-                            .foregroundStyle(isBusy ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(Palette.foreground))
+                            .foregroundStyle(isBusy ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(MultiplayerTheme.foreground))
                             .disabled(isBusy)
                         }
                         if let onAudit {
                             SymbolButton(symbol: "list.bullet.rectangle", label: "Audit for \(resource.name.multiplayerDisplay)") {
                                 onAudit(resource.id)
                             }
-                            .foregroundStyle(Palette.foreground)
+                            .foregroundStyle(MultiplayerTheme.foreground)
                             .help("Every use of \(resource.name.multiplayerDisplay)")
                         }
                         Button("Share") { onShare(nil, resource.id) }
@@ -333,12 +345,15 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                     .background { MultiplayerScrollerSilencer().accessibilityHidden(true) }
             }
+            // The page is one stop on the way from the header to the footer: Tab finishes it first,
+            // including the rows scrolled out of sight, which otherwise sort after the footer.
+            .focusSection()
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(max(contentHeight, 120), MultiplayerLayout.maxBodyHeight))
             footer
         }
         .frame(width: MultiplayerLayout.width)
-        .background(MultiplayerTheme.panel)
+        .background(MultiplayerTheme.panelFill)
     }
 }
 
@@ -806,7 +821,7 @@ struct MultiplayerCredentialEditor: View {
                 SecureField("Paste token", text: $entry.value)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
-                    .foregroundStyle(Palette.foreground)
+                    .foregroundStyle(MultiplayerTheme.foreground)
                     .multiplayerFieldBox(focused: focused)
                     .focused($focused)
                     .privacySensitive()
@@ -836,10 +851,11 @@ struct MultiplayerSessionContent: View {
     var onShare: ((_ handle: String?, _ resourceID: String?) -> Void)? = nil
     var onAudit: ((_ resourceID: String) -> Void)? = nil
 
+    @Environment(\.theme) private var theme
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             activity
-                .padding(.horizontal, MultiplayerTheme.sectionInset)
+                .padding(.horizontal, theme.space.sectionInset)
                 .padding(.top, 10)
             page
         }
@@ -880,6 +896,7 @@ struct MultiplayerSessionContent: View {
                 MultiplayerHomeLists(status: status, isBusy: model.isBusy,
                                      resourceName: { model.resourceName(for: $0) },
                                      onAccept: { model.accept($0) },
+                                     onDecline: { model.decline($0) },
                                      onAddFriend: { model.startAddFriend() },
                                      onAddResource: { model.startAddResource() },
                                      onShare: { handle, resource in
@@ -956,13 +973,14 @@ struct MultiplayerSessionContent: View {
 struct MultiplayerPanelStage: View {
     let model: MultiplayerModel
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
+        let shape = theme.trayTile
         ZStack {
             Palette.window.ignoresSafeArea()
             ScrollView([.vertical]) {
                 VStack(spacing: Space.m) {
-                    MultiplayerPanel(model: model)
+                    MultiplayerPanel(model: model, closesOnOpen: false)
                         .clipShape(shape)
                         .overlay { shape.strokeBorder(.inkEdge) }
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)

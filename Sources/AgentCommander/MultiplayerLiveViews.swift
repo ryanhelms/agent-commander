@@ -22,6 +22,8 @@ struct MultiplayerRowVerb: Identifiable {
     let title: String
     var isPrimary = false
     var isEnabled = true
+    /// The verb leaves the tray for the main window, and is marked with the out arrow.
+    var opensWindow = false
     /// Said by VoiceOver and shown as the tooltip: the verb with its subject.
     let hint: String
     let action: () -> Void
@@ -31,16 +33,20 @@ struct MultiplayerRowVerb: Identifiable {
 struct MultiplayerVerbStrip: View {
     let verbs: [MultiplayerRowVerb]
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+        let shape = theme.trayControl
         HStack(spacing: 0) {
             ForEach(Array(verbs.enumerated()), id: \.element.id) { index, verb in
                 if index > 0 { Rectangle().fill(MultiplayerTheme.border).frame(width: 1) }
                 Button(action: verb.action) {
-                    Text(verb.title)
-                        .font(.system(size: 11, weight: verb.isPrimary ? .semibold : .medium, design: .monospaced))
-                        .foregroundStyle(verb.isPrimary ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(verb.title)
+                            .font(.system(size: 11, weight: verb.isPrimary ? .semibold : .medium, design: .monospaced))
+                            .foregroundStyle(verb.isPrimary ? MultiplayerTheme.onAccent : MultiplayerTheme.foreground)
+                            .lineLimit(1)
+                        if verb.opensWindow { MultiplayerLeavesTrayMark() }
+                    }
                         .padding(.horizontal, 9)
                         .frame(minHeight: 22)
                         .background(verb.isPrimary ? MultiplayerTheme.focus : Color.clear)
@@ -106,6 +112,7 @@ struct MultiplayerTraceRow: View {
         return String(format: "%02d:%02d:%02d", parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0)
     }
 
+    @Environment(\.theme) private var theme
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(Self.time(event.at))
@@ -114,9 +121,9 @@ struct MultiplayerTraceRow: View {
             Text(event.tag)
                 .font(MultiplayerTheme.label)
                 .foregroundStyle(color)
-                .frame(width: 24, alignment: .leading)
+                .frame(width: (theme.type.label.size * 2.5).rounded(.up), alignment: .leading)
             Text(event.text)
-                .font(event.kind == .message ? .system(size: 12) : MultiplayerTheme.mono)
+                .font(event.kind == .message ? .system(size: 12) : MultiplayerTheme.mono.font(in: theme))
                 .foregroundStyle(event.kind == .status ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(MultiplayerTheme.foreground))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
@@ -134,6 +141,19 @@ struct MultiplayerTraceRow: View {
     }
 }
 
+private struct MultiplayerFixedNowKey: EnvironmentKey {
+    static let defaultValue: Date? = nil
+}
+
+extension EnvironmentValues {
+    /// A clock that stands still, for everything below that counts time down: a fixture, a preview
+    /// or a headless picture sets it to the instant its data was made for. Nil is the real clock.
+    var multiplayerFixedNow: Date? {
+        get { self[MultiplayerFixedNowKey.self] }
+        set { self[MultiplayerFixedNowKey.self] = newValue }
+    }
+}
+
 /// Time left, ticking each second, over a line that drains with it.
 struct MultiplayerCountdown: View {
     static let lineWidth: CGFloat = 56
@@ -141,14 +161,26 @@ struct MultiplayerCountdown: View {
     let until: Date
     /// How long the whole span is, in seconds. The line is full at the span and empty at zero.
     let span: TimeInterval
+    /// The instant to count from, for a caller with a clock of its own. It stands still: the
+    /// figure changes when the caller passes a later instant. Nil counts from the environment's
+    /// `multiplayerFixedNow`, or from the real clock, ticking each second.
+    var now: Date? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.multiplayerFixedNow) private var fixedNow
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let left = max(until.timeIntervalSince(context.date), 0)
-            let color = left <= 0 ? Palette.secondary : left < 300 ? MultiplayerTheme.attention : MultiplayerTheme.working
+        if let instant = now ?? fixedNow {
+            figure(at: instant)
+        } else {
+            TimelineView(.periodic(from: .now, by: 1)) { context in figure(at: context.date) }
+        }
+    }
+
+    private func figure(at instant: Date) -> some View {
+            let left = max(until.timeIntervalSince(instant), 0)
+            let color = left <= 0 ? MultiplayerTheme.secondary : left < 300 ? MultiplayerTheme.attention : MultiplayerTheme.working
             let text = MultiplayerHandover.clock(left)
-            VStack(alignment: .trailing, spacing: 3) {
+            return VStack(alignment: .trailing, spacing: 3) {
                 Text(text)
                     .font(MultiplayerTheme.figure.monospacedDigit())
                     .foregroundStyle(color)
@@ -166,7 +198,6 @@ struct MultiplayerCountdown: View {
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(MultiplayerHandover.spoken(left))
-        }
     }
 
     static func fraction(left: TimeInterval, span: TimeInterval) -> Double {
@@ -488,7 +519,7 @@ struct MultiplayerWatchView: View {
             .padding(.vertical, 6)
         case .failed(let text):
             VStack(alignment: .leading, spacing: Space.s) {
-                liveNote("Couldn’t read the output. \(text)", failure: true)
+                liveNote(MultiplayerSentence.join("Couldn’t read the output.", text), failure: true)
                 Button("Try again", action: onRetry).buttonStyle(MultiplayerTrayButtonStyle())
             }
             .padding(.vertical, 6)
@@ -811,6 +842,7 @@ struct MultiplayerComparePage: View {
     /// Two columns share the tray's width; more keep a readable measure and scroll sideways.
     static let columnWidth: CGFloat = 196
 
+    @Environment(\.theme) private var theme
     var body: some View {
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.s) {
@@ -825,8 +857,8 @@ struct MultiplayerComparePage: View {
                         .multiplayerTicking(fanout.answered)
                 }
                 HStack(spacing: 6) {
-                    (Text("\(columns.count) workers, sent ").font(MultiplayerTheme.sub)
-                        + Text(MultiplayerActivityRow.time(fanout.at, now: now)).font(MultiplayerTheme.fingerprint))
+                    (Text("\(columns.count) workers, sent ").font(MultiplayerTheme.sub.font(in: theme))
+                        + Text(MultiplayerActivityRow.time(fanout.at, now: now)).font(MultiplayerTheme.fingerprint.font(in: theme)))
                         .foregroundStyle(.inkSecondary)
                     Spacer(minLength: 0)
                     if fanout.answered > 0 { MultiplayerSignedBadge() }

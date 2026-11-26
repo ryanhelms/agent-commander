@@ -9,8 +9,9 @@ import SwiftUI
 //
 //   open "dist/Agent Commander.app" --args --design-preview <state>
 //
-//   <state>: any slug in DesignPreviewScenario (coordinator-wall … accessible-worker), or "gallery"
-//            to start at the first view.
+//   <state>: any slug in DesignPreviewScenario (coordinator-wall … accessible-worker, then the
+//            redesigned shell: shell-a, shell-b, shell-c, needs-you), or "gallery" to start at the
+//            first view.
 //
 // Inside the window, the title-bar gallery control (and ⌥⌘← / ⌥⌘→) browses all states, and the
 // navigation rail moves between views. Interactions change in-memory sample state only; choosing a
@@ -67,6 +68,29 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case reducedTransparency = "reduced-transparency"
     case accessibleWall = "accessible-wall"
     case accessibleWorker = "accessible-worker"
+    // The redesigned main-window shell (ShellPreview.swift).
+    case shellA = "shell-a"
+    case shellB = "shell-b"
+    case shellC = "shell-c"
+    case needsYou = "needs-you"
+    // The full-size network pages, in sidebar B (NetworkPagesPreview.swift).
+    case networkServers = "network-servers"
+    case networkDirectory = "network-directory"
+    case networkApprovals = "network-approvals"
+    case networkHandoffs = "network-handoffs"
+    case networkThreads = "network-threads"
+    case networkAudit = "network-audit"
+    case networkFanout = "network-fanout"
+    case networkShared = "network-shared"
+    case people = "people"
+    // The full-size Teams pages, in sidebar B (TeamsPagesPreview.swift).
+    case teamsWorkspace = "teams-workspace"
+    case teamsBoard = "teams-board"
+    case teamsGroups = "teams-groups"
+    case teamsHosts = "teams-hosts"
+    case teamsKnowledge = "teams-knowledge"
+    case teamsDirectory = "teams-directory"
+    case teamsAdmin = "teams-admin"
 
     struct Info {
         let title: String
@@ -77,7 +101,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         let summary: String
     }
 
-    static let groups = ["Cockpit", "Workspace", "Delegation", "Setup & recovery"]
+    static let groups = ["Cockpit", "Workspace", "Delegation", "Setup & recovery", "Main window redesign"]
 
     var id: String { rawValue }
     var number: Int { (Self.allCases.firstIndex(of: self) ?? 0) + 1 }
@@ -93,6 +117,9 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
             false
         }
     }
+
+    /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -186,6 +213,66 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
             Info(title: "Reduced transparency · worker", group: "Setup & recovery",
                  crumbs: ["Relay", "Retry policy", "Timeout cases"], active: "Relay",
                  summary: "The focused worker under increased contrast, with its request and explicit handback.")
+        case .shellA:
+            Info(title: "Sidebar A · grouped", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "Every place in one grouped list. Presence and server health sit in the toolbar.")
+        case .shellB:
+            Info(title: "Sidebar B · mode rail", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "A narrow rail switches mode and a second column lists that mode's pages.")
+        case .shellC:
+            Info(title: "Sidebar C · Needs you first", group: "Main window redesign", crumbs: ["Workspace", "All agents"], active: "All agents",
+                 summary: "The combined inbox is pinned at the top. Profile and presence sit in the sidebar footer.")
+        case .needsYou:
+            Info(title: "Needs you inbox", group: "Main window redesign", crumbs: ["Workspace", "Needs you"], active: "Needs you",
+                 summary: "One list of local and network requests in order of urgency, decided in place.")
+        case .networkServers:
+            Info(title: "Network · Servers", group: "Main window redesign", crumbs: ["Network", "Servers"], active: "Servers",
+                 summary: "Every saved server, with the open one's certificate review or settings beside it.")
+        case .networkDirectory:
+            Info(title: "Network · Directory", group: "Main window redesign", crumbs: ["Network", "Directory"], active: "Directory",
+                 summary: "What friends offer on your servers, and what you can do with each.")
+        case .networkApprovals:
+            Info(title: "Network · Approvals", group: "Main window redesign", crumbs: ["Network", "Approvals"], active: "Approvals",
+                 summary: "Uses of your resources that wait for you, and access requests in both directions.")
+        case .networkHandoffs:
+            Info(title: "Network · Hand-offs", group: "Main window redesign", crumbs: ["Network", "Hand-offs"], active: "Hand-offs",
+                 summary: "Hand-offs and reviews you sent, with the open one's status, result and artifacts.")
+        case .networkThreads:
+            Info(title: "Network · Threads", group: "Main window redesign", crumbs: ["Network", "Threads"], active: "Threads",
+                 summary: "The comments on each request you sent.")
+        case .networkAudit:
+            Info(title: "Network · Audit", group: "Main window redesign", crumbs: ["Network", "Audit"], active: "Audit",
+                 summary: "Every use of a shared resource, as a table.")
+        case .networkFanout:
+            Info(title: "Network · Fan-out", group: "Main window redesign", crumbs: ["Network", "Fan-out"], active: "Fan-out",
+                 summary: "One prompt sent to several workers, with their answers side by side.")
+        case .networkShared:
+            Info(title: "Network · Shared", group: "Main window redesign", crumbs: ["Network", "Shared"], active: "Shared",
+                 summary: "What you share, who can use it and for how long.")
+        case .people:
+            Info(title: "People", group: "Main window redesign", crumbs: ["People"], active: "People",
+                 summary: "Friend requests, friends by server, your profile and the activity feed.")
+        case .teamsWorkspace:
+            Info(title: "Teams · Workspace", group: "Main window redesign", crumbs: ["Workspaces", "Relay launch"], active: "Relay launch",
+                 summary: "A workspace’s goal and its combined view: every member’s workers, claims, branches and checks.")
+        case .teamsBoard:
+            Info(title: "Teams · Board", group: "Main window redesign", crumbs: ["Workspaces", "Relay launch"], active: "Relay launch",
+                 summary: "Open, claimed and done columns, with the open card beside them.")
+        case .teamsGroups:
+            Info(title: "Teams · Groups", group: "Main window redesign", crumbs: ["Team tools", "Groups"], active: "Groups",
+                 summary: "The groups you are in, with the open one’s members.")
+        case .teamsHosts:
+            Info(title: "Teams · Hosts", group: "Main window redesign", crumbs: ["Team tools", "Hosts"], active: "Hosts",
+                 summary: "Hardware you lend and hardware friends lend, with a run and its output.")
+        case .teamsKnowledge:
+            Info(title: "Teams · Knowledge", group: "Main window redesign", crumbs: ["Team tools", "Knowledge"], active: "Knowledge",
+                 summary: "The library, an item’s versions, sharing and installing.")
+        case .teamsDirectory:
+            Info(title: "Teams · Directory", group: "Main window redesign", crumbs: ["Team tools", "Directory"], active: "Directory",
+                 summary: "Search a server, then a resource’s reputation and endorsements.")
+        case .teamsAdmin:
+            Info(title: "Teams · Admin", group: "Main window redesign", crumbs: ["Team tools", "Admin"], active: "Admin",
+                 summary: "A relay’s policy, and its members and devices.")
         }
     }
 
@@ -384,7 +471,9 @@ struct DesignPreviewPage: View {
     }
 
     @ViewBuilder private var page: some View {
-        if store.scenario.isCockpit {
+        if store.scenario.isShell {
+            ShellPreviewPage(store: store, gallery: gallery)
+        } else if store.scenario.isCockpit {
             CockpitScreen(content: DesignFixture.content(for: store), ui: store.ui,
                           actions: DesignFixture.actions(for: store),
                           fixtureNavigation: DesignFixture.navigation(for: store),
@@ -564,8 +653,11 @@ struct PreviewCanvas: View {
                             choosePresentation: { mode in store.presentation = mode },
                             chooseTheme: { id in ThemeChoice.select(id) })
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
-             .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker:
-            // Drawn by CockpitScreen in DesignPreviewPage.
+             .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
+             .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
+             .networkThreads, .networkAudit, .networkFanout, .networkShared, .people,
+             .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin:
+            // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }
     }

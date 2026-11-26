@@ -7,6 +7,16 @@ Stands in for `commander-network tray VERB` so the panel can be previewed withou
     COMMANDER_NETWORK_BIN="$PWD/Tests/Fixtures/commander-network-fixture.py" \
     swift run AgentCommander          # debug builds only
 
+To run the cockpit itself against it, give the run a home of its own instead of the panel switch:
+
+    AGENT_COMMANDER_HOME="$(mktemp -d)" \
+    COMMANDER_NETWORK_BIN="$PWD/Tests/Fixtures/commander-network-fixture.py" \
+    COMMANDER_NETWORK_FIXTURE_STATE="$AGENT_COMMANDER_HOME/network-fixture.json" \
+    swift run AgentCommander          # debug builds only
+
+The home must be an absolute path outside the live app's Application Support folder; otherwise the
+bundled helper is used and the fixture is ignored.
+
 It starts with three servers: ryan-mac (online, admin, with friends and one friend request),
 studio-relay (online, not admin; fixture-sam is a friend on both, so the two rows are linked) and
 team-relay (certificate changed). The feed has events on both online servers, three of them unseen.
@@ -16,12 +26,27 @@ with the pin the probe of lab.example shows; `join` then adds that server. Chang
 and remove can be exercised; delete that file, or set COMMANDER_NETWORK_FIXTURE_STATE to a new
 path, to start again. Every name, host and fingerprint here is made up. Nothing touches a network.
 
+The friend request on ryan-mac is from fixture-priya and carries `requestedAt`, twelve minutes ago.
+`accept` and `decline` take `{"server", "handle"}` (or the row's `id`, which is the handle) and
+answer it; it then leaves `status` and the server's `incoming` count. Answering it twice is refused.
+
 Increment 3: ryan-mac starts with two approvals waiting (one Consult, one Hand off), an access request
 from fixture-jonas, a shared directory where sam-agent is granted and jonas-ios and mei-docs are only
 offered, two hand-offs you sent (one done with a report, a patch and a branch; one waiting on its
 owner), threads, and an audit log. Consult answers at once; a prompt containing "wait" stays pending
 and one containing "deny" is denied. Share, approve, deny, request access, withdraw, comment and
 apply are all kept in the scratch file. Apply writes nothing: it only checks the folder exists.
+A patch answers `{"applied": name}`. The report answers `{"saved": path}`, under `Result.md`, or
+under `Result.md.1a2b3c4d` when the folder already holds a `Result.md`.
+
+COMMANDER_NETWORK_FIXTURE_NOW fixes the clock every time here is measured from: seconds since
+1970. A headless picture sets it, with the same instant as the model's clock, so a countdown shows
+the same figure on every run. Without it the fixture reads the real clock.
+
+`threads` lists the threads you take part in on a server, newest first, at most 50: every `sent`
+row (hand-offs, a review as agent.review, a fan-out as agent.fanout with `children`, and one consult),
+with `peer` and `handle` empty, then what friends sent you. A received row always carries `comments`
+(0 for none) and carries `lastCommentAt` only above 0. An approval still waiting is a received row too.
 
 Increment 4: relay-worker starts handed over to fixture-sam with about 24 minutes left, and a
 suggestion from fixture-sam waits in approvals. sam-agent offers Watch, Suggest and Review; its
@@ -35,7 +60,8 @@ handle or that account ID under `handle`.
 
 Increment 6: Remote starts off with two paired devices. `remote-enable` serves nothing: it answers a
 tailnet-shaped address with a new eight-character code that lasts ten minutes. `remote-devices`,
-`remote-revoke` and `remote-disable` keep their state in the scratch file. These verbs name no
+`remote-revoke`, `remote-rename` and `remote-disable` keep their state in the scratch file, and
+`remote-devices` returns `pairing` while the code is unused and under ten minutes old. These verbs name no
 server and refuse any field they don't know, as the device agent does.
 
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
@@ -46,8 +72,23 @@ endorsements, a directory search and an admin policy. A grant may name `group` i
 `host.run` answers with exit 0; a command or argument containing "fail" exits 1 and one containing
 "wait" stays pending. Sharing knowledge whose content looks like a secret is refused. A claim that
 overlaps a live one is refused with its holder. `queue-merge` merges each queued branch, except one
-whose name contains "fail" (tests fail) or "conflict". `knowledge-install` writes nothing. Suspending
+whose name contains "fail" (tests fail) or "conflict". `queue-remove` takes one entry out by its
+workspace and branch. `workspace-prs` lists three open pull requests for iOS onboarding; set
+COMMANDER_NETWORK_FIXTURE_PRS to "empty" for none or "fail" for the signed-out `gh` refusal, and a
+workspace whose repository is not on GitHub is refused as the device refuses it. jonas-mac-mini and studio-mac publish `capabilities.commands` (run-ios-ui-tests
+allows extra arguments, build-release doesn't); mei-gpu-box publishes only `tools`, as an older
+device does. `knowledge-install` writes nothing. Suspending
 "fixture-nobody" or revoking device "d-unknown" is refused as not found.
+
+After increment 5 (design/demos/main-window-5/TRAY-API.md): `admin-members` lists ryan-mac's five
+members and six devices for its admin, with what was suspended or revoked here, and is refused on
+studio-relay. `workspace-combined` lists a workspace's members with their published agents and
+claim holders; `branch` is "" and `checks` null, as the device sends them. Workspaces and knowledge
+items carry `ownerHandle`. Each host in `status.resources` carries `capabilities.commands`. `me`
+carries the policy's `knowledgeDefault` and `knowledgeWidest`. `workspace-edit` changes a workspace
+you own (Relay reconnect) and is refused for one you don't; `workspace-leave` takes you out of iOS
+onboarding and is refused for the one you own. A refused claim carries `holder`, `agent` and
+`claim` beside `error`, and so does a claim or edit of a card someone else holds (card-3).
 
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
 already trusts. Any other address passes and asks for its fingerprint to be confirmed.
@@ -64,8 +105,16 @@ STATE = os.environ.get("COMMANDER_NETWORK_FIXTURE_STATE") or os.path.join(
     tempfile.gettempdir(), "commander-network-fixture-state.json")
 
 
+def clock():
+    fixed = os.environ.get("COMMANDER_NETWORK_FIXTURE_NOW")
+    try:
+        return datetime.fromtimestamp(float(fixed), timezone.utc) if fixed else datetime.now(timezone.utc)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
 def now(delta_minutes=0):
-    moment = datetime.now(timezone.utc) + timedelta(minutes=delta_minutes)
+    moment = clock() + timedelta(minutes=delta_minutes)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -100,7 +149,8 @@ def seed():
              "capabilities": {"harness": "claude", "model": "opus", "slots": 2, "tools": ["gh", "xcodebuild"],
                               "environments": ["ios-simulator"]}},
             {"id": "res-3", "name": "studio-mac", "kind": "host", "actions": ["host.run"],
-             "capabilities": {"tools": ["run-relay-benchmarks"], "environments": ["apple-silicon", "128gb"]}}]},
+             "capabilities": {"tools": ["run-relay-benchmarks"], "environments": ["apple-silicon", "128gb"],
+                              "commands": [{"name": "run-relay-benchmarks", "allowArgs": False, "environment": "apple-silicon"}]}}]},
         "groups": {"s-fixture-home": [
             {"id": "grp-relay", "name": "relay-team", "owner": "u-ryan", "ownerHandle": "fixture-ryan",
              "members": ["fixture-ryan", "fixture-sam", "fixture-mei"]},
@@ -114,7 +164,8 @@ def seed():
                  {"id": "cl-1", "kind": "paths", "key": "Sources/Relay/Lease.swift,Tests/Relay", "holder": "fixture-sam/sam-agent",
                   "expiresAt": now(42)},
                  {"id": "cl-2", "kind": "card", "key": "card-2", "holder": "fixture-ryan/relay-worker", "expiresAt": now(55)},
-                 {"id": "cl-3", "kind": "issue", "key": "#212", "holder": "fixture-mei/mei-agent", "expiresAt": now(18)}]},
+                 {"id": "cl-3", "kind": "issue", "key": "#212", "holder": "fixture-mei/mei-agent", "expiresAt": now(18)},
+                 {"id": "cl-5", "kind": "card", "key": "card-3", "holder": "fixture-sam/sam-agent", "expiresAt": now(37)}]},
             {"id": "ws-ios", "owner": "u-jonas", "group": "grp-ios", "name": "iOS onboarding",
              "goal": "Ship the three-screen first-run flow behind a flag.",
              "repository": "github.com/example/commander-ios", "base": "develop", "integration": "pull_request",
@@ -239,6 +290,14 @@ def seed():
              "text": "Reproduced. The test races the lease renewal. I am adding a wait on the renewal event."},
             {"id": "cm-3", "author": "fixture-sam", "authorKind": "person", "at": now(-40),
              "text": "Looks right to me. Take the patch when it lands."}]},
+        "consults": {"s-fixture-home": [
+            {"request": "rq-consult-1", "resource": "dir-mei-agent", "action": "agent.ask",
+             "title": "How should the lease renewal back off?", "at": now(-52)}]},
+        "received": {"s-fixture-home": [
+            {"request": "rq-in-9", "resource": "res-2", "action": "agent.ask", "title": "Explain the lease renewal path",
+             "at": now(-200), "peer": "u-sam", "handle": "fixture-sam"},
+            {"request": "rq-in-8", "resource": "res-2", "action": "agent.handoff", "title": "Bisect the reconnect flake",
+             "at": now(-1400), "peer": "u-sam", "handle": "fixture-sam"}]},
         "audit": [
             {"request": "rq-in-9", "peer": "fixture-sam", "resource": "res-2", "action": "agent.ask", "started": now(-200),
              "ended": now(-199), "outcome": "ok", "tokens": 18400, "summary": "Explained the lease renewal path."},
@@ -311,7 +370,9 @@ DIRECTORY = {
          "name": "mei-docs", "actions": ["issue.comment", "issue.read"], "grantedActions": []},
         {"id": "dir-jonas-mini", "owner": "u-jonas", "handle": "fixture-jonas", "device": "d-jonas", "kind": "host",
          "name": "jonas-mac-mini", "actions": ["host.run"], "grantedActions": ["host.run"], "listed": True,
-         "capabilities": {"tools": ["run-ios-ui-tests", "build-release"], "environments": ["ios-simulator", "xcode-16"]}},
+         "capabilities": {"tools": ["run-ios-ui-tests", "build-release"], "environments": ["ios-simulator", "xcode-16"],
+                          "commands": [{"name": "run-ios-ui-tests", "allowArgs": True, "environment": "ios-simulator"},
+                                       {"name": "build-release", "allowArgs": False, "environment": "xcode-16"}]}},
         {"id": "dir-mei-gpu", "owner": "u-mei", "handle": "fixture-mei", "device": "d-mei", "kind": "host",
          "name": "mei-gpu-box", "actions": ["host.run"], "grantedActions": [], "listed": True,
          "capabilities": {"tools": ["train-eval", "render-batch", "run-benchmarks"], "environments": ["gpu", "linux", "cuda-12"]}}],
@@ -373,6 +434,23 @@ def save(state):
         json.dump(state, handle)
 
 
+def pending(state):
+    """The home server's friend request, until it is accepted or declined. The id is the handle, as
+    the device agent sends it, and requestedAt is when it came."""
+    if "fixture-priya" in state.get("answered", []):
+        return []
+    return [{"id": "fixture-priya", "handle": "fixture-priya", "requestedAt": now(-12)}]
+
+
+def hosted(row):
+    """A resource as `status` lists it: a host always carries its enrolled commands, even none."""
+    if row.get("kind") != "host":
+        return row
+    capabilities = dict(row.get("capabilities") or {})
+    capabilities.setdefault("commands", [])
+    return dict(row, capabilities=capabilities)
+
+
 def status(state, server):
     profile = state.get("profiles", {}).get(server["id"], {})
     home = server["id"] == "s-fixture-home"
@@ -382,9 +460,9 @@ def status(state, server):
         "hasAvatar": bool(profile.get("avatar")),
         "friends": [{"id": ident, "user": "u-" + handle.split("-", 1)[-1], "handle": handle, "online": presence != "offline"}
                     for ident, handle, presence, _ in FRIENDS.get(server["id"], [])],
-        "incoming": [{"id": "in-1", "handle": "fixture-priya"}] if home else [],
+        "incoming": pending(state) if home else [],
         "outgoing": [], "grants": share(state, "grants").get(server["id"], []),
-        "resources": share(state, "resources").get(server["id"], []),
+        "resources": [hosted(row) for row in share(state, "resources").get(server["id"], [])],
         "shared": [{"id": row["id"], "name": row["name"], "kind": row["kind"], "owner": row["handle"],
                     "actions": row["grantedActions"], "capabilities": row.get("capabilities")}
                    for row in DIRECTORY.get(server["id"], []) if row["grantedActions"]],
@@ -447,7 +525,7 @@ def answer(request):
 
 
 def seconds(delta):
-    moment = datetime.now(timezone.utc) + timedelta(seconds=delta)
+    moment = clock() + timedelta(seconds=delta)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -526,7 +604,8 @@ REMOTE_URL = "http://100.64.0.7:8780"
 
 def remote(state, verb, request):
     """Increment 6: the web view's switch, pairing code and paired devices. Nothing is served."""
-    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"}}.get(verb, set())
+    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"},
+               "remote-rename": {"device", "name"}}.get(verb, set())
     if set(request) - allowed:
         raise ValueError("invalid request")
     if "remote" not in state:
@@ -535,11 +614,12 @@ def remote(state, verb, request):
     if verb == "remote-enable":
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
         code = "".join(alphabet[byte % 32] for byte in os.urandom(8))
-        held.update(running=True, url=REMOTE_URL, code=code)
+        held.update(running=True, url=REMOTE_URL, code=code, expiresAt=now(10))
         save(state)
-        return {"url": REMOTE_URL, "code": code, "expiresAt": now(10), "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
+        return {"url": REMOTE_URL, "code": code, "expiresAt": held["expiresAt"],
+                "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
     if verb == "remote-disable":
-        held.update(running=False, url="", code="")
+        held.update(running=False, url="", code="", expiresAt="")
         save(state)
         return {}
     if verb == "remote-revoke":
@@ -549,11 +629,71 @@ def remote(state, verb, request):
         held["devices"] = kept
         save(state)
         return {}
-    return {"devices": held["devices"], "url": held["url"], "running": held["running"]}
+    if verb == "remote-rename":
+        name = str(request.get("name", "")).strip()
+        if not name or len(name.encode()) > 64:
+            raise ValueError("give the device a name of 1–64 characters")
+        row = next((row for row in held["devices"] if row["id"] == request.get("device")), None)
+        if row is None:
+            raise ValueError("unknown device")
+        row["name"] = name
+        save(state)
+        return {}
+    listed = {"devices": held["devices"], "url": held["url"], "running": held["running"]}
+    # The code on show, so a tray that restarts can draw the same QR code. Timestamps sort as text.
+    if held["running"] and held.get("code") and held.get("expiresAt", "") > now():
+        listed["pairing"] = {"code": held["code"], "expiresAt": held["expiresAt"],
+                             "pairURL": "%s/pair?code=%s" % (held["url"], held["code"])}
+    return listed
+
+
+# Comments on a request a friend sent you. An older scratch file gains them on first read.
+RECEIVED_COMMENTS = {"rq-in-9": [
+    {"id": "cm-in-1", "author": "fixture-sam", "authorKind": "person", "minutes": -198,
+     "text": "Thanks. Does the backoff reset after a clean renewal?"},
+    {"id": "cm-in-2", "author": "relay-worker", "authorKind": "agent", "minutes": -197,
+     "text": "Yes. One clean renewal sets it back to the base interval."}]}
+SENT_ACTIONS = {"review.request": "agent.review"}
+
+
+def thread_rows(state, request):
+    table = share(state, "threads")
+    if request not in table:
+        table[request] = [{"id": row["id"], "author": row["author"], "authorKind": row["authorKind"],
+                           "at": now(row["minutes"]), "text": row["text"]} for row in RECEIVED_COMMENTS.get(request, [])]
+    return table[request]
+
+
+def thread_list(state, server):
+    """What the device's `threads` verb answers: sent rows, then received ones, newest first."""
+    rows = []
+    for row in share(state, "sent").get(server, []) + share(state, "consults").get(server, []):
+        action = row["action"]
+        entry = {"request": row["request"], "resource": row["resource"], "title": row.get("title") or action,
+                 "at": row["at"], "direction": "sent", "peer": "", "handle": "",
+                 "action": "agent.fanout" if action.startswith("fanout:") else SENT_ACTIONS.get(action, action)}
+        if row.get("children"):
+            entry["children"] = [{"request": child["id"], "resource": child["resource"]} for child in row["children"]]
+        rows.append(entry)
+    waiting = [{"request": row["id"], "resource": row["resource"], "action": row["action"],
+                "title": (json.loads(row.get("summary") or "{}").get("title")
+                          or json.loads(row.get("summary") or "{}").get("text") or row["action"]),
+                "at": row["arrived"], "peer": "u-" + row["peer"].replace("fixture-", ""), "handle": row["peer"]}
+               for row in share(state, "approvals").get(server, [])]
+    for row in waiting + share(state, "received").get(server, []):
+        comments = thread_rows(state, row["request"])
+        entry = dict(row, direction="received", comments=len(comments))
+        if comments:
+            entry["lastCommentAt"] = max(comment["at"] for comment in comments)
+        rows.append(entry)
+    rows.sort(key=lambda row: row["at"], reverse=True)
+    return rows[:50]
 
 
 def sharing(state, verb, request):
     server = find(state, request)["id"]
+    if verb == "threads":
+        return {"threads": thread_list(state, server)}
     if verb == "approvals":
         return {"approvals": share(state, "approvals").get(server, [])}
     if verb in ("approve", "deny"):
@@ -629,7 +769,7 @@ def sharing(state, verb, request):
         rows = [row for row in share(state, "sent").get(server, []) if verb == "sent" or row["action"] == "agent.handoff"]
         return {verb: rows[:50]}
     if verb in ("thread", "comment"):
-        rows = share(state, "threads").setdefault(request.get("request") or "", [])
+        rows = thread_rows(state, request.get("request") or "")
         if verb == "comment":
             if not (request.get("text") or "").strip():
                 raise ValueError("Write a comment first.")
@@ -642,7 +782,10 @@ def sharing(state, verb, request):
             raise ValueError("name the absolute path of a local checkout")
         if request.get("artifact") not in (0, 1):
             raise ValueError("this artifact kind is not applied automatically; fetch the branch from the owner's repository")
-        return {"applied": "fixture"}
+        if request.get("artifact") == 1:
+            return {"applied": "reconnect-wait.patch"}
+        taken = os.path.exists(os.path.join(request["checkout"], "Result.md"))
+        return {"saved": os.path.join(request["checkout"], "Result.md.1a2b3c4d" if taken else "Result.md")}
     if verb == "relay":
         path, method = request.get("path") or "", (request.get("method") or "").upper()
         if not path.startswith("/v1/access-requests"):
@@ -677,6 +820,116 @@ SECRET = __import__("re").compile(
     r"(?i)(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
     r"AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(password|passwd|secret|token|api[_-]?key)\s*[=:]\s*[\"']?[^\s\"'${}]{6,})")
 SECRET_REFUSAL = "this item seems to contain a secret; replace it with a ${NAME} placeholder before sharing"
+
+
+class Refusal(ValueError):
+    """A refusal that carries fields beside its sentence, as a refused claim does."""
+
+    def __init__(self, message, **fields):
+        super().__init__(message)
+        self.fields = fields
+
+
+def owned(row):
+    """A workspace or knowledge row with its owner's handle, as the relay sends it."""
+    return dict(row, ownerHandle="fixture-" + row.get("owner", "")[2:] if row.get("owner", "").startswith("u-") else "")
+
+
+def joined(state, server):
+    """The server's workspaces the person hasn't left."""
+    left = state.get("leftWorkspaces", [])
+    return [row for row in share(state, "workspaces").setdefault(server, []) if row["id"] not in left]
+
+
+DEVICES = [("d-ryan-mac", "fixture-ryan", None), ("d-ryan-studio", "fixture-ryan", -190), ("d-sam", "fixture-sam", None),
+           ("d-jonas", "fixture-jonas", None), ("d-mei", "fixture-mei", -45), ("d-noor", "fixture-noor", None)]
+
+
+def admin_members(state, server):
+    """`admin-members`: every member and every device that isn't revoked. Only ryan-mac's admin."""
+    if server != "s-fixture-home":
+        raise ValueError("only a relay admin can list members and devices")
+    friends = FRIENDS.get(server, [])
+    suspended = share(state, "suspended")
+    members = [{"handle": "fixture-ryan", "suspended": False, "admin": True}] + [
+        {"handle": handle, "suspended": handle in suspended, "admin": False} for _, handle, _, _ in friends]
+    offline = {handle for _, handle, presence, _ in friends if presence == "offline"}
+    revoked = share(state, "revokedDevices")
+    devices = []
+    for ident, owner, seen in DEVICES:
+        if ident in revoked:
+            continue
+        # noor's device never opened a session: offline with no last seen.
+        online = seen is None and owner not in offline
+        devices.append({"id": ident, "name": "", "owner": owner, "online": online,
+                        "lastSeen": None if seen is None else now(seen)})
+    return {"members": sorted(members, key=lambda row: row["handle"]),
+            "devices": sorted(devices, key=lambda row: (row["owner"], row["id"]))}
+
+
+def combined(state, server, ident):
+    """`workspace-combined`: each member of the workspace's group with their workers."""
+    found = [row for row in joined(state, server) if row["id"] == ident]
+    if not found:
+        raise ValueError("no workspace %s in your groups" % ident)
+    workspace = found[0]
+    group = [row for row in share(state, "groups").get(server, []) if row["id"] == workspace["group"]]
+    presence = dict({handle: mood != "offline" for _, handle, mood, _ in FRIENDS.get(server, [])}, **{"fixture-ryan": True})
+    published = {"fixture-ryan": [(row["id"], row["name"], row.get("capabilities") or {}, True)
+                                  for row in share(state, "resources").get(server, []) if row["kind"] == "agent"]}
+    for row in DIRECTORY.get(server, []):
+        if row["kind"] == "agent":
+            published.setdefault(row["handle"], []).append((row["id"], row["name"], row.get("capabilities") or {}, False))
+    members = []
+    for handle in sorted(group[0]["members"] if group else []):
+        claims = [claim for claim in workspace["claims"] if claim["holder"].split("/")[0] == handle]
+        workers = []
+        for resource, name, capabilities, own in published.get(handle, []):
+            # The device links only the caller's own claims to a published agent.
+            mine = [claim for claim in claims if own and claim["holder"].split("/", 1)[-1] == name]
+            claims = [claim for claim in claims if claim not in mine]
+            workers.append({"id": resource, "name": name, "resource": resource, "agent": name if mine else "",
+                            "harness": capabilities.get("harness", ""), "model": capabilities.get("model", ""),
+                            "state": "working" if mine else "online" if presence.get(handle) else "offline",
+                            "branch": "", "checks": None, "claims": mine})
+        for holder in sorted({claim["holder"] for claim in claims}):
+            agent = holder.split("/", 1)[-1]
+            workers.append({"id": holder, "name": agent, "resource": "", "agent": agent, "harness": "", "model": "",
+                            "state": "working", "branch": "", "checks": None,
+                            "claims": [claim for claim in claims if claim["holder"] == holder]})
+        for worker in workers:
+            worker["claims"] = [{"id": claim["id"], "kind": claim["kind"], "key": claim["key"],
+                                 "expiresAt": claim["expiresAt"]} for claim in worker["claims"]]
+        members.append({"handle": handle, "online": presence.get(handle, False), "workers": workers})
+    return {"workspace": ident, "members": members}
+
+
+def workspace_change(state, server, verb, request):
+    """`workspace-edit` for the owner and `workspace-leave` for a member."""
+    ident = request.get("workspace") or request.get("id") or ""
+    found = [row for row in joined(state, server) if row["id"] == ident]
+    if not found:
+        raise ValueError("no workspace %s in your groups" % ident)
+    workspace = found[0]
+    owner = workspace["owner"] == "u-ryan"
+    if verb == "workspace-leave":
+        if owner:
+            raise ValueError("the owner cannot leave workspace %s" % ident)
+        workspace["claims"] = [claim for claim in workspace["claims"] if not claim["holder"].startswith("fixture-ryan/")]
+        state.setdefault("leftWorkspaces", []).append(ident)
+        save(state)
+        return {}
+    if not owner:
+        raise ValueError("only the owner can edit workspace %s" % ident)
+    fields = {field: request[field].strip() for field in ("name", "goal", "repository", "base", "integration")
+              if isinstance(request.get(field), str) and request[field].strip()}
+    if "integration" in fields and fields["integration"] not in ("queue", "pull_request"):
+        raise ValueError("integration must be queue or pull_request")
+    if not any(workspace[field] != value for field, value in fields.items()):
+        raise ValueError("nothing to change")
+    workspace.update(fields)
+    save(state)
+    return owned(workspace)
 
 
 def overlaps(kind, a, b):
@@ -728,7 +981,7 @@ def teams_relay(state, server, method, path, body):
     if head == "workspaces":
         rows = share(state, "workspaces").setdefault(server, [])
         if len(parts) == 1 and method == "GET":
-            return {"workspaces": rows}
+            return {"workspaces": [owned(row) for row in joined(state, server)]}
         if len(parts) == 1 and method == "POST":
             if not all((body.get(field) or "").strip() for field in ("name", "goal", "repository", "base", "group")):
                 raise ValueError("provide a name, goal, repository, base and group")
@@ -740,7 +993,7 @@ def teams_relay(state, server, method, path, body):
                          "claims": []})
             save(state)
             return {"id": ident}
-        workspace = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
+        workspace = [row for row in joined(state, server) if row["id"] == (parts[1] if len(parts) > 1 else "")]
         if not workspace:
             raise ValueError("not found")
         workspace = workspace[0]
@@ -754,7 +1007,9 @@ def teams_relay(state, server, method, path, body):
                     raise ValueError("holder must be handle/agent")
                 for claim in workspace["claims"]:
                     if claim["kind"] == kind and overlaps(kind, key, claim["key"]):
-                        raise ValueError("already claimed by %s" % claim["holder"])
+                        handle, _, agent = claim["holder"].partition("/")
+                        raise Refusal("relay HTTP 409: overlapping claim held by %s" % claim["holder"],
+                                      holder=handle, agent=agent, claim=claim["id"])
                 claim = {"id": "cl-%s" % hashlib.sha256((key + now()).encode()).hexdigest()[:8], "kind": kind, "key": key,
                          "holder": holder, "expiresAt": now(60)}
                 workspace["claims"].append(claim)
@@ -789,7 +1044,10 @@ def teams_relay(state, server, method, path, body):
             if body.get("state") not in (None, "open", "claimed", "done"):
                 raise ValueError("state must be open, claimed or done")
             if card["state"] == "claimed" and not card["assignee"].startswith("fixture-ryan/"):
-                raise ValueError("already claimed by %s" % card["assignee"])
+                handle, _, agent = card["assignee"].partition("/")
+                held = [claim["id"] for claim in workspace["claims"] if claim["kind"] == "card" and claim["key"] == card["id"]]
+                raise Refusal("relay HTTP 409: overlapping claim held by %s" % card["assignee"],
+                              holder=handle, agent=agent, claim=held[0] if held else "")
             was = card["state"]
             card["state"] = body.get("state", was)
             if "result" in body:
@@ -809,13 +1067,13 @@ def teams_relay(state, server, method, path, body):
         rows = share(state, "knowledge").setdefault(server, [])
         versions = share(state, "knowledgeVersions")
         if len(parts) == 1 and method == "GET":
-            return {"items": rows}
+            return {"items": [owned(row) for row in rows]}
         if len(parts) == 3 and parts[2] == "versions":
             item = [row for row in rows if row["id"] == parts[1]]
             if not item:
                 raise ValueError("not found")
             older = [dict(item[0], **version) for version in versions.get(parts[1], [])]
-            return {"versions": older + [item[0]]}
+            return {"versions": [owned(row) for row in older + [item[0]]]}
         if SECRET.search(body.get("content") or ""):
             raise ValueError(SECRET_REFUSAL)
         widest = ["private", "friend", "group", "server"]
@@ -833,7 +1091,7 @@ def teams_relay(state, server, method, path, body):
                     "visibility": body.get("visibility") or "private", "version": 1, "createdAt": now()}
             rows.insert(0, item)
             save(state)
-            return item
+            return owned(item)
         item = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
         if not item or item[0]["owner"] != "u-ryan":
             raise ValueError("not found")
@@ -842,7 +1100,7 @@ def teams_relay(state, server, method, path, body):
         item.update({key: body[key] for key in ("name", "content", "visibility") if body.get(key)})
         item.update(version=item["version"] + 1, createdAt=now())
         save(state)
-        return item
+        return owned(item)
     if head == "reputation" and method == "GET":
         figures = share(state, "reputation").get(parts[1] if len(parts) > 1 else "")
         if parts[1:2] == ["dir-mei-gpu"]:
@@ -919,6 +1177,12 @@ def teams_relay(state, server, method, path, body):
 def teams(state, verb, request):
     """Increment 5: the device's own team verbs."""
     server = find(state, request)["id"]
+    if verb == "admin-members":
+        return admin_members(state, server)
+    if verb == "workspace-combined":
+        return combined(state, server, request.get("workspace") or request.get("id") or "")
+    if verb in ("workspace-edit", "workspace-leave"):
+        return workspace_change(state, server, verb, request)
     if verb == "knowledge-share":
         return teams_relay(state, server, "POST", "/v1/knowledge", request.get("item") or {})
     if verb == "knowledge-install":
@@ -931,12 +1195,40 @@ def teams(state, verb, request):
         if not (request.get("destination") or "").startswith("/"):
             raise ValueError("choose where to save this item")
         return {"installed": request["destination"]}
+    if verb == "workspace-prs":
+        found = [row for row in joined(state, server) if row["id"] == request.get("workspace")]
+        if not request.get("workspace"):
+            raise ValueError("name a workspace")
+        if not found:
+            raise ValueError("unknown workspace %s" % request["workspace"])
+        repository = found[0]["repository"]
+        if not repository.startswith("github.com/"):
+            raise ValueError("pull requests can only be listed for GitHub repositories, not %s" % repository)
+        slug = repository[len("github.com/"):]
+        mode = os.environ.get("COMMANDER_NETWORK_FIXTURE_PRS", "")
+        if mode == "fail":
+            raise ValueError("gh could not list pull requests for %s; check that gh is installed and signed in" % slug)
+        rows = [] if mode == "empty" or found[0]["integration"] != "pull_request" else [
+            {"number": 212, "title": "Add the three-screen first-run flow behind a flag", "author": "fixture-jonas",
+             "state": "open", "branch": "onboarding/first-run-flow"},
+            {"number": 209, "title": "Remember which onboarding screen the person left on", "author": "fixture-ryan",
+             "state": "open", "branch": "collab/onboarding-resume"},
+            {"number": 207, "title": "Document the lease states", "author": "fixture-sam", "state": "open",
+             "branch": "docs/lease-states"}]
+        for row in rows:
+            row["url"] = "https://github.com/%s/pull/%d" % (slug, row["number"])
+        return {"workspace": found[0]["id"], "repository": slug, "pullRequests": rows}
     rows = share(state, "queue")
     if verb == "queue-add":
         if not (request.get("checkout") or "").startswith("/") or not request.get("branch") or not request.get("workspace"):
             raise ValueError("queue-add needs a workspace, a branch and the absolute checkout path")
         rows.append({"workspace": request["workspace"], "branch": request["branch"], "checkout": request["checkout"],
                      "test": request.get("testCommand") or [], "added": now(), "state": "queued", "output": ""})
+    if verb == "queue-remove":
+        found = [row for row in rows if row["workspace"] == request.get("workspace") and row["branch"] == request.get("branch")]
+        if not found:
+            raise ValueError("no queued branch %s in that workspace" % (request.get("branch") or ""))
+        rows.remove(found[0])
     if verb == "queue-merge":
         for row in rows:
             if row["state"] != "queued" or (request.get("workspace") and row["workspace"] != request["workspace"]):
@@ -959,7 +1251,7 @@ def summary(server, state=None):
     if state is not None and live:
         unseen = sum(1 for event in events()[:max(len(events()) - state.get("seen", 0), 0)] if event["server"] == server["id"])
     extra = {"presence": effective(state)} if state is not None and live else {}
-    return dict(server, friendsOnline=friends, incoming=1 if home else 0, unseen=unseen, **extra)
+    return dict(server, friendsOnline=friends, incoming=len(pending(state or {})) if home else 0, unseen=unseen, **extra)
 
 
 def find(state, request):
@@ -1005,7 +1297,7 @@ def probe(request):
 
 def run(verb, request):
     state = load()
-    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke"):
+    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename"):
         return remote(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
@@ -1108,7 +1400,9 @@ def run(verb, request):
             head, data = source.split(",", 1)
             return {"contentType": head[5:].split(";")[0], "data": data}
         if verb == "me":
-            return {"admin": admin, "mode": state["membership"]["mode"] if admin else "open"}
+            policy = share(state, "policy")
+            return {"admin": admin, "mode": state["membership"]["mode"] if admin else "open",
+                    "knowledgeDefault": policy["knowledgeDefault"], "knowledgeWidest": policy["knowledgeWidest"]}
         if verb in ("membership", "membership-set"):
             if not admin:
                 raise ValueError("Only an admin can see membership settings.")
@@ -1130,12 +1424,21 @@ def run(verb, request):
                 "maxUses": request.get("maxUses", 5), "uses": 0}
     if verb == "search":
         return {"handle": request.get("handle", "")}
+    if verb in ("accept", "decline"):
+        find(state, request)
+        handle = request.get("handle") or request.get("id") or ""
+        if handle not in [row["handle"] for row in pending(state)]:
+            raise ValueError("no pending friend request from " + handle)
+        state.setdefault("answered", []).append(handle)
+        save(state)
+        return {}
     if verb in ("approvals", "approve", "deny", "audit", "resource-add", "grant", "revoke", "send", "sent", "handoffs",
-                "thread", "comment", "apply-artifact", "relay"):
+                "thread", "threads", "comment", "apply-artifact", "relay"):
         return sharing(state, verb, request)
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
-    if verb in ("queue", "queue-add", "queue-merge", "knowledge-share", "knowledge-install"):
+    if verb in ("queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs", "knowledge-share",
+                "knowledge-install", "admin-members", "workspace-combined", "workspace-edit", "workspace-leave"):
         return teams(state, verb, request)
     return {}
 
@@ -1149,7 +1452,7 @@ def main():
         print(json.dumps({"ok": True, "data": run(sys.argv[2], request)}))
         return 0
     except ValueError as problem:
-        print(json.dumps({"ok": False, "error": str(problem)}))
+        print(json.dumps(dict(getattr(problem, "fields", {}), ok=False, error=str(problem))))
         return 0
 
 

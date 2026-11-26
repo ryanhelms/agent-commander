@@ -123,21 +123,65 @@ struct MultiplayerLenientList<Item: Decodable>: Decodable {
 // MARK: - Capabilities and the directory
 
 /// What an owner says a resource can do: its harness, model, free slots, tools and environments.
+/// One command a host's owner enrolled, as the host publishes it.
+struct MultiplayerHostCommand: Decodable, Equatable, Sendable, Identifiable {
+    let name: String
+    /// The owner lets a caller add arguments after the enrolled ones.
+    let allowArgs: Bool
+    /// Where the command runs, in the owner's words: "ios-simulator". Empty when not said.
+    let environment: String
+
+    var id: String { name }
+
+    private enum CodingKeys: String, CodingKey { case name, allowArgs, environment }
+
+    init(name: String, allowArgs: Bool = false, environment: String = "") {
+        self.name = name
+        self.allowArgs = allowArgs
+        self.environment = environment
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = container.text(.name)
+        allowArgs = ((try? container.decodeIfPresent(Bool.self, forKey: .allowArgs)) ?? nil) ?? false
+        environment = container.text(.environment)
+    }
+}
+
 struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
     let harness: String
     let model: String
     let slots: Int?
     let tools: [String]
     let environments: [String]
+    /// A host's enrolled commands, each with whether it takes extra arguments. Nil from a device
+    /// that doesn't publish them yet; `tools` then names the commands and nothing is known of
+    /// their arguments.
+    let commands: [MultiplayerHostCommand]?
 
-    private enum CodingKeys: String, CodingKey { case harness, model, slots, tools, environments }
+    private enum CodingKeys: String, CodingKey { case harness, model, slots, tools, environments, commands }
 
-    init(harness: String = "", model: String = "", slots: Int? = nil, tools: [String] = [], environments: [String] = []) {
+    init(harness: String = "", model: String = "", slots: Int? = nil, tools: [String] = [], environments: [String] = [],
+         commands: [MultiplayerHostCommand]? = nil) {
         self.harness = harness
         self.model = model
         self.slots = slots
         self.tools = tools
         self.environments = environments
+        self.commands = commands
+    }
+
+    /// The names a host run can choose between.
+    var commandNames: [String] { commands?.map(\.name) ?? tools }
+
+    func command(_ name: String) -> MultiplayerHostCommand? { commands?.first { $0.name == name } }
+
+    /// Whether a run of this command may carry extra arguments. Nil when the host doesn't say,
+    /// and the owner's Mac then decides.
+    func allowsArguments(_ name: String) -> Bool? {
+        guard let commands else { return nil }
+        return commands.first { $0.name == name }?.allowArgs ?? false
     }
 
     init(from decoder: any Decoder) throws {
@@ -147,9 +191,18 @@ struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
         slots = ((try? container.decodeIfPresent(Int.self, forKey: .slots)) ?? nil).flatMap { $0 > 0 ? $0 : nil }
         tools = container.strings(.tools) ?? []
         environments = container.strings(.environments) ?? []
+        // Unreadable rows are dropped; a command with no name can't be run.
+        struct Lenient: Decodable {
+            let value: MultiplayerHostCommand?
+            init(from decoder: any Decoder) throws { value = try? MultiplayerHostCommand(from: decoder) }
+        }
+        commands = ((try? container.decodeIfPresent([Lenient].self, forKey: .commands)) ?? nil)?
+            .compactMap(\.value).filter { !$0.name.isEmpty }
     }
 
-    var isEmpty: Bool { harness.isEmpty && model.isEmpty && slots == nil && tools.isEmpty && environments.isEmpty }
+    var isEmpty: Bool {
+        harness.isEmpty && model.isEmpty && slots == nil && tools.isEmpty && environments.isEmpty && commands?.isEmpty != false
+    }
 
     /// Harness and model, then slots: "Claude, opus, 2 slots".
     var headline: String? {
@@ -161,7 +214,7 @@ struct MultiplayerCapabilities: Decodable, Equatable, Sendable {
     }
 
     /// Tools and environments, as short tags.
-    var tags: [String] { (tools + environments).map(\.multiplayerDisplay) }
+    var tags: [String] { ((tools.isEmpty ? commandNames : tools) + environments).map(\.multiplayerDisplay) }
 
     static func harnessTitle(_ harness: String) -> String {
         switch harness.lowercased() {
@@ -657,6 +710,121 @@ struct MultiplayerThread: Decodable, Equatable, Sendable {
     }
 }
 
+/// One thread the person takes part in: a request they sent, or one a friend sent to a resource
+/// of theirs. `request` works with the thread and comment verbs.
+struct MultiplayerThreadSummary: Decodable, Equatable, Sendable, Identifiable {
+    enum Direction: String, Equatable, Sendable { case sent, received }
+
+    /// One request a fan-out made.
+    struct Child: Decodable, Equatable, Sendable, Identifiable {
+        let request: String
+        let resource: String
+
+        var id: String { request }
+
+        private enum CodingKeys: String, CodingKey { case request, resource }
+
+        init(request: String, resource: String = "") {
+            self.request = request
+            self.resource = resource
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let request = container.text(.request)
+            guard !request.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .request, in: container, debugDescription: "missing request")
+            }
+            self.request = request
+            resource = container.text(.resource)
+        }
+    }
+
+    let request: String
+    let resource: String
+    /// For example agent.ask, agent.suggest, agent.handoff, agent.review or agent.fanout.
+    let action: String
+    let title: String
+    let at: Date?
+    /// Nil when the device names a direction this build doesn't know.
+    let direction: Direction?
+    /// Who sent a received request. Empty on a sent row: name its resource instead.
+    let peer: String
+    let handle: String
+    /// How many comments a received row's thread holds. Nil on a sent row.
+    let comments: Int?
+    /// The newest comment's time, when the thread has one.
+    let lastCommentAt: Date?
+    /// A fan-out's requests. Empty for anything else.
+    let children: [Child]
+
+    var id: String { request }
+
+    private enum CodingKeys: String, CodingKey {
+        case request, resource, action, title, at, direction, peer, handle, comments, lastCommentAt, children
+    }
+
+    init(request: String, resource: String = "", action: String = "", title: String = "", at: Date? = nil,
+         direction: Direction? = .sent, peer: String = "", handle: String = "", comments: Int? = nil,
+         lastCommentAt: Date? = nil, children: [Child] = []) {
+        self.request = request
+        self.resource = resource
+        self.action = action
+        self.title = title
+        self.at = at
+        self.direction = direction
+        self.peer = peer
+        self.handle = handle
+        self.comments = comments
+        self.lastCommentAt = lastCommentAt
+        self.children = children
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let request = container.text(.request)
+        guard !request.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .request, in: container, debugDescription: "missing request")
+        }
+        self.request = request
+        resource = container.text(.resource)
+        action = container.text(.action)
+        title = container.text(.title)
+        at = container.date(.at)
+        direction = Direction(rawValue: container.text(.direction))
+        peer = container.text(.peer)
+        handle = container.text(.handle)
+        comments = ((try? container.decodeIfPresent(Int.self, forKey: .comments)) ?? nil).map { max($0, 0) }
+        lastCommentAt = container.date(.lastCommentAt)
+        let list = (try? container.decodeIfPresent(MultiplayerLenientList<Child>.self, forKey: .children)) ?? nil
+        children = MultiplayerUnique.keep(list?.items ?? []) { $0.request }
+    }
+
+    var isSent: Bool { direction == .sent }
+    var isReceived: Bool { direction == .received }
+    /// One prompt and its reply.
+    var isConsult: Bool { action == MultiplayerSharePolicy.ask }
+    var isFanout: Bool { !children.isEmpty || action == "agent.fanout" }
+    /// The action in words: "Send prompts to the worker".
+    var actionTitle: String { MultiplayerCapability.title(action) }
+    /// Who sent a received request, by handle when the device gives one.
+    var sender: String { handle.isEmpty ? peer : handle }
+}
+
+/// The reply to `threads`: newest first, at most 50 rows.
+struct MultiplayerThreadList: Decodable {
+    static let limit = 50
+    let threads: [MultiplayerThreadSummary]
+
+    private enum CodingKeys: String, CodingKey { case threads }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let list = (try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerThreadSummary>.self, forKey: .threads)) ?? nil
+        threads = Array(MultiplayerUnique.keep(list?.items ?? []) { $0.request }.prefix(Self.limit))
+    }
+}
+
 // MARK: - Grant policy
 
 /// Which actions travel together, and the action lists a resource has before the device agent has
@@ -790,6 +958,31 @@ enum MultiplayerAttribution: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Something in the cockpit the person chose to share: a worker, or a run's repository.
+/// What the device did with an artifact: `{"saved": path}` for a file or a report it wrote, or
+/// `{"applied": name}` for a patch it applied and staged.
+struct MultiplayerApplied: Decodable, Equatable, Sendable {
+    /// Where the file was written. Its last component is the file's final name, which differs from
+    /// the artifact's when that name was taken (`report.md.1a2b3c4d`).
+    var saved: String? = nil
+    var applied: String? = nil
+
+    /// The saved file's final name.
+    var savedName: String? {
+        guard let saved, !saved.isEmpty else { return nil }
+        let name = URL(fileURLWithPath: saved).lastPathComponent.multiplayerDisplay
+        return name.isEmpty ? nil : name
+    }
+
+    /// The confirmation for one artifact: what was applied or saved, where, and under which name.
+    func confirmation(artifact name: String, patch: Bool, folder: String) -> String {
+        if applied != nil || (patch && saved == nil) {
+            return "Applied \(name) to \(folder). The changes are staged, not committed."
+        }
+        guard let final = savedName, final != name else { return "Saved \(name) into \(folder)." }
+        return "Saved \(name) into \(folder) as \(final)."
+    }
+}
+
 enum MultiplayerShareTarget: Equatable, Sendable {
     case agent(id: String, name: String)
     case repo(path: String, name: String)
@@ -1048,6 +1241,11 @@ extension MultiplayerClient {
         try await fetch(.handoffs, [:], as: MultiplayerSentList.self).rows
     }
 
+    /// Every thread the person takes part in on this server, newest first.
+    func threads() async throws -> [MultiplayerThreadSummary] {
+        try await fetch(.threads, [:], as: MultiplayerThreadList.self).threads
+    }
+
     func thread(request: String) async throws -> MultiplayerThread {
         try await fetch(.thread, ["request": .string(request)], as: MultiplayerThread.self, allowsEmpty: true)
             ?? MultiplayerThread()
@@ -1059,8 +1257,14 @@ extension MultiplayerClient {
     }
 
     func applyArtifact(request: String, artifact: Int, checkout: String) async throws {
-        _ = try await fetch(.applyArtifact, ["request": .string(request), "artifact": .number(artifact),
-                                             "checkout": .string(checkout)], as: MultiplayerIgnored.self, allowsEmpty: true)
+        _ = try await appliedArtifact(request: request, artifact: artifact, checkout: checkout)
+    }
+
+    /// Applies or saves one artifact and says what the device did with it.
+    func appliedArtifact(request: String, artifact: Int, checkout: String) async throws -> MultiplayerApplied {
+        try await fetch(.applyArtifact, ["request": .string(request), "artifact": .number(artifact),
+                                         "checkout": .string(checkout)], as: MultiplayerApplied.self, allowsEmpty: true)
+            ?? MultiplayerApplied()
     }
 
     func accessRequests() async throws -> [MultiplayerAccessRequest] {

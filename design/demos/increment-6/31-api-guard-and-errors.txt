@@ -1,0 +1,30 @@
+== -X POST http://100.64.0.1:8780/api/approvals/s-f01fcff5/a-nope/approve
+{"error":"missing request guard","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 1 http://100.64.0.1:8780/api/approvals/s-f01fcff5/a-nope/approve
+{"error":"no such pending request","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 1 http://100.64.0.1:8780/api/approvals/s-f01fcff5/a-nope/deny
+{"error":"no such pending request","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 1 http://100.64.0.1:8780/api/approvals/s-f01fcff5/a-nope/maybe
+{"error":"unknown decision","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 1 http://100.64.0.1:8780/api/approvals/s-unknown/a-nope/approve
+{"error":"unknown server","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 0 -d {"cursor":""} http://100.64.0.1:8780/api/activity/seen
+{"error":"missing request guard","ok":false}
+ [400]
+== -X POST -H X-Commander-Remote: 1 -H Origin: http://evil.example -d garbage http://100.64.0.1:8780/api/activity/seen
+{"error":"invalid body","ok":false}
+ [400]
+== -X GET http://100.64.0.1:8780/api/watch/s-f01fcff5/no-such-resource
+{"error":"requested shared resource or capability unavailable","ok":false}
+ [400]
+== -X GET http://100.64.0.1:8780/api/watch/s-unknown/x
+{"error":"unknown server","ok":false}
+ [400]
+== -X DELETE http://100.64.0.1:8780/api/overview
+Method Not Allowed
+ [405]

@@ -40,6 +40,20 @@ Foundations come in two themes, black glass and console, with the same roles (`t
 | Templates | `WorkspacePage`, `TaskSheet`, and the window material in `CockpitShell` | `Templates.swift` |
 | Pages | Preferences, Hosts, All agents, Search history | `SetupPages.swift`, `WorkspacePages.swift`, `DelegationPages.swift` |
 
+The redesigned main-window shell (increment 2, design previews only) follows the same levels:
+
+| Level | Shell components | File |
+| --- | --- | --- |
+| Values | `CommanderNavigation`, `CommanderPlace`, `CommanderNavigationAction`, `NeedsYouInbox`, `NeedsYouItem` | `ShellNavigation.swift`, `NeedsYouModel.swift` |
+| Foundations | `ShellLayout`, `NeedsYouLayout` | `ShellMolecules.swift`, `NeedsYouPage.swift` |
+| Atoms | `ShellCount`, `ShellPlaceMark`, `ShellSelectable`, `shellSidebarSurface` | `ShellMolecules.swift` |
+| Molecules | `ShellPlaceRow`, `ShellGroupHeading`, `ShellModeCell`, `ShellReadoutStrip`, `ShellPresenceMenu`, `ShellToolbarReadouts`, `ShellSegments`, `ShellProfileRow`, `ShellLoadNote`, `ShellInboxCell`, `ShellToolbarTitle`, `NeedsYouOriginCell`, `NeedsYouKindTag`, `NeedsYouClockLabel`, `NeedsYouVerbStrip`, `NeedsYouOutcomeWell`, `NeedsYouReplyField` | `ShellMolecules.swift`, `ShellNeedsYouSidebar.swift`, `ShellTemplate.swift`, `NeedsYouPage.swift` |
+| Organisms | `ShellPlaceList`, `ShellSidebarGrouped`, `ShellModeRail`, `ShellNeedsYouSidebar`, `NeedsYouRow`, `NeedsYouList` | `ShellSidebarGrouped.swift`, `ShellModeRail.swift`, `ShellNeedsYouSidebar.swift`, `NeedsYouPage.swift` |
+| Templates | `ShellTemplate` | `ShellTemplate.swift` |
+| Pages | `NeedsYouPage`, and the previews `ShellPreviewPage`, `ShellPlaceholderPage`, `ShellWallPage` | `NeedsYouPage.swift`, `ShellPreview.swift` |
+
+The three sidebars take one `CommanderNavigation` and emit `CommanderNavigationAction`s, so a page never depends on which sidebar is showing.
+
 The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
 
 ## Native composition and ownership
@@ -47,6 +61,44 @@ The atoms in `Atoms.swift` stay on the black-glass tokens because the console su
 The focused native terminal window reuses the existing console title bar and surface. `NativeTerminalWell` is the AppKit leaf for a read-only SwiftTerm grid, and `NativeTerminalHeader` combines worker identity with detach, reconnect and close. The `NativeTerminalViewer` organism receives the attachment state from `NativeTerminalViewerModel`. The existing console display menu opens the matching worker’s window by value. [Terminal well](../../Sources/AgentCommander/NativeTerminalWell.swift) · [Window components](../../Sources/AgentCommander/NativeTerminalComponents.swift)
 
 Inline terminals on the coordinator, wall, focused worker, and PiP use the same `NativeTerminalWell`. `ConsoleScrollback` selects the surface, and `NativeTerminalSlot` keeps the transcript available when attachment is unavailable or the viewer detaches. The shared mode and connection state follow the worker ID. Each visible terminal owns its own read-only, size-neutral attachment. The title bar stays with the containing console, and reply and approval controls remain in their existing places.
+
+The network composers are drawn in the main window through hosts. `MultiplayerHostFrame` is the template: a banner band, the tray's own composer organism, then the tray footer with the hint, Cancel and the composer's actions. There is a host for each composer: `MultiplayerGrantHost`, `MultiplayerConsultHost`, `MultiplayerHandoffHost`, `MultiplayerReviewRequestHost`, `MultiplayerWatchHost`, `MultiplayerAddFriendHost`, `MultiplayerInviteHost`, `MultiplayerMembershipHost` and `MultiplayerAddServerHost`. A host receives the network model, its server and resource, and emits `onCancel` and `onFinish` with a `MultiplayerActionResult`. It keeps its own draft, reply and refusal, and acts through the model's calls that name their target, so it never reads or moves the tray's route. `scrolls: false` drops the host's scroll view for a pane that already scrolls. A host adds no styling of its own. [Hosts](../../Sources/AgentCommander/MultiplayerHosts.swift) · [Grant host](../../Sources/AgentCommander/MultiplayerGrantHost.swift)
+
+The tray's atoms take the theme of the view they are drawn in. `MultiplayerTheme` is no longer a set of console values: a colour token (`MultiplayerTheme.focus`) is a `Color` that resolves its role from `@Environment(\.theme)`, a fill token (`panelFill`, `controlFill`, `primaryFill`) is a shape style, and a type token (`MultiplayerTheme.sub`) is a `MultiplayerType` that `.font(_:)` resolves with its tracking and case. An atom that needs a shape or a size reads `@Environment(\.theme)` and asks for `trayTile`, `trayControl`, `trayChip`, `controlShape` or `theme.space`. So a host, the holder row, `RemoteWorkerZoom` and `RemoteWorkerGroup` are restyled by the window's theme with no change at the call site, and no component asks which theme is active. The menu bar tray sets console at its root (`MultiplayerPanel(model:theme:)`). The role each atom reads is listed under "Tray roles" in [DESIGN.md](../../DESIGN.md). [Token layer](../../Sources/AgentCommander/MultiplayerTrayComponents.swift) · [Skin](../../Sources/AgentCommander/MultiplayerSkin.swift)
+
+The triage tray opens main-window pages through two molecules and their values, in `MultiplayerOpenInWindow.swift`:
+
+| Level | Component | Responsibility |
+| --- | --- | --- |
+| Value | `MultiplayerSharePage.staysInTray` | Which pages the tray still draws: the quick actions and composers, Watch until the wall's zoom to a remote tile passes, and Control, a documented deferral with no window hand-over composer planned. |
+| Value | `MultiplayerWindowLink` | A page as the window page it opens: the router's `CommanderOpenRequest`, the breadcrumb and the item's name. Nil for a page with no window page. |
+| Value | `MultiplayerWindowShortcut` | One compact row: a place's mark and name, a count with an optional noun ("3 sent"), and its link. Its static lists (`agents`, `teams`, `groups`, `sharing`, `serverTeams`) are the rows of each band. |
+| Value | `MultiplayerPageOpener` | Shows a page where it lives: the tray's route for a page that stays, a request through the opener for one that moved. Every tray entry point that names a page uses it. |
+| Value | `MultiplayerWindowOpener` | Open, then close, as two injected steps. The default opens through `CommanderWindowRouter.shared`. Read from `\.multiplayerWindowOpener`. |
+| Value | `MultiplayerPanelWindow`, `MultiplayerPanelWindowProbe` | The window a panel is drawn in, so the opener can close it. In the menu bar it closes through the dismissal, not the window. |
+| Value | `MultiplayerPanelDismissal`, `multiplayerMenuBarPanel()` | SwiftUI's `dismiss` for the `MenuBarExtra` panel, handed down from the scene's content. Nil in any other window. |
+| Molecule | `MultiplayerOpenInWindowRow` | One native button in the tray's skin. It receives a link and emits one request through the opener. It reads no model. |
+| Molecule | `MultiplayerWindowLinkRow`, `MultiplayerWindowLinkRows` | The compact form, inside a band: it receives a shortcut and emits one request through the opener. The group stacks rows in the order given. |
+| Atom | `MultiplayerLeavesTrayMark` | The out arrow after a verb (`MultiplayerRowVerb.opensWindow`) or a work row's state that opens the window. |
+| Molecule | `MultiplayerServerAction` | A band heading's action that acts on a server: a button with one server, a menu with several. |
+
+`MultiplayerPanel` (the page) builds the link for its route and places the row first on the page; a page that left the tray is that row alone. Each tab composes a band heading and window link rows where its dense section was. The tray depends on the request value and the router's `open(_:)` only.
+
+These tray organisms and pages were deleted with their pages: `MultiplayerSharingBand`, `MultiplayerTeamsBand`, `MultiplayerGroupsBand`, `MultiplayerServerTeamsBand`, `MultiplayerGroupRow`, `MultiplayerHandoffList`, `MultiplayerGroupsPage`, `MultiplayerWorkspacesPage`, `MultiplayerWorkspacePage`, `MultiplayerHostsPage`, `MultiplayerKnowledgeLibrary`, `MultiplayerDirectorySearchPage`, and the molecules only they used (`MultiplayerStateTally`, `MultiplayerCardRow`). The other page organisms stay because the main window or a host draws them. The tray no longer draws `MultiplayerReviewPage` or `MultiplayerPolicyPage`; they stay because the window's Hand-offs page and the policy host draw them.
+
+Changes to the atoms and hosts that go with it:
+
+- `MultiplayerLamp` draws the theme's status mark: the lamp shapes, or one dot. `MultiplayerSwitchStyle` draws the theme's switch form and still speaks its label.
+- `MultiplayerTrayButtonStyle`, `MultiplayerSegments` and the verb strip take the theme's button shape, control fill, edge, ink and height.
+- `MultiplayerFieldBox`, `MultiplayerTextArea` and `MultiplayerWell` take the field roles and the control radius. `MultiplayerMark` and `MultiplayerAvatar` take the mark roles.
+- `MultiplayerRowOutcome` is a new molecule: a state label for how an answered request came out. `MultiplayerDecisionRow` shows it in place of its verbs (`outcome:`), and `MultiplayerNeedsYou` takes `approvalAnswer` and `accessAnswer`.
+- `MultiplayerCountdown` takes `now:`, and reads `multiplayerFixedNow` from the environment when it has none.
+- `RemoteWorkerZoom` takes `footerTitle` (nil leaves the button out) and, with `allowsSuggestion`, the caller's `suggestion` draft, `reply`, `isBusy` and `onSuggest`. `MultiplayerRemoteWorkerZoomHost` takes `footerTitle` and `allowsSuggestion` and keeps the draft itself.
+- `RemoteWorkerGroup` reads the `wall` group roles for its fill, edge, radius and heading type.
+- `MultiplayerFingerprintText` is one static text for VoiceOver.
+- `MultiplayerKnowledgeForm`'s secret refusal is one static text for VoiceOver, with the heading, the reason and the advice as its label.
+- `MultiplayerClaimHost` and `MultiplayerCardHost` take `onRefused`, called with the `MultiplayerClaimRefusal` before `onFinish` when the relay names who holds the claim or the card.
+- `MultiplayerKnowledgeHost` reads the server's widest knowledge scope itself and names it in a refused share.
 
 **SwiftUI owns the cockpit.** Use native navigation, split views, menu actions, controls and keyboard commands. Apply the dark glass material to navigation and floating controls. Keep terminal wells and long-reading surfaces opaque so an ANSI error or a selection stays readable over changing content. Resolve the reduced-transparency, increased-contrast and reduced-motion settings independently. A material belongs to its region or container, so assembling a row of buttons does not multiply glass layers. Native system materials respond to their surroundings. The HTML specimen approximates those materials for review. [Apple Human Interface Guidelines, Materials](https://developer.apple.com/design/human-interface-guidelines/materials) · [Commander materials and accessibility roles](tokens.json)
 

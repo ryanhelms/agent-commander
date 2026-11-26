@@ -378,12 +378,14 @@ enum MultiplayerLiveFixture {
         await live.sendReview()?.value
         let sent = try MultiplayerShareFixture.object(helper.lastRawInput(.send))
         #expect(sent["capability"] == .string("review.request") && sent["name"] == .string("Bound the wait"))
-        #expect(model.route == .share(Self.home, .review(request: "rq-7")) && model.notice == "bo-agent finished the review.")
+        // The review is a window page: the composer closes and the tray is back where it was.
+        #expect(model.route == .home && model.notice == "bo-agent finished the review.")
         let row = try #require(live.review("rq-7", on: Self.home))
         #expect(MultiplayerReview(row.value)?.findings.count == 2)
         #expect(live.remoteWork.first?.kind == .review && live.remoteWork.first?.state == "1 important, 1 nit")
 
-        // No URL, no post; a URL alone posts nothing either.
+        // The model's own post still works on its route. No URL, no post; a URL alone posts nothing either.
+        live.openReview("rq-7", on: Self.home)
         #expect(live.postProblem("rq-7", on: Self.home) == "Name the pull request to post to.")
         #expect(live.confirmPost() == nil)
         live.postDraft = "https://example.test/a/b/pull/4"

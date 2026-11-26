@@ -7,10 +7,10 @@ import SwiftUI
 // for approvals and watching from a phone. The tray turns it on and off, shows the pairing code
 // with a QR code of the pairing link, and lists the paired devices with a way to revoke each.
 // The device agent's verbs name no server: `remote-enable` {listen?}, `remote-disable`,
-// `remote-devices` and `remote-revoke` {device}.
+// `remote-devices`, `remote-revoke` {device} and `remote-rename` {device, name}.
 //   Contract:  MultiplayerRemotePairing, MultiplayerRemoteDevice, MultiplayerRemoteStatus
 //   Model:     MultiplayerRemoteModel
-//   Atom:      MultiplayerQRCode
+//   Atoms:     MultiplayerQRCode, MultiplayerInsetFocusRing
 //   Molecules: MultiplayerCopyChip, MultiplayerRemoteDeviceRow
 //   Organism:  MultiplayerRemoteBand
 // Components take values and emit actions; the tray wires them to MultiplayerRemoteModel.
@@ -62,11 +62,30 @@ struct MultiplayerRemoteDevice: Equatable, Sendable, Identifiable {
     /// When its session ends by itself, 30 days after pairing.
     let expires: Date?
 
+    /// The device agent takes a name of 1 to 64 bytes.
+    static let nameLimit = 64
+
     init(id: String, name: String, paired: Date? = nil, expires: Date? = nil) {
         self.id = id
         self.name = name
         self.paired = paired
         self.expires = expires
+    }
+
+    /// A typed name as it is sent: trimmed. Nil when it is empty or too long to send.
+    static func sendable(name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.utf8.count > nameLimit ? nil : trimmed
+    }
+
+    /// Why a typed name can't be sent. Nil while it can, and while nothing is typed yet.
+    static func problem(name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.utf8.count > nameLimit ? "Use a shorter name: \(nameLimit) characters at most." : nil
+    }
+
+    func named(_ name: String) -> MultiplayerRemoteDevice {
+        MultiplayerRemoteDevice(id: id, name: name, paired: paired, expires: expires)
     }
 
     init?(_ json: MultiplayerJSON) {
@@ -83,17 +102,28 @@ struct MultiplayerRemoteStatus: Equatable, Sendable {
     var running = false
     var url = ""
     var devices: [MultiplayerRemoteDevice] = []
+    /// The unused code the device agent still offers, so a tray that restarts draws the same QR code.
+    var pairing: MultiplayerRemotePairing?
 
-    init(running: Bool = false, url: String = "", devices: [MultiplayerRemoteDevice] = []) {
+    init(running: Bool = false, url: String = "", devices: [MultiplayerRemoteDevice] = [],
+         pairing: MultiplayerRemotePairing? = nil) {
         self.running = running
         self.url = url
         self.devices = devices
+        self.pairing = pairing
     }
 
-    init(_ json: MultiplayerJSON) {
+    init(_ json: MultiplayerJSON, now: Date = Date()) {
         if case .bool(let value) = json["running"] ?? .null { running = value }
         url = json.firstText("url") ?? ""
         devices = MultiplayerUnique.keep((json["devices"]?.items ?? []).compactMap(MultiplayerRemoteDevice.init)) { $0.id }
+        // `pairing` is {code, expiresAt, pairURL}: the address is the status's own.
+        if running, !url.isEmpty, let offer = json["pairing"], let code = offer.firstText("code"), !code.isEmpty {
+            pairing = MultiplayerRemotePairing(
+                url: url, code: code,
+                expiresAt: offer["expiresAt"]?.text.flatMap(MultiplayerTime.parse) ?? now.addingTimeInterval(MultiplayerRemotePairing.lifetime),
+                pairURL: offer.firstText("pairURL") ?? "\(url)/pair?code=\(code)")
+        }
     }
 }
 
@@ -111,8 +141,13 @@ extension MultiplayerClient {
         _ = try await fetch(.remoteDisable, [:], as: MultiplayerIgnored.self, allowsEmpty: true)
     }
 
-    func remoteDevices() async throws -> MultiplayerRemoteStatus {
-        MultiplayerRemoteStatus(try await fetch(.remoteDevices, [:], as: MultiplayerJSON.self))
+    func remoteDevices(now: Date = Date()) async throws -> MultiplayerRemoteStatus {
+        MultiplayerRemoteStatus(try await fetch(.remoteDevices, [:], as: MultiplayerJSON.self), now: now)
+    }
+
+    func remoteRename(device: String, name: String) async throws {
+        _ = try await fetch(.remoteRename, ["device": .string(device), "name": .string(name)], as: MultiplayerIgnored.self,
+                            allowsEmpty: true)
     }
 
     func remoteRevoke(device: String) async throws {
@@ -131,10 +166,12 @@ final class MultiplayerRemoteModel {
     private(set) var status: MultiplayerRemoteStatus?
     /// Why the last read failed. Nil while it works.
     private(set) var failure: String?
-    /// The code on show. Kept in memory only: after a relaunch the person makes a new one.
+    /// The code on show: the one this tray made, or the unused one the device agent still offers.
     private(set) var pairing: MultiplayerRemotePairing?
     /// The device whose Revoke is waiting for a second click.
     private(set) var confirmingRevoke: String?
+    /// The device whose name is being edited.
+    private(set) var renaming: String?
 
     private let client: MultiplayerClient?
     private let clock: () -> Date
@@ -165,7 +202,7 @@ final class MultiplayerRemoteModel {
         guard let client, let tray, tray.viewers > 0, quietTask == nil else { return }
         quietTask = Task {
             do {
-                self.take(try await client.remoteDevices())
+                self.take(try await client.remoteDevices(now: self.clock()))
                 self.failure = nil
             } catch {
                 let reason = MultiplayerFailure.from(error)
@@ -179,6 +216,7 @@ final class MultiplayerRemoteModel {
         quietTask?.cancel()
         quietTask = nil
         confirmingRevoke = nil
+        renaming = nil
     }
 
     /// Takes a fresh device list. A code is used up by the device it paired, so a new device ends it.
@@ -189,8 +227,11 @@ final class MultiplayerRemoteModel {
             pairing = nil
             tray?.post(notice: "Paired \(device.name.multiplayerDisplay). It can approve requests and watch from the web view.")
         }
+        // The device agent names the code only while it can still pair, so its code is the one to show.
+        if let offered = next.pairing { pairing = offered }
         if !next.running { pairing = nil }
         if let asked = confirmingRevoke, !next.devices.contains(where: { $0.id == asked }) { confirmingRevoke = nil }
+        if let edited = renaming, !next.devices.contains(where: { $0.id == edited }) { renaming = nil }
         status = next
     }
 
@@ -208,13 +249,14 @@ final class MultiplayerRemoteModel {
             next.running = true
             next.url = pairing.url
             self.status = next
-            if let listed = try? await client.remoteDevices() { self.take(listed) }
+            if let listed = try? await client.remoteDevices(now: self.clock()) { self.take(listed) }
         }
     }
 
     @discardableResult
     func disable() -> Task<Void, Never>? {
         confirmingRevoke = nil
+        renaming = nil
         return tray?.act("Turning Remote off…", failing: "Couldn’t turn Remote off.",
                          confirmation: "Remote is off. Paired devices stay paired for when you turn it on again.") { client in
             try await client.remoteDisable()
@@ -227,8 +269,38 @@ final class MultiplayerRemoteModel {
     }
 
     /// The first click on Revoke: asks. Nothing is sent.
-    func askRevoke(_ device: String) { confirmingRevoke = device }
+    func askRevoke(_ device: String) {
+        renaming = nil
+        confirmingRevoke = device
+    }
     func cancelRevoke() { confirmingRevoke = nil }
+
+    /// Opens the name field on one device. Nothing is sent.
+    func startRename(_ device: String) {
+        confirmingRevoke = nil
+        renaming = device
+    }
+    func cancelRename() { renaming = nil }
+
+    /// Sends the typed name for the device being renamed. The same name closes the field unsent.
+    @discardableResult
+    func rename(to typed: String) -> Task<Void, Never>? {
+        guard let id = renaming, let device = devices.first(where: { $0.id == id }),
+              let name = MultiplayerRemoteDevice.sendable(name: typed) else { return nil }
+        guard name != device.name else {
+            renaming = nil
+            return nil
+        }
+        let old = device.name.multiplayerDisplay
+        return tray?.act("Renaming \(old)…", failing: "Couldn’t rename \(old).",
+                         confirmation: "\(old) is now \(name.multiplayerDisplay).") { client in
+            try await client.remoteRename(device: id, name: name)
+            self.renaming = nil
+            if let index = self.status?.devices.firstIndex(where: { $0.id == id }) {
+                self.status?.devices[index] = device.named(MultiplayerText.clean(name, limit: 60))
+            }
+        }
+    }
 
     @discardableResult
     func confirmRevoke() -> Task<Void, Never>? {
@@ -285,8 +357,9 @@ struct MultiplayerQRCode: View {
         max(2, (maxSide / CGFloat(count + quietZone * 2)).rounded(.down))
     }
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
+        let shape = theme.trayTile
         Group {
             if let modules = Self.modules(for: text) {
                 let unit = Self.moduleSize(count: modules.count)
@@ -327,6 +400,26 @@ struct MultiplayerQRCode: View {
     }
 }
 
+/// The focus ring for a control whose frame clips the system's ring, such as a cell joined to its
+/// neighbours on one hairline: 2 pt of `focus` drawn inside the control's own edge while it has
+/// keyboard focus. The control stays a native button; only where the ring is drawn changes.
+struct MultiplayerInsetFocusRing: ViewModifier {
+    /// Draws the ring without focus, for a headless picture.
+    var forced = false
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($focused)
+            .focusEffectDisabled()
+            .overlay {
+                if focused || forced {
+                    Rectangle().strokeBorder(MultiplayerTheme.focus, lineWidth: 2).allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 /// A value shown as data with a way to copy it: a label cell, the value, and a copy cell, joined on
 /// one hairline frame. The copy cell shows a tick once it has copied.
 struct MultiplayerCopyChip: View {
@@ -334,14 +427,17 @@ struct MultiplayerCopyChip: View {
     let value: String
     /// What VoiceOver says for the value, when the drawn text would be read badly.
     var spoken: String? = nil
-    var font: Font = MultiplayerTheme.data
+    var font: MultiplayerType = MultiplayerTheme.data
     var height: CGFloat = 22
+    /// Draws the copy cell's focus ring without focus, for a headless picture.
+    var showsFocus = false
     let onCopy: (String) -> Void
     @State private var copied = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         HStack(spacing: 0) {
             Text(label)
                 .font(MultiplayerTheme.label)
@@ -369,12 +465,13 @@ struct MultiplayerCopyChip: View {
             } label: {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(copied ? MultiplayerTheme.working : Palette.secondary)
+                    .foregroundStyle(copied ? MultiplayerTheme.working : MultiplayerTheme.secondary)
                     .frame(width: 24)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
             }
             .buttonStyle(MultiplayerRowButtonStyle())
+            .modifier(MultiplayerInsetFocusRing(forced: showsFocus))
             .help("Copy the \(label)")
             .accessibilityLabel(copied ? "Copied the \(label)" : "Copy the \(label)")
         }
@@ -387,12 +484,17 @@ struct MultiplayerCopyChip: View {
     }
 }
 
-/// A paired device: what it is called, when it paired and when its session ends, and Revoke.
+/// A paired device: what it is called, when it paired and when its session ends, Rename and
+/// Revoke. Rename opens a name field under the row; Revoke asks under the row before it sends.
 struct MultiplayerRemoteDeviceRow: View {
     let device: MultiplayerRemoteDevice
     let now: Date
     let isConfirming: Bool
+    var isRenaming = false
     let isBusy: Bool
+    var onRename: () -> Void = {}
+    var onCancelRename: () -> Void = {}
+    var onSubmitName: (String) -> Void = { _ in }
     let onRevoke: () -> Void
     let onCancel: () -> Void
     let onConfirm: () -> Void
@@ -417,13 +519,21 @@ struct MultiplayerRemoteDeviceRow: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityAddTraits(.isStaticText)
                 .accessibilityLabel("\(name), \(Self.dates(device, now: now))")
-                if !isConfirming {
+                if !isConfirming, !isRenaming {
+                    Button("Rename", action: onRename)
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .disabled(isBusy)
+                        .help("Give this device a name you’ll recognise")
+                        .accessibilityLabel("Rename \(name)")
                     Button("Revoke", action: onRevoke)
                         .buttonStyle(MultiplayerTrayButtonStyle(role: .danger))
                         .disabled(isBusy)
                         .help("Sign this device out of the web view")
                         .accessibilityLabel("Revoke \(name)")
                 }
+            }
+            if isRenaming {
+                MultiplayerRemoteNameEditor(current: device.name, isBusy: isBusy, onCancel: onCancelRename, onSave: onSubmitName)
             }
             if isConfirming {
                 MultiplayerInlineConfirm(message: "Revoke \(name)? It is signed out at once and has to pair again.",
@@ -444,6 +554,44 @@ struct MultiplayerRemoteDeviceRow: View {
     }
 }
 
+/// The name field a device row opens: the field with the name in it, then Cancel and Save. Return
+/// saves and Escape cancels. The draft lives here; the row hears only the name to send.
+struct MultiplayerRemoteNameEditor: View {
+    let current: String
+    let isBusy: Bool
+    let onCancel: () -> Void
+    let onSave: (String) -> Void
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    private var sendable: String? { MultiplayerRemoteDevice.sendable(name: draft) }
+
+    var body: some View {
+        MultiplayerWell {
+            VStack(alignment: .leading, spacing: Space.s) {
+                MultiplayerField(label: "Device name", problem: MultiplayerRemoteDevice.problem(name: draft)) {
+                    MultiplayerTextField(label: "Device name", placeholder: "Kitchen iPad", text: $draft, isFocused: focused)
+                        .focused($focused)
+                        .onSubmit { if let sendable, !isBusy { onSave(sendable) } }
+                }
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    Button("Cancel", action: onCancel).buttonStyle(MultiplayerTrayButtonStyle())
+                    Button("Save name") { if let sendable { onSave(sendable) } }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .disabled(isBusy || sendable == nil)
+                }
+            }
+        }
+        .onExitCommand(perform: onCancel)
+        .onAppear {
+            draft = current
+            focused = true
+        }
+        .multiplayerArriving()
+    }
+}
+
 // MARK: - Organism
 
 /// Remote: the switch for this Mac's web view, the pairing code as a QR code and as data, and the
@@ -455,6 +603,7 @@ struct MultiplayerRemoteBand: View {
     let pairing: MultiplayerRemotePairing?
     let pairingExpired: Bool
     let confirmingRevoke: String?
+    var renaming: String? = nil
     let now: Date
     let isBusy: Bool
     let onSetRunning: (Bool) -> Void
@@ -463,6 +612,9 @@ struct MultiplayerRemoteBand: View {
     let onAskRevoke: (String) -> Void
     let onCancelRevoke: () -> Void
     let onConfirmRevoke: () -> Void
+    var onStartRename: (String) -> Void = { _ in }
+    var onCancelRename: () -> Void = {}
+    var onRename: (String) -> Void = { _ in }
     let onRetry: () -> Void
 
     private var isRunning: Bool { status?.running == true }
@@ -490,7 +642,11 @@ struct MultiplayerRemoteBand: View {
             .multiplayerStreaming(pairing?.code ?? "")
             .multiplayerStreaming(devices.map(\.id))
             .multiplayerStreaming(confirmingRevoke ?? "")
+            .multiplayerStreaming(renaming ?? "")
         }
+        // Tab visits every control in the band before it leaves. Without this the order follows each
+        // control's place in the window, and a row scrolled under the footer is reached after it.
+        .focusSection()
     }
 
     @ViewBuilder private func summary(_ status: MultiplayerRemoteStatus) -> some View {
@@ -573,7 +729,9 @@ struct MultiplayerRemoteBand: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(devices) { device in
                     MultiplayerRemoteDeviceRow(device: device, now: now, isConfirming: confirmingRevoke == device.id,
-                                               isBusy: isBusy,
+                                               isRenaming: renaming == device.id, isBusy: isBusy,
+                                               onRename: { onStartRename(device.id) }, onCancelRename: onCancelRename,
+                                               onSubmitName: onRename,
                                                onRevoke: { onAskRevoke(device.id) }, onCancel: onCancelRevoke,
                                                onConfirm: onConfirmRevoke)
                         .multiplayerArriving()

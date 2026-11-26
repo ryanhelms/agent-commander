@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"POST","path":"/v1/workspaces/no-such-ws/cards","body":{"title":"x","body":"y"}}, "response": {
+ "error": "no workspace no-such-ws in your groups",
+ "ok": false
+}}

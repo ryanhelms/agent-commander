@@ -1,0 +1,46 @@
+# agentflow repo config. Written by `agentflow init`; commit it.
+# There is no pinned version: agentflow installs the latest release and updates itself.
+agentflow: 1
+update:
+  track: 0 # follow the latest release within this major version
+  check_every: 6h
+  # pin: 0.5.2                   # incident use only; agentflow warns on every run while set
+# Task management and knowledge base are disabled until a provider is selected.
+# task_management: {provider: github-issues}
+# knowledge_base: {provider: repository}
+commit:
+  types: [feat, fix, perf, refactor, docs, test, build, ci, chore, revert]
+  subject_max: 72
+  require_key: false # GitHub Issues: no Jira key in commit subjects
+  ai_trailer: true # keep Co-Authored-By trailers
+  breaking_paths: # changes here suggest `!` and a BREAKING CHANGE footer
+    - "api/**/*.proto"
+    - "openapi/*.yaml"
+    - "migrations/**"
+policy:
+  max_autonomy: # ceiling for each developer's suggest | confirm | auto
+    local: auto
+    remote: auto # agents push, open PRs and merge into develop without review
+    # actions: {commit: confirm}  # optional tighter ceiling for one operation
+  allow_auto_pr_publication: true # permit automatic PR creation with its feature-branch push
+  # max_approval_window: 15m     # caps the user's approval_window (default 5m)
+  protected_branches: [main, develop]
+  coordinator_merge: true # the coordinator merges task PRs into develop
+  test_cmd: make test && make test-native
+  lint_cmd: go vet ./...
+task_management:
+  provider: "github-issues"
+
+# Task worktrees: `agentflow start <issue> --worktree` creates <root>/<repo>/<branch>.
+worktree:
+  go_work: # resolves go.mod's agent-acp.local modules from the sibling repos
+    use: [".", "multiplayer"]
+    siblings:
+      agent-acp.local/sdks/go: {repo: agent-acp, path: sdks/go}
+      agent-acp.local/transport: {repo: agent-acp-transport, path: .}
+# worktree:
+#   root: ~/.worktrees
+#   go_work:                     # write a git-excluded go.work into each worktree
+#     use: [".", "multiplayer"]
+#     siblings:                  # module => repo and path; uses that repo's worktree for the
+#       example.local/sdk: {repo: other-repo, path: sdk}   # same branch or issue, else its checkout

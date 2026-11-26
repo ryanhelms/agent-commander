@@ -10,6 +10,8 @@ import Observation
 // - A server is saved only from a health check that passed for the address still in the field,
 //   and, when the system doesn't trust the certificate, only after the person confirms the pin.
 // - A changed certificate is trusted only from a fresh check of that server and a second confirmation.
+// - A read or an action that names its target never reads or moves `route`. The tray's own pages
+//   call the same functions with the target their route names.
 // - Sessions poll only while a panel is open. With notifications available, the list and the feed
 //   are also read every other poll interval while it is closed (MultiplayerSocialModel.swift).
 
@@ -125,6 +127,75 @@ struct MultiplayerFriendGroup: Equatable, Identifiable {
     }
 }
 
+/// The add-server form's rules, for one draft, the check last run for it and the saved servers.
+/// The tray reads its own form through this, and so does a form a view outside the tray owns.
+struct MultiplayerServerForm {
+    let draft: MultiplayerServerDraft
+    /// The check as it was run, whatever address it was for.
+    let probe: MultiplayerProbeState
+    let servers: [MultiplayerServerSummary]
+
+    var addressProblem: String? {
+        draft.trimmedAddress.isEmpty ? nil : MultiplayerServerAddress.problem(draft.trimmedAddress)
+    }
+
+    /// The check for the address now in the field. Editing the field retires an older one.
+    var currentProbe: MultiplayerProbeState { probe.address == draft.trimmedAddress ? probe : .idle }
+
+    /// The save can be sent, when no other action is running.
+    var canSave: Bool {
+        guard let result = currentProbe.probe, result.passed, existing == nil else { return false }
+        if activeInvite != nil { return invitePinProblem == nil }
+        return !result.needsPinConfirmation || draft.pinConfirmed
+    }
+
+    /// The saved server the checked address already belongs to, by the helper's word or by address.
+    var existing: MultiplayerServerSummary? {
+        if let id = currentProbe.probe?.existing, let saved = servers.first(where: { $0.id == id }) { return saved }
+        guard let checked = currentProbe.probe?.url else { return nil }
+        let host = MultiplayerServerAddress.host(checked).lowercased()
+        return servers.first { MultiplayerServerAddress.host($0.url).lowercased() == host }
+    }
+
+    /// The invite the form was opened from, while the address is still its server.
+    var activeInvite: MultiplayerInviteLink? {
+        guard let invite = draft.invite,
+              MultiplayerServerAddress.host(invite.server) == MultiplayerServerAddress.host(draft.trimmedAddress)
+        else { return nil }
+        return invite
+    }
+
+    /// Why the invite's fingerprint can't stand in for the person's own check, when it can't.
+    var invitePinProblem: String? {
+        guard let invite = activeInvite, let result = currentProbe.probe, let tls = result.step(.tls), tls.ok else { return nil }
+        let presented = tls.pin ?? ""
+        if !invite.pin.isEmpty {
+            return presented == invite.pin ? nil
+                : "This server’s certificate doesn’t match the invite. Don’t join. Ask the person who invited you for a new link."
+        }
+        return result.needsPinConfirmation
+            ? "The invite carries no fingerprint, and macOS doesn’t already trust this certificate. Ask for a new invite link."
+            : nil
+    }
+
+    /// What stands between the form and Save, in one line.
+    var hint: String {
+        switch currentProbe {
+        case .idle: return activeInvite == nil ? "Check the server before you save it." : "Check the server before you join it."
+        case .running: return "Checking…"
+        case .failed: return "The check didn’t run. Try again."
+        case .finished(let result, _):
+            if let stage = result.stoppedAt, let index = MultiplayerProbeStage.allCases.firstIndex(of: stage) {
+                return "Fix step \(index + 1) to finish."
+            }
+            if let saved = existing { return "\(saved.displayName) is already in your list." }
+            if activeInvite != nil { return invitePinProblem == nil ? "Ready to join." : "This invite can’t be used." }
+            if result.needsPinConfirmation, !draft.pinConfirmed { return "Confirm the fingerprint to finish." }
+            return "Ready to save."
+        }
+    }
+}
+
 @Observable @MainActor
 final class MultiplayerModel {
     /// Favorites first, then most recently used.
@@ -210,7 +281,9 @@ final class MultiplayerModel {
          notifier: (any MultiplayerNotifying)? = nil,
          winners: MultiplayerWinnerStore = .scratch(),
          watchInterval: Duration = .seconds(2),
-         now: @escaping () -> Date = { Date() }) {
+         answeredHold: Duration = .zero,
+         now: @escaping () -> Date = { Date() },
+         holdTimer: MultiplayerHoldTimer = .clock) {
         self.client = client
         self.notifier = notifier
         self.setupFailure = setupFailure
@@ -218,7 +291,8 @@ final class MultiplayerModel {
         self.steadyPoll = steadyPoll
         self.fastPoll = fastPoll
         self.clock = now
-        self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval)
+        self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
+                                           answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.share.tray = self
         self.remote.tray = self
@@ -227,13 +301,15 @@ final class MultiplayerModel {
     /// The one live model: the menu bar panel, the review window and invite links all use it.
     static let shared = MultiplayerModel.live()
 
-    /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in debug review mode.
+    /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in a debug build's
+    /// fixture mode (the review panel, or a run with its own AGENT_COMMANDER_HOME).
     static func live() -> MultiplayerModel {
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
             MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
-                             winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)))
+                             winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
+                             answeredHold: MultiplayerShareModel.answeredHold)
         case .failure(let failure):
             MultiplayerModel(client: nil, setupFailure: failure)
         }
@@ -256,7 +332,7 @@ final class MultiplayerModel {
         MultiplayerTally(servers: servers.count,
                          serversOnline: servers.filter { $0.state == .online }.count,
                          friendsOnline: friendsAvailable ?? servers.reduce(0) { $0 + $1.friendsOnline },
-                         needsYou: servers.reduce(0) { $0 + $1.incoming } + share.pendingApprovals.count + share.pendingAccess.count)
+                         needsYou: servers.reduce(0) { $0 + $1.incoming } + share.waitingApprovals.count + share.waitingAccess.count)
     }
 
     /// One group per server, in list order. A server's friends come from its own session, and
@@ -295,73 +371,36 @@ final class MultiplayerModel {
 
     // MARK: Add server
 
-    var addressProblem: String? {
-        serverDraft.trimmedAddress.isEmpty ? nil : MultiplayerServerAddress.problem(serverDraft.trimmedAddress)
+    /// The tray's add-server form, read through the same rules a form outside the tray uses.
+    /// Off the add-server page there is no form, so it reads as empty.
+    private var addServerForm: MultiplayerServerForm {
+        guard route == .addServer else { return MultiplayerServerForm(draft: MultiplayerServerDraft(), probe: .idle, servers: servers) }
+        return MultiplayerServerForm(draft: serverDraft, probe: probe, servers: servers)
     }
 
+    var addressProblem: String? { MultiplayerServerForm(draft: serverDraft, probe: .idle, servers: []).addressProblem }
+
     /// The health check for the address now in the field. Editing the field retires an older one.
-    var currentProbe: MultiplayerProbeState {
-        guard route == .addServer else { return .idle }
-        return probe.address == serverDraft.trimmedAddress ? probe : .idle
-    }
+    var currentProbe: MultiplayerProbeState { addServerForm.currentProbe }
 
     var canProbe: Bool {
         client != nil && !isBusy && !probe.isRunning
             && MultiplayerServerAddress.problem(serverDraft.trimmedAddress) == nil
     }
 
-    var canSaveServer: Bool {
-        guard !isBusy, let result = currentProbe.probe, result.passed, existingServer == nil else { return false }
-        if activeInvite != nil { return invitePinProblem == nil }
-        return !result.needsPinConfirmation || serverDraft.pinConfirmed
-    }
+    var canSaveServer: Bool { !isBusy && addServerForm.canSave }
 
     /// The saved server the checked address already belongs to, by the helper's word or by address.
-    var existingServer: MultiplayerServerSummary? {
-        guard route == .addServer else { return nil }
-        if let id = currentProbe.probe?.existing, let saved = server(id) { return saved }
-        guard let checked = currentProbe.probe?.url else { return nil }
-        let host = MultiplayerServerAddress.host(checked).lowercased()
-        return servers.first { MultiplayerServerAddress.host($0.url).lowercased() == host }
-    }
+    var existingServer: MultiplayerServerSummary? { addServerForm.existing }
 
     /// The invite the form was opened from, while the address is still its server.
-    var activeInvite: MultiplayerInviteLink? {
-        guard route == .addServer, let invite = serverDraft.invite,
-              MultiplayerServerAddress.host(invite.server) == MultiplayerServerAddress.host(serverDraft.trimmedAddress)
-        else { return nil }
-        return invite
-    }
+    var activeInvite: MultiplayerInviteLink? { addServerForm.activeInvite }
 
     /// Why the invite's fingerprint can't stand in for the person's own check, when it can't.
-    var invitePinProblem: String? {
-        guard let invite = activeInvite, let result = currentProbe.probe, let tls = result.step(.tls), tls.ok else { return nil }
-        let presented = tls.pin ?? ""
-        if !invite.pin.isEmpty {
-            return presented == invite.pin ? nil
-                : "This server’s certificate doesn’t match the invite. Don’t join. Ask the person who invited you for a new link."
-        }
-        return result.needsPinConfirmation
-            ? "The invite carries no fingerprint, and macOS doesn’t already trust this certificate. Ask for a new invite link."
-            : nil
-    }
+    var invitePinProblem: String? { addServerForm.invitePinProblem }
 
     /// What stands between the form and Save, in one line.
-    var addServerHint: String {
-        switch currentProbe {
-        case .idle: return activeInvite == nil ? "Check the server before you save it." : "Check the server before you join it."
-        case .running: return "Checking…"
-        case .failed: return "The check didn’t run. Try again."
-        case .finished(let result, _):
-            if let stage = result.stoppedAt, let index = MultiplayerProbeStage.allCases.firstIndex(of: stage) {
-                return "Fix step \(index + 1) to finish."
-            }
-            if let saved = existingServer { return "\(saved.displayName) is already in your list." }
-            if activeInvite != nil { return invitePinProblem == nil ? "Ready to join." : "This invite can’t be used." }
-            if result.needsPinConfirmation, !serverDraft.pinConfirmed { return "Confirm the fingerprint to finish." }
-            return "Ready to save."
-        }
-    }
+    var addServerHint: String { addServerForm.hint }
 
     // MARK: Certificate review
 
@@ -502,7 +541,8 @@ final class MultiplayerModel {
 
     @discardableResult
     func act(_ progress: String, failing title: String, confirmation: String? = nil,
-                     _ work: @escaping @MainActor (MultiplayerClient) async throws -> Void) -> Task<Void, Never>? {
+             report: (@MainActor (_ failure: String?) -> Void)? = nil,
+             _ work: @escaping @MainActor (MultiplayerClient) async throws -> Void) -> Task<Void, Never>? {
         guard let client, !isBusy else { return nil }
         cancelRefresh()
         working = progress
@@ -512,11 +552,14 @@ final class MultiplayerModel {
             do {
                 try await work(client)
                 if let confirmation { self.notice = confirmation }
+                report?(nil)
             } catch {
                 let reason = MultiplayerFailure.from(error)
-                self.failure = reason.outcomeUnknown
-                    ? "\(reason.message) Check the server list before trying again."
-                    : "\(title) \(reason.message)"
+                let text = reason.outcomeUnknown
+                    ? MultiplayerSentence.join(reason.message, "Check the server list before trying again.")
+                    : MultiplayerSentence.join(title, reason.message)
+                self.failure = text
+                report?(text)
             }
             self.working = nil
             self.actionTask = nil
@@ -556,11 +599,29 @@ final class MultiplayerModel {
         return !name.isEmpty && name.count <= 80 && name != server.name
     }
 
+    /// Saves the nickname typed on the tray's own server page.
     @discardableResult
     func rename() -> Task<Void, Never>? {
         guard canRename, case .server(let id) = route else { return nil }
-        let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return act("Renaming to \(name.multiplayerDisplay)…", failing: "Couldn’t rename the server.") { client in
+        return rename(id, to: renameDraft)
+    }
+
+    /// Why a nickname can't be saved for a server, or nil when it can.
+    func renameProblem(_ id: String, to name: String) -> String? {
+        guard let server = server(id) else { return "That server is no longer in your list." }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "Enter a name." }
+        if name.count > 80 { return "Keep the name under 80 characters." }
+        return name == server.name ? "That is already its name." : nil
+    }
+
+    /// Renames a saved server to a name the caller holds.
+    @discardableResult
+    func rename(_ id: String, to name: String,
+                report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard renameProblem(id, to: name) == nil else { return nil }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return act("Renaming to \(name.multiplayerDisplay)…", failing: "Couldn’t rename the server.", report: report) { client in
             self.merge(try await client.updateServer(id: id, name: name))
         }
     }
@@ -584,6 +645,21 @@ final class MultiplayerModel {
         }
     }
 
+    /// Removes a saved server the caller names, after the caller asked the person to confirm. The
+    /// helper also signs out and deletes that server's Keychain item and files. The tray's own
+    /// confirm step is not used and its page stays, unless that page is the removed server's.
+    @discardableResult
+    func remove(_ id: String, report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard let server = server(id) else { return nil }
+        return act("Removing \(server.displayName)…", failing: "Couldn’t remove the server.",
+                   confirmation: "Removed \(server.displayName).", report: report) { client in
+            try await client.removeServer(id: id)
+            // The list read that follows would do this too; doing it now means the answer the
+            // caller awaits already finds the server gone.
+            self.apply(self.servers.filter { $0.id != id })
+        }
+    }
+
     func askTrust(_ server: MultiplayerServerSummary) {
         guard canTrust(server) else { return }
         confirmingRemoval = nil
@@ -599,11 +675,19 @@ final class MultiplayerModel {
               let pin = presentedProbe(for: server).probe?.step(.tls)?.pin
         else { return nil }
         confirmingTrust = nil
-        return act("Trusting the new certificate for \(server.displayName)…",
-                   failing: "Couldn’t trust the new certificate.",
-                   confirmation: "\(server.displayName) is pinned to its new certificate.") { client in
-            self.merge(try await client.trustServer(id: id, pin: pin))
-            self.probe = .idle
+        return trust(server, pin: pin, then: { self.probe = .idle })
+    }
+
+    /// Pins a new key for a server. Callers reach this only from a fresh check and a confirmation.
+    @discardableResult
+    func trust(_ server: MultiplayerServerSummary, pin: String,
+               report: (@MainActor (_ failure: String?) -> Void)? = nil,
+               then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        act("Trusting the new certificate for \(server.displayName)…",
+            failing: "Couldn’t trust the new certificate.",
+            confirmation: "\(server.displayName) is pinned to its new certificate.", report: report) { client in
+            self.merge(try await client.trustServer(id: server.id, pin: pin))
+            then?()
         }
     }
 
@@ -631,8 +715,7 @@ final class MultiplayerModel {
         let token = probeToken
         probe = .running(address: address)
         let task = Task {
-            let result: Result<MultiplayerProbe, MultiplayerFailure>
-            do { result = .success(try await client.probe(url: address)) } catch { result = .failure(.from(error)) }
+            let result = await Self.readProbe(address, with: client)
             guard token == self.probeToken else { return }
             self.probeTask = nil
             switch result {
@@ -643,6 +726,28 @@ final class MultiplayerModel {
         }
         probeTask = task
         return task
+    }
+
+    private static func readProbe(_ address: String, with client: MultiplayerClient) async -> Result<MultiplayerProbe, MultiplayerFailure> {
+        do { return .success(try await client.probe(url: address)) } catch { return .failure(.from(error)) }
+    }
+
+    /// Checks an address for the caller, who keeps the result: the same five steps as the tray's
+    /// own check. It reads and changes nothing of the tray: not its route, and not its own check.
+    func checkServer(at address: String) async -> MultiplayerLoad<MultiplayerProbe> {
+        guard let client else { return .failed(unavailable?.message ?? "The network helper isn’t available.") }
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = MultiplayerServerAddress.problem(address) { return .failed(problem) }
+        switch await Self.readProbe(address, with: client) {
+        case .success(let probe): return .loaded(probe)
+        case .failure(.cancelled): return .failed("The check was stopped. Try again.")
+        case .failure(let failure): return .failed(failure.message)
+        }
+    }
+
+    /// Checks a saved server again for the caller, to read the certificate it presents now.
+    func checkCertificate(of server: MultiplayerServerSummary) async -> MultiplayerLoad<MultiplayerProbe> {
+        await checkServer(at: server.url)
     }
 
     private func cancelProbe() {
@@ -657,18 +762,31 @@ final class MultiplayerModel {
     @discardableResult
     func saveServer() -> Task<Void, Never>? {
         guard canSaveServer, let result = currentProbe.probe else { return nil }
-        if let invite = activeInvite { return join(invite) }
-        let draft = serverDraft
+        return saveServer(serverDraft, checked: result, then: { _ in
+            self.serverDraft = MultiplayerServerDraft()
+            self.probe = .idle
+            self.go(.home)
+        })
+    }
+
+    /// Saves a server from the caller's own draft and the check that passed for its address, or
+    /// joins it when the draft carries an invite. `then` is given the saved server, before the
+    /// confirmation is posted. Nothing is sent unless the form's rules allow the save.
+    @discardableResult
+    func saveServer(_ draft: MultiplayerServerDraft, checked result: MultiplayerProbe,
+                    report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: (@MainActor (MultiplayerServerSummary) -> Void)? = nil) -> Task<Void, Never>? {
+        let form = MultiplayerServerForm(draft: draft, probe: .finished(result, address: draft.trimmedAddress), servers: servers)
+        guard form.canSave else { return nil }
+        if let invite = form.activeInvite { return join(invite, report: report, then: then) }
         let pin = result.pin
-        return act("Saving the server…", failing: "Couldn’t save the server.") { client in
+        return act("Saving the server…", failing: "Couldn’t save the server.", report: report) { client in
             var saved = try await client.addServer(url: draft.trimmedAddress, name: draft.trimmedName, pin: pin)
             if !draft.autoConnect, saved.autoConnect {
                 saved = (try? await client.updateServer(id: saved.id, autoConnect: false)) ?? saved
             }
             self.merge(saved)
-            self.serverDraft = MultiplayerServerDraft()
-            self.probe = .idle
-            self.go(.home)
+            then?(saved)
             self.notice = "Added \(saved.displayName)."
         }
     }
@@ -715,6 +833,7 @@ final class MultiplayerModel {
     func signOut(_ id: String) { sessions[id]?.signOut() }
 
     func accept(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.accept(request) }
+    func decline(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.decline(request) }
 
     /// Opens the grant sheet on a server for one friend.
     func share(with handle: String, on id: String) {
@@ -744,14 +863,16 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
-            if let task = share.live.quietTask ?? share.live.pageTask ?? share.teams.quietTask ?? share.teams.pageTask {
+            if let task = share.live.quietTask ?? share.live.pageTask ?? share.teams.quietTask ?? share.teams.pageTask
+                ?? share.teams.pullRequestTask {
                 await task.value
                 continue
             }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
                sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, share.live.quietTask == nil,
-               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil { return }
+               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
+               share.teams.pullRequestTask == nil { return }
         }
     }
 }

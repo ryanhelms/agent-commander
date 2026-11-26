@@ -1,0 +1,52 @@
+{
+    "data": {
+        "activity": {
+            "cursor": "eyJzLWYwMWZjZmY1IjoyfQ",
+            "events": [
+                {
+                    "server": "s-f01fcff5",
+                    "seq": 2,
+                    "at": "2026-11-25T21:25:10.607048-05:00",
+                    "kind": "group.removed",
+                    "actor": "ryan",
+                    "resource": "bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070"
+                },
+                {
+                    "server": "s-f01fcff5",
+                    "seq": 1,
+                    "at": "2026-11-25T21:08:00.170848-05:00",
+                    "kind": "group.added",
+                    "actor": "ryan",
+                    "resource": "bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070"
+                }
+            ],
+            "unseen": 2
+        },
+        "approvals": [],
+        "handoffs": {
+            "s-f01fcff5": []
+        },
+        "servers": [
+            {
+                "id": "s-f01fcff5",
+                "url": "https://ryan-mac.tail.internal:8443",
+                "name": "ryan-mac.tail.internal",
+                "favorite": false,
+                "autoConnect": true,
+                "pin": "sha256/mzRsixS5iA2sfqYhOYVkydWg/vJhmsVut4dyaH21444=",
+                "addedAt": "2026-11-26T00:08:05.253015Z",
+                "lastUsedAt": "2026-11-26T03:23:43.553156Z",
+                "state": "online",
+                "signedIn": true,
+                "handle": "ryan",
+                "lastSeen": "2026-11-26T03:23:53.669644Z",
+                "error": "",
+                "friendsOnline": 0,
+                "incoming": 0,
+                "presence": "online",
+                "unseen": 2
+            }
+        ]
+    },
+    "ok": true
+}

@@ -279,3 +279,19 @@ The coordinator MCP adapter forwards each network request to the private device 
 ### Reattaching an existing provider session
 
 An owner command reserves a new control generation and a fresh worker credential after the service verifies that the original worker is inactive. The provider adapter verifies the saved checkout and executable identity before bringing up a replacement runner. The runner reports the same native session identity before the service accepts follow-ups. Discovery uses the saved provider and checkout without establishing a new conversation. The Idempotent Receiver reuses the original reservation on command retry. An unresolved earlier operation keeps its delivery receipt and requires the owner's explicit acknowledgement before reattachment. A stopped-history load and reattachment for the same worker cannot overlap.
+
+## Multiplayer workspace membership and combined view
+
+Leaving a workspace removes the member from that workspace only. The relay records the departure in `mp_workspace_departures` and ends the member's live claims there. Group membership and the group's other workspaces stay unchanged. Every workspace read skips departed members. Only the group owner restores access, by removing the member from the group and adding them again. The workspace owner cannot leave.
+
+The combined view is an Aggregator over two sources. The first is agents the member published that the caller may already see: their own, those shared with the group, or those visible to the caller as a friend or grantee. The second is holders of live claims in the workspace. The relay does not join another member's agents to that member's claims, so one worker can appear twice. The caller's own device agent joins the caller's agents to their claims. Fields with no source stay empty and are never inferred: branch and check counts.
+
+## Opening a window page
+
+The network tray opens a main-window page through one Command. `CommanderOpenRequest` is the command as a value: a place ID, and optionally a server and an item on that place. `CommanderWindowRouter.open(_:)` is its only receiver. It brings the cockpit forward through `SingleInstanceCoordinator`, which reopens a closed window and activates the app, and then hands the request to the live window. The tray depends on the value and that call, not on the window's models or templates.
+
+A request sent while the window is closed waits in the router and is handed to the window that reopens. Only the last one waits. The window checks the request against what the network lists now: an item that is unknown, or has no server, is dropped and its place opens alone. `CommanderOpenRequest.init(page:server:)` maps each tray page that moved to its request, and returns nil for a page that stays in the tray.
+
+Live work opens from the wall. Watch and Control name a worker by its resource, and their request is the Runs place with a remote-worker item: the window zooms the wall to the first hand-off tile that runs on that worker. A review's request is the Runs place with a review item. The wall has no review view of its own, so a review the network lists opens where the wall's own review row opens it, on Hand-offs. A worker no hand-off runs on, or a review that is no longer listed, opens the wall and zooms nothing. Request review stays in the tray: it is a composer, as Hand off and Consult are. The tray builds none of these requests by hand; it passes its page to `init(page:server:)`.
+
+The request also says where it lands, in words. `CommanderOpenRequest.landingCrumbs` returns the breadcrumb of the place the request opens when its item exists. It takes the place from the same private mapping `destination(in:)` uses and the words from `LiveShell.navigation(...).crumbs`, read with every place listed and no workspace or run. A sender labels its link with these segments and keeps no table of its own, so the label and the landing can't drift.

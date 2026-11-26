@@ -15,6 +15,13 @@ import SwiftUI
 //                                              with AttentionDrawer beside either (the default)
 //                                    floating  AttentionStack (the PiP alternative)
 //                                  or TaskSheet via NewRunView
+//                  Given a ShellContext (the live page), the same canvas sits in the redesigned
+//                  shell instead:
+//                    ShellTemplate
+//                      navigation  ShellModeRail (+ RunChooser popover), from LiveShell.navigation
+//                      toolbar     ShellToolbarTitle, service state, ShellToolbarReadouts
+//                      canvas      banners over the wall above, LiveNeedsYouPage, PreferencesPage
+//                                  or ShellPlaceholderPage, by the selected place
 //   CockpitView    the live page: binds CockpitModel to CockpitScreen and owns the subscription.
 
 /// Presentation state keyed by stable IDs. It survives data refreshes and belongs to the feature
@@ -32,6 +39,32 @@ final class CockpitPresentationState {
     var returnFocusWorkerID: String?
     var splitFraction = Metric.coordinatorFraction
     var sidebarExpanded = false
+    /// The redesigned shell's place, by `LiveShell` ID. The wall is the default, as before.
+    var shellPlace = LiveShell.wall
+    /// The mode rail's context list is put away, leaving the rail.
+    var contextListHidden = false
+    /// Network requests answered in Needs you a moment ago, kept while their outcome shows.
+    var needsYouDecided: [NeedsYouItem] = []
+    /// Why the last answer to a network request didn't go through, by request.
+    var needsYouFailures: [String: String] = [:]
+    /// Network requests whose answer is still on its way.
+    var needsYouRunning = Set<String>()
+    /// The network pages' own selections and each row's last result.
+    let networkPages = NetworkPagesLiveState()
+    /// The window's own place, reads and drafts on the Teams pages.
+    let teamsPages = TeamsPagesLiveState()
+    /// The shell shows a page other than the wall, so no console is in front of the developer.
+    var wallHidden: Bool { shellPlace != LiveShell.wall }
+    /// The last key command pressed and how many there have been. The page runs each one from
+    /// its current state (CockpitShortcuts.swift).
+    private(set) var keyCommand: CockpitCommand?
+    private(set) var keyCommandCount = 0
+
+    /// Records a key command for the page to run.
+    func press(_ command: CockpitCommand) {
+        keyCommand = command
+        keyCommandCount += 1
+    }
     var composingRun = false
     var newRunDraft = NewRunDraft()
     var showingRunChooser = false
@@ -146,6 +179,7 @@ final class CockpitPresentationState {
     /// and zooms it there. The in-window surfaces and the floating window both use this.
     func reveal(_ request: RequestPresentation, from run: RunContent?, selectRun: (String) -> Void) {
         let target = request.workerIsCoordinator ? nil : request.workerID
+        shellPlace = LiveShell.wall
         if request.runID == run?.id {
             zoomedRemoteWorkerID = nil
             zoomedWorkerID = target
@@ -181,7 +215,7 @@ extension CockpitContent {
     /// the inline request always stays out.
     @MainActor func shownInlineRequestID(_ ui: CockpitPresentationState) -> String? {
         let inlineIsOutOfSight = ui.usesFloatingPanel && ui.suppressesVisibleSources
-            && (!ui.cockpitWindowAttended || ui.composingRun)
+            && (!ui.cockpitWindowAttended || ui.composingRun || ui.wallHidden)
         return inlineIsOutOfSight ? nil : inlineRequestID(ui)
     }
 
@@ -222,7 +256,7 @@ extension CockpitContent {
     /// run, a worker's further request, a worker scrolled away or inside a collapsed group, or a
     /// cockpit that is behind another app or minimized is not in view.
     @MainActor func isSourceInView(_ request: RequestPresentation, _ ui: CockpitPresentationState) -> Bool {
-        guard ui.suppressesVisibleSources, ui.cockpitWindowAttended, !ui.composingRun,
+        guard ui.suppressesVisibleSources, ui.cockpitWindowAttended, !ui.composingRun, !ui.wallHidden,
               request.runID == selected?.id,
               shownRequestID(ofWorker: request.workerID) == request.id else { return false }
         if request.workerIsCoordinator { return true }
@@ -317,23 +351,40 @@ struct WorkspaceToolbar: ToolbarContent {
     /// Staged adapter updates. The notice appears beside the service state only while the set is
     /// not empty.
     var adapterUpdates: AdapterUpdateFeed? = nil
+    /// The redesigned shell's wordmark and breadcrumb, in place of the ones drawn here.
+    var title: AnyView? = nil
+    /// The redesigned shell's readouts, after the service state. Each is its own toolbar item, so
+    /// each is its own element for assistive apps: the servers button, then the presence menu.
+    var readouts: AnyView? = nil
+    var presence: AnyView? = nil
+
+    /// The shell's items sit flat on the toolbar: no shared glass capsule behind them. The console
+    /// display menu and the adapter notice are the console's own controls and keep their look.
+    private var capsule: Visibility { title == nil ? .automatic : .hidden }
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Button { sidebarExpanded.toggle() } label: { Image(systemName: "sidebar.left") }
+                .buttonStyle(.plain)
                 .help(sidebarExpanded ? "Collapse navigation" : "Expand navigation")
                 .accessibilityLabel(sidebarExpanded ? "Collapse navigation" : "Expand navigation")
         }
+        .sharedBackgroundVisibility(capsule)
         ToolbarItem(placement: .navigation) {
-            HStack(spacing: 12) {
-                Text("Agent Commander").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.foreground)
-                if !crumbs.isEmpty {
-                    Hairline(vertical: true).frame(height: 18)
-                    Breadcrumb(items: crumbs)
+            if let title {
+                title
+            } else {
+                HStack(spacing: 12) {
+                    Text("Agent Commander").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.foreground)
+                    if !crumbs.isEmpty {
+                        Hairline(vertical: true).frame(height: 18)
+                        Breadcrumb(items: crumbs)
+                    }
                 }
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
         }
+        .sharedBackgroundVisibility(capsule)
         // Flexible space keeps the breadcrumb leading and pins the service indicator to the trailing
         // edge. Without it the native toolbar packs the indicator directly after the breadcrumb.
         ToolbarSpacer(.flexible, placement: .automatic)
@@ -352,15 +403,25 @@ struct WorkspaceToolbar: ToolbarContent {
                     .foregroundStyle(Color(hex: 0xE0E1EA))
                     .padding(.horizontal, 6)
                 }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut(KeyEquivalent(CockpitShortcuts.search.key), modifiers: CockpitShortcuts.search.modifiers)
                 .accessibilityLabel("Search workspace")
             }
+            .sharedBackgroundVisibility(capsule)
         }
         if let adapterUpdates {
             AdapterUpdateToolbarItem(feed: adapterUpdates)
         }
         ToolbarItem(placement: .primaryAction) {
             ConnectionIndicator(connection: connection)
+        }
+        .sharedBackgroundVisibility(capsule)
+        if let readouts {
+            ToolbarItem(placement: .primaryAction) { readouts }
+                .sharedBackgroundVisibility(capsule)
+        }
+        if let presence {
+            ToolbarItem(placement: .primaryAction) { presence }
+                .sharedBackgroundVisibility(capsule)
         }
     }
 }
@@ -376,7 +437,13 @@ struct CockpitScreen: View {
     var toolbarAccessory: AnyView? = nil
     /// Staged adapter updates for the title bar. The feed is read by the toolbar item alone.
     var adapterUpdates: AdapterUpdateFeed? = nil
+    /// The redesigned shell: the mode rail, the toolbar readouts and the Needs you inbox, with
+    /// the network's state. The live page supplies it. Without it the cockpit keeps the earlier
+    /// navigation rail, as the design previews of the cockpit do.
+    var shell: ShellContext? = nil
 
+    @Environment(\.theme) private var theme
+    @Environment(\.openSettings) private var openSettings
     @FocusState private var paneFocus: String?
     @FocusState private var replyFocus: String?
 
@@ -461,6 +528,8 @@ struct CockpitScreen: View {
         chrome
             .consoleRecordAccess(actions, openSource: openSource)
             .onChange(of: run?.id) { _, _ in runChanged() }
+            // A key command is run here, where the page's values are current.
+            .onChange(of: ui.keyCommandCount) { _, _ in if let command = ui.keyCommand { perform(command) } }
             .onChange(of: paneFocus) { _, focus in
                 if let focus { ui.returnFocusWorkerID = focus }
             }
@@ -477,20 +546,45 @@ struct CockpitScreen: View {
             .onAppear { seedFocus() }
     }
 
-    private var chrome: some View {
-        CockpitShell {
-            navigation
-        } banners: {
-            banners
-        } canvas: {
-            canvas
+    /// The window's frame: the redesigned shell when the page supplies one, otherwise the
+    /// earlier navigation rail.
+    private var frame: AnyView {
+        guard let shell else {
+            return AnyView(CockpitShell {
+                navigation
+            } banners: {
+                banners
+            } canvas: {
+                canvas
+            })
         }
+        return AnyView(shellFrame(shell, shellNavigation(shell)))
+    }
+
+    private var chrome: some View {
+        let shellNavigation = shell.map { self.shellNavigation($0) }
+        return frame
         .background { shortcuts }
         .background { WindowAttentionProbe { attended in ui.cockpitWindowAttended = attended } }
         .toolbar {
-            WorkspaceToolbar(sidebarExpanded: $ui.sidebarExpanded, crumbs: crumbs, connection: content.connection,
-                             search: actions.searchWorkspace, accessory: toolbarAccessory,
-                             adapterUpdates: adapterUpdates)
+            if let shell, let shellNavigation {
+                if shell.chrome == .hosted {
+                    WorkspaceToolbar(sidebarExpanded: Binding(get: { !ui.contextListHidden },
+                                                              set: { ui.contextListHidden = !$0 }),
+                                     crumbs: [], connection: content.connection,
+                                     search: actions.searchWorkspace, accessory: toolbarAccessory,
+                                     adapterUpdates: adapterUpdates,
+                                     // Toolbar items don't inherit the window's theme, so it is handed on.
+                                     title: AnyView(ShellToolbarTitle(crumbs: shellCrumbs(shellNavigation))
+                                        .environment(\.theme, theme)),
+                                     readouts: AnyView(shellReadouts(shell, part: .servers).environment(\.theme, theme)),
+                                     presence: AnyView(shellReadouts(shell, part: .presence).environment(\.theme, theme)))
+                }
+            } else {
+                WorkspaceToolbar(sidebarExpanded: $ui.sidebarExpanded, crumbs: crumbs, connection: content.connection,
+                                 search: actions.searchWorkspace, accessory: toolbarAccessory,
+                                 adapterUpdates: adapterUpdates)
+            }
         }
         .toolbar(removing: .title)
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -524,6 +618,206 @@ struct CockpitScreen: View {
             }
     }
 
+    // MARK: Shell (the redesigned main window)
+
+    /// The inbox as the navigation counts it: what waits now, without rows showing an outcome.
+    private func shellNavigation(_ shell: ShellContext) -> CommanderNavigation {
+        let inbox = LiveShell.inbox(pending: content.pending, network: shell.network, now: shell.now ?? Date(),
+                                    decided: ui.needsYouDecided)
+        return LiveShell.navigation(runs: content.runs, openRunPath: run?.path, composing: ui.composingRun,
+                                    place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network,
+                                    isOnline: isOnline)
+    }
+
+    /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
+    private func shellCrumbs(_ navigation: CommanderNavigation) -> [String] {
+        guard LiveShell.showsWall(navigation.selection) else { return navigation.crumbs }
+        // With no run open the wall has no crumbs of its own, so the place says where this is.
+        if crumbs.isEmpty {
+            let mode = navigation.modes.first { $0.id == navigation.selectedModeID }?.title
+            return [mode, navigation.place(LiveShell.wall)?.title].compactMap { $0 }
+        }
+        return crumbs
+    }
+
+    private func shellReadouts(_ shell: ShellContext, part: ShellToolbarReadouts.Part = .both) -> some View {
+        ShellToolbarReadouts(part: part, servers: shell.network.health, profile: shell.network.profile,
+                             openServers: { show(place: LiveShell.servers) },
+                             pickPresence: { shell.actions.setPresence($0) })
+    }
+
+    private func shellFrame(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
+        ShellTemplate(chrome: shell.chrome) {
+            // The modes' keys are bound once, with the window's other shortcuts.
+            ShellModeRail(navigation: navigation, modeModifiers: LiveShell.modeModifiers,
+                          showsContext: !ui.contextListHidden, bindsModeKeys: false) { action in
+                act(action, in: navigation, shell)
+            }
+            .popover(isPresented: $ui.showingRunChooser, arrowEdge: .trailing) {
+                RunChooser(runs: content.runs, selected: run?.id) { id in
+                    ui.showingRunChooser = false
+                    ui.composingRun = false
+                    ui.shellPlace = LiveShell.wall
+                    actions.selectRun(id)
+                }
+            }
+        } toolbarLeading: {
+            ShellToolbarTitle(crumbs: shellCrumbs(navigation))
+        } toolbarTrailing: {
+            HStack(spacing: Space.m) {
+                ConnectionIndicator(connection: content.connection)
+                shellReadouts(shell)
+            }
+        } canvas: {
+            VStack(spacing: 0) {
+                banners
+                shellCanvas(shell, navigation).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        // A countdown drawn by the network's own rows counts from the window's fixed time, when it has one.
+        .environment(\.multiplayerFixedNow, shell.now)
+    }
+
+    @ViewBuilder private func shellCanvas(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
+        let selection = navigation.selection
+        if LiveShell.showsWall(selection) {
+            canvas
+        } else if selection == LiveShell.needsYou {
+            LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided,
+                             failures: ui.needsYouFailures, now: shell.now,
+                             decide: { inbox, id, decision in decide(id, decision, in: inbox, shell) },
+                             open: { id in openFromInbox(id, shell) },
+                             reply: { id in openFromInbox(id, shell) })
+        } else if selection == LiveShell.settings {
+            PreferencesPage(projectName: run?.project ?? "", retention: "", retentionOptions: [],
+                            showsSystemAppearance: false, presentation: ui.attentionPresentation,
+                            choosePresentation: { mode in presentationChoice.wrappedValue = mode },
+                            chooseTheme: { id in ThemeChoice.select(id) },
+                            presentations: AttentionPresentationMenu.options, showsRecording: false,
+                            openAppSettings: { openSettings() })
+        } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
+            page(selection) { place in show(place: place) }
+        } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
+            page(selection) { place in show(place: place) }
+        } else {
+            ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
+                                 note: LiveShell.note(for: selection, network: shell.network),
+                                 actionTitle: shell.actions.openNetworkPanel == nil ? nil : "Open network panel",
+                                 action: { shell.actions.openNetworkPanel?() })
+        }
+    }
+
+    /// Routes one navigation action. The navigation value itself is rebuilt from state.
+    private func act(_ action: CommanderNavigationAction, in navigation: CommanderNavigation, _ shell: ShellContext) {
+        switch action {
+        case .select(let id):
+            show(place: id, from: navigation)
+        case .selectMode:
+            var next = navigation
+            next.apply(action)
+            if next.selection != navigation.selection { show(place: next.selection, from: navigation) }
+        case .setPresence(let choice):
+            shell.actions.setPresence(choice)
+        case .share(let id):
+            guard let path = LiveShell.projectPath(of: id), let name = navigation.place(id)?.title else { return }
+            MultiplayerShareLauncher.action(.repo(path: path, name: name))?()
+        case .toggleGroup:
+            break
+        }
+    }
+
+    /// Goes to a place. Runs shows the wall, and offers the run chooser when the wall is already
+    /// showing; a project opens its newest run; New run opens the form.
+    private func show(place id: String, from navigation: CommanderNavigation? = nil) {
+        if id == LiveShell.wall {
+            if let navigation, LiveShell.showsWall(navigation.selection), !ui.composingRun, !content.runs.isEmpty {
+                ui.showingRunChooser.toggle()
+            }
+            ui.composingRun = false
+            ui.shellPlace = LiveShell.wall
+        } else if id == LiveShell.newRun {
+            // No run can start while the service is offline; the row and ⌘N are both off.
+            guard isOnline else { return }
+            ui.shellPlace = LiveShell.wall
+            startComposing()
+        } else if let path = LiveShell.projectPath(of: id) {
+            ui.shellPlace = LiveShell.wall
+            ui.composingRun = false
+            if let latest = content.runs.last(where: { $0.path == path }) { actions.selectRun(latest.id) }
+        } else {
+            ui.composingRun = false
+            ui.shellPlace = id
+        }
+    }
+
+    /// A worker's request chosen in Needs you is answered where it always is: the wall comes
+    /// back and the request opens exactly as Next request opens it. A network request opens on
+    /// its page: an approval in Approvals with its review beside it, an access request in
+    /// Approvals, a friend request in People.
+    private func openFromInbox(_ id: String, _ shell: ShellContext) {
+        if let link = NetworkDeepLink(inboxID: id) {
+            shell.actions.openLink(link)
+            show(place: link.place)
+            return
+        }
+        guard let request = content.pending.first(where: { $0.id == id }) else { return }
+        ui.composingRun = false
+        ui.shellPlace = LiveShell.wall
+        open(request)
+    }
+
+    /// One answer to a network request. The network model does the work and says how it ended
+    /// for this request alone: the row shows the outcome for a moment and then leaves, or says
+    /// why the answer didn't go through and keeps its answers.
+    private func decide(_ id: String, _ decision: NeedsYouDecision, in inbox: NeedsYouInbox, _ shell: ShellContext) {
+        guard var item = inbox.items.first(where: { $0.id == id }), item.isPending, !ui.needsYouRunning.contains(id) else { return }
+        let network = shell.network, answers = shell.actions.answers
+        let work: @MainActor () async -> NetworkActionResult
+        switch (item.kind, decision) {
+        case (.networkApproval, .approved), (.networkApproval, .denied):
+            guard let approval = network.approvals.first(where: { LiveShell.id($0) == id }) else { return }
+            work = { await answers.decide(approval.item, approval.server, decision == .approved) }
+        case (.accessRequest, .declined):
+            guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
+            work = { await answers.removeAccess(request.item, request.server, true) }
+        case (.accessRequest, .inReview):
+            // The grant sheet is the review. It opens beside the request in Approvals.
+            guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
+            if shell.actions.reviewAccess(request) { show(place: NetworkPlace.approvals) }
+            return
+        case (.friendRequest, .accepted), (.friendRequest, .declined):
+            guard let friend = network.friendRequests.first(where: { LiveShell.id($0) == id }) else { return }
+            if decision == .accepted {
+                work = { await answers.acceptFriend(friend.request, friend.server) }
+            } else {
+                guard let decline = answers.declineFriend else { return }
+                work = { await decline(friend.request, friend.server) }
+            }
+        default:
+            return
+        }
+        ui.needsYouRunning.insert(id)
+        ui.needsYouFailures[id] = nil
+        Task {
+            let result = await work()
+            ui.needsYouRunning.remove(id)
+            guard result.isDone else {
+                ui.needsYouFailures[id] = result.reason
+                return
+            }
+            // The network holds an answered approval or access request itself, with its outcome
+            // (`ShellNetwork.answers`), so the window keeps no copy and adds no time of its own.
+            guard item.kind == .friendRequest else { return }
+            // A friend request leaves the network's list at once. The window shows its outcome
+            // for as long as the network holds an answered row.
+            item.decision = decision
+            item.failure = nil
+            ui.needsYouDecided.append(item)
+            try? await Task.sleep(for: MultiplayerShareModel.answeredHold)
+            ui.needsYouDecided.removeAll { $0.id == id }
+        }
+    }
+
     private var navigationGroups: [NavigationGroup] {
         if let fixtureNavigation { return fixtureNavigation.groups }
         let workspace = [
@@ -532,7 +826,7 @@ struct CockpitScreen: View {
                            action: { ui.showingRunChooser.toggle() }),
             NavigationItem(id: "attention", title: "Attention", mark: .symbol("bell"),
                            badge: content.pending.count, isEnabled: !content.pending.isEmpty,
-                           shortcut: KeyboardShortcut("a", modifiers: [.command, .shift]),
+                           shortcut: CockpitShortcuts.nextRequest.shortcut,
                            action: { nextRequest() })
         ]
 
@@ -561,7 +855,7 @@ struct CockpitScreen: View {
         if let fixtureNavigation { return fixtureNavigation.footer }
         return [NavigationItem(id: "new-run", title: "New run", mark: .symbol("plus"),
                                isActive: ui.composingRun, isEnabled: isOnline,
-                               shortcut: KeyboardShortcut("n", modifiers: .command),
+                               shortcut: CockpitShortcuts.newRun.shortcut,
                                action: { startComposing() })]
     }
 
@@ -583,22 +877,58 @@ struct CockpitScreen: View {
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
-    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return. ⌘N and ⇧⌘A live on their navigation rows.
+    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘5. Each
+    /// button only records its command; `perform` runs it from the page's current state, so a
+    /// shortcut never acts on values captured when the window opened.
     private var shortcuts: some View {
         Group {
-            Button("Focus coordinator") { focusCoordinator() }.keyboardShortcut("1", modifiers: .command)
-            Button("Zoom worker") { zoomFocused() }.keyboardShortcut("]", modifiers: .command)
-            Button("Return to wall") { returnToWall() }.keyboardShortcut("[", modifiers: .command)
-                .disabled(ui.zoomedWorkerID == nil && ui.zoomedRemoteWorkerID == nil)
+            // The shell's modes come before ⌘1.
+            if shell != nil {
+                ForEach(CockpitShortcuts.modes) { key in
+                    Button(key.title) { ui.press(key.command) }.keyboardShortcut(key.shortcut)
+                }
+                // The window hears the mode keys itself too, before anything else can take one.
+                CockpitModeKeys { ui.press($0) }
+            }
+            Button(CockpitShortcuts.focusCoordinator.title) { ui.press(.focusCoordinator) }
+                .keyboardShortcut(CockpitShortcuts.focusCoordinator.shortcut)
+            Button(CockpitShortcuts.zoomWorker.title) { ui.press(.zoomWorker) }
+                .keyboardShortcut(CockpitShortcuts.zoomWorker.shortcut)
+            Button(CockpitShortcuts.returnToWall.title) { ui.press(.returnToWall) }
+                .keyboardShortcut(CockpitShortcuts.returnToWall.shortcut)
             // The live Attention row carries ⇧⌘A. A supplied navigation model has its own rows, so
             // the shortcut is kept here.
-            if fixtureNavigation != nil {
-                Button("Next request") { nextRequest() }.keyboardShortcut("a", modifiers: [.command, .shift])
+            if fixtureNavigation != nil || shell != nil {
+                Button(CockpitShortcuts.nextRequest.title) { ui.press(.nextRequest) }
+                    .keyboardShortcut(CockpitShortcuts.nextRequest.shortcut)
+            }
+            // The shell's New run row has no key of its own, so ⌘N is kept here.
+            if shell != nil {
+                Button(CockpitShortcuts.newRun.title) { ui.press(.newRun) }
+                    .keyboardShortcut(CockpitShortcuts.newRun.shortcut)
             }
         }
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+
+    /// Runs a key command against what the page shows now.
+    private func perform(_ command: CockpitCommand) {
+        switch command {
+        case .mode(let index):
+            guard let shell else { return }
+            let navigation = shellNavigation(shell)
+            let modes = navigation.modeItems
+            guard modes.indices.contains(index) else { return }
+            act(.selectMode(modes[index].mode.id), in: navigation, shell)
+        case .focusCoordinator: focusCoordinator()
+        case .zoomWorker: zoomFocused()
+        case .returnToWall: returnToWall()
+        case .nextRequest: nextRequest()
+        // No run can start while the service is offline; `show` leaves the window where it is.
+        case .newRun: if shell != nil { show(place: LiveShell.newRun) }
+        }
     }
 
     // MARK: Canvas
@@ -655,7 +985,7 @@ struct CockpitScreen: View {
     private func coordinatorPane(_ run: RunContent) -> some View {
         VStack(spacing: 0) {
             SectionBar {
-                SectionTitle(symbol: "terminal", title: "Coordinator")
+                WallHeading(symbol: "terminal", title: "Coordinator")
             } trailing: {
                 EmptyView()
             }
@@ -693,49 +1023,39 @@ struct CockpitScreen: View {
     @ViewBuilder private func workerRegion(_ run: RunContent) -> some View {
         if let remoteID = ui.zoomedRemoteWorkerID {
             // A remote worker's output, read-only (network tray, increment 4 Watch).
-            let name = MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+            let remote = shell?.wall.remoteWorkers.first { $0.id == remoteID }
+            let name = shell == nil
+                ? MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+                : remote?.agent ?? "Remote worker"
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                        MultiplayerReadOnlyBadge()
-                    }
+                    WallCrumb(name: name, back: { returnToWall() }) { MultiplayerReadOnlyBadge() }
                 } trailing: {
                     HStack(spacing: 12) {
+                        // The hand-off's report, artifacts and thread are on its page.
+                        if let remote, shell != nil {
+                            Button("Open hand-off") { openWork(.handoff, request: remote.request, on: remote.server) }
+                                .buttonStyle(ThemeButtonStyle(compact: true))
+                                .help("Open this hand-off in Hand-offs: its report, what it left to apply, and its thread")
+                        }
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
                         AttentionPresentationMenu(selection: presentationChoice)
                     }
                 }
-                MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                if let shell {
+                    if let zoom = shell.wallActions.zoom {
+                        zoom(remoteID) { ui.zoomedRemoteWorkerID = nil }
+                    } else {
+                        Color.clear.onAppear { ui.zoomedRemoteWorkerID = nil }
+                    }
+                } else {
+                    MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                }
             }
         } else if let zoomed = zoomed {
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(zoomed.name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                    }
+                    WallCrumb(name: zoomed.name, back: { returnToWall() })
                 } trailing: {
                     HStack(spacing: 12) {
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
@@ -744,12 +1064,13 @@ struct CockpitScreen: View {
                 }
                 tile(zoomed, variant: .focused)
                     .coordinateSpace(.named(ConsoleVisibility.viewport))
+                controlDock(for: zoomed)
             }
         } else {
             let count = run.wall.workers.count
             VStack(spacing: 0) {
                 SectionBar {
-                    SectionTitle(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
+                    WallHeading(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
                 } trailing: {
                   HStack(spacing: 12) {
                     // Offered only where the wall can actually be regrouped.
@@ -775,13 +1096,13 @@ struct CockpitScreen: View {
                 WorkerWall(layout: run.wall, collapsed: ui.collapsedGroups,
                            reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
                            toggleGroup: { id in toggleGroup(id) }) { worker in
-                    tile(worker, variant: .wall)
+                    // The dock sits under the tile, outside its shell.
+                    VStack(spacing: 0) {
+                        tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        controlDock(for: worker)
+                    }
                 }
-                // Hand-offs running on friends' Macs, as remote workers (network tray).
-                MultiplayerRemoteWorkerBand(model: .shared) { worker in
-                    ui.zoomedWorkerID = nil
-                    ui.zoomedRemoteWorkerID = worker.id
-                }
+                remoteBand
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
@@ -792,6 +1113,58 @@ struct CockpitScreen: View {
                 .padding(.bottom, -11)
             }
         }
+    }
+
+    /// Hand-offs running on friends' Macs, as remote workers, and the reviews and fan-outs that
+    /// still need a look. The redesigned shell draws them from values in the wall's own frame;
+    /// without it the network's own band stands in.
+    @ViewBuilder private var remoteBand: some View {
+        if let shell {
+            let wall = shell.wall
+            Group {
+                if !wall.remoteWorkers.isEmpty || !wall.work.isEmpty {
+                    WallRemoteBand(workers: wall.remoteWorkers, work: wall.work, now: wall.now,
+                                   zoom: { worker in
+                                       ui.zoomedWorkerID = nil
+                                       ui.zoomedRemoteWorkerID = worker.id
+                                   },
+                                   openHandoffs: { show(place: NetworkPlace.handoffs) },
+                                   openWork: { item in openWork(item.kind, request: item.request, on: item.server) })
+                        .padding(.top, Metric.wallRowGap)
+                        .transition(.opacity)
+                }
+            }
+            .animation(theme.motion.animation(theme.motion.standard), value: wall.remoteWorkers.isEmpty && wall.work.isEmpty)
+            .onAppear { shell.wallActions.appeared() }
+            .onDisappear { shell.wallActions.disappeared() }
+        } else {
+            MultiplayerRemoteWorkerBand(model: .shared) { worker in
+                ui.zoomedWorkerID = nil
+                ui.zoomedRemoteWorkerID = worker.id
+            }
+        }
+    }
+
+    /// Who holds control of this worker and what a friend suggests for it, under its tile.
+    @ViewBuilder private func controlDock(for worker: WorkerPresentation) -> some View {
+        if let shell {
+            let wall = shell.wall
+            WallControlDock(controls: wall.controls(forWorker: worker.id), suggestions: wall.suggestions(forWorker: worker.id),
+                            now: wall.now, isBusy: wall.isBusy,
+                            takeBack: { control in shell.wallActions.takeBack(control) },
+                            openShared: { show(place: NetworkPlace.shared) },
+                            review: { suggestion in
+                                shell.actions.openLink(.approval(id: suggestion.approval, server: suggestion.server))
+                                show(place: NetworkPlace.approvals)
+                            })
+        }
+    }
+
+    /// Opens a hand-off, a review or a fan-out in the network and goes to the page that shows it.
+    private func openWork(_ kind: MultiplayerRemoteWork.Kind, request: String, on server: String) {
+        guard let shell else { return }
+        shell.wallActions.openWork(kind, request, server)
+        show(place: WallLiveWork.place(for: kind))
     }
 
     /// The drawer reaches the pane's trailing and bottom edges, outside the wall's insets.
@@ -1075,6 +1448,8 @@ struct CockpitScreen: View {
     /// including a second request from the focused or a visible worker and ones left out of the
     /// attention surfaces because their console is in view.
     private func nextRequest() {
+        // Requests are answered beside the wall, so Next request brings it back.
+        if !content.pending.isEmpty, ui.wallHidden { ui.shellPlace = LiveShell.wall }
         ui.drawerClosed = false
         let answering = replyFocus.flatMap { id in content.pending.contains { $0.id == id } ? id : nil }
         let navigation = content.attentionNavigation(ui, answering: answering)
@@ -1315,9 +1690,14 @@ struct CockpitView: View {
     @Environment(ConsoleModeStore.self) private var consoleModes
     @Environment(NativeTerminalLedger.self) private var nativeTerminals: NativeTerminalLedger?
     let model: CockpitModel
+    /// The network tray's model. The main window reads it and calls its intents; it owns nothing
+    /// of the network's.
+    private let network = MultiplayerModel.shared
     @State private var ui = CockpitView.initialState()
     /// The floating window for the PiP presentation. It lives as long as the live page.
     @State private var floatingPanel: FloatingAttentionController?
+    /// This window's place with the open-in-window router, while it shows.
+    @State private var routerAttachment: Int?
 
     /// Where the developer's choice of attention presentation is kept on this Mac.
     private static let attentionPresentationKey = "attentionPresentation"
@@ -1342,8 +1722,41 @@ struct CockpitView: View {
 
     var body: some View {
         CockpitScreen(content: CockpitContent(model: model), ui: ui, actions: actions,
-                      adapterUpdates: model.adapterUpdates)
+                      adapterUpdates: model.adapterUpdates,
+                      shell: ShellContext(network: ShellNetwork(model: network), actions: networkActions,
+                                          networkPage: { place, go in
+                                              AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
+                                                                      openPanel: networkActions.openNetworkPanel))
+                                          },
+                                          teamsPage: { place, go in
+                                              AnyView(LiveTeamsPage(place: place, model: network, state: ui.teamsPages, go: go,
+                                                                    share: { resource, server in
+                                                                        // The grant sheet is the network pages' own, on Shared.
+                                                                        guard networkActions.answers.prepareGrant(server, nil, resource, []) else { return }
+                                                                        ui.networkPages.selection.grant = server
+                                                                        go(NetworkPlace.shared)
+                                                                    }))
+                                          },
+                                          // The wall's live work, read from the network model as values.
+                                          wall: WallLiveWork(model: network, workers: CockpitContent(model: model).selected?.wall.workers.map(\.id) ?? []),
+                                          wallActions: .live(network, pages: ui.networkPages)))
             .task { await model.follow() }
+            // The window is one more viewer of the network model: it polls while the window shows.
+            .onAppear { network.open() }
+            .onDisappear { network.close() }
+            // The tray's "Open in Agent Commander" arrives here (CommanderWindowRouter.swift). A
+            // request sent while the window was closed is handed over as it reopens.
+            .onAppear {
+                let ui = ui, network = network
+                routerAttachment = CommanderWindowRouter.shared.attach { request in
+                    let places = LiveShell.places(network: ShellNetwork(model: network))
+                    request.destination(in: CommanderOpenCatalog(places: places, model: network)).show(in: ui, model: network)
+                }
+            }
+            .onDisappear {
+                if let routerAttachment { CommanderWindowRouter.shared.detach(routerAttachment) }
+                routerAttachment = nil
+            }
             // Its own task: a missing or old catalog endpoint never holds up the workspace feed.
             .task { await model.adapterUpdates.follow() }
             .onAppear {
@@ -1360,6 +1773,28 @@ struct CockpitView: View {
             .onChange(of: ui.drawerPinned) { _, pinned in
                 UserDefaults.standard.set(pinned, forKey: Self.attentionPanelPinnedKey)
             }
+    }
+
+    /// The network intents the shell may ask for: the same model methods the tray calls.
+    private var networkActions: ShellNetworkActions {
+        let network = network
+        var panel: (@MainActor () -> Void)?
+        if network.client != nil { panel = { MultiplayerLinkWindow.show(network) } }
+        return ShellNetworkActions(
+            setPresence: { choice in _ = network.setPresence(choice) },
+            answers: .live(network),
+            openNetworkPanel: panel,
+            // The window opens the approval on its own page. The tray stays where it is.
+            openLink: { link in
+                if case .approval(let id, let server) = link { ui.networkPages.open(.share(server, .approval(id))) }
+            },
+            reviewAccess: { pending in
+                // Fills the grant sheet from the request; Approvals then hosts it beside the request.
+                guard network.share.prepareGrant(on: pending.server, handle: pending.item.requester,
+                                                 resourceID: pending.item.resource, actions: Set(pending.item.actions)) else { return false }
+                ui.networkPages.selection.grant = pending.server
+                return true
+            })
     }
 
     private var actions: CockpitActions {

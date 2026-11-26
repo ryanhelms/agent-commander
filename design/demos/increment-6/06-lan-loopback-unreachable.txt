@@ -1,0 +1,9 @@
+== http://192.168.1.144:8780/
+curl: (7) Failed to connect to 192.168.1.144 port 8780 after 1 ms: Couldn't connect to server
+000
+== http://127.0.0.1:8780/
+curl: (7) Failed to connect to 127.0.0.1 port 8780 after 0 ms: Couldn't connect to server
+000
+== http://192.168.64.1:8780/
+curl: (7) Failed to connect to 192.168.64.1 port 8780 after 1 ms: Couldn't connect to server
+000

@@ -16,6 +16,7 @@ import (
 	"agentcommander.network/pilot/internal/actions"
 	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/identity"
+	"agentcommander.network/pilot/internal/sharing"
 )
 
 type input struct {
@@ -24,6 +25,7 @@ type input struct {
 	Group         string                `json:"group"`
 	Resource      string                `json:"resource"`
 	Capability    string                `json:"capability"`
+	Actions       []string              `json:"actions,omitempty"`
 	Capabilities  *control.Capabilities `json:"capabilities,omitempty"`
 	Name          string                `json:"name"`
 	Kind          string                `json:"kind"`
@@ -122,7 +124,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	friends, incoming, outgoing := []map[string]any{}, []map[string]any{}, []map[string]any{}
 	for _, f := range social.Friends {
-		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online, "displayName": f.DisplayName, "statusMessage": f.StatusMessage, "presence": f.Presence, "hasAvatar": f.HasAvatar, "contactKey": f.ContactKey, "lastSeen": f.LastSeen}
+		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online, "displayName": f.DisplayName, "statusMessage": f.StatusMessage, "presence": f.Presence, "hasAvatar": f.HasAvatar, "contactKey": f.ContactKey, "lastSeen": f.LastSeen, "requestedAt": f.RequestedAt}
 		switch f.Status {
 		case "accepted":
 			friends = append(friends, row)
@@ -151,10 +153,16 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	own, shared := []map[string]any{}, []map[string]any{}
 	kind := map[string]string{}
+	a.mu.Lock()
+	local := slices.Clone(a.policy.Resources)
+	a.mu.Unlock()
 	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
+		}
+		if r.Kind == "host" && r.Device == s.Device && r.Owner == s.User {
+			row["capabilities"] = hostCapabilities(ctx, r, local)
 		}
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
@@ -177,6 +185,25 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	result["grants"] = rows
 	return result, nil
+}
+
+// hostCapabilities gives an own host's published capabilities with the
+// commands this Mac has enrolled for it. It falls back to the relay's copy when
+// the command file can't be read, and always carries a commands list.
+func hostCapabilities(ctx context.Context, r control.Resource, local []actions.Resource) *control.Capabilities {
+	caps := control.Capabilities{}
+	if r.Capabilities != nil {
+		caps = *r.Capabilities
+	}
+	if i := slices.IndexFunc(local, func(l actions.Resource) bool { return l.ID == r.ID && l.Kind == "host" }); i >= 0 {
+		if prepared, err := actions.PrepareResource(ctx, local[i]); err == nil && prepared.Capabilities != nil {
+			caps.Commands = prepared.Capabilities.Commands
+		}
+	}
+	if caps.Commands == nil {
+		caps.Commands = []sharing.Command{}
+	}
+	return &caps
 }
 
 type grantList struct {
@@ -332,8 +359,17 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	p := a.policy
 	a.mu.Unlock()
 	i := slices.IndexFunc(p.Resources, func(r actions.Resource) bool { return r.ID == resource })
-	if i < 0 || !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
-		return errors.New("unsupported local resource or capability")
+	if resource == "" {
+		return errors.New("provide a resource for the grant")
+	}
+	if i < 0 {
+		return fmt.Errorf("no resource %s", resource)
+	}
+	if action == "" {
+		return errors.New("provide a capability for the grant")
+	}
+	if !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
+		return fmt.Errorf("resource %s does not support %s", resource, action)
 	}
 	// The other user can end the friendship from a different device. Reconcile
 	// with the relay before carrying any previously granted capability forward.
@@ -529,6 +565,17 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 }
 
 func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
+	if in.Actions != nil {
+		// Grant callers can also use the relay's actions array. The tray
+		// edits one capability and its limits at a time.
+		if verb != "grant" {
+			return nil, errors.New("the actions field is only accepted for a grant")
+		}
+		if len(in.Actions) != 1 || in.Actions[0] == "" || in.Capability != "" {
+			return nil, errors.New("provide one grant action using either capability or actions")
+		}
+		in.Capability = in.Actions[0]
+	}
 	switch verb {
 	case "status":
 		return a.status(ctx)
@@ -565,13 +612,15 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
-	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge":
+	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs":
 		return a.teamVerb(ctx, s, verb, in)
-	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "claim", "release", "knowledge":
+	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members":
 		return a.namedTeamRelay(ctx, s, verb, in)
+	case "workspace-combined":
+		return a.combinedWorkspace(ctx, s, in)
 	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
 		return a.liveVerb(ctx, s, verb, in)
-	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
+	case "send", "sent", "handoffs", "threads", "thread", "comment", "apply-artifact":
 		return a.requesterVerb(ctx, s, verb, in)
 	case "approvals":
 		return a.approvals(ctx, s), nil
@@ -587,7 +636,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.audit(ctx, s, in.Resource, peer)
 	case "avatar", "membership", "membership-set", "invite-create", "me":
 		return a.socialVerb(ctx, s, verb, in)
-	case "search", "request", "accept", "unfriend":
+	case "search", "request", "accept", "unfriend", "decline":
 		handle := in.Handle
 		if handle == "" {
 			handle = in.ID
@@ -601,12 +650,17 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			e = a.remote(ctx, s, "GET", "/v1/users/"+part, nil, &u)
 			return u, e
 		}
-		method := map[string]string{"request": "POST", "accept": "PUT", "unfriend": "DELETE"}[verb]
+		// decline refuses an incoming request; the relay deletes the pending pair either way.
+		method := map[string]string{"request": "POST", "accept": "PUT", "unfriend": "DELETE", "decline": "DELETE"}[verb]
 		return nil, a.remote(ctx, s, method, "/v1/friends/"+part, nil, nil)
 	case "resource-add", "resource-update":
 		return a.publishResource(ctx, s, in, verb == "resource-update")
 	case "grant", "revoke":
-		return nil, a.grant(ctx, s, in, verb == "revoke")
+		err := a.grant(ctx, s, in, verb == "revoke")
+		if in.Group != "" {
+			err = teamRefusal(err)
+		}
+		return nil, err
 	case "repo-credential":
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -668,7 +722,14 @@ func reply(w http.ResponseWriter, value any, e error) {
 	w.Header().Set("Cache-Control", "no-store")
 	if e != nil {
 		w.WriteHeader(400)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": e.Error()})
+		envelope := map[string]any{"ok": false, "error": e.Error()}
+		var status statusError
+		if errors.As(e, &status) {
+			for k, v := range status.refusalFields() {
+				envelope[k] = v
+			}
+		}
+		_ = json.NewEncoder(w).Encode(envelope)
 		return
 	}
 	if value == nil {

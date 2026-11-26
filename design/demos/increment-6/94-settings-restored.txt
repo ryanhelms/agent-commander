@@ -1,0 +1,10 @@
+Wed Nov 25 22:35:05 EST 2026
+com.apple.Accessibility ReduceMotionEnabled = 0
+com.apple.universalaccess reduceMotion = 0
+com.apple.Accessibility FullKeyboardAccessEnabled = 0
+NSGlobalDomain AppleKeyboardUIMode = 0
+{"reduceMotion":false}
+System Settings running: no
+deleted AppleKeyboardUIMode
+after: AppleKeyboardUIMode=Error: Could not find key 'AppleKeyboardUIMode' in domain 'kCFPreferencesAnyApplication'.; universalaccess reduceMotion=0
+{"reduceMotion":false}

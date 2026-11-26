@@ -13,8 +13,8 @@ import Testing
     /// A model on the fixture with a state file of its own. The fixture reads its state path from
     /// the environment, which every test in the process shares, so each model here runs it through
     /// a launcher that names its own file. Tests that change state can then run side by side.
-    static func fixtureModel(_ name: String) async throws -> MultiplayerModel {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("multiplayer-remote-\(name)-\(UUID().uuidString)")
+    static func fixtureModel(_ name: String, in shared: URL? = nil) async throws -> MultiplayerModel {
+        let folder = shared ?? FileManager.default.temporaryDirectory.appendingPathComponent("multiplayer-remote-\(name)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let launcher = folder.appendingPathComponent("fixture")
         let script = "#!/bin/sh\nCOMMANDER_NETWORK_FIXTURE_STATE='\(folder.path)/state.json' exec '\(MultiplayerRenderTests.fixture.path)' \"$@\"\n"
@@ -33,7 +33,7 @@ import Testing
 
     @Test func tracksTheRemoteVerbs() {
         #expect(MultiplayerVerb.remoteEnable.arguments == ["tray", "remote-enable"])
-        #expect(Set(["remote-enable", "remote-disable", "remote-devices", "remote-revoke"])
+        #expect(Set(["remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename"])
             .isSubset(of: Set(MultiplayerVerb.allCases.map(\.rawValue))))
     }
 
@@ -145,6 +145,112 @@ import Testing
         model.close()
     }
 
+    // MARK: Increment 6 defects (design/demos/increment-6/demo.md)
+
+    /// D1: `remote-devices` names the unused code, so a tray that restarts shows it again.
+    @Test func aRestartedTrayShowsTheCodeStillOnOffer() async throws {
+        let now = MultiplayerFixtureClock.start
+        let status = MultiplayerRemoteStatus(try MultiplayerLiveFixture.json(
+            #"{"running":true,"url":"http://100.64.0.7:8780","devices":[],"pairing":{"code":"ABCD2345","expiresAt":"2026-11-23T12:10:00Z","pairURL":"http://100.64.0.7:8780/pair?code=ABCD2345"}}"#), now: now)
+        #expect(status.pairing?.code == "ABCD2345" && status.pairing?.url == "http://100.64.0.7:8780")
+        #expect(status.pairing?.pairURL == "http://100.64.0.7:8780/pair?code=ABCD2345")
+        // No code is read from a web view that is off, or from a reply without one.
+        #expect(MultiplayerRemoteStatus(try MultiplayerLiveFixture.json(
+            #"{"running":false,"url":"","devices":[],"pairing":{"code":"ABCD2345"}}"#), now: now).pairing == nil)
+        #expect(MultiplayerRemoteStatus(try MultiplayerLiveFixture.json(#"{"running":true,"url":"http://h:1","devices":[]}"#), now: now).pairing == nil)
+
+        // The fixture keeps the code: a second tray on the same state draws the first one's code.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("multiplayer-remote-restart-\(UUID().uuidString)")
+        let first = try await Self.fixtureModel("restart", in: folder)
+        await first.remote.enable()?.value
+        await first.settle()
+        let shown = try #require(first.remote.livePairing)
+        first.close()
+        let second = try await Self.fixtureModel("restart", in: folder)
+        defer { second.close() }
+        #expect(await MultiplayerLiveFixture.eventually { second.remote.status != nil })
+        let restored = try #require(second.remote.livePairing)
+        #expect(restored.code == shown.code && restored.pairURL == shown.pairURL && !second.remote.pairingExpired)
+        #expect(abs(restored.expiresAt.timeIntervalSince(shown.expiresAt)) < 2)
+        // Off drops it for every tray.
+        await second.remote.disable()?.value
+        await second.settle()
+        #expect(second.remote.livePairing == nil)
+    }
+
+    /// D7: a paired device is renamed from its row. Only a name the device agent takes is sent.
+    @Test func aPairedDeviceIsRenamed() async throws {
+        #expect(MultiplayerVerb.remoteRename.arguments == ["tray", "remote-rename"])
+        #expect(MultiplayerRemoteDevice.sendable(name: "  Kitchen iPad \n") == "Kitchen iPad")
+        #expect(MultiplayerRemoteDevice.sendable(name: "   ") == nil && MultiplayerRemoteDevice.problem(name: "") == nil)
+        let long = String(repeating: "é", count: 33)   // 66 bytes: the limit counts bytes.
+        #expect(MultiplayerRemoteDevice.sendable(name: long) == nil && MultiplayerRemoteDevice.problem(name: long) != nil)
+        #expect(MultiplayerRemoteDevice.sendable(name: String(repeating: "a", count: 64)) != nil)
+
+        let model = try await Self.fixtureModel("rename")
+        defer { model.close() }
+        let remote = model.remote
+        // Rename and Revoke are one at a time on a row.
+        remote.askRevoke("RD3XW9PT")
+        remote.startRename("RD3XW9PT")
+        #expect(remote.renaming == "RD3XW9PT" && remote.confirmingRevoke == nil)
+        // Nothing is sent for an empty name, or for the name it has.
+        #expect(remote.rename(to: "  ") == nil && remote.renaming == "RD3XW9PT")
+        #expect(remote.rename(to: "iPad mini") == nil && remote.renaming == nil)
+
+        remote.startRename("RD3XW9PT")
+        await remote.rename(to: " Kitchen iPad ")?.value
+        await model.settle()
+        #expect(model.failure == nil && remote.renaming == nil)
+        #expect(remote.devices.map(\.name) == ["Ryan’s iPhone", "Kitchen iPad"])
+        #expect(model.notice == "iPad mini is now Kitchen iPad.")
+        // The fixture kept it: a fresh read says the same.
+        remote.refresh()
+        await remote.quietTask?.value
+        #expect(remote.devices.first { $0.id == "RD3XW9PT" }?.name == "Kitchen iPad")
+        // Asking to revoke closes the name field.
+        remote.startRename("RD7K2MQA")
+        remote.askRevoke("RD7K2MQA")
+        #expect(remote.renaming == nil && remote.confirmingRevoke == "RD7K2MQA")
+    }
+
+    /// D7: the rename request carries the device and the name, and no server.
+    @Test func aRenameSendsTheDeviceAndTheName() async throws {
+        let listed = MultiplayerLiveFixture.ok(#"{"running":true,"url":"http://h:1","devices":[{"id":"D1","name":"Phone"}]}"#)
+        let helper = ScriptedMultiplayerHelper([
+            .servers: [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)], .status: [MultiplayerLiveFixture.status],
+            .remoteDevices: [listed, MultiplayerLiveFixture.ok(#"{"running":true,"url":"http://h:1","devices":[{"id":"D1","name":"Pixel"}]}"#)],
+            .remoteRename: [MultiplayerLiveFixture.ok("{}")]])
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600))
+        model.open()
+        await model.settle()
+        #expect(await MultiplayerLiveFixture.eventually { model.remote.status != nil })
+        model.remote.startRename("D1")
+        await model.remote.rename(to: "Pixel")?.value
+        await model.settle()
+        #expect(helper.lastInput(.remoteRename) == ["device": "D1", "name": "Pixel"])
+        #expect(model.remote.devices.first?.name == "Pixel")
+        model.close()
+    }
+
+    /// D8: the Remote controls are still native buttons with names, and the row offers Rename.
+    @Test func theRemoteBandOffersRenameToAssistiveApps() async throws {
+        let model = try await Self.fixtureModel("ax-rename")
+        defer { model.close() }
+        model.tab = .network
+        await model.remote.enable()?.value
+        await model.settle()
+        let nodes = try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model))
+        let dump = nodes.map(\.description).joined(separator: "\n")
+        for label in ["Copy the address", "Copy the code", "Copy the link", "Rename iPad mini", "Revoke iPad mini"] {
+            #expect(nodes.contains { $0.role == "AXButton" && $0.label == label }, "\(label)\n\(dump)")
+        }
+        model.remote.startRename("RD3XW9PT")
+        let editing = try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model))
+        #expect(editing.contains { $0.role == "AXTextField" && $0.label == "Device name" }, "\(editing.map(\.description).joined(separator: "\n"))")
+        #expect(editing.contains { $0.label == "Save name" } && !editing.contains { $0.label == "Rename iPad mini" })
+    }
+
     // MARK: Increment 4 defects
 
     /// D4: the fixture names the holder as the device agent does, and Take back works for them.
@@ -208,7 +314,8 @@ import Testing
         #expect(live.zoomTask == nil)
     }
 
-    /// D10: live-work rows have roles, and each picker is offered once.
+    /// D10: live-work rows have roles, and each picker is offered once. Review is a window page:
+    /// the tray draws its open-in-window row alone.
     @Test func exposesTheLiveWorkPagesToAssistiveApps() async throws {
         let model = try await Self.fixtureModel("ax-live")
         defer { model.close() }
@@ -241,12 +348,14 @@ import Testing
                 let pickers = nodes.filter { $0.label == "Friend" }
                 #expect(pickers.count == 1 && pickers.first?.value.isEmpty == false, "\(dump)")
                 #expect(nodes.contains { $0.label == "Hand over control" }, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Hand over" }, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Runs in Agent Commander" }, "\(dump)")
             case "watch":
                 let lines = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).contains("Message: ") }
                 #expect(!lines.isEmpty, "\(dump)")
             case "review":
-                let findings = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).hasPrefix("Important, ") }
-                #expect(findings.count == 2, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Hand-offs in Agent Commander" }, "\(dump)")
+                #expect(!nodes.contains { ($0.label + $0.value).hasPrefix("Important, ") || $0.label == "Post to PR…" }, "\(dump)")
             case "network":
                 #expect(nodes.contains { $0.label == "Remote" }, "\(dump)")
                 #expect(nodes.contains { $0.label == "Revoke iPad mini" }, "\(dump)")
@@ -277,7 +386,8 @@ import Testing
     @Test(.enabled(if: multiplayerRenderDirectory != nil)) func drawsRemoteAndTheCockpitWatch() async throws {
         let folder = URL(fileURLWithPath: try #require(multiplayerRenderDirectory), isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let model = try await Self.fixtureModel("remote-render")
+        let shared = FileManager.default.temporaryDirectory.appendingPathComponent("multiplayer-remote-render-\(UUID().uuidString)")
+        let model = try await Self.fixtureModel("remote-render", in: shared)
         defer { model.close() }
         let remote = model.remote, live = model.share.live
 
@@ -289,6 +399,24 @@ import Testing
         remote.askRevoke("RD3XW9PT")
         try await MultiplayerRenderTests.write(model, "remote-band-revoke", to: folder)
         remote.cancelRevoke()
+        remote.startRename("RD3XW9PT")
+        try await MultiplayerRenderTests.write(model, "remote-band-rename", to: folder)
+        remote.cancelRename()
+        // A second tray on the same state: the code, link and countdown come back from `remote-devices`.
+        let restarted = try await Self.fixtureModel("remote-render", in: shared)
+        restarted.tab = .network
+        _ = await MultiplayerLiveFixture.eventually { restarted.remote.status != nil }
+        try await MultiplayerRenderTests.write(restarted, "remote-band-after-restart", to: folder)
+        restarted.close()
+        // The copy cell's focus ring, drawn as it is with keyboard focus on it.
+        let chips = VStack(alignment: .leading, spacing: Space.s) {
+            MultiplayerCopyChip(label: "address", value: "http://100.64.0.7:8780", showsFocus: true, onCopy: { _ in })
+            MultiplayerCopyChip(label: "code", value: "ABCD 2345", font: MultiplayerTheme.figure, height: 28, showsFocus: true, onCopy: { _ in })
+            MultiplayerCopyChip(label: "link", value: "http://100.64.0.7:8780/pair?code=ABCD2345", onCopy: { _ in })
+        }
+        .padding(14)
+        .background(MultiplayerTheme.panel)
+        try await Self.write(chips, size: CGSize(width: 372, height: 120), "remote-copy-chip-focus", to: folder)
 
         // The tray pages the increment 4 fixes changed.
         model.tab = .agents

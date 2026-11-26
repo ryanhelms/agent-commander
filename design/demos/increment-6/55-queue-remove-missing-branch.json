@@ -1,0 +1,4 @@
+{"verb": "queue-remove", "request": {"workspace":"x"}, "response": {
+ "error": "queue-remove needs a workspace and a branch",
+ "ok": false
+}}

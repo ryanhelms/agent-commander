@@ -1,0 +1,15 @@
+# Requests to the tray session from main window increment 4
+
+Nothing in `Multiplayer*.swift` changed in this increment. The wall composes `RemoteWorkerTile`, `RemoteWorkerZoom` and `MultiplayerHolderRow` from outside. These would let it drop its workarounds. None blocks what is built.
+
+| # | Request | Why |
+|---|---|---|
+| 1 | `apply` that answers for its artifact: `share.apply(artifact:of:on:checkout:) async -> MultiplayerActionResult`, with the saved file's final name in the message. | Today it returns a task and reports through the banner. The window awaits the task and reads `model.failure` and `model.notice` to get the artifact's result. A file saved under a new name (`report.md.1a2b3c4d`) is not named anywhere. |
+| 2 | In `RemoteWorkerZoom`, let the caller title the footer button, or leave it out: `footerTitle: String = "Open in tray"`. | In the main window the hand-off's page is Hand-offs. The window adds "Open hand-off" in the bar above and can't change the footer, so the zoom offers both. |
+| 3 | In `RemoteWorkerGroup` (`MultiplayerWall.swift` line 185), take the frame from the caller or read `@Environment(\.theme)`: fill `Palette.groupFill`, edge `MultiplayerTheme.hair`, radius `MultiplayerTheme.tileRadius`. | The band is console-styled in both themes. The window draws its own band (`WallRemoteBand`) from `RemoteWorkerTile` instead, so `RemoteWorkerGroup` and `MultiplayerRemoteWorkerBand` are now used only where the cockpit has no shell (the older design previews). They can go once those previews move. |
+| 4 | A countdown that takes the clock: `MultiplayerCountdown(until:span:now:)`. | It always reads the real clock, so a fixture with a fixed time shows a wrong figure. The renders time the sample hold from the real clock. |
+| 5 | Read hand-overs and sent reviews and fan-outs while only the wall shows (`live.refresh()` returns unless `tray.viewers > 0`). | The dock and the band's rows are current only because the main window counts as a tray viewer while it shows. If that changes, they go stale. |
+| 6 | A worker's resource ID from the model: `share.resource(forWorker:) -> MultiplayerResource?`. | The window matches a local worker to a hand-over by `MultiplayerShareTarget.agent(id:name:).resourceID`. That holds only while sharing derives the ID that way. |
+| 7 | Suggestions on the watch view from the zoom (`allowsSuggestion: true` with a draft the caller owns). | The cockpit zoom is read-only. Suggesting to a friend's worker still needs the tray's watch page. |
+| 8 | Remove a server by value: `remove(_ server:) async -> MultiplayerActionResult`, leaving the tray's route alone. | The window still uses `askRemove` and `confirmRemove`. They share the tray's confirm state, and the tray goes home once the server is gone. It is the one place the window still moves the tray. |
+| 9 | Still open from increment 3: tray atoms reading `\.theme` (8), and the cockpit running against the fixture (10). | The dock's holder row, the zoom and every hosted composer stay console-styled in black glass. |

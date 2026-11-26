@@ -160,7 +160,7 @@ enum MultiplayerIntegration: String, CaseIterable, Sendable, Identifiable {
     var explanation: String {
         switch self {
         case .queue: "Contributors push branches to the owner’s Mac. The owner’s Mac tests each one and merges them in order."
-        case .pullRequest: "Contributors open pull requests themselves. Commander links to them here."
+        case .pullRequest: "Contributors open pull requests themselves. Commander lists the open ones here."
         }
     }
 
@@ -173,6 +173,8 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     let id: String
     /// The owner's account on the relay.
     let owner: String
+    /// The owner's handle. Empty when the relay doesn't say, or the owner has none.
+    let ownerHandle: String
     let group: String
     let name: String
     let goal: String
@@ -181,10 +183,11 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     let integration: String
     let claims: [MultiplayerClaim]
 
-    init(id: String, owner: String = "", group: String = "", name: String, goal: String = "", repository: String = "",
-         base: String = "", integration: String = "", claims: [MultiplayerClaim] = []) {
+    init(id: String, owner: String = "", ownerHandle: String = "", group: String = "", name: String, goal: String = "",
+         repository: String = "", base: String = "", integration: String = "", claims: [MultiplayerClaim] = []) {
         self.id = id
         self.owner = owner
+        self.ownerHandle = ownerHandle
         self.group = group
         self.name = name
         self.goal = goal
@@ -196,7 +199,8 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
 
     init?(_ json: MultiplayerJSON) {
         guard let id = json.firstText("id") else { return nil }
-        self.init(id: id, owner: json.firstText("owner") ?? "", group: json.firstText("group") ?? "",
+        self.init(id: id, owner: json.firstText("owner") ?? "", ownerHandle: json.firstText("ownerHandle") ?? "",
+                  group: json.firstText("group") ?? "",
                   name: json.firstText("name") ?? id, goal: json.firstText("goal") ?? "",
                   repository: json.firstText("repository") ?? "", base: json.firstText("base") ?? "",
                   integration: json.firstText("integration") ?? "",
@@ -204,6 +208,9 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
     }
 
     var usesQueue: Bool { integration == MultiplayerIntegration.queue.rawValue }
+
+    /// Whether this person owns it: only the owner edits a workspace, and the owner can't leave it.
+    func isOwned(by handle: String) -> Bool { !handle.isEmpty && ownerHandle == handle }
 
     /// Where the repository's pull requests are, when the repository names a GitHub project.
     var pullRequestsURL: URL? {
@@ -218,6 +225,88 @@ struct MultiplayerWorkspace: Equatable, Sendable, Identifiable {
               url.pathComponents.filter({ $0 != "/" }).count == 2 else { return nil }
         return url.appendingPathComponent("pulls")
     }
+}
+
+/// One open pull request in a workspace's repository, as the person's own `gh` listed it.
+struct MultiplayerPullRequest: Equatable, Sendable, Identifiable {
+    let number: Int
+    let title: String
+    let url: String
+    /// The author's GitHub login.
+    let author: String
+    let state: String
+    /// The branch the change comes from.
+    let branch: String
+
+    var id: Int { number }
+
+    init(number: Int, title: String, url: String = "", author: String = "", state: String = "open", branch: String = "") {
+        self.number = number
+        self.title = title
+        self.url = url
+        self.author = author
+        self.state = state
+        self.branch = branch
+    }
+
+    init?(_ json: MultiplayerJSON) {
+        guard let number = json["number"]?.int, number > 0 else { return nil }
+        self.init(number: number, title: json.firstText("title") ?? "", url: json.firstText("url") ?? "",
+                  author: json.firstText("author") ?? "", state: json.firstText("state") ?? "open",
+                  branch: json.firstText("branch") ?? "")
+    }
+
+    /// The number as people write it.
+    var reference: String { "#\(number)" }
+
+    /// Where the pull request opens. Only an https address is ever handed to the system.
+    var link: URL? {
+        guard let link = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)), link.scheme == "https",
+              link.host?.isEmpty == false else { return nil }
+        return link
+    }
+
+    var spoken: String {
+        var parts = ["Pull request \(number)", title.multiplayerDisplay]
+        if !branch.isEmpty { parts.append("branch \(branch.multiplayerDisplay)") }
+        if !author.isEmpty { parts.append("by \(author.multiplayerDisplay)") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// The open pull requests of one workspace's repository.
+struct MultiplayerPullRequestList: Equatable, Sendable {
+    /// The device lists at most this many.
+    static let limit = 50
+
+    let workspace: String
+    /// The repository as `owner/name`.
+    let repository: String
+    let pullRequests: [MultiplayerPullRequest]
+
+    init(workspace: String, repository: String = "", pullRequests: [MultiplayerPullRequest] = []) {
+        self.workspace = workspace
+        self.repository = repository
+        self.pullRequests = pullRequests
+    }
+
+    init(_ json: MultiplayerJSON, workspace: String) {
+        self.init(workspace: json.firstText("workspace") ?? workspace, repository: json.firstText("repository") ?? "",
+                  pullRequests: (json["pullRequests"]?.items ?? []).compactMap(MultiplayerPullRequest.init))
+    }
+
+    /// Why the list couldn't be read, as the page says it. `gh` missing or signed out reads as what
+    /// to check; anything else is the device's own reason.
+    static func problem(_ reason: String) -> String {
+        let lead = "Couldn’t list the pull requests."
+        if reason.hasPrefix("gh could not list pull requests") {
+            return "\(lead) Check that gh is installed on this Mac and signed in to GitHub."
+        }
+        return MultiplayerSentence.join(lead, reason)
+    }
+
+    /// The device stopped at its limit, so there may be more on the host.
+    var isCapped: Bool { pullRequests.count >= Self.limit }
 }
 
 /// One card of a workspace's board.
@@ -343,6 +432,13 @@ struct MultiplayerQueueEntry: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A count with its noun: "1 claim", "3 claims". Used for what is drawn and what is spoken.
+enum MultiplayerPlural {
+    static func count(_ number: Int, _ one: String, _ many: String? = nil) -> String {
+        "\(number) \(number == 1 ? one : many ?? one + "s")"
+    }
+}
+
 // MARK: - Hosts
 
 extension MultiplayerDirectoryEntry {
@@ -372,6 +468,9 @@ struct MultiplayerHostRun: Equatable, Sendable {
     }
 
     var succeeded: Bool { exitCode == 0 }
+
+    /// The exit state and the time it took, as one readout: "Exit 1, 41 seconds".
+    var spoken: String { "Exit \(exitCode), \(MultiplayerPlural.count(seconds, "second"))" }
 }
 
 /// One run of an enrolled command on a friend's host.
@@ -384,9 +483,12 @@ struct MultiplayerHostRunDraft: Equatable {
 
     var canSend: Bool { !command.trimmingCharacters(in: .whitespaces).isEmpty && arguments.count <= 32 }
 
-    var payload: MultiplayerJSON {
+    var payload: MultiplayerJSON { payload(allowingArguments: true) }
+
+    /// What is sent. Extra arguments are left out for a command the host says takes none.
+    func payload(allowingArguments: Bool) -> MultiplayerJSON {
         var fields: [String: MultiplayerJSON] = ["command": .string(command.trimmingCharacters(in: .whitespaces))]
-        if !arguments.isEmpty { fields["args"] = .array(arguments.map(MultiplayerJSON.string)) }
+        if allowingArguments, !arguments.isEmpty { fields["args"] = .array(arguments.map(MultiplayerJSON.string)) }
         return .object(fields)
     }
 }
@@ -480,6 +582,8 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
     let id: String
     /// The owner's account on the relay.
     let owner: String
+    /// The owner's handle. Empty when the relay doesn't say, or the owner has none.
+    let ownerHandle: String
     let kind: String
     let name: String
     let content: String
@@ -487,10 +591,11 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
     let version: Int
     let createdAt: Date?
 
-    init(id: String, owner: String = "", kind: String, name: String, content: String = "", visibility: String = "private",
-         version: Int = 1, createdAt: Date? = nil) {
+    init(id: String, owner: String = "", ownerHandle: String = "", kind: String, name: String, content: String = "",
+         visibility: String = "private", version: Int = 1, createdAt: Date? = nil) {
         self.id = id
         self.owner = owner
+        self.ownerHandle = ownerHandle
         self.kind = kind
         self.name = name
         self.content = content
@@ -501,7 +606,8 @@ struct MultiplayerKnowledgeItem: Equatable, Sendable, Identifiable {
 
     init?(_ json: MultiplayerJSON) {
         guard let id = json.firstText("id") else { return nil }
-        self.init(id: id, owner: json.firstText("owner") ?? "", kind: json.firstText("kind") ?? "",
+        self.init(id: id, owner: json.firstText("owner") ?? "", ownerHandle: json.firstText("ownerHandle") ?? "",
+                  kind: json.firstText("kind") ?? "",
                   name: json.firstText("name") ?? id, content: json["content"]?.text ?? "",
                   visibility: json.firstText("visibility") ?? "private", version: json["version"]?.int ?? 1,
                   createdAt: json.date("createdAt"))
@@ -955,8 +1061,10 @@ extension MultiplayerClient {
         try await relay("POST", "/v1/workspaces", body: body).firstText("id") ?? ""
     }
 
-    func claim(_ body: MultiplayerJSON, in workspace: String) async throws {
-        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/claims", body: body)
+    /// The new claim's ID, when the relay names it.
+    @discardableResult
+    func claim(_ body: MultiplayerJSON, in workspace: String) async throws -> String {
+        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/claims", body: body).firstText("id") ?? ""
     }
 
     func release(claim: String, in workspace: String) async throws {
@@ -968,8 +1076,10 @@ extension MultiplayerClient {
             .compactMap(MultiplayerCard.init)
     }
 
-    func createCard(_ body: MultiplayerJSON, in workspace: String) async throws {
-        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/cards", body: body)
+    /// The new card's ID, when the relay names it.
+    @discardableResult
+    func createCard(_ body: MultiplayerJSON, in workspace: String) async throws -> String {
+        try await relay("POST", "/v1/workspaces/\(Self.segment(workspace))/cards", body: body).firstText("id") ?? ""
     }
 
     func updateCard(_ card: String, in workspace: String, fields: [String: MultiplayerJSON]) async throws {
@@ -991,6 +1101,22 @@ extension MultiplayerClient {
 
     func queueMerge(workspace: String) async throws -> [MultiplayerQueueEntry] {
         try await queue(.queueMerge, ["workspace": .string(workspace)])
+    }
+
+    /// A pull-request workspace's open pull requests. The device runs `gh` with the person's own login.
+    func pullRequests(in workspace: String) async throws -> MultiplayerPullRequestList {
+        let reply = try await fetch(.workspacePRs, ["workspace": .string(workspace)], as: MultiplayerJSON.self, allowsEmpty: true) ?? .null
+        return MultiplayerPullRequestList(reply, workspace: workspace)
+    }
+
+    /// Takes one branch out of the queue, whatever its state. The device names an entry by its
+    /// workspace and branch.
+    func queueRemove(workspace: String, branch: String) async throws -> [MultiplayerQueueEntry] {
+        let reply = try await fetch(.queueRemove, ["workspace": .string(workspace), "branch": .string(branch)],
+                                    as: MultiplayerJSON.self, allowsEmpty: true) ?? .null
+        // A reply without the queue is read again rather than taken as an empty one.
+        guard let rows = reply["queue"]?.items else { return try await mergeQueue() }
+        return rows.compactMap(MultiplayerQueueEntry.init)
     }
 
     func knowledge() async throws -> [MultiplayerKnowledgeItem] {

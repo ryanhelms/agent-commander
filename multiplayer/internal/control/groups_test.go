@@ -9,6 +9,35 @@ import (
 	"time"
 )
 
+func TestTeamRefusals(t *testing.T) {
+	call := sharingAPI(t)
+	group := shareResponse[Group](t, call("alice", "POST", "/v1/groups", map[string]string{"name": "Core"}, 200)).ID
+	policy := grantPolicy{Actions: []string{"read"}, ExpiresAt: time.Now().Add(time.Hour), MaxUses: 1}
+	for _, tc := range []struct {
+		method, path string
+		body         any
+		status       int
+		want         string
+	}{
+		{"PUT", "/v1/groups/" + group + "/members/nobody", nil, 404, "nobody is not your friend"},
+		{"PUT", "/v1/groups/" + group + "/members/cara", nil, 403, "cara is not your friend"},
+		{"PUT", "/v1/groups/absent/members/bob", nil, 404, "no group absent"},
+		{"PUT", "/v1/grants/missing/group:" + group, policy, 404, "no resource missing"},
+		{"GET", "/v1/reputation/missing", nil, 404, "no resource missing"},
+		{"POST", "/v1/outcomes", map[string]any{"resource": "missing", "request": "r1", "accepted": false}, 404, "no request r1 from you for resource missing"},
+		{"POST", "/v1/endorsements", map[string]string{"resource": "missing", "skill": "go"}, 403, "to endorse resource missing, you must be friends with its owner and have completed a request for it"},
+		{"DELETE", "/v1/workspaces/absent/claims/c1", nil, 404, "no workspace absent in your groups"},
+		{"GET", "/v1/knowledge/absent/versions", nil, 404, "no knowledge item absent available to you"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			got := shareResponse[struct{ Error string }](t, call("alice", tc.method, tc.path, tc.body, tc.status))
+			if got.Error != tc.want {
+				t.Errorf("got %q, want %q", got.Error, tc.want)
+			}
+		})
+	}
+}
+
 func TestGroupsAndExpandedGrants(t *testing.T) {
 	call := sharingAPI(t)
 	create := func(name string) string {

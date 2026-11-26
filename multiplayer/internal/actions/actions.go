@@ -101,6 +101,21 @@ func FailureCode(err error) string {
 	return "resource_unavailable"
 }
 
+// requestRefusal contains a validation message that is safe to send to the requester.
+type requestRefusal string
+
+func (r requestRefusal) Error() string { return string(r) }
+func (r requestRefusal) Unwrap() error { return ErrInvalid }
+
+// FailureReason returns a requester-facing explanation when the handler supplied one.
+func FailureReason(err error) string {
+	var refusal requestRefusal
+	if errors.As(err, &refusal) {
+		return refusal.Error()
+	}
+	return ""
+}
+
 // A descriptor is a compiled device-side capability, independent of the broker.
 // Registration is package-owned. Grant documents may select names but cannot install handlers.
 type handler func(context.Context, Config, Resource, Request, string, bool) (json.RawMessage, error)
@@ -184,6 +199,7 @@ type receipt struct {
 	Status   string          `json:"status"`
 	Result   json.RawMessage `json:"result,omitempty"`
 	Failure  string          `json:"failure,omitempty"`
+	Reason   string          `json:"reason,omitempty"`
 }
 
 func privateDir(path string) error {
@@ -424,6 +440,9 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 		case "completed":
 			return r.Result, nil
 		case "failed":
+			if r.Failure == ErrInvalid.Error() && r.Reason != "" {
+				return nil, requestRefusal(r.Reason)
+			}
 			for _, failure := range actionFailures {
 				if r.Failure == failure.err.Error() {
 					return nil, failure.err
@@ -444,6 +463,7 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 			return nil, ErrUncertain
 		}
 		r.Status = "failed"
+		r.Reason = FailureReason(e)
 		for _, failure := range actionFailures {
 			if errors.Is(e, failure.err) {
 				r.Failure = failure.err.Error()

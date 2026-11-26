@@ -56,6 +56,7 @@ struct AgentCommander: App {
 
         MenuBarExtra {
             MultiplayerPanel(model: network)
+                .multiplayerMenuBarPanel()
                 .preferredColorScheme(.dark)
         } label: {
             MultiplayerMenuBarLabel(model: network)

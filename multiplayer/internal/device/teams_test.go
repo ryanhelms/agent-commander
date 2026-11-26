@@ -108,6 +108,18 @@ func TestKnowledgeShareVersion(t *testing.T) {
 	}
 }
 
+func queueTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	pilotGit(t, dir, "init", "-b", "release")
+	pilotGit(t, dir, "config", "user.name", "Queue Test")
+	pilotGit(t, dir, "config", "user.email", "queue@localhost")
+	pilotGit(t, dir, "config", "core.hooksPath", "/dev/null")
+	pilotGit(t, dir, "config", "commit.gpgsign", "false")
+	pilotGit(t, dir, "commit", "--allow-empty", "-qm", "base")
+	return dir
+}
+
 func TestTrayServerQueues(t *testing.T) {
 	m := testManager(t)
 	ctx, stop := context.WithCancel(t.Context())
@@ -115,7 +127,11 @@ func TestTrayServerQueues(t *testing.T) {
 	m.ctx = ctx // Keep the fixture's signed-in devices offline.
 	h := m.Handler()
 	legacy := filepath.Join(m.cfg.Dir, queueFile)
-	checkout := t.TempDir()
+	checkout := queueTestRepo(t)
+	pilotGit(t, checkout, "switch", "-c", "other")
+	pilotGit(t, checkout, "commit", "--allow-empty", "-qm", "contribution")
+	pilotGit(t, checkout, "switch", "-c", "unrelated", "release")
+	unrelated := pilotGit(t, checkout, "rev-parse", "unrelated")
 	if err := save(legacy, []queueEntry{{Workspace: "w", Branch: "legacy", Checkout: checkout, State: "queued"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +143,16 @@ func TestTrayServerQueues(t *testing.T) {
 			t.Fatalf("add server: %s %s", data, msg)
 		}
 		m.agents[s.ID].creds.Session = identity.Session{User: "me", ExpiresAt: time.Now().Add(time.Hour)}
+		m.agents[s.ID].http = &http.Client{Transport: relayTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "GET" || r.URL.Path != "/v1/workspaces" || r.URL.Host != url {
+				t.Errorf("unexpected workspace lookup: %s %s", r.Method, r.URL)
+			}
+			if url == "b.example.test" {
+				w.Write([]byte(`{"workspaces":[{"id":"w","base":"release","integration":"queue"},{"id":"pr","base":"release","integration":"pull_request"}]}`))
+			} else {
+				w.Write([]byte(`{"workspaces":[]}`))
+			}
+		})}}
 		return s.ID
 	}
 	a, b := addServer("a.example.test"), addServer("b.example.test")
@@ -145,15 +171,94 @@ func TestTrayServerQueues(t *testing.T) {
 	if rows := queue("queue", input{Server: b}); len(rows) != 0 {
 		t.Fatalf("second server inherited queue: %+v", rows)
 	}
+	if _, why := call(t, h, "queue-add", input{Server: a, Workspace: "w", Branch: "other", Checkout: checkout}); !strings.Contains(why, "unknown workspace w") {
+		t.Fatalf("workspace on the wrong server: %s", why)
+	}
+	nonGit := t.TempDir()
+	bare := t.TempDir()
+	pilotGit(t, bare, "init", "--bare")
+	for _, tc := range []struct{ workspace, checkout, want string }{
+		{"pr", checkout, "pull_request"},
+		{"w", nonGit, "not a Git work tree"},
+		{"w", bare, "not a Git work tree"},
+		{"w", filepath.Join(nonGit, "missing"), "missing"},
+	} {
+		_, why := call(t, h, "queue-add", input{Server: b, Workspace: tc.workspace, Branch: "other", Checkout: tc.checkout})
+		if !strings.Contains(why, tc.want) {
+			t.Errorf("add %s in %s: got %q, want %q", tc.workspace, tc.checkout, why, tc.want)
+		}
+	}
+	if rows := queue("queue", input{Server: b}); len(rows) != 0 {
+		t.Fatalf("refused entries were queued: %+v", rows)
+	}
 	queue("queue-add", input{Server: b, Workspace: "w", Branch: "other", Checkout: checkout})
-	if rows := queue("queue-merge", input{Server: b, Workspace: "w"}); len(rows) != 1 || rows[0].Branch != "other" || rows[0].State != "conflict" {
+	if rows := queue("queue-merge", input{Server: b, Workspace: "w"}); len(rows) != 1 || rows[0].Branch != "other" || rows[0].State != "merged" {
 		t.Fatalf("second server merge: %+v", rows)
+	}
+	if pilotGit(t, checkout, "rev-parse", "release^2") != pilotGit(t, checkout, "rev-parse", "other") ||
+		pilotGit(t, checkout, "rev-parse", "unrelated") != unrelated {
+		t.Fatal("contribution did not land on the workspace base alone")
 	}
 	if rows := queue("queue", input{Server: a}); len(rows) != 1 || rows[0].Branch != "legacy" || rows[0].State != "queued" {
 		t.Fatalf("first server queue: %+v", rows)
 	}
 	if _, msg := call(t, h, "queue", input{}); msg == "" {
 		t.Fatal("ambiguous server accepted")
+	}
+	if rows := queue("queue-remove", input{Server: a, Workspace: "w", Branch: "legacy"}); len(rows) != 0 {
+		t.Fatalf("remove stale queued entry: %+v", rows)
+	}
+	if rows := queue("queue", input{Server: b}); len(rows) != 1 {
+		t.Fatalf("removal changed another server's queue: %+v", rows)
+	}
+	for _, other := range []input{{Server: b, Workspace: "pr", Branch: "other"}, {Server: b, Workspace: "w", Branch: "unrelated"}} {
+		if rows := queue("queue-remove", other); len(rows) != 1 {
+			t.Fatalf("removal ignored the workspace or branch: %+v", rows)
+		}
+	}
+	if rows := queue("queue-remove", input{Server: b, Workspace: "w", Branch: "other"}); len(rows) != 0 {
+		t.Fatalf("remove merged entry: %+v", rows)
+	}
+	queue("queue-add", input{Server: b, Workspace: "w", Branch: "other", Checkout: checkout})
+	if err := os.Rename(checkout, filepath.Join(t.TempDir(), "moved")); err != nil {
+		t.Fatal(err)
+	}
+	queue("queue-merge", input{Server: b, Workspace: "w"})
+	if rows := queue("queue", input{Server: b}); len(rows) != 1 || rows[0].State != "failed" || !strings.Contains(rows[0].Output, checkout) {
+		t.Fatalf("missing checkout at merge time: %+v", rows)
+	}
+}
+
+func TestQueueMergeConflictAndFailedChecks(t *testing.T) {
+	dir := queueTestRepo(t)
+	commitFile := func(contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "shared"), []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+		pilotGit(t, dir, "add", "shared")
+		pilotGit(t, dir, "commit", "-qm", contents)
+	}
+	commitFile("base")
+	pilotGit(t, dir, "switch", "-c", "topic")
+	commitFile("topic")
+	pilotGit(t, dir, "switch", "release")
+	entry := queueEntry{Branch: "topic", Checkout: dir, Test: []string{"sh", "-c", "echo checks-failed; exit 1"}}
+	base := pilotGit(t, dir, "rev-parse", "release")
+	if state, out := mergeBranch(t.Context(), entry, "release"); state != "failed" || !strings.Contains(out, "checks-failed") {
+		t.Fatalf("failed check: %s %q", state, out)
+	}
+	if pilotGit(t, dir, "rev-parse", "release") != base || pilotGit(t, dir, "status", "--porcelain") != "" {
+		t.Fatal("failed checks changed base or left a dirty checkout")
+	}
+	commitFile("divergent")
+	entry.Test = nil
+	base = pilotGit(t, dir, "rev-parse", "release")
+	if state, out := mergeBranch(t.Context(), entry, "release"); state != "conflict" || out == "" {
+		t.Fatalf("merge conflict: %s %q", state, out)
+	}
+	if pilotGit(t, dir, "rev-parse", "release") != base || pilotGit(t, dir, "status", "--porcelain") != "" {
+		t.Fatal("conflict changed base or left a dirty checkout")
 	}
 }
 

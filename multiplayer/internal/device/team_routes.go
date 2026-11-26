@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 
+	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/identity"
 )
 
@@ -46,7 +48,20 @@ func (a *Agent) teamRelay(ctx context.Context, s identity.Session, method, route
 	}
 	var out any
 	err := a.remote(ctx, s, method, route, payload, &out)
-	return out, err
+	return out, teamRefusal(err)
+}
+
+// The relay can explain a refused team edit with the exact group, resource,
+// or member. Pass that sentence through to the tray.
+func teamRefusal(err error) error {
+	var status statusError
+	if errors.As(err, &status) && status.message != "" {
+		switch status.code {
+		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound:
+			return errors.New(status.message)
+		}
+	}
+	return err
 }
 
 func (a *Agent) namedTeamRelay(ctx context.Context, s identity.Session, verb string, in input) (any, error) {
@@ -55,6 +70,28 @@ func (a *Agent) namedTeamRelay(ctx context.Context, s identity.Session, verb str
 	switch verb {
 	case "groups", "workspaces", "knowledge":
 		method, path = "GET", "/v1/"+verb
+	case "admin-members":
+		method, path = "GET", "/v1/admin/members"
+	case "workspace-edit", "workspace-leave":
+		workspace, err := segment(cmp.Or(in.Workspace, in.ID))
+		if err != nil {
+			return nil, err
+		}
+		method, path = "PUT", "/v1/workspaces/"+workspace
+		if verb == "workspace-leave" {
+			method, path = "DELETE", path+"/membership"
+			break
+		}
+		// Only named fields change; an empty one keeps its current value.
+		fields = map[string]string{}
+		for k, v := range map[string]string{"name": in.Name, "goal": in.Goal, "repository": in.Repository, "base": in.Base, "integration": in.Integration} {
+			if v != "" {
+				fields[k] = v
+			}
+		}
+		if len(fields) == 0 && (len(in.Body) == 0 || string(in.Body) == "null") {
+			return nil, errors.New("nothing to change")
+		}
 	case "group-create":
 		method, path = "POST", "/v1/groups"
 		fields = map[string]string{"name": in.Name}
@@ -103,4 +140,58 @@ func (a *Agent) namedTeamRelay(ctx context.Context, s identity.Session, verb str
 		}
 	}
 	return a.teamRelay(ctx, s, method, path, payload)
+}
+
+// combinedWorkspace reads a workspace's combined view. The relay cannot tell
+// which Commander worker a published agent runs, but this device can for its
+// own agents: a claim held under an own agent's enrolled worker joins that
+// agent's row.
+func (a *Agent) combinedWorkspace(ctx context.Context, s identity.Session, in input) (any, error) {
+	workspace, err := segment(cmp.Or(in.Workspace, in.ID))
+	if err != nil {
+		return nil, err
+	}
+	var view control.CombinedView
+	if err := a.remote(ctx, s, "GET", "/v1/workspaces/"+workspace+"/combined", nil, &view); err != nil {
+		return nil, teamRefusal(err)
+	}
+	a.mu.Lock()
+	targets := map[string]string{} // resource ID -> enrolled worker
+	for _, r := range a.policy.Resources {
+		if r.Kind == "agent" {
+			targets[r.ID] = r.Target
+		}
+	}
+	a.mu.Unlock()
+	for i := range view.Members {
+		view.Members[i].Workers = mergeOwnClaims(view.Members[i].Workers, targets)
+	}
+	return view, nil
+}
+
+func mergeOwnClaims(workers []control.CombinedWorker, targets map[string]string) []control.CombinedWorker {
+	own := map[string]int{} // enrolled worker -> the own agent's row
+	for i, w := range workers {
+		if target := targets[w.Resource]; w.Resource != "" && target != "" {
+			workers[i].Agent = target
+			if _, seen := own[target]; !seen {
+				own[target] = i
+			}
+		}
+	}
+	joined := make([]bool, len(workers))
+	for i, w := range workers {
+		if j, ok := own[w.Agent]; ok && w.Resource == "" {
+			workers[j].Claims = append(workers[j].Claims, w.Claims...)
+			workers[j].Agent, workers[j].State = w.Agent, "working"
+			joined[i] = true
+		}
+	}
+	merged := make([]control.CombinedWorker, 0, len(workers))
+	for i, w := range workers {
+		if !joined[i] {
+			merged = append(merged, w)
+		}
+	}
+	return merged
 }

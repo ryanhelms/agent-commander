@@ -1,0 +1,6 @@
+{"verb": "group-create", "request": {"name":"demo6-team"}, "response": {
+ "data": {
+  "id": "d29c44d73c7c0e9b3aaf854e29b56c482769cac793f909eb"
+ },
+ "ok": true
+}}

@@ -1,0 +1,28 @@
+2   AXScrollArea 
+3    AXButton Knowledge library | Knowledge library (Esc)
+4    AXHeading Knowledge item
+5    AXScrollArea 
+6     AXStaticText relay-triage, Skill, group relay-team
+7     AXStaticText v3
+8     AXGroup ID, not pinned, kn-skill
+9      AXImage Number Sign
+10      AXStaticText ID
+11      AXStaticText kn-skill
+12      AXButton Copy the full id | Copy the full id
+13     AXHeading Content
+14     AXHeading Relay triage
+15     AXStaticText Use this when a relay test flakes.
+16     AXGroup Numbered list, 3 items
+17      AXStaticText 1. Read the failing test and the lease code.
+18      AXStaticText 2. Run the test 20 times: swift test --filter Reconnect.
+19      AXStaticText 3. Report the failure rate before changing anything.
+20     AXStaticText Writes ~/.claude/skills/<name>/SKILL.md on this Mac.
+21     AXHeading Versions
+22     AXStaticText 3
+23     AXButton Version 3, Group relay-team | Selected | [selected]
+24     AXButton Version 2, Friend fixture-ryan
+25     AXButton Version 1, Only you
+26    AXButton New version… | Only the item’s owner can save a new version
+27    AXButton Install skill
+28    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+29  AXStaticText Agent Commander

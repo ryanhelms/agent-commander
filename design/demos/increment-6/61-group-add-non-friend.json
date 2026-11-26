@@ -1,0 +1,4 @@
+{"verb": "group-add", "request": {"group":"d29c44d73c7c0e9b3aaf854e29b56c482769cac793f909eb","handle":"nobody-demo6"}, "response": {
+ "error": "nobody-demo6 is not your friend",
+ "ok": false
+}}

@@ -3,44 +3,147 @@ import SwiftUI
 
 // ATOMIC LEVEL: Tokens, atoms and molecules for the network tray
 // (design/mockups/commander-network-tray.html, increments 1 and 2).
-// `MultiplayerTheme` is the tray's token layer, mapped from design/system/tokens.json the way the
-// mockup's `--ac-*` layer is. Tray components read only these roles, so a later skin redefines
-// this one enum. Each component takes values and emits a targeted action; none reads the model.
+// `MultiplayerTheme` is the tray's token layer. Each token names a role of the app theme
+// (ThemeTokens.swift) and is resolved from `@Environment(\.theme)` where it is drawn, so the tray,
+// the hosted composers and the wall's network components follow the theme the person chose.
+// Nothing here asks which theme is active. Each component takes values and emits a targeted
+// action; none reads the model.
+//
+//   Colour     `MultiplayerTheme.focus` is a `Color` that resolves its role in the environment.
+//   Fill       `MultiplayerTheme.panelFill` is a shape style for a surface that may be a gradient.
+//   Type       `MultiplayerTheme.sub` is a `MultiplayerType`; `.font(MultiplayerTheme.sub)` sets the
+//              face, size, weight, tracking and case of that role in the current theme.
+//   Shape      a view reads `@Environment(\.theme)` and asks it for `trayTile`, `trayControl`,
+//              `trayChip` or `controlShape`.
+//   Space      a view reads `theme.space`.
+
+/// A colour role of the app theme, resolved where it is drawn. Increase Contrast swaps the rule
+/// and outline roles as `ThemeInk` does.
+struct MultiplayerInk: ShapeStyle, Hashable {
+    let role: KeyPath<Theme, ThemeColor> & Sendable
+
+    func resolve(in environment: EnvironmentValues) -> Color.Resolved {
+        ThemeInk(role: role).resolve(in: environment).resolve(in: environment)
+    }
+
+    static func == (left: MultiplayerInk, right: MultiplayerInk) -> Bool { left.role == right.role }
+    func hash(into hasher: inout Hasher) { hasher.combine(role) }
+}
+
+/// A surface role of the app theme that may be a gradient, resolved where it is drawn.
+struct MultiplayerFill: ShapeStyle {
+    let role: KeyPath<Theme, ThemeFill> & Sendable
+
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        environment.theme[keyPath: role].style
+    }
+}
+
+/// A type role of the app theme. `.font(_:)` resolves it where it is drawn.
+struct MultiplayerType: Sendable {
+    let role: KeyPath<Theme, ThemeFont> & Sendable
+    var digits = false
+
+    /// Figures of equal width, so a ticking value doesn't shift.
+    func monospacedDigit() -> MultiplayerType { MultiplayerType(role: role, digits: true) }
+
+    /// The role's font in one theme, for a caller that needs a `Font` value.
+    func font(in theme: Theme) -> Font {
+        let font = theme[keyPath: role].font
+        return digits ? font.monospacedDigit() : font
+    }
+}
+
+private struct MultiplayerTypeModifier: ViewModifier {
+    @Environment(\.theme) private var theme
+    let type: MultiplayerType
+
+    nonisolated init(type: MultiplayerType) { self.type = type }
+
+    func body(content: Content) -> some View {
+        let role = theme[keyPath: type.role]
+        // A role with no tracking and no case leaves both as the view inherited them.
+        if role.tracking == 0, !role.uppercase {
+            content.font(type.font(in: theme))
+        } else {
+            content.font(type.font(in: theme)).tracking(role.tracking).textCase(role.uppercase ? .uppercase : nil)
+        }
+    }
+}
+
+extension View {
+    /// Sets a tray type role in the current theme.
+    nonisolated func font(_ type: MultiplayerType) -> some View { modifier(MultiplayerTypeModifier(type: type)) }
+}
 
 enum MultiplayerTheme {
-    /// The tray is always drawn in the console theme (ThemeTokens.swift).
-    private static let theme = Theme.console
+    private static func ink(_ role: KeyPath<Theme, ThemeColor> & Sendable) -> Color { Color(MultiplayerInk(role: role)) }
+    private static func type(_ role: KeyPath<Theme, ThemeFont> & Sendable) -> MultiplayerType { MultiplayerType(role: role) }
 
-    static let panel = theme.color.panel.color
-    static let well = theme.color.well.color
-    static let border = theme.color.border.color
-    static let hair = theme.color.hair.color
-    static let foreground = theme.color.foreground.color
-    static let focus = theme.color.focus.color
-    static let working = theme.color.working.color
-    static let attention = theme.color.attention.color
-    static let failure = theme.color.failure.color
-    static let selection = theme.color.selection.color
-    static let onAccent = theme.color.onAccent.color
+    // DESIGN.md section 2 "Colour": the thirteen roles every theme has.
+    static let panel = ink(\.color.panel)
+    static let well = ink(\.color.well)
+    static let border = ink(\.color.border)
+    static let hair = ink(\.color.hair)
+    static let foreground = ink(\.color.foreground)
+    static let secondary = ink(\.color.secondary)
+    static let focus = ink(\.color.focus)
+    static let working = ink(\.color.working)
+    static let attention = ink(\.color.attention)
+    static let failure = ink(\.color.failure)
+    static let selection = ink(\.color.selection)
+    static let onAccent = ink(\.color.onAccent)
 
-    // Hard lines: nothing in the tray is rounder than two points.
-    static let tileRadius = theme.radius.tile
-    static let controlRadius = theme.radius.control
-    static let chipRadius = theme.radius.chip
-    static let sectionInset = theme.space.sectionInset
+    // What each tray surface is made of. In console these are the roles above; another theme
+    // gives them its own values.
+    /// A raised region: the tray itself, a hosted composer, the zoom.
+    static let panelFill = MultiplayerFill(role: \.surface.panelFill)
+    static let panelEdge = ink(\.surface.panelEdge)
+    /// The square mark and the avatar.
+    static let markFill = ink(\.surface.markFill)
+    static let markEdge = ink(\.surface.markEdge)
+    /// A field, a text area and a sunken block.
+    static let fieldFill = ink(\.surface.fieldFill)
+    static let fieldEdge = ink(\.surface.fieldEdge)
+    /// A standard control and the one primary action.
+    static let controlFill = MultiplayerFill(role: \.surface.controlFill)
+    static let controlEdge = ink(\.surface.controlEdge)
+    static let controlInk = ink(\.surface.controlInk)
+    static let primaryFill = MultiplayerFill(role: \.surface.primaryFill)
+    static let primaryEdge = ink(\.surface.primaryEdge)
+    /// A chip or a badge outline.
+    static let tagEdge = ink(\.surface.tagEdge)
+    /// An unselected tab.
+    static let unselectedFill = ink(\.surface.unselectedFill)
+    /// The footer, the status strip and a table header.
+    static let footerFill = ink(\.surface.footerFill)
+    static let headerFill = ink(\.surface.headerFill)
+    /// A hot count.
+    static let highlightFill = ink(\.surface.highlightFill)
+    static let highlightInk = ink(\.surface.highlightInk)
+    /// The wall's group of remote workers.
+    static let groupFill = ink(\.wall.groupFill)
+    static let groupEdge = ink(\.wall.groupEdge)
+
+    /// The console theme's section inset, for a caller that can't read the environment. A view
+    /// reads `theme.space.sectionInset`.
+    static let sectionInset = Theme.console.space.sectionInset
 
     // Prose is set in the system face; anything that is data, a state or a count is monospaced.
-    static let title = theme.type.title.font
-    static let body = theme.type.body.font
-    static let name = theme.type.name.font
-    static let heading = theme.type.heading.font
-    static let state = theme.type.state.font
-    static let sub = theme.type.sub.font
-    static let mono = theme.type.mono.font
-    static let data = theme.type.data.font
-    static let label = theme.type.label.font
-    static let fingerprint = theme.type.fingerprint.font
-    static let figure = theme.type.figure.font
+    static let title = type(\.type.title)
+    static let body = type(\.type.body)
+    static let name = type(\.type.name)
+    static let heading = type(\.type.heading)
+    static let state = type(\.type.state)
+    static let sub = type(\.type.sub)
+    static let mono = type(\.type.mono)
+    static let data = type(\.type.data)
+    static let label = type(\.type.label)
+    static let fingerprint = type(\.type.fingerprint)
+    static let figure = type(\.type.figure)
+    /// The wall group's title and the note beside it.
+    static let groupTitle = type(\.wall.groupTitleType)
+    static let groupNote = type(\.wall.groupNoteType)
 
     /// tokens.json color.harness.swatch: mint, sky, pink, lime.
     static let swatches = [Color(hex: 0x4ADE80), Color(hex: 0x38BDF8), Color(hex: 0xF472B6), Color(hex: 0xA3E635)]
@@ -54,9 +157,27 @@ enum MultiplayerTheme {
     }
 }
 
+extension Theme {
+    /// The outline of a whole region: the zoom, a group, the panel on its stage.
+    var trayTile: RoundedRectangle { RoundedRectangle(cornerRadius: radius.tile, style: .continuous) }
+    /// The outline of a field, a notice, a sunken block or joined cells.
+    var trayControl: RoundedRectangle { RoundedRectangle(cornerRadius: radius.control, style: .continuous) }
+    /// The outline of a chip, a badge or a mark.
+    var trayChip: RoundedRectangle { RoundedRectangle(cornerRadius: radius.chip, style: .continuous) }
+
+    /// The tray button's type: the theme's control face, one point smaller unless the button is large.
+    func trayButtonType(large: Bool, primary: Bool) -> Font {
+        let control = pageType.control
+        return ThemeFont(face: control.face, size: control.size - (large ? 0 : 1),
+                         weight: primary ? .semibold : control.weight).font
+    }
+}
+
 // MARK: - Atoms
 
 /// A status lamp. Each state has its own shape as well as its colour, and a word always sits beside it.
+/// A theme whose status mark is a dot draws one round mark in the state's colour instead; the word
+/// beside it still carries the state.
 struct MultiplayerLamp: View {
     enum Kind: Equatable { case on, off, waiting, error, unknown, busy, away, doNotDisturb }
 
@@ -64,9 +185,31 @@ struct MultiplayerLamp: View {
     var size: CGFloat = 9
     /// A live lamp beats while it is on. Off by default, so lists of lamps stay still.
     var pulses = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         Group {
+            switch theme.style.statusMark {
+            case .lamp: lamp
+            case .dot: Circle().fill(dotColor).padding(size / 6)
+            }
+        }
+        .frame(width: size, height: size)
+        .modifier(MultiplayerPulse(isLive: pulses && kind == .on, color: MultiplayerTheme.working))
+        .accessibilityHidden(true)
+    }
+
+    private var dotColor: Color {
+        switch kind {
+        case .on: MultiplayerTheme.working
+        case .off: MultiplayerTheme.secondary
+        case .waiting, .unknown: MultiplayerTheme.focus
+        case .error, .doNotDisturb: MultiplayerTheme.failure
+        case .busy, .away: MultiplayerTheme.attention
+        }
+    }
+
+    @ViewBuilder private var lamp: some View {
             switch kind {
             case .on:
                 Circle().fill(MultiplayerTheme.working)
@@ -94,10 +237,6 @@ struct MultiplayerLamp: View {
                 Circle().strokeBorder(MultiplayerTheme.failure, lineWidth: 1.5)
                     .overlay { Rectangle().fill(MultiplayerTheme.failure).frame(height: 2).padding(.horizontal, 1.5) }
             }
-        }
-        .frame(width: size, height: size)
-        .modifier(MultiplayerPulse(isLive: pulses && kind == .on, color: MultiplayerTheme.working))
-        .accessibilityHidden(true)
     }
 }
 
@@ -127,27 +266,42 @@ extension MultiplayerPersonPresence {
 }
 
 /// The tray's switch. The track is green when on and an outline when off, in a key window or not,
-/// so the two states never look alike. It draws no label; the label is still spoken.
+/// so the two states never look alike. It draws no label; the label is still spoken. A theme whose
+/// switch is native gets the system switch in the theme's tint, also without its label.
 struct MultiplayerSwitchStyle: ToggleStyle {
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.theme) private var theme
 
-    func makeBody(configuration: Configuration) -> some View {
+    @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+        switch theme.style.switchShape {
+        case .native:
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .labelsHidden()
+                .tint(theme.surface.switchTint.color)
+        case .square:
+            square(configuration)
+        }
+    }
+
+    private func square(_ configuration: Configuration) -> some View {
         Button {
             configuration.isOn.toggle()
         } label: {
-            let track = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+            let track = theme.trayControl
             track
                 .fill(configuration.isOn ? MultiplayerTheme.working : Color.clear)
-                .overlay { track.strokeBorder(configuration.isOn ? MultiplayerTheme.working : Palette.secondary, lineWidth: 1.5) }
+                .overlay { track.strokeBorder(configuration.isOn ? MultiplayerTheme.working : MultiplayerTheme.secondary, lineWidth: 1.5) }
                 .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                     Rectangle()
-                        .fill(configuration.isOn ? MultiplayerTheme.panel : Palette.secondary)
+                        .fill(configuration.isOn ? MultiplayerTheme.panel : MultiplayerTheme.secondary)
                         .frame(width: 10)
                         .padding(3.5)
                 }
                 .frame(width: 30, height: 18)
                 .contentShape(Rectangle())
-                .animation(.easeOut(duration: 0.12), value: configuration.isOn)
+                .animation(theme.motion.animation(theme.motion.fast), value: configuration.isOn)
         }
         .buttonStyle(.plain)
         .opacity(isEnabled ? 1 : 0.45)
@@ -178,12 +332,12 @@ struct MultiplayerAvatar: View {
                     .font(.system(size: size * 0.46, weight: .semibold))
                     .foregroundStyle(.inkSecondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(MultiplayerTheme.well)
+                    .background(MultiplayerTheme.markFill)
             }
         }
         .frame(width: size, height: size)
         .clipShape(shape)
-        .overlay { shape.strokeBorder(MultiplayerTheme.border) }
+        .overlay { shape.strokeBorder(MultiplayerTheme.markEdge) }
         .accessibilityHidden(true)
     }
 }
@@ -200,23 +354,25 @@ struct MultiplayerSwatch: View {
     }
 }
 
-/// The tray's rectangular control: outlined, the one primary action filled, a destructive one in failure ink.
+/// The tray's control in the theme's button shape: outlined, the one primary action filled, a
+/// destructive one in failure ink.
 struct MultiplayerTrayButtonStyle: ButtonStyle {
     enum Role { case standard, primary, danger }
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.theme) private var theme
     var role: Role = .standard
     var large = false
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius, style: .continuous)
+        let shape = theme.controlShape
         configuration.label
-            .font(.system(size: large ? 12 : 11, weight: role == .primary ? .semibold : .medium, design: .monospaced))
+            .font(theme.trayButtonType(large: large, primary: role == .primary))
             .foregroundStyle(ink)
             .lineLimit(1)
             .padding(.horizontal, large ? 14 : 10)
-            .frame(minHeight: large ? 28 : 24)
-            .background(role == .primary ? MultiplayerTheme.focus : Color.clear, in: shape)
+            .frame(minHeight: large ? theme.space.controlHeightLarge : theme.space.controlHeight)
+            .background(role == .primary ? MultiplayerTheme.primaryFill : MultiplayerTheme.controlFill, in: shape)
             .modifier(MultiplayerResponsive(isPressed: configuration.isPressed))
             .clipShape(shape)
             .overlay { shape.strokeBorder(edge) }
@@ -226,7 +382,7 @@ struct MultiplayerTrayButtonStyle: ButtonStyle {
 
     private var ink: Color {
         switch role {
-        case .standard: MultiplayerTheme.foreground
+        case .standard: MultiplayerTheme.controlInk
         case .primary: MultiplayerTheme.onAccent
         case .danger: MultiplayerTheme.failure
         }
@@ -234,8 +390,8 @@ struct MultiplayerTrayButtonStyle: ButtonStyle {
 
     private var edge: Color {
         switch role {
-        case .standard: MultiplayerTheme.border
-        case .primary: MultiplayerTheme.focus
+        case .standard: MultiplayerTheme.controlEdge
+        case .primary: MultiplayerTheme.primaryEdge
         case .danger: MultiplayerTheme.failure
         }
     }
@@ -246,11 +402,13 @@ struct MultiplayerBadge: View {
     let text: String
     var symbol: String? = nil
     var tone: Tone = .neutral
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+        let shape = theme.trayChip
         HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)) }
+            // The word carries the meaning. A tick symbol would otherwise be spoken as "Selected".
+            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)).accessibilityHidden(true) }
             Text(text).font(MultiplayerTheme.label)
         }
             .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
@@ -258,7 +416,20 @@ struct MultiplayerBadge: View {
             .padding(.horizontal, 5)
             .frame(minHeight: 15)
             .background(tone == .neutral ? Color.clear : tone.color.opacity(0.12), in: shape)
-            .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.border : tone.color.opacity(0.45)) }
+            .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.tagEdge : tone.color.opacity(0.45)) }
+    }
+}
+
+extension Tone {
+    /// The tone lamp (DESIGN.md): the lamp for a state the view knows only by its tone.
+    var lamp: MultiplayerLamp.Kind {
+        switch self {
+        case .working: .on
+        case .attention: .busy
+        case .failure: .error
+        case .focus: .unknown
+        case .neutral: .off
+        }
     }
 }
 
@@ -306,6 +477,10 @@ struct MultiplayerFingerprintText: View {
             .lineSpacing(3)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+            // One static text. Selectable text is otherwise offered twice, once by the selection
+            // view and once by the text inside it, and neither carries the label.
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel("Fingerprint \(fingerprint.multiplayerDisplay.replacingOccurrences(of: ":", with: " "))")
     }
 }
@@ -335,16 +510,17 @@ struct MultiplayerStateLabel: View {
 
 /// One band of the tray: a padded region with a hairline under it.
 struct MultiplayerBand<Content: View>: View {
+    @Environment(\.theme) private var theme
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             content
-                .padding(.horizontal, MultiplayerTheme.sectionInset)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
+                .padding(.horizontal, theme.space.sectionInset)
+                .padding(.top, theme.space.bandTop)
+                .padding(.bottom, theme.space.bandBottom)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Rectangle().fill(MultiplayerTheme.hair).frame(height: 1)
+            Rectangle().fill(MultiplayerTheme.hair).frame(height: theme.line.hairline)
         }
     }
 }
@@ -353,6 +529,7 @@ struct MultiplayerBand<Content: View>: View {
 struct MultiplayerBandHeading<Trailing: View>: View {
     let title: String
     var count: String? = nil
+    @Environment(\.theme) private var theme
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
@@ -370,7 +547,7 @@ struct MultiplayerBandHeading<Trailing: View>: View {
             Spacer(minLength: Space.s)
             trailing
         }
-        .frame(minHeight: 24)
+        .frame(minHeight: theme.space.controlHeight)
     }
 }
 
@@ -467,9 +644,10 @@ struct MultiplayerServerRow: View {
 struct MultiplayerCertificateNotice: View {
     let serverName: String
     let onReview: () -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
+        let shape = theme.trayControl
         HStack(alignment: .center, spacing: Space.s) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Commander blocked this connection")
@@ -576,9 +754,10 @@ struct MultiplayerTextArea: View {
     let label: String
     @Binding var text: String
     var lines = 3
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius, style: .continuous)
+        let shape = theme.trayControl
         TextEditor(text: $text)
             .font(MultiplayerTheme.mono)
             .foregroundStyle(MultiplayerTheme.foreground)
@@ -587,17 +766,21 @@ struct MultiplayerTextArea: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 6)
             .frame(height: CGFloat(lines) * 16 + 14)
-            .background(MultiplayerTheme.well, in: shape)
-            .overlay { shape.strokeBorder(MultiplayerTheme.border) }
+            .background(MultiplayerTheme.fieldFill, in: shape)
+            .overlay { shape.strokeBorder(MultiplayerTheme.fieldEdge) }
             .accessibilityLabel(label)
     }
 }
 
-/// Something waiting on the person: who, what, and the one answer.
+/// Something waiting on the person: who, what, and the answer. A request that can be refused has
+/// the refusal first and the answer after it as the primary button.
 struct MultiplayerNeedRow: View {
     let color: Color
     let title: String
     let detail: String
+    /// The refusing answer, such as Decline. Nil leaves the one answer.
+    var declineTitle: String? = nil
+    var onDecline: (() -> Void)? = nil
     let actionTitle: String
     let isBusy: Bool
     let action: () -> Void
@@ -619,8 +802,14 @@ struct MultiplayerNeedRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
+            if let declineTitle, let onDecline {
+                Button(declineTitle, action: onDecline)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(isBusy)
+                    .accessibilityLabel("\(declineTitle): \(title)")
+            }
             Button(actionTitle, action: action)
-                .buttonStyle(MultiplayerTrayButtonStyle())
+                .buttonStyle(MultiplayerTrayButtonStyle(role: onDecline == nil ? .standard : .primary))
                 .disabled(isBusy)
                 .accessibilityLabel("\(actionTitle): \(title)")
         }
@@ -645,7 +834,7 @@ struct MultiplayerProbeStepRow<Detail: View>: View {
                 Text(title)
                     .font(MultiplayerTheme.name)
                     .foregroundStyle(passed == false ? MultiplayerTheme.failure
-                                     : passed == nil ? Palette.secondary : MultiplayerTheme.foreground)
+                                     : passed == nil ? MultiplayerTheme.secondary : MultiplayerTheme.foreground)
                 if let detail, !detail.isEmpty {
                     Text(detail)
                         .font(MultiplayerTheme.sub)
@@ -684,15 +873,16 @@ struct MultiplayerSettingRow<Control: View>: View {
 /// A sunken block for a value the person reads closely.
 struct MultiplayerWell<Content: View>: View {
     var edge: Color? = nil
+    @Environment(\.theme) private var theme
     @ViewBuilder var content: Content
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
+        let shape = theme.trayControl
         content
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(MultiplayerTheme.well, in: shape)
+            .background(MultiplayerTheme.fieldFill, in: shape)
             .overlay { if let edge { shape.strokeBorder(edge) } }
     }
 }

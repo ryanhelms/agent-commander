@@ -21,13 +21,16 @@ final class RoutedMultiplayerHelper: MultiplayerHelper {
     private let calls = Mutex<[Call]>([])
     private let route: @Sendable (Call) -> String?
 
-    /// `route` returns the reply's `data` as JSON text, "!message" for a refusal, or nil for `{}`.
+    /// `route` returns the reply's `data` as JSON text, "!message" for a refusal, "=" and a whole
+    /// envelope to send it as written, or nil for `{}`.
     init(_ route: @escaping @Sendable (Call) -> String?) { self.route = route }
 
     func run(verb: MultiplayerVerb, input: Data) async throws -> MultiplayerHelperOutput {
         let call = Call(verb: verb, input: (try? JSONDecoder().decode(MultiplayerJSON.self, from: input)) ?? .null)
         calls.withLock { $0.append(call) }
         let reply = route(call) ?? "{}"
+        // A whole envelope, for a refusal that carries fields beside its sentence.
+        if reply.hasPrefix("=") { return MultiplayerFixture.output(String(reply.dropFirst())) }
         if reply.hasPrefix("!") {
             let message = String(data: try JSONEncoder().encode(String(reply.dropFirst())), encoding: .utf8) ?? "\"\""
             return MultiplayerFixture.output(#"{"ok":false,"error":\#(message)}"#)
@@ -113,6 +116,7 @@ enum MultiplayerTeamsFixture {
         #expect(Set(["relay", "queue", "queue-add", "queue-merge", "knowledge-share", "knowledge-install"])
             .isSubset(of: Set(MultiplayerVerb.allCases.map(\.rawValue))))
         #expect(MultiplayerVerb.queueMerge.arguments == ["tray", "queue-merge"])
+        #expect(MultiplayerVerb.queueRemove.arguments == ["tray", "queue-remove"])
         #expect(MultiplayerResourceKind(rawValue: "host")?.title == "Host")
         #expect(MultiplayerSharePolicy.expected(kind: "host") == ["host.run"])
         #expect(MultiplayerCapability.title("host.run") == "Run enrolled commands")
@@ -306,8 +310,11 @@ enum MultiplayerTeamsFixture {
         #expect(teams.addable(to: group, on: home).map(\.handle) == ["fixture-cy"])
         await teams.setMember("fixture-cy", in: group, on: home, isMember: true)?.value
         #expect(helper.relays("PUT").last?.path == "/v1/groups/grp-1/members/fixture-cy")
+        // Removing a member takes the group's grants away, so the first press only asks.
+        #expect(teams.setMember("fixture-bo", in: group, on: home, isMember: false) == nil && helper.relays("DELETE").isEmpty)
+        teams.ask(.removeMember(group: "grp-1", handle: "fixture-bo"))
         await teams.setMember("fixture-bo", in: group, on: home, isMember: false)?.value
-        #expect(helper.relays("DELETE").last?.path == "/v1/groups/grp-1/members/fixture-bo")
+        #expect(helper.relays("DELETE").last?.path == "/v1/groups/grp-1/members/fixture-bo" && teams.confirming == nil)
 
         teams.ask(.deleteGroup("grp-1"))
         #expect(teams.confirming == .deleteGroup("grp-1") && helper.relays("DELETE").count == 1)
@@ -351,7 +358,9 @@ enum MultiplayerTeamsFixture {
         teams.workspaceDraft.goal = "Survive renewals"
         teams.workspaceDraft.repository = "github.com/example/relay"
         await teams.createWorkspace(on: home)?.value
-        #expect(model.route == .share(home, .workspace("ws-1")))
+        // The workspace is a window page: the composer closes and the tray is back where it was.
+        #expect(model.route == .home)
+        model.share.open(.workspace("ws-1"), on: home)
         #expect(helper.relays("POST").first { $0.path == "/v1/workspaces" }?.body?["integration"] == .string("queue"))
 
         teams.startClaim(in: "ws-1", on: home)
@@ -359,7 +368,7 @@ enum MultiplayerTeamsFixture {
         teams.claimDraft.kind = .paths
         teams.claimDraft.key = "Sources/Relay"
         await teams.sendClaim(in: "ws-1", on: home)?.value
-        #expect(model.failure?.contains("fixture-bo/bo-agent") == true && model.route == .share(home, .claim(workspace: "ws-1")))
+        #expect(model.failure == "Couldn’t claim it. Already claimed by fixture-bo/bo-agent." && model.route == .share(home, .claim(workspace: "ws-1")))
         teams.claimDraft.key = "docs"
         await teams.sendClaim(in: "ws-1", on: home)?.value
         #expect(helper.relays("POST").last?.body == .object(["kind": .string("paths"), "key": .string("docs"),
@@ -367,8 +376,13 @@ enum MultiplayerTeamsFixture {
         #expect(model.route == .share(home, .workspace("ws-1")))
 
         let mine = teams.workspace("ws-1", on: home)!.claims[1]
+        #expect(teams.release(mine, in: "ws-1", on: home) == nil && helper.relays("DELETE").isEmpty)   // the first press only asks
+        teams.ask(.releaseClaim("cl-2"))
+        teams.cancelConfirmation()
+        #expect(teams.release(mine, in: "ws-1", on: home) == nil)
+        teams.ask(.releaseClaim("cl-2"))
         await teams.release(mine, in: "ws-1", on: home)?.value
-        #expect(helper.relays("DELETE").last?.path == "/v1/workspaces/ws-1/claims/cl-2")
+        #expect(helper.relays("DELETE").last?.path == "/v1/workspaces/ws-1/claims/cl-2" && teams.confirming == nil)
         model.close()
     }
 

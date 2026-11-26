@@ -83,6 +83,37 @@ func TestTrayClaimConflictNamesHolder(t *testing.T) {
 	}
 }
 
+func TestTrayTeamRefusals(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/grants", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"grants":[]}`)
+	})
+	mux.HandleFunc("PUT /v1/groups/core/members/nobody", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":"nobody is not your friend"}`)
+	})
+	mux.HandleFunc("POST /v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"integration must be queue or pull_request"}`)
+	})
+	s := identity.Session{User: "alice", Device: "mac", ExpiresAt: time.Now().Add(time.Hour)}
+	a := &Agent{cfg: Config{Dir: t.TempDir(), Relay: testRelayURL}, http: &http.Client{Transport: relayTransport{mux}}, creds: credentials{Session: s}}
+	for _, tc := range []struct {
+		verb  string
+		input any
+		want  string
+	}{
+		{"group-add", input{Group: "core", Handle: "nobody"}, "nobody is not your friend"},
+		{"grant", map[string]any{"group": "core", "resource": "missing", "actions": []string{"agent.ask"}}, "no resource missing"},
+		{"grant", input{Group: "core", Resource: "missing", Capability: "agent.ask"}, "no resource missing"},
+		{"workspace-create", input{Integration: "invalid"}, "integration must be queue or pull_request"},
+	} {
+		if _, why := call(t, a.Handler(), tc.verb, tc.input); why != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.verb, why, tc.want)
+		}
+	}
+}
+
 func TestTrayCanReadPublicPolicyBeforeLogin(t *testing.T) {
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.URL.Path != "/v1/info" || r.Header.Get("Authorization") != "" {

@@ -1,0 +1,29 @@
+2   AXScrollArea 
+3    AXButton People | People (Esc)
+4    AXHeading relay-team
+5    AXScrollArea 
+6     AXStaticText relay-team
+7     AXStaticText Owner
+8     AXGroup ID, not pinned, grp-relay
+9      AXImage Number Sign
+10      AXStaticText ID
+11      AXStaticText grp-relay
+12      AXButton Copy the full id | Copy the full id
+13     AXStaticText A grant to this group reaches every member. People you add later get it, and people you remove lose it.
+14     AXHeading Members
+15     AXStaticText 3
+16     AXButton Add a friend to relay-team | Add a friend to the group
+17     AXStaticText fixture-ryan
+18     AXStaticText Owner
+19     AXStaticText You
+20     AXStaticText fixture-sam
+21     AXButton Remove fixture-sam from relay-team
+22     AXStaticText Remove fixture-sam from relay-team? They lose every grant made to the group.
+23     AXButton Keep member
+24     AXButton Remove member
+25     AXStaticText fixture-mei
+26     AXButton Remove fixture-mei from relay-team
+27    AXButton Delete group…
+28    AXButton Share with group… | Give every member access to one of your resources
+29    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+30  AXStaticText Agent Commander

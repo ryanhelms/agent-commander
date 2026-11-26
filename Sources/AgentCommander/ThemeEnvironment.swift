@@ -16,10 +16,11 @@ extension EnvironmentValues {
     }
 }
 
-/// The person's theme choice, kept in user defaults under `appearance.theme`.
+/// The person's theme choice, kept in user defaults under `appearance.theme`. Console until they
+/// choose; black glass stays on offer in Preferences.
 enum ThemeChoice {
     static let key = "appearance.theme"
-    static let fallback = ThemeID.blackGlass
+    static let fallback = ThemeID.console
 
     static func id(for stored: String?) -> ThemeID {
         stored.flatMap(ThemeID.init(rawValue:)) ?? fallback
@@ -27,6 +28,13 @@ enum ThemeChoice {
 
     static func stored(in defaults: UserDefaults = .standard) -> ThemeID {
         id(for: defaults.string(forKey: key))
+    }
+
+    /// The theme was named on the command line (`-appearance.theme console`). A launch argument
+    /// outranks the stored choice for the whole run, so choosing a theme changes nothing until
+    /// the app is opened without it.
+    static var isFixedByLaunchArgument: Bool {
+        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[key] != nil
     }
 
     static func select(_ id: ThemeID, in defaults: UserDefaults = .standard) {
@@ -69,6 +77,7 @@ struct ThemeInk: ShapeStyle {
         role == \Theme.color.hair || role == \Theme.color.border || role == \Theme.surface.panelEdge
             || role == \Theme.surface.markEdge || role == \Theme.surface.unselectedEdge
             || role == \Theme.surface.fieldEdge || role == \Theme.surface.controlEdge || role == \Theme.surface.tagEdge
+            || role == \Theme.wall.groupEdge
     }
 }
 

@@ -1,0 +1,33 @@
+== GET / (no session)
+HTTP/1.1 200 OK
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:
+Content-Type: text/html; charset=utf-8
+Date: Thu, 26 Nov 2026 03:21:37 GMT
+Transfer-Encoding: chunked
+
+   33501
+same as embedded index.html
+== GET /api/overview (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /api/approvals (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /api/activity (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /api/handoffs (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /api/watchable (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /api/watch/s-f01fcff5/x (no session)
+{"error":"not paired","ok":false}
+ [401]
+== POST /api/activity/seen (no session)
+{"error":"not paired","ok":false}
+ [401]
+== GET /pair?code=WRONG1234
+This pairing code is invalid or expired. Create a new one in the Agent Commander tray.
+ [403]

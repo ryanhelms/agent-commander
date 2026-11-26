@@ -11,25 +11,27 @@ import (
 )
 
 type knowledgeItem struct {
-	ID         string    `json:"id"`
-	Owner      string    `json:"owner"`
-	Kind       string    `json:"kind"`
-	Name       string    `json:"name"`
-	Content    string    `json:"content"`
-	Visibility string    `json:"visibility"`
-	Version    int       `json:"version"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID          string    `json:"id"`
+	Owner       string    `json:"owner"`
+	OwnerHandle string    `json:"ownerHandle"`
+	Kind        string    `json:"kind"`
+	Name        string    `json:"name"`
+	Content     string    `json:"content"`
+	Visibility  string    `json:"visibility"`
+	Version     int       `json:"version"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 // Store the stable user ID for a friend. A reassigned handle cannot inherit
 // access. Check group membership, friendship and the current policy at read time.
 const visibleKnowledge = `WITH visible AS (
-	SELECT k.id,k.owner_id,v.kind,v.name,v.content,
+	SELECT k.id,k.owner_id,coalesce(op.handle,'') AS owner_handle,v.kind,v.name,v.content,
 		CASE v.scope WHEN 'friend' THEN 'friend:'||coalesce(p.handle,v.target)
 			WHEN 'group' THEN 'group:'||v.target ELSE v.scope END AS visibility,
 		v.version,v.created_at,k.version AS latest
 	FROM mp_knowledge k JOIN mp_knowledge_versions v ON v.item=k.id
 	CROSS JOIN mp_policy policy
+	LEFT JOIN mp_profiles op ON op.user_id=k.owner_id
 	LEFT JOIN mp_profiles p ON v.scope='friend' AND p.user_id=v.target
 	WHERE (($2='' AND v.version=k.version) OR k.id=$2) AND (k.owner_id=$1 OR (
 		array_position(ARRAY['private','friend','group','server'],v.scope) <=
@@ -46,7 +48,7 @@ const visibleKnowledge = `WITH visible AS (
 func (s *Service) readKnowledge(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	id := r.PathValue("id")
 	rows, err := s.pool.Query(ctx, visibleKnowledge+`
-		SELECT id,owner_id,kind,name,content,visibility,version,created_at FROM visible v
+		SELECT id,owner_id,owner_handle,kind,name,content,visibility,version,created_at FROM visible v
 		WHERE ($2='' AND version=latest) OR (id=$2 AND EXISTS(
 			SELECT FROM visible current WHERE current.id=v.id AND current.version=current.latest))
 		ORDER BY created_at DESC,version DESC,id`, p.User, id)
@@ -56,7 +58,7 @@ func (s *Service) readKnowledge(ctx context.Context, p Principal, r *http.Reques
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByPos[knowledgeItem])
 	if id != "" {
 		if err == nil && len(items) == 0 {
-			return nil, missing()
+			return nil, &fault{http.StatusNotFound, "no knowledge item " + id + " available to you"}
 		}
 		return map[string]any{"versions": items}, err
 	}
@@ -127,6 +129,9 @@ func (s *Service) writeKnowledge(ctx context.Context, p Principal, r *http.Reque
 			return err
 		}
 		v := knowledgeItem{ID: id, Owner: p.User, Visibility: defaultScope}
+		if err := tx.QueryRow(ctx, "SELECT coalesce((SELECT handle FROM mp_profiles WHERE user_id=$1),'')", p.User).Scan(&v.OwnerHandle); err != nil {
+			return err
+		}
 		if !create {
 			err := tx.QueryRow(ctx, `SELECT v.kind,v.name,v.content,
 				CASE v.scope WHEN 'friend' THEN 'friend:'||coalesce(p.handle,'')
@@ -135,7 +140,7 @@ func (s *Service) writeKnowledge(ctx context.Context, p Principal, r *http.Reque
 				LEFT JOIN mp_profiles p ON v.scope='friend' AND p.user_id=v.target
 				WHERE k.id=$1 AND k.owner_id=$2 FOR UPDATE OF k`, id, p.User).Scan(&v.Kind, &v.Name, &v.Content, &v.Visibility, &v.Version)
 			if err != nil {
-				return err
+				return missingRow(err, "no knowledge item "+id+" that you can edit")
 			}
 		}
 		if in.Kind != nil {

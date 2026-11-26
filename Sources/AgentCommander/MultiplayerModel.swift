@@ -98,7 +98,7 @@ struct MultiplayerCredentialFailure: Equatable {
         case .rejected, .invalidInput:
             return "The helper didn’t save the GitHub token for \(name). Check it’s limited to this repository, then enter it again."
         default:
-            return "The GitHub token for \(name) wasn’t saved. \(failure.message)"
+            return MultiplayerSentence.join("The GitHub token for \(name) wasn’t saved.", failure.message)
         }
     }
 
@@ -128,9 +128,9 @@ struct MultiplayerActionFailure: Equatable {
             return "The panel closed before the network helper confirmed the \(command.noun). Check status before trying again."
         }
         if failure.outcomeUnknown {
-            return "\(failure.message) The \(command.noun) may still have gone through, so check status before trying again."
+            return MultiplayerSentence.join(failure.message, "The \(command.noun) may still have gone through, so check status before trying again.")
         }
-        return "\(command.failureTitle) \(failure.message)"
+        return MultiplayerSentence.join(command.failureTitle, failure.message)
     }
 
     /// An unconfirmed outcome is checked, never re-sent.
@@ -457,8 +457,10 @@ final class MultiplayerSessionModel {
 
     // MARK: - Commands
 
+    /// `keepingPage` is set by a caller outside this server's page (a hosted form, a revoke by
+    /// value): the command is sent and confirmed the same way, and the page and its drafts stay.
     @discardableResult
-    func perform(_ command: MultiplayerCommand) -> Task<Void, Never>? {
+    func perform(_ command: MultiplayerCommand, keepingPage: Bool = false) -> Task<Void, Never>? {
         guard let client, !isBusy else { return nil }
         cancelRefresh()
         running = command
@@ -469,13 +471,13 @@ final class MultiplayerSessionModel {
         let task = Task {
             var failure: MultiplayerFailure?
             do { try await client.perform(command) } catch { failure = .from(error) }
-            self.finishAction(command, failure: failure)
+            self.finishAction(command, failure: failure, keepingPage: keepingPage)
         }
         actionTask = task
         return task
     }
 
-    private func finishAction(_ command: MultiplayerCommand, failure: MultiplayerFailure?) {
+    private func finishAction(_ command: MultiplayerCommand, failure: MultiplayerFailure?, keepingPage: Bool = false) {
         running = nil
         actionTask = nil
         if let failure {
@@ -483,6 +485,10 @@ final class MultiplayerSessionModel {
             return
         }
         notice = command.confirmation
+        if keepingPage {
+            if viewers > 0 { refresh() }
+            return
+        }
         switch command {
         case .login:
             awaitingBrowser = true
@@ -500,7 +506,7 @@ final class MultiplayerSessionModel {
             friendDraft = ""
             lookup = .idle
             go(.home)
-        case .accept:
+        case .accept, .decline:
             break
         case .grant:
             grantDraft = MultiplayerGrantDraft()
@@ -659,8 +665,15 @@ final class MultiplayerSessionModel {
         perform(.sendRequest(handle: handle))
     }
 
-    func accept(_ request: MultiplayerIncoming) {
+    @discardableResult
+    func accept(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
         perform(.accept(requestID: request.id, handle: request.handle))
+    }
+
+    /// Refuses a friend request. One press: the sender can ask again, so nothing is lost.
+    @discardableResult
+    func decline(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
+        perform(.decline(handle: request.handle))
     }
 
     func startAddResource(kind: MultiplayerResourceKind? = nil) {
@@ -737,8 +750,29 @@ final class MultiplayerSessionModel {
 
     func confirmRevoke() {
         guard case .confirmRevoke(let grant) = route else { return }
-        perform(.revoke(grantID: grant.id, handle: grant.handle,
-                        resourceName: resourceName(for: grant.resource), capability: grant.capability))
+        perform(revokeCommand(grant))
+    }
+
+    /// The command that ends one grant.
+    func revokeCommand(_ grant: MultiplayerGrant) -> MultiplayerCommand {
+        .revoke(grantID: grant.id, handle: grant.handle,
+                resourceName: resourceName(for: grant.resource), capability: grant.capability)
+    }
+
+    /// Looks up one person by their exact handle for the caller, who keeps the result. The page's
+    /// own lookup and its field are left alone. Nothing is sent to the person.
+    func lookUp(_ handle: String) async -> MultiplayerLoad<String> {
+        let handle = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let client else { return .failed(setupFailure?.message ?? "The network helper isn’t available.") }
+        if let problem = MultiplayerInput.handleProblem(handle) { return .failed(problem) }
+        do {
+            let found = try await client.lookUp(handle: handle)
+            return found == handle ? .loaded(found)
+                : .failed("The network matched a different handle, so nothing was sent. Check the exact spelling.")
+        } catch {
+            let failure = MultiplayerFailure.from(error)
+            return .failed(failure == .cancelled ? "The lookup was stopped. Try again." : failure.message)
+        }
     }
 
     // MARK: - Testing support

@@ -24,6 +24,9 @@ func (s *Service) workspaceRoutes(routes map[string]endpoint) {
 	routes["GET "+workspaces] = s.workspaces
 	routes["POST "+claims] = s.claimWorkspace
 	routes["DELETE "+claims+"/{claim}"] = s.releaseWorkspaceClaim
+	routes["PUT "+workspaces+"/{id}"] = s.editWorkspace
+	routes["DELETE "+workspaces+"/{id}/membership"] = s.leaveWorkspace
+	routes["GET "+workspaces+"/{id}/combined"] = s.combinedWorkspace
 	routes["POST "+cards] = s.createCard
 	routes["GET "+cards] = s.cards
 	routes["GET "+cards+"/{card}"] = s.card
@@ -51,9 +54,20 @@ type workspaceClaim struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-type claimConflict struct{ Holder string }
+// claimConflict names the live claim that blocked a request. Holder is the
+// claim's handle/agent form; Claim is its ID in the workspace's claims.
+type claimConflict struct{ Holder, Claim string }
 
 func (e *claimConflict) Error() string { return "overlapping claim held by " + e.Holder }
+
+// HolderHandle is the handle part of the holder.
+func (e *claimConflict) HolderHandle() string {
+	handle, _, _ := strings.Cut(e.Holder, "/")
+	return handle
+}
+
+// notDeparted filters a member row m of workspace w to members who have not left it.
+const notDeparted = `NOT EXISTS (SELECT FROM mp_workspace_departures d WHERE d.workspace_id=w.id AND d.user_id=m.user_id)`
 
 func (s *Service) createWorkspace(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	var in struct{ Name, Goal, Repository, Base, Group, Integration string }
@@ -71,25 +85,36 @@ func (s *Service) createWorkspace(ctx context.Context, p Principal, r *http.Requ
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
+		err := tx.QueryRow(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
 			SELECT $1,$2,$3,$4,$5,$6,$7,$8 FROM mp_group_members WHERE group_id=$3 AND user_id=$2
 			RETURNING (SELECT coalesce(handle,'') FROM mp_profiles WHERE user_id=$2)`,
 			w.ID, w.Owner, w.Group, w.Name, w.Goal, w.Repository, w.Base, w.Integration).Scan(&w.OwnerHandle)
+		return missingRow(err, "you do not belong to group "+in.Group)
 	})
 	return w, err
 }
 
 func (s *Service) workspaces(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	rows, err := s.pool.Query(ctx, `SELECT w.id,w.owner_id,coalesce(owner.handle,''),w.group_id,w.name,w.goal,w.repository,w.base,w.integration,
+	result, err := readWorkspaces(ctx, s.pool, p.User, "")
+	return map[string]any{"workspaces": result}, err
+}
+
+type workspaceReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// readWorkspaces lists the workspaces the user can see, or the one named by id.
+func readWorkspaces(ctx context.Context, db workspaceReader, user, id string) ([]workspace, error) {
+	rows, err := db.Query(ctx, `SELECT w.id,w.owner_id,coalesce(owner.handle,''),w.group_id,w.name,w.goal,w.repository,w.base,w.integration,
 		coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'kind',kind,'key',key,'holder',holder,'expiresAt',expires_at) ORDER BY kind,key,id)
 		FROM mp_live_workspace_claims c WHERE c.workspace_id=w.id),'[]'::jsonb)
 		FROM mp_workspaces w JOIN mp_profiles owner ON owner.user_id=w.owner_id
-		JOIN mp_group_members m ON m.group_id=w.group_id AND m.user_id=$1 ORDER BY w.name,w.id`, p.User)
+		JOIN mp_group_members m ON m.group_id=w.group_id AND m.user_id=$1
+		WHERE ($2='' OR w.id=$2) AND `+notDeparted+` ORDER BY w.name,w.id`, user, id)
 	if err != nil {
 		return nil, err
 	}
-	result, err := pgx.CollectRows(rows, pgx.RowToStructByPos[workspace])
-	return map[string]any{"workspaces": result}, err
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[workspace])
 }
 
 // Membership, overlap checks and any change to a board/claim share the same
@@ -101,8 +126,8 @@ func (s *Service) writeWorkspace(ctx context.Context, p Principal, id string, op
 		}
 		var group string
 		if err := tx.QueryRow(ctx, `SELECT w.group_id FROM mp_workspaces w JOIN mp_group_members m
-			ON m.group_id=w.group_id WHERE w.id=$1 AND m.user_id=$2 FOR UPDATE OF w FOR SHARE OF m`, id, p.User).Scan(&group); err != nil {
-			return err
+			ON m.group_id=w.group_id WHERE w.id=$1 AND m.user_id=$2 AND `+notDeparted+` FOR UPDATE OF w FOR SHARE OF m`, id, p.User).Scan(&group); err != nil {
+			return missingRow(err, "no workspace "+id+" in your groups")
 		}
 		return op(tx, group)
 	})
@@ -204,29 +229,29 @@ func acquireWorkspaceClaim(ctx context.Context, tx pgx.Tx, p Principal, id, grou
 		return c, err
 	}
 	if handle != ownHandle {
-		return c, forbidden()
+		return c, &fault{http.StatusForbidden, "you can only claim work under your own handle"}
 	}
 	if in.Kind == "card" {
 		var done bool
 		if err := tx.QueryRow(ctx, `SELECT done FROM mp_workspace_cards WHERE workspace_id=$1 AND id=$2`, id, in.Key).Scan(&done); err != nil {
-			return c, err
+			return c, missingRow(err, "no card "+in.Key+" in workspace "+id)
 		}
 		if done {
 			return c, conflict("reopen the completed card before claiming it")
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT key,holder FROM mp_live_workspace_claims WHERE workspace_id=$1 AND kind=$2 ORDER BY id`, id, in.Kind)
+	rows, err := tx.Query(ctx, `SELECT id,key,holder FROM mp_live_workspace_claims WHERE workspace_id=$1 AND kind=$2 ORDER BY id`, id, in.Kind)
 	if err != nil {
 		return c, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var other, holder string
-		if err := rows.Scan(&other, &holder); err != nil {
+		var claim, other, holder string
+		if err := rows.Scan(&claim, &other, &holder); err != nil {
 			return c, err
 		}
 		if claimsOverlap(in.Kind, in.Key, other) {
-			return c, &claimConflict{holder}
+			return c, &claimConflict{holder, claim}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -257,7 +282,7 @@ func (s *Service) releaseWorkspaceClaim(ctx context.Context, p Principal, r *htt
 	err := s.writeWorkspace(ctx, p, id, func(tx pgx.Tx, _ string) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM mp_workspace_claims WHERE workspace_id=$1 AND id=$2 AND holder_id=$3 AND device=$4`, id, r.PathValue("claim"), p.User, p.Device)
 		if err == nil && tag.RowsAffected() == 0 {
-			return missing()
+			return &fault{http.StatusNotFound, "no claim " + r.PathValue("claim") + " held by this device in workspace " + id}
 		}
 		return err
 	})

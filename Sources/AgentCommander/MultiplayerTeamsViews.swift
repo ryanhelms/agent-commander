@@ -3,13 +3,13 @@ import SwiftUI
 
 // ATOMIC LEVEL: Molecules, organisms and pages for teams (increment 5), in the tray's language
 // (DESIGN.md). Every colour, face, radius and duration comes from `MultiplayerTheme`.
-//   Molecules:  MultiplayerInlineConfirm, MultiplayerStateTally, MultiplayerClaimRow, MultiplayerCardRow,
+//   Molecules:  MultiplayerInlineConfirm, MultiplayerClaimRow,
 //               MultiplayerQueueRow, MultiplayerEndorsementChips, MultiplayerOutputWell
-//   Organisms:  MultiplayerTeamsBand, MultiplayerGroupsBand, MultiplayerServerTeamsBand
-//   Pages:      groups, group, workspaces, new workspace, workspace (combined), claim, card, queue a
-//               branch, hosts, run on host, knowledge library, share knowledge, knowledge item,
-//               reputation, directory search, relay policy
-// Each takes values and emits actions; MultiplayerPanel wires them to MultiplayerTeamsModel.
+//               MultiplayerServerAction
+//   Pages:      group, new workspace, claim, card, queue a branch, run on host, share knowledge,
+//               knowledge item, reputation, relay policy
+// Each takes values and emits actions. The tray draws New workspace and Relay policy only
+// (DESIGN.md, "The triage tray"); the main window and the hosts draw the rest.
 
 // MARK: - Molecules
 
@@ -42,53 +42,6 @@ struct MultiplayerInlineConfirm: View {
     }
 }
 
-/// Counts by state as joined cells that also filter: "open 3 | claimed 1 | done 4".
-struct MultiplayerStateTally<Option: Hashable>: View {
-    struct Cell {
-        let option: Option
-        let title: String
-        let count: Int
-        var tone: Tone = .neutral
-    }
-
-    let label: String
-    let cells: [Cell]
-    @Binding var selection: Option
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
-        HStack(spacing: 0) {
-            ForEach(Array(cells.enumerated()), id: \.element.option) { index, cell in
-                let isOn = cell.option == selection
-                if index > 0 { Rectangle().fill(MultiplayerTheme.border).frame(width: 1) }
-                Button { selection = cell.option } label: {
-                    HStack(spacing: 6) {
-                        Text(cell.title).font(MultiplayerTheme.data)
-                        Text("\(cell.count)")
-                            .font(MultiplayerTheme.data.monospacedDigit())
-                            .multiplayerTicking(cell.count)
-                            .foregroundStyle(isOn ? MultiplayerTheme.onAccent
-                                                  : cell.tone == .neutral || cell.count == 0 ? MultiplayerTheme.foreground : cell.tone.color)
-                    }
-                    .foregroundStyle(isOn ? AnyShapeStyle(MultiplayerTheme.onAccent) : AnyShapeStyle(.inkSecondary))
-                    .frame(maxWidth: .infinity, minHeight: 24)
-                    .background(isOn ? MultiplayerTheme.focus : Color.clear)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(MultiplayerRowButtonStyle())
-                .accessibilityLabel("\(cell.title), \(cell.count)")
-                .accessibilityValue(isOn ? "Selected" : "")
-                .accessibilityAddTraits(isOn ? .isSelected : [])
-            }
-        }
-        .clipShape(shape)
-        .overlay { shape.strokeBorder(MultiplayerTheme.border) }
-        .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: selection)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(label)
-    }
-}
-
 /// Who holds what: the kind, the key as data, the holder as person and agent, and when it lapses.
 struct MultiplayerClaimRow: View {
     let claim: MultiplayerClaim
@@ -97,9 +50,29 @@ struct MultiplayerClaimRow: View {
     let isMine: Bool
     let now: Date
     let isBusy: Bool
+    /// Release is waiting for its second press.
+    var isConfirming = false
+    /// Asks to release; nothing is sent until `onConfirm`.
     let onRelease: () -> Void
+    var onCancel: () -> Void = {}
+    var onConfirm: () -> Void = {}
+
+    private var name: String { (title ?? claim.key).multiplayerDisplay }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            row
+            if isConfirming {
+                MultiplayerInlineConfirm(message: "Release \(name)? \(claim.holderAgent.isEmpty ? "Your agent" : claim.holderAgent.multiplayerDisplay) loses its hold, and anyone in the group can claim it.",
+                                         keepTitle: "Keep claim", confirmTitle: "Release claim", isBusy: isBusy,
+                                         onCancel: onCancel, onConfirm: onConfirm)
+            }
+        }
+        .padding(.vertical, 5)
+        .multiplayerArriving()
+    }
+
+    private var row: some View {
         HStack(spacing: Space.s) {
             MultiplayerMark(symbol: claim.symbol, tone: isMine ? .focus : .neutral, size: 22)
             VStack(alignment: .leading, spacing: 2) {
@@ -127,73 +100,14 @@ struct MultiplayerClaimRow: View {
             .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel("\(claim.kindTitle) \((title ?? claim.key).multiplayerDisplay), held by \(claim.holderHandle.multiplayerDisplay)\(claim.holderAgent.isEmpty ? "" : " for \(claim.holderAgent.multiplayerDisplay)")")
             if isMine {
-                Button("Release", action: onRelease)
+                Button("Release…", action: onRelease)
                     .buttonStyle(MultiplayerTrayButtonStyle())
-                    .disabled(isBusy)
-                    .accessibilityLabel("Release \((title ?? claim.key).multiplayerDisplay)")
+                    .disabled(isBusy || isConfirming)
+                    .accessibilityLabel("Release \(name)")
             } else {
                 MultiplayerStateLabel(lamp: .busy, text: "Held", tone: .attention)
             }
         }
-        .padding(.vertical, 5)
-        .multiplayerArriving()
-    }
-}
-
-/// One card of the board: its state as a lamp and a word, its title, who has it, and the one step
-/// that moves it on. The text opens the card.
-struct MultiplayerCardRow: View {
-    let card: MultiplayerCard
-    /// The person holds this card's claim.
-    let isMine: Bool
-    let isBusy: Bool
-    let onOpen: () -> Void
-    let onClaim: () -> Void
-
-    var body: some View {
-        let state = card.known
-        HStack(spacing: Space.s) {
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(card.title.multiplayerDisplay)
-                        .font(MultiplayerTheme.name)
-                        .foregroundStyle(MultiplayerTheme.foreground)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    HStack(spacing: 6) {
-                        MultiplayerStateLabel(lamp: state.lamp, text: state.title, tone: state.tone)
-                        if !card.assignee.isEmpty {
-                            Text(card.assignee.multiplayerDisplay)
-                                .font(MultiplayerTheme.fingerprint)
-                                .foregroundStyle(isMine ? AnyShapeStyle(MultiplayerTheme.focus) : AnyShapeStyle(.inkSecondary))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .padding(.leading, 8)
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(state == .open ? MultiplayerTheme.border : state.tone.color).frame(width: 2)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(MultiplayerRowButtonStyle())
-            .accessibilityLabel("\(card.title.multiplayerDisplay), \(state.title)\(card.assignee.isEmpty ? "" : ", \(card.assignee.multiplayerDisplay)")")
-            .accessibilityHint("Opens the card")
-            if state == .open {
-                Button("Claim", action: onClaim)
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-                    .disabled(isBusy)
-                    .accessibilityLabel("Claim \(card.title.multiplayerDisplay)")
-            } else if state == .claimed, isMine {
-                Button("Complete…", action: onOpen)
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .accessibilityLabel("Complete \(card.title.multiplayerDisplay)")
-            }
-        }
-        .multiplayerArriving()
     }
 }
 
@@ -225,42 +139,132 @@ struct MultiplayerQueueRow: View {
     let position: Int
     let entry: MultiplayerQueueEntry
     let now: Date
+    var isBusy = false
+    /// Remove is waiting for its second press.
+    var isConfirming = false
+    /// Asks to take the branch out of the queue. Nil hides the action.
+    var onRemove: (() -> Void)? = nil
+    var onCancel: () -> Void = {}
+    var onConfirm: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: Space.s) {
-                Text("\(position)")
-                    .font(MultiplayerTheme.label)
-                    .foregroundStyle(.inkSecondary)
-                    .frame(width: 22, height: 22)
-                    .background(MultiplayerTheme.well)
-                    .overlay { Rectangle().strokeBorder(MultiplayerTheme.border) }
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.branch.multiplayerDisplay)
-                        .font(MultiplayerTheme.data)
-                        .foregroundStyle(MultiplayerTheme.foreground)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Text(entry.test.isEmpty ? "no test command" : entry.test.joined(separator: " ").multiplayerDisplay)
-                        .font(MultiplayerTheme.fingerprint)
+                HStack(spacing: Space.s) {
+                    Text("\(position)")
+                        .font(MultiplayerTheme.label)
                         .foregroundStyle(.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .frame(width: 22, height: 22)
+                        .background(MultiplayerTheme.well)
+                        .overlay { Rectangle().strokeBorder(MultiplayerTheme.border) }
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.branch.multiplayerDisplay)
+                            .font(MultiplayerTheme.data)
+                            .foregroundStyle(MultiplayerTheme.foreground)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Text(entry.test.isEmpty ? "no test command" : entry.test.joined(separator: " ").multiplayerDisplay)
+                            .font(MultiplayerTheme.fingerprint)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    MultiplayerStateLabel(lamp: entry.lamp, text: entry.stateTitle, tone: entry.tone)
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel("\(position). \(entry.branch.multiplayerDisplay), \(entry.stateTitle)")
                 .frame(maxWidth: .infinity, alignment: .leading)
-                MultiplayerStateLabel(lamp: entry.lamp, text: entry.stateTitle, tone: entry.tone)
+                if let onRemove {
+                    Button("Remove…", action: onRemove)
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .disabled(isBusy || isConfirming)
+                        .accessibilityLabel("Remove \(entry.branch.multiplayerDisplay) from the merge queue")
+                }
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityAddTraits(.isStaticText)
-            .accessibilityLabel("\(position). \(entry.branch.multiplayerDisplay), \(entry.stateTitle)")
             if !entry.output.isEmpty, !entry.isQueued, entry.state != "merged" {
                 MultiplayerOutputWell(text: entry.output, tone: .failure, lines: 6)
+            }
+            if isConfirming {
+                MultiplayerInlineConfirm(message: "Remove \(entry.branch.multiplayerDisplay) from the queue? "
+                                             + (entry.isQueued ? "It won’t be tested or merged." : "Its result and output are cleared from this Mac.")
+                                             + " The branch itself stays.",
+                                         keepTitle: "Keep in queue", confirmTitle: "Remove from queue", isBusy: isBusy,
+                                         onCancel: onCancel, onConfirm: onConfirm)
             }
         }
         .padding(.vertical, 5)
         .multiplayerArriving()
+    }
+}
+
+/// One open pull request: its number and branch as data, its title, and who opened it. The row opens
+/// the pull request on its host.
+struct MultiplayerPullRequestRow: View {
+    let pullRequest: MultiplayerPullRequest
+    let onOpen: (URL) -> Void
+
+    var body: some View {
+        if let link = pullRequest.link {
+            Button { onOpen(link) } label: { content(opens: true) }
+                .buttonStyle(MultiplayerRowButtonStyle())
+                .help(link.absoluteString)
+                .accessibilityLabel(pullRequest.spoken)
+                .accessibilityHint("Opens the pull request in your browser")
+                .multiplayerArriving()
+        } else {
+            content(opens: false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel(pullRequest.spoken)
+                .multiplayerArriving()
+        }
+    }
+
+    private func content(opens: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            Text(pullRequest.reference)
+                .font(MultiplayerTheme.data)
+                .foregroundStyle(.inkSecondary)
+                .lineLimit(1)
+                .frame(minWidth: 44, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pullRequest.title.isEmpty ? "Untitled" : pullRequest.title.multiplayerDisplay)
+                    .font(MultiplayerTheme.name)
+                    .foregroundStyle(MultiplayerTheme.foreground)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 6) {
+                    if !pullRequest.branch.isEmpty {
+                        Text(pullRequest.branch.multiplayerDisplay)
+                            .font(MultiplayerTheme.fingerprint)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                    }
+                    if !pullRequest.author.isEmpty {
+                        Text(pullRequest.author.multiplayerDisplay)
+                            .font(MultiplayerTheme.sub)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if opens {
+                Image(systemName: "arrow.up.right")
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 }
 
@@ -295,86 +299,21 @@ private func teamsNote(_ text: String) -> some View {
         .fixedSize(horizontal: false, vertical: true)
 }
 
-// MARK: - Organisms
-
-/// Teams on the Agents tab: the workspaces you work in, then the ways into hosts and the library.
-struct MultiplayerTeamsBand: View {
-    let workspaces: [MultiplayerPending<MultiplayerWorkspace>]
-    let hostCount: Int
-    let knowledgeCount: Int
-    /// The person's handle on a server, to mark their own claims.
-    let handle: (String) -> String
-    let serverName: (String) -> String
-    /// Servers a workspace can be made on. Empty hides the action.
+/// A band action that acts on a server: a button with one server, a menu with several.
+struct MultiplayerServerAction: View {
+    let title: String
+    let symbol: String
+    /// What VoiceOver calls it: "New workspace".
+    let label: String
     let servers: [MultiplayerServerSummary]
-    let onOpen: (MultiplayerPending<MultiplayerWorkspace>) -> Void
-    let onNew: (String) -> Void
-    let onHosts: (String) -> Void
-    let onKnowledge: (String) -> Void
+    let perform: (String) -> Void
 
     var body: some View {
-        if !servers.isEmpty {
-            MultiplayerBand {
-                VStack(alignment: .leading, spacing: 2) {
-                    MultiplayerBandHeading(title: "Workspaces", count: workspaces.isEmpty ? nil : "\(workspaces.count)") {
-                        serverAction("New…", symbol: "plus", label: "New workspace", perform: onNew)
-                    }
-                    if workspaces.isEmpty {
-                        teamsNote("A workspace is a goal, a repository and a group. Members claim parts of it so two agents never take the same work.")
-                            .padding(.vertical, Space.xs)
-                    }
-                    ForEach(workspaces) { entry in
-                        let mine = entry.item.claims.filter { $0.isHeld(by: handle(entry.server)) }.count
-                        Button { onOpen(entry) } label: {
-                            HStack(spacing: Space.s) {
-                                MultiplayerMark(symbol: "square.stack.3d.up", tone: mine > 0 ? .focus : .neutral)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.item.name.multiplayerDisplay)
-                                        .font(MultiplayerTheme.name)
-                                        .foregroundStyle(MultiplayerTheme.foreground)
-                                        .lineLimit(1)
-                                    HStack(spacing: 5) {
-                                        MultiplayerSwatch(color: MultiplayerTheme.swatch(for: entry.server))
-                                        Text("\(serverName(entry.server)), \(entry.item.goal.multiplayerDisplay)")
-                                            .font(MultiplayerTheme.sub)
-                                            .foregroundStyle(.inkSecondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                let count = entry.item.claims.count
-                                MultiplayerStateLabel(lamp: count > 0 ? .busy : .off,
-                                                      text: count == 1 ? "1 claim" : "\(count) claims",
-                                                      tone: count > 0 ? .attention : .neutral)
-                            }
-                            .frame(minHeight: 36)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(MultiplayerRowButtonStyle())
-                        .multiplayerArriving()
-                        .accessibilityLabel("\(entry.item.name.multiplayerDisplay) on \(serverName(entry.server)), \(entry.item.claims.count) claims")
-                        .accessibilityHint("Opens the workspace")
-                    }
-                    Rectangle().fill(MultiplayerTheme.hair).frame(height: 1).padding(.top, 4)
-                    serverLink(symbol: "cpu", title: "Hosts", caption: "Hardware lent to run enrolled commands",
-                               count: hostCount, perform: onHosts)
-                    serverLink(symbol: "books.vertical", title: "Knowledge library",
-                               caption: "Prompts, skills, instructions and MCP settings", count: knowledgeCount,
-                               perform: onKnowledge)
-                }
-                .multiplayerStreaming(workspaces.map(\.id))
-            }
-        }
-    }
-
-    /// A band action that acts on a server: a button with one server, a menu with several.
-    @ViewBuilder private func serverAction(_ title: String, symbol: String, label: String,
-                                           perform: @escaping (String) -> Void) -> some View {
         if servers.count == 1 {
             Button { perform(servers[0].id) } label: { Label(title, systemImage: symbol) }
                 .buttonStyle(MultiplayerTrayButtonStyle())
                 .accessibilityLabel(label)
-        } else {
+        } else if servers.count > 1 {
             Menu {
                 ForEach(servers) { server in Button("On \(server.displayName)") { perform(server.id) } }
             } label: { Label(title, systemImage: symbol) }
@@ -386,192 +325,9 @@ struct MultiplayerTeamsBand: View {
             .accessibilityLabel(label)
         }
     }
-
-    @ViewBuilder private func serverLink(symbol: String, title: String, caption: String, count: Int,
-                                         perform: @escaping (String) -> Void) -> some View {
-        if servers.count == 1 {
-            MultiplayerLinkRow(symbol: symbol, title: title, caption: caption, count: count) { perform(servers[0].id) }
-        } else {
-            Menu {
-                ForEach(servers) { server in Button("On \(server.displayName)") { perform(server.id) } }
-            } label: {
-                MultiplayerLinkRow(symbol: symbol, title: title, caption: caption, count: count) {}
-                    .allowsHitTesting(false)
-            }
-            .menuStyle(.button)
-            .buttonStyle(MultiplayerRowButtonStyle())
-            .menuIndicator(.hidden)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(count > 0 ? "\(title), \(count). \(caption)" : "\(title). \(caption)")
-        }
-    }
-}
-
-/// Groups on the People tab: each with its members, and the way to make one.
-struct MultiplayerGroupsBand: View {
-    let groups: [MultiplayerPending<MultiplayerGroup>]
-    let handle: (String) -> String
-    let serverName: (String) -> String
-    let servers: [MultiplayerServerSummary]
-    let onOpen: (MultiplayerPending<MultiplayerGroup>) -> Void
-    let onManage: (String) -> Void
-
-    var body: some View {
-        if !servers.isEmpty {
-            MultiplayerBand {
-                VStack(alignment: .leading, spacing: 2) {
-                    MultiplayerBandHeading(title: "Groups", count: groups.isEmpty ? nil : "\(groups.count)") {
-                        if servers.count == 1 {
-                            Button { onManage(servers[0].id) } label: { Label("New…", systemImage: "plus") }
-                                .buttonStyle(MultiplayerTrayButtonStyle())
-                                .accessibilityLabel("New group")
-                        } else {
-                            Menu {
-                                ForEach(servers) { server in Button("On \(server.displayName)") { onManage(server.id) } }
-                            } label: { Label("New…", systemImage: "plus") }
-                            .menuStyle(.button)
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .menuIndicator(.hidden)
-                            .fixedSize()
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel("New group")
-                        }
-                    }
-                    if groups.isEmpty {
-                        teamsNote("Name a group of friends, then share a resource with all of them at once.")
-                            .padding(.vertical, Space.xs)
-                    }
-                    ForEach(groups) { entry in
-                        MultiplayerGroupRow(group: entry.item, isOwner: entry.item.isOwned(by: handle(entry.server)),
-                                            color: MultiplayerTheme.swatch(for: entry.server),
-                                            serverName: serverName(entry.server)) { onOpen(entry) }
-                    }
-                }
-                .multiplayerStreaming(groups.map(\.id))
-            }
-        }
-    }
-}
-
-/// A group: its name, how many are in it, the first few of them, and whether it is yours.
-struct MultiplayerGroupRow: View {
-    let group: MultiplayerGroup
-    let isOwner: Bool
-    var color: Color? = nil
-    var serverName: String? = nil
-    let onOpen: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: Space.s) {
-                // People are round: the first members overlap, as a group does.
-                HStack(spacing: -8) {
-                    ForEach(Array(group.members.prefix(3).enumerated()), id: \.offset) { _, member in
-                        MultiplayerAvatar(image: nil, name: member, size: 22)
-                    }
-                }
-                .frame(width: 50, alignment: .leading)
-                .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group.name.multiplayerDisplay)
-                        .font(MultiplayerTheme.name)
-                        .foregroundStyle(MultiplayerTheme.foreground)
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
-                        if let color { MultiplayerSwatch(color: color) }
-                        Text([serverName, group.memberTitle].compactMap { $0 }.joined(separator: ", "))
-                            .font(MultiplayerTheme.sub)
-                            .foregroundStyle(.inkSecondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                MultiplayerBadge(text: isOwner ? "Owner" : "Member", tone: isOwner ? .focus : .neutral)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.inkSecondary)
-            }
-            .frame(minHeight: 36)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(MultiplayerRowButtonStyle())
-        .multiplayerArriving()
-        .accessibilityLabel("\(group.name.multiplayerDisplay), \(group.memberTitle), you are \(isOwner ? "the owner" : "a member")")
-        .accessibilityHint("Opens the group")
-    }
-}
-
-/// One server's ways into teams, on the server's own page.
-struct MultiplayerServerTeamsBand: View {
-    let groupCount: Int
-    let workspaceCount: Int
-    let hostCount: Int
-    let knowledgeCount: Int
-    let isAdmin: Bool
-    let onGroups: () -> Void
-    let onWorkspaces: () -> Void
-    let onHosts: () -> Void
-    let onKnowledge: () -> Void
-    let onSearch: () -> Void
-    let onPolicy: () -> Void
-
-    var body: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: 0) {
-                MultiplayerBandHeading(title: "Teams")
-                MultiplayerLinkRow(symbol: "person.3", title: "Groups", caption: "Named groups of friends you can share with",
-                                   count: groupCount, action: onGroups)
-                MultiplayerLinkRow(symbol: "square.stack.3d.up", title: "Workspaces",
-                                   caption: "Shared goals, claims and the task board", count: workspaceCount, action: onWorkspaces)
-                MultiplayerLinkRow(symbol: "cpu", title: "Hosts", caption: "Hardware lent to run enrolled commands",
-                                   count: hostCount, action: onHosts)
-                MultiplayerLinkRow(symbol: "books.vertical", title: "Knowledge library",
-                                   caption: "Prompts, skills, instructions and MCP settings", count: knowledgeCount,
-                                   action: onKnowledge)
-                MultiplayerLinkRow(symbol: "magnifyingglass", title: "Directory search",
-                                   caption: "People and the resources their owners listed", action: onSearch)
-                if isAdmin {
-                    MultiplayerLinkRow(symbol: "slider.horizontal.3", title: "Relay policy",
-                                       caption: "Sharing limits, retention, members and devices", action: onPolicy)
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Groups
-
-/// Every group on a server, and the field that makes a new one.
-struct MultiplayerGroupsPage: View {
-    let groups: [MultiplayerGroup]
-    let handle: String
-    @Binding var draft: String
-    let canCreate: Bool
-    let onCreate: () -> Void
-    let onOpen: (MultiplayerGroup) -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        MultiplayerBand {
-            MultiplayerField(label: "New group", hint: "You own the groups you create. Only friends can be added.") {
-                HStack(spacing: 6) {
-                    MultiplayerTextField(label: "Group name", placeholder: "relay-team", text: $draft, isFocused: focused)
-                        .focused($focused)
-                        .onSubmit { if canCreate { onCreate() } }
-                    Button("Create group", action: onCreate)
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary, large: true))
-                        .disabled(!canCreate)
-                }
-            }
-        }
-        MultiplayerSection(title: "Groups", count: groups.count) {
-            if groups.isEmpty { teamsNote("No groups on this server yet.").padding(.vertical, Space.xs) }
-            ForEach(groups) { group in
-                MultiplayerGroupRow(group: group, isOwner: group.isOwned(by: handle)) { onOpen(group) }
-            }
-        }
-    }
-}
 
 /// One group: its members, the friends who can join it, and what a grant to it means.
 struct MultiplayerGroupPage: View {
@@ -580,12 +336,21 @@ struct MultiplayerGroupPage: View {
     let addable: [MultiplayerFriend]
     let isBusy: Bool
     let confirmingDelete: Bool
+    /// The member whose Remove is waiting for its second press.
+    var confirmingRemoval: String? = nil
     let onAdd: (String) -> Void
+    /// Asks to remove a member; nothing is sent until `onConfirmRemove`.
     let onRemove: (String) -> Void
+    var onConfirmRemove: (String) -> Void = { _ in }
     let onCancelDelete: () -> Void
     let onConfirmDelete: () -> Void
 
     private var isOwner: Bool { group.isOwned(by: handle) }
+
+    /// What deleting a group takes with it. One member takes the singular verb.
+    static func deleteQuestion(_ group: MultiplayerGroup) -> String {
+        "Delete \(group.name.multiplayerDisplay)? Its \(group.memberTitle) \(group.members.count == 1 ? "loses" : "lose") every grant made to the group."
+    }
 
     var body: some View {
         MultiplayerBand {
@@ -599,7 +364,7 @@ struct MultiplayerGroupPage: View {
                 teamsNote(isOwner ? "A grant to this group reaches every member. People you add later get it, and people you remove lose it."
                                   : "\(group.owner.multiplayerDisplay) owns this group and decides who is in it.")
                 if confirmingDelete {
-                    MultiplayerInlineConfirm(message: "Delete \(group.name.multiplayerDisplay)? Its \(group.memberTitle) lose every grant made to the group.",
+                    MultiplayerInlineConfirm(message: Self.deleteQuestion(group),
                                              keepTitle: "Keep group", confirmTitle: "Delete group", isBusy: isBusy,
                                              onCancel: onCancelDelete, onConfirm: onConfirmDelete)
                 }
@@ -636,63 +401,28 @@ struct MultiplayerGroupPage: View {
                         if member == handle { MultiplayerBadge(text: "You") }
                         Spacer(minLength: 0)
                         if isOwner, member != group.owner {
-                            Button("Remove") { onRemove(member) }
+                            Button("Remove…") { onRemove(member) }
                                 .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(isBusy)
+                                .disabled(isBusy || confirmingRemoval == member)
                                 .accessibilityLabel("Remove \(member.multiplayerDisplay) from \(group.name.multiplayerDisplay)")
                         }
                     }
                     .frame(minHeight: 34)
                     .multiplayerArriving()
+                    if confirmingRemoval == member {
+                        MultiplayerInlineConfirm(message: "Remove \(member.multiplayerDisplay) from \(group.name.multiplayerDisplay)? They lose every grant made to the group.",
+                                                 keepTitle: "Keep member", confirmTitle: "Remove member", isBusy: isBusy,
+                                                 onCancel: onCancelDelete, onConfirm: { onConfirmRemove(member) })
+                            .padding(.bottom, 6)
+                    }
                 }
             }
-            .multiplayerStreaming(group.members)
+            .multiplayerStreaming(group.members + [confirmingRemoval ?? ""])
         }
     }
 }
 
 // MARK: - Workspaces
-
-struct MultiplayerWorkspacesPage: View {
-    let workspaces: [MultiplayerWorkspace]
-    let handle: String
-    let groupName: (String) -> String
-    let onOpen: (MultiplayerWorkspace) -> Void
-
-    var body: some View {
-        MultiplayerSection(title: "Workspaces", count: workspaces.count) {
-            if workspaces.isEmpty {
-                teamsNote("No workspace on this server yet. A workspace is a goal, a repository, a base branch and the group that works on it.")
-                    .padding(.vertical, Space.xs)
-            }
-            ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
-                if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                Button { onOpen(workspace) } label: {
-                    HStack(spacing: Space.s) {
-                        MultiplayerMark(symbol: "square.stack.3d.up",
-                                        tone: workspace.claims.contains { $0.isHeld(by: handle) } ? .focus : .neutral)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(workspace.name.multiplayerDisplay).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground)
-                            Text("\(groupName(workspace.group).multiplayerDisplay), \(MultiplayerIntegration.title(for: workspace.integration).lowercasedFirst)")
-                                .font(MultiplayerTheme.sub)
-                                .foregroundStyle(.inkSecondary)
-                        }
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        let count = workspace.claims.count
-                        MultiplayerStateLabel(lamp: count > 0 ? .busy : .off, text: count == 1 ? "1 claim" : "\(count) claims",
-                                              tone: count > 0 ? .attention : .neutral)
-                    }
-                    .frame(minHeight: 38)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(MultiplayerRowButtonStyle())
-                .accessibilityLabel("\(workspace.name.multiplayerDisplay), \(workspace.claims.count) claims")
-                .accessibilityHint("Opens the workspace")
-            }
-        }
-    }
-}
 
 struct MultiplayerWorkspaceForm: View {
     @Binding var draft: MultiplayerWorkspaceDraft
@@ -737,188 +467,6 @@ struct MultiplayerWorkspaceForm: View {
     }
 }
 
-/// The combined view of one workspace: what it is for, who has claimed what, the board, and how
-/// work lands.
-struct MultiplayerWorkspacePage: View {
-    let workspace: MultiplayerWorkspace
-    let group: MultiplayerGroup?
-    let handle: String
-    let cards: MultiplayerLoad<[MultiplayerCard]>
-    let queue: [MultiplayerQueueEntry]
-    @Binding var cardDraft: MultiplayerCardDraft
-    let canAddCard: Bool
-    let now: Date
-    let isBusy: Bool
-    let onClaim: () -> Void
-    let onRelease: (MultiplayerClaim) -> Void
-    let onAddCard: () -> Void
-    let onOpenCard: (MultiplayerCard) -> Void
-    let onClaimCard: (MultiplayerCard) -> Void
-    let onQueueAdd: () -> Void
-    let onRunQueue: () -> Void
-    let onRetryCards: () -> Void
-    @State private var filter = MultiplayerCard.State.open
-    @FocusState private var cardFocused: Bool
-
-    private var all: [MultiplayerCard] { cards.value ?? [] }
-
-    private func count(_ state: MultiplayerCard.State) -> Int { all.filter { $0.known == state }.count }
-
-    private var boardCells: [MultiplayerStateTally<MultiplayerCard.State>.Cell] {
-        MultiplayerCard.State.allCases.map { .init(option: $0, title: $0.title.lowercased(), count: count($0), tone: $0.tone) }
-    }
-
-    var body: some View {
-        telemetry
-        summary
-        claimsBand
-        boardBand
-        if workspace.usesQueue { queueBand } else { pullRequestBand }
-    }
-
-    private var telemetry: some View {
-        MultiplayerStatusStrip(cells: [
-            MultiplayerReadout(id: "claims", label: "claims", value: "\(workspace.claims.count)",
-                               lamp: workspace.claims.isEmpty ? .off : .busy,
-                               tone: workspace.claims.isEmpty ? .neutral : .attention),
-            MultiplayerReadout(id: "open", label: "open", value: "\(count(.open))"),
-            MultiplayerReadout(id: "claimed", label: "claimed", value: "\(count(.claimed))",
-                               tone: count(.claimed) > 0 ? .attention : .neutral),
-            MultiplayerReadout(id: "done", label: "done", value: "\(count(.done))", tone: count(.done) > 0 ? .working : .neutral),
-        ])
-    }
-
-    private var summary: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: Space.s) {
-                Text(workspace.goal.multiplayerDisplay)
-                    .font(MultiplayerTheme.body)
-                    .foregroundStyle(MultiplayerTheme.foreground)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                VStack(alignment: .leading, spacing: 4) {
-                    MultiplayerSummaryLine(label: "Repository", value: workspace.repository, monospaced: true)
-                    MultiplayerSummaryLine(label: "Base", value: workspace.base, monospaced: true)
-                    MultiplayerSummaryLine(label: "Group", value: group.map { "\($0.name), \($0.memberTitle)" } ?? workspace.group)
-                    MultiplayerSummaryLine(label: "Lands by", value: MultiplayerIntegration.title(for: workspace.integration))
-                }
-                MultiplayerHashChip(label: "ID", hash: workspace.id, onCopy: { MultiplayerHashChip.copy($0) })
-            }
-        }
-    }
-
-    private var claimsBand: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: 2) {
-                MultiplayerBandHeading(title: "Claims", count: workspace.claims.isEmpty ? nil : "\(workspace.claims.count)") {
-                    Button(action: onClaim) { Label("Claim…", systemImage: "lock") }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .disabled(isBusy)
-                        .help("Claim an issue or a set of paths for one of your agents")
-                        .accessibilityLabel("Claim work in \(workspace.name.multiplayerDisplay)")
-                }
-                if workspace.claims.isEmpty {
-                    teamsNote("Nothing is claimed. Claim an issue, some paths or a card before an agent starts on it.")
-                        .padding(.vertical, Space.xs)
-                }
-                ForEach(Array(workspace.claims.enumerated()), id: \.element.id) { index, claim in
-                    if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                    MultiplayerClaimRow(claim: claim, title: claim.kind == "card" ? all.first { $0.id == claim.key }?.title : nil,
-                                        isMine: claim.isHeld(by: handle), now: now, isBusy: isBusy) { onRelease(claim) }
-                }
-            }
-            .multiplayerStreaming(workspace.claims.map(\.id))
-        }
-    }
-
-    private var boardBand: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: Space.s) {
-                MultiplayerBandHeading(title: "Board", count: all.isEmpty ? nil : "\(all.count)")
-                if cards.value == nil {
-                    MultiplayerLoadNote(loading: "Reading the board…", failure: cards.failure,
-                                        onRetry: onRetryCards)
-                } else {
-                    MultiplayerStateTally(label: "Cards by state", cells: boardCells, selection: $filter)
-                    let shown = all.filter { $0.known == filter }
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, card in
-                            if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                            MultiplayerCardRow(card: card, isMine: card.isAssigned(to: handle), isBusy: isBusy,
-                                               onOpen: { onOpenCard(card) }, onClaim: { onClaimCard(card) })
-                        }
-                        if shown.isEmpty {
-                            teamsNote(all.isEmpty ? "No cards yet. Add the first piece of work below."
-                                                  : "No \(filter.title.lowercased()) cards.")
-                                .padding(.vertical, Space.xs)
-                        }
-                    }
-                    .multiplayerStreaming(shown.map(\.id))
-                    HStack(spacing: 6) {
-                        MultiplayerTextField(label: "New card title", placeholder: "Add a card", text: $cardDraft.title,
-                                             isFocused: cardFocused)
-                            .focused($cardFocused)
-                            .onSubmit { if canAddCard { onAddCard() } }
-                        Button("Add card", action: onAddCard)
-                            .buttonStyle(MultiplayerTrayButtonStyle(large: true))
-                            .disabled(!canAddCard)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var queueBand: some View {
-        Group {
-            MultiplayerBand {
-                VStack(alignment: .leading, spacing: 2) {
-                    let waiting = queue.filter(\.isQueued).count
-                    MultiplayerBandHeading(title: "Merge queue", count: queue.isEmpty ? nil : "\(waiting)/\(queue.count)") {
-                        Button(action: onQueueAdd) { Label("Queue branch…", systemImage: "plus") }
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .disabled(isBusy)
-                    }
-                    if queue.isEmpty {
-                        teamsNote("No branch is queued. The queue lives on the owner’s Mac: it tests each branch in order, then merges it into \(workspace.base.multiplayerDisplay).")
-                            .padding(.vertical, Space.xs)
-                    }
-                    ForEach(Array(queue.enumerated()), id: \.element.id) { index, entry in
-                        if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                        MultiplayerQueueRow(position: index + 1, entry: entry, now: now)
-                    }
-                    if waiting > 0 {
-                        HStack {
-                            teamsNote("Runs on this Mac, in each branch’s checkout.")
-                            Spacer(minLength: Space.s)
-                            Button(waiting == 1 ? "Test and merge 1" : "Test and merge \(waiting)", action: onRunQueue)
-                                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                                .disabled(isBusy)
-                        }
-                        .padding(.top, 6)
-                    }
-                }
-                .multiplayerStreaming(queue.map { "\($0.id)\($0.state)" })
-            }
-        }
-    }
-
-    @ViewBuilder private var pullRequestBand: some View {
-        Group {
-            MultiplayerBand {
-                VStack(alignment: .leading, spacing: Space.s) {
-                    MultiplayerBandHeading(title: "Pull requests")
-                    teamsNote("Members open pull requests against \(workspace.base.multiplayerDisplay) themselves.")
-                    if let url = workspace.pullRequestsURL {
-                        Button { NSWorkspace.shared.open(url) } label: { Label("Open pull requests", systemImage: "arrow.up.right.square") }
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .help(url.absoluteString)
-                    }
-                }
-            }
-        }
-    }
-}
-
 struct MultiplayerClaimForm: View {
     @Binding var draft: MultiplayerClaimDraft
     let workspace: MultiplayerWorkspace
@@ -956,6 +504,11 @@ struct MultiplayerCardPage: View {
     let card: MultiplayerCard
     let handle: String
     @Binding var result: String
+    /// Release is waiting for its second press.
+    var confirmingRelease = false
+    var isBusy = false
+    var onCancelRelease: () -> Void = {}
+    var onConfirmRelease: () -> Void = {}
 
     var body: some View {
         let state = card.known
@@ -977,6 +530,11 @@ struct MultiplayerCardPage: View {
                 }
                 if !card.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     MultiplayerMarkdown(text: card.body)
+                }
+                if confirmingRelease {
+                    MultiplayerInlineConfirm(message: "Release \(card.title.multiplayerDisplay)? It goes back to open, anyone in the group can claim it, and a result you typed here is not kept.",
+                                             keepTitle: "Keep card", confirmTitle: "Release card", isBusy: isBusy,
+                                             onCancel: onCancelRelease, onConfirm: onConfirmRelease)
                 }
             }
         }
@@ -1035,101 +593,6 @@ struct MultiplayerQueueForm: View {
 
 // MARK: - Hosts
 
-/// Hosts you lend and hosts friends lend: each with its environments and enrolled commands.
-struct MultiplayerHostsPage: View {
-    let mine: [MultiplayerResource]
-    let theirs: [MultiplayerDirectoryEntry]
-    let grantCount: (String) -> Int
-    let isWaiting: (String) -> Bool
-    let isBusy: Bool
-    let onShare: (MultiplayerResource) -> Void
-    let onAudit: (MultiplayerResource) -> Void
-    let onRun: (MultiplayerDirectoryEntry) -> Void
-    let onRequest: (MultiplayerDirectoryEntry) -> Void
-    let onReputation: (MultiplayerDirectoryEntry) -> Void
-
-    var body: some View {
-        MultiplayerSection(title: "You lend", count: mine.count) {
-            if mine.isEmpty {
-                teamsNote("To lend this Mac, add a resource of kind Host on this server’s page. It points at a file listing the commands friends may run. Nothing else runs.")
-                    .padding(.vertical, Space.xs)
-            }
-            ForEach(Array(mine.enumerated()), id: \.element.id) { index, host in
-                if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                VStack(alignment: .leading, spacing: 6) {
-                    let count = grantCount(host.id)
-                    MultiplayerRow(symbol: "cpu", tone: count > 0 ? .working : .neutral, title: host.name,
-                                   caption: count == 0 ? "Not shared yet" : count == 1 ? "Shared with 1 person" : "Shared with \(count) people")
-                    HStack {
-                        Spacer(minLength: 0)
-                        MultiplayerVerbStrip(verbs: [
-                            MultiplayerRowVerb(id: "audit", title: "Audit", hint: "See every run on \(host.name.multiplayerDisplay)") { onAudit(host) },
-                            MultiplayerRowVerb(id: "share", title: "Share…", isEnabled: !isBusy,
-                                               hint: "Let a friend or a group run commands on \(host.name.multiplayerDisplay)") { onShare(host) },
-                        ])
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
-        MultiplayerSection(title: "Friends lend", count: theirs.count) {
-            if theirs.isEmpty {
-                teamsNote("No friend on this server lends a host yet.").padding(.vertical, Space.xs)
-            }
-            ForEach(Array(theirs.enumerated()), id: \.element.id) { index, host in
-                if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: Space.m) {
-                        MultiplayerMark(symbol: "cpu", tone: host.canRunOnHost ? .working : .neutral)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(host.name.multiplayerDisplay).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground)
-                            Text(host.owner.multiplayerDisplay).font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                        }
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityElement(children: .combine)
-                        MultiplayerBadge(text: host.canRunOnHost ? "Granted" : isWaiting(host.id) ? "Request waiting" : "Offered",
-                                         symbol: host.canRunOnHost ? "checkmark" : nil, tone: host.canRunOnHost ? .working : .neutral)
-                    }
-                    if let capabilities = host.capabilities {
-                        VStack(alignment: .leading, spacing: 3) {
-                            if !capabilities.environments.isEmpty { tags("env", capabilities.environments, spoken: "Environments") }
-                            if !capabilities.tools.isEmpty { tags("run", capabilities.tools, spoken: "Enrolled commands") }
-                        }
-                    }
-                    MultiplayerEndorsementChips(endorsements: host.endorsements)
-                    HStack {
-                        Spacer(minLength: 0)
-                        MultiplayerVerbStrip(verbs: [
-                            MultiplayerRowVerb(id: "reputation", title: "Reputation",
-                                               hint: "See how runs on \(host.name.multiplayerDisplay) went") { onReputation(host) },
-                            host.canRunOnHost
-                                ? MultiplayerRowVerb(id: "run", title: "Run…", isPrimary: true, isEnabled: !isBusy,
-                                                     hint: "Run an enrolled command on \(host.name.multiplayerDisplay)") { onRun(host) }
-                                : MultiplayerRowVerb(id: "request", title: "Request access", isEnabled: !isBusy && !isWaiting(host.id),
-                                                     hint: "Ask \(host.owner.multiplayerDisplay) to let you run commands on \(host.name.multiplayerDisplay)") { onRequest(host) },
-                        ])
-                    }
-                }
-                .padding(.vertical, 6)
-            }
-        }
-    }
-
-    private func tags(_ label: String, _ values: [String], spoken: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label).font(MultiplayerTheme.label).foregroundStyle(.inkSecondary).frame(width: 26, alignment: .leading)
-            Text(values.map(\.multiplayerDisplay).joined(separator: "  "))
-                .font(MultiplayerTheme.mono)
-                .foregroundStyle(MultiplayerTheme.foreground)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isStaticText)
-        .accessibilityLabel("\(spoken): \(values.formatted(.list(type: .and)))")
-    }
-}
-
 /// Runs one enrolled command on a friend's host and shows its exit code and the end of its output.
 struct MultiplayerHostRunPage: View {
     @Binding var draft: MultiplayerHostRunDraft
@@ -1140,7 +603,11 @@ struct MultiplayerHostRunPage: View {
     enum Field: Hashable { case command, arguments }
 
     var body: some View {
-        let commands = entry?.capabilities?.tools ?? []
+        let commands = entry?.capabilities?.commandNames ?? []
+        let chosen = draft.command.trimmingCharacters(in: .whitespaces)
+        // Nil when the host doesn't publish its commands: the field stays, and the owner's Mac decides.
+        let allowsArguments = entry?.capabilities?.allowsArguments(chosen)
+        let environment = entry?.capabilities?.command(chosen)?.environment ?? ""
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.m) {
                 if let entry {
@@ -1156,7 +623,9 @@ struct MultiplayerHostRunPage: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
-                MultiplayerField(label: "Command", hint: commands.isEmpty ? "Type the name the owner enrolled. Anything else is refused." : "Only the commands the owner enrolled.") {
+                MultiplayerField(label: "Command", hint: commands.isEmpty ? "Type the name the owner enrolled. Anything else is refused."
+                                                          : environment.isEmpty ? "Only the commands the owner enrolled."
+                                                          : "Runs in \(environment.multiplayerDisplay). Only the commands the owner enrolled.") {
                     if commands.isEmpty {
                         MultiplayerTextField(label: "Command", placeholder: "run-ios-ui-tests", text: $draft.command, monospaced: true,
                                              isFocused: focus == .command)
@@ -1168,10 +637,17 @@ struct MultiplayerHostRunPage: View {
                                              options: commands.map { ($0, $0.multiplayerDisplay) }, selection: $draft.command)
                     }
                 }
-                MultiplayerField(label: "Extra arguments", hint: "Added after the enrolled arguments, and only when the owner’s command allows it.") {
-                    MultiplayerTextField(label: "Extra arguments", placeholder: "none", text: $draft.argumentText, monospaced: true,
-                                         isFocused: focus == .arguments)
-                        .focused($focus, equals: .arguments)
+                if allowsArguments != false {
+                    MultiplayerField(label: "Extra arguments",
+                                     hint: allowsArguments == true ? "Added after the enrolled arguments."
+                                                                   : "Added after the enrolled arguments, and only when the owner’s command allows it.") {
+                        MultiplayerTextField(label: "Extra arguments", placeholder: "none", text: $draft.argumentText, monospaced: true,
+                                             isFocused: focus == .arguments)
+                            .focused($focus, equals: .arguments)
+                    }
+                    .multiplayerArriving()
+                } else if !chosen.isEmpty {
+                    teamsNote("\(chosen.multiplayerDisplay) runs exactly as its owner enrolled it. It takes no extra arguments.")
                 }
             }
         }
@@ -1181,9 +657,15 @@ struct MultiplayerHostRunPage: View {
                     if let run = MultiplayerHostRun(reply.value), reply.succeeded {
                         HStack(spacing: Space.s) {
                             MultiplayerBandHeading(title: "Result")
-                            MultiplayerStateLabel(lamp: run.succeeded ? .on : .error, text: "exit \(run.exitCode)",
-                                                  tone: run.succeeded ? .working : .failure)
-                            Text("\(run.seconds) s").font(MultiplayerTheme.fingerprint).foregroundStyle(.inkSecondary)
+                            // The exit state and the time read as one readout.
+                            HStack(spacing: Space.s) {
+                                MultiplayerStateLabel(lamp: run.succeeded ? .on : .error, text: "exit \(run.exitCode)",
+                                                      tone: run.succeeded ? .working : .failure)
+                                Text("\(run.seconds) s").font(MultiplayerTheme.fingerprint).foregroundStyle(.inkSecondary)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityAddTraits(.isStaticText)
+                            .accessibilityLabel(run.spoken)
                         }
                         MultiplayerOutputWell(text: run.output, tone: run.succeeded ? .neutral : .failure)
                     } else {
@@ -1200,66 +682,6 @@ struct MultiplayerHostRunPage: View {
 
 // MARK: - Knowledge
 
-struct MultiplayerKnowledgeLibrary: View {
-    let items: [MultiplayerKnowledgeItem]
-    let groupName: (String) -> String?
-    let now: Date
-    let onOpen: (MultiplayerKnowledgeItem) -> Void
-    @State private var kind = ""
-
-    private func kindCells(_ kinds: [String]) -> [MultiplayerStateTally<String>.Cell] {
-        var cells = [MultiplayerStateTally<String>.Cell(option: "", title: "all", count: items.count)]
-        for raw in kinds {
-            cells.append(.init(option: raw, title: MultiplayerKnowledgeKind.title(for: raw).lowercased(),
-                               count: items.filter { $0.kind == raw }.count))
-        }
-        return cells
-    }
-
-    var body: some View {
-        let kinds = MultiplayerUnique.keep(items.map(\.kind)) { $0 }
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: Space.s) {
-                MultiplayerBandHeading(title: "Library", count: items.isEmpty ? nil : "\(items.count)")
-                if kinds.count > 1 {
-                    MultiplayerStateTally(label: "Kind", cells: kindCells(kinds), selection: $kind)
-                }
-                let shown = items.filter { kind.isEmpty || $0.kind == kind }
-                if items.isEmpty {
-                    teamsNote("Nothing is shared with you here yet. Share a prompt, a skill, an instructions snippet, an MCP configuration or a summary.")
-                }
-                VStack(spacing: 0) {
-                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
-                        if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                        Button { onOpen(item) } label: {
-                            HStack(spacing: Space.s) {
-                                MultiplayerMark(symbol: MultiplayerKnowledgeKind.symbol(for: item.kind), size: 24)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name.multiplayerDisplay).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground)
-                                    Text("\(MultiplayerKnowledgeKind.title(for: item.kind)), \(MultiplayerKnowledgeScope.describe(item.visibility, groupName: groupName).lowercasedFirst)")
-                                        .font(MultiplayerTheme.sub)
-                                        .foregroundStyle(.inkSecondary)
-                                }
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                MultiplayerBadge(text: "v\(item.version)")
-                                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.inkSecondary)
-                            }
-                            .frame(minHeight: 38)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(MultiplayerRowButtonStyle())
-                        .multiplayerArriving()
-                        .accessibilityLabel("\(item.name.multiplayerDisplay), \(MultiplayerKnowledgeKind.title(for: item.kind)), version \(item.version)")
-                        .accessibilityHint("Opens the item")
-                    }
-                }
-                .multiplayerStreaming(shown.map(\.id))
-            }
-        }
-    }
-}
-
 struct MultiplayerKnowledgeForm: View {
     @Binding var draft: MultiplayerKnowledgeDraft
     let friends: [MultiplayerFriend]
@@ -1268,6 +690,14 @@ struct MultiplayerKnowledgeForm: View {
     let refusal: String?
     @FocusState private var nameFocused: Bool
 
+    static let secretTitle = "Not shared: a secret was found"
+    static let secretAdvice = "Whoever installs the item fills ${NAME} from their own Keychain. Secrets never travel."
+
+    /// The secret refusal as VoiceOver reads it: what happened, why, and what to do instead.
+    static func secretLabel(_ problem: String) -> String {
+        [secretTitle, problem, secretAdvice].map(MultiplayerSentence.sentence).joined(separator: " ")
+    }
+
     var body: some View {
         if let problem = draft.secretProblem ?? refusal {
             MultiplayerBand {
@@ -1275,15 +705,19 @@ struct MultiplayerKnowledgeForm: View {
                     HStack(alignment: .top, spacing: Space.s) {
                         MultiplayerLamp(kind: .error).padding(.top, 3)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Not shared: a secret was found").font(MultiplayerTheme.heading).foregroundStyle(MultiplayerTheme.failure)
+                            Text(Self.secretTitle).font(MultiplayerTheme.heading).foregroundStyle(MultiplayerTheme.failure)
                             Text(problem).font(.system(size: 12)).foregroundStyle(MultiplayerTheme.foreground)
                                 .fixedSize(horizontal: false, vertical: true)
-                            Text("Whoever installs the item fills ${NAME} from their own Keychain. Secrets never travel.")
+                            Text(Self.secretAdvice)
                                 .font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .accessibilityElement(children: .combine)
+                    // One static text with the whole refusal: the lamp, the heading and the two
+                    // sentences are not separate elements, and the well is never an empty one.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isStaticText)
+                    .accessibilityLabel(Self.secretLabel(problem))
                 }
             }
             .multiplayerArriving()
@@ -1467,7 +901,7 @@ struct MultiplayerReputationPage: View {
             if reputation.accepted + reputation.rejected > 0 {
                 MultiplayerBand {
                     HStack(spacing: Space.s) {
-                        MultiplayerMeter(used: reputation.accepted, limit: reputation.accepted + reputation.rejected, cells: 24, isGood: true)
+                        MultiplayerMeter(used: reputation.accepted, limit: reputation.accepted + reputation.rejected, isGood: true)
                         Text("\(reputation.acceptedPercent ?? 0)% of judged results accepted")
                             .font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                     }
@@ -1536,94 +970,6 @@ struct MultiplayerReputationPage: View {
                             }
                         }
                         .frame(minHeight: 36)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Searches handles, and the resources whose owners chose to list them.
-struct MultiplayerDirectorySearchPage: View {
-    @Binding var query: String
-    let state: MultiplayerLoad<MultiplayerDirectorySearch>
-    let onSearch: () -> Void
-    let onReputation: (MultiplayerDirectoryHit) -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        MultiplayerBand {
-            HStack(spacing: 6) {
-                MultiplayerTextField(label: "Search the directory", placeholder: "A handle, a name, a tool or an environment",
-                                     text: $query, isFocused: focused)
-                    .focused($focused)
-                    .onSubmit(onSearch)
-                Button("Search", action: onSearch)
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary, large: true))
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .onAppear { focused = true }
-        switch state {
-        case .loading:
-            MultiplayerBand { MultiplayerLoadNote(loading: "Searching…", failure: nil, onRetry: onSearch) }
-        case .failed(let message):
-            MultiplayerBand {
-                MultiplayerLoadNote(loading: "", failure: message.localizedCaseInsensitiveContains("forbidden")
-                                        ? "This relay’s directory is off. Its admin can turn it on in the relay policy." : message,
-                                    onRetry: onSearch)
-            }
-        case .loaded(let found):
-            if found.isEmpty {
-                MultiplayerBand {
-                    teamsNote(found.query.isEmpty ? "Nothing is listed by default. An owner lists a resource to make it findable here."
-                                                  : "Nothing matches “\(found.query.multiplayerDisplay)”.")
-                }
-            }
-            if !found.handles.isEmpty {
-                MultiplayerSection(title: "People", count: found.handles.count) {
-                    ForEach(Array(found.handles.enumerated()), id: \.element) { index, handle in
-                        if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                        HStack(spacing: Space.s) {
-                            MultiplayerAvatar(image: nil, name: handle.multiplayerDisplay, size: 24)
-                            Text(handle.multiplayerDisplay).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground)
-                                .textSelection(.enabled)
-                            Spacer(minLength: 0)
-                        }
-                        .frame(minHeight: 34)
-                    }
-                }
-            }
-            if !found.resources.isEmpty {
-                MultiplayerSection(title: "Listed resources", count: found.resources.count) {
-                    ForEach(Array(found.resources.enumerated()), id: \.element.id) { index, hit in
-                        if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: Space.m) {
-                                MultiplayerMark(symbol: MultiplayerResourceKind.symbol(for: hit.kind))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(hit.name.multiplayerDisplay).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground)
-                                    Text("\(hit.handle.multiplayerDisplay), \(MultiplayerResourceKind.title(for: hit.kind).lowercased())")
-                                        .font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                                }
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .accessibilityElement(children: .combine)
-                                Button("Reputation") { onReputation(hit) }
-                                    .buttonStyle(MultiplayerTrayButtonStyle())
-                                    .accessibilityLabel("Reputation of \(hit.name.multiplayerDisplay)")
-                            }
-                            if let capabilities = hit.capabilities {
-                                if capabilities.headline != nil { MultiplayerAgentChip(capabilities: capabilities) }
-                                if !capabilities.tags.isEmpty {
-                                    Text(capabilities.tags.joined(separator: "  ")).font(MultiplayerTheme.mono).foregroundStyle(.inkSecondary)
-                                        .accessibilityLabel("Tools and environments: \(capabilities.tags.formatted(.list(type: .and)))")
-                                }
-                            }
-                            MultiplayerEndorsementChips(endorsements: hit.endorsements)
-                        }
-                        .padding(.vertical, 6)
-                        .multiplayerArriving()
                     }
                 }
             }

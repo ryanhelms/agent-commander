@@ -100,11 +100,21 @@ func bad(msg string) error      { return &fault{400, msg} }
 func forbidden() error          { return &fault{403, "access denied"} }
 func missing() error            { return &fault{404, "not found"} }
 func conflict(msg string) error { return &fault{409, msg} }
+
+// A scoped lookup can name what the caller asked for without disclosing
+// whether that object exists outside their access.
+func missingRow(err error, message string) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &fault{http.StatusNotFound, message}
+	}
+	return err
+}
+
 func problem(w http.ResponseWriter, err error) {
 	var c *claimConflict
 	if errors.As(err, &c) {
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": c.Error(), "holder": c.Holder})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": c.Error(), "holder": c.Holder, "holderHandle": c.HolderHandle(), "claim": c.Claim})
 		return
 	}
 	var f *fault

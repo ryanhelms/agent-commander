@@ -33,9 +33,9 @@ func (s *Service) reputation(ctx context.Context, p Principal, r *http.Request) 
 			WHERE c.resource=r.id AND c.status='completed') stats
 		WHERE r.id=$2`, p.User, out.Resource).Scan(&visible, &out.Completed, &out.Accepted, &out.Rejected, &out.MedianSeconds)
 	if err == nil && !visible {
-		return nil, forbidden()
+		return nil, &fault{http.StatusForbidden, "you cannot view the reputation of resource " + out.Resource}
 	}
-	return out, err
+	return out, missingRow(err, "no resource "+out.Resource)
 }
 
 type outcomeRequest struct {
@@ -70,7 +70,7 @@ func (s *Service) reportOutcome(ctx context.Context, p Principal, r *http.Reques
 			return err
 		}
 		if len(candidates) == 0 {
-			return missing()
+			return &fault{http.StatusNotFound, "no request " + in.Request + " from you for resource " + in.Resource}
 		}
 		child := candidates[0]
 		if len(candidates) > 1 && child.ID != in.Request {
@@ -120,7 +120,7 @@ func (s *Service) endorse(ctx context.Context, p Principal, r *http.Request) (an
 			WHERE r.id=$2 AND EXISTS(SELECT FROM mp_children c
 				WHERE c.sender=$1 AND c.resource=r.id AND c.status='completed')`, p.User, in.Resource).Scan(&owner)
 		if err == pgx.ErrNoRows {
-			return forbidden()
+			return &fault{http.StatusForbidden, "to endorse resource " + in.Resource + ", you must be friends with its owner and have completed a request for it"}
 		}
 		if err != nil {
 			return err
