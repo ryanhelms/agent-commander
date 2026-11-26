@@ -95,7 +95,7 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         let share = model.share
         let live = model.share.live
         let teams = model.share.teams
-        // The pages the tray still draws, and two that are only a link now (DESIGN.md, "The triage tray").
+        // The pages the tray still draws, and some that are only a link now (DESIGN.md, "The triage tray").
         let pages: [(String, () -> Void)] = [
             // Live work (increment 4).
             ("watch", {
@@ -108,12 +108,6 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
                 live.reviewDraft.title = "Wait for lease renewal before dropping the link"
                 live.reviewDraft.pr = "https://github.com/example/relay/pull/212"
                 live.reviewDraft.diff = MultiplayerContextItem(name: "reconnect-wait.diff", content: String(repeating: "x", count: 6_200))
-            }),
-            ("review", { live.openReview("rq-review-1", on: home) }),
-            ("review-post", {
-                live.openReview("rq-review-1", on: home)
-                live.postDraft = "https://github.com/example/relay/pull/212"
-                live.askPost()
             }),
             ("grant-sheet", {
                 share.startGrant(on: home, handle: "fixture-sam", resourceID: "res-2")
@@ -128,6 +122,8 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
             // A page that moved to the main window: the open-in-window row alone.
             ("moved-handoffs", { share.open(.handoffs, on: home) }),
             ("moved-workspace", { share.open(.workspace("ws-relay"), on: home) }),
+            ("moved-review", { live.openReview("rq-review-1", on: home) }),
+            ("moved-policy", { share.open(.policy, on: home) }),
             ("server", { model.openServer(home) }),
             // Teams (increment 5).
             ("grant-sheet-group", {
@@ -141,7 +137,6 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
                 teams.workspaceDraft.goal = "Retry failed avatar uploads without duplicating them."
                 teams.workspaceDraft.repository = "github.com/example/relay"
             }),
-            ("policy", { share.open(.policy, on: home) }),
         ]
         for (name, open) in pages {
             model.go(.home)
@@ -149,13 +144,6 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
             await model.settle()
             try await Self.write(model, name, to: folder, theme: theme)
         }
-        model.go(.home)
-        share.open(.policy, on: home)
-        await model.settle()
-        teams.policyDraft.member = "fixture-noor"
-        teams.policyDraft.directory = false
-        teams.ask(.suspend("fixture-noor"))
-        try await Self.write(model, "policy-suspend", to: folder, theme: theme)
         model.close()
         try? FileManager.default.removeItem(at: winners.file)
     }

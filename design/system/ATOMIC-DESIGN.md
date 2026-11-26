@@ -70,12 +70,13 @@ The triage tray opens main-window pages through two molecules and their values, 
 
 | Level | Component | Responsibility |
 | --- | --- | --- |
-| Value | `MultiplayerSharePage.staysInTray` | Which pages the tray still draws: the quick actions and composers, and Watch, Control, Review and Relay policy until their window pages pass. |
+| Value | `MultiplayerSharePage.staysInTray` | Which pages the tray still draws: the quick actions and composers, Watch until the wall's zoom to a remote tile passes, and Control, a documented deferral with no window hand-over composer planned. |
 | Value | `MultiplayerWindowLink` | A page as the window page it opens: the router's `CommanderOpenRequest`, the breadcrumb and the item's name. Nil for a page with no window page. |
-| Value | `MultiplayerWindowShortcut` | One compact row: a place's mark and name, a count, and its link. Its static lists (`agents`, `teams`, `groups`, `sharing`, `serverTeams`) are the rows of each band. |
+| Value | `MultiplayerWindowShortcut` | One compact row: a place's mark and name, a count with an optional noun ("3 sent"), and its link. Its static lists (`agents`, `teams`, `groups`, `sharing`, `serverTeams`) are the rows of each band. |
 | Value | `MultiplayerPageOpener` | Shows a page where it lives: the tray's route for a page that stays, a request through the opener for one that moved. Every tray entry point that names a page uses it. |
 | Value | `MultiplayerWindowOpener` | Open, then close, as two injected steps. The default opens through `CommanderWindowRouter.shared`. Read from `\.multiplayerWindowOpener`. |
-| Value | `MultiplayerPanelWindow`, `MultiplayerPanelWindowProbe` | The window a panel is drawn in, so the opener can close it. |
+| Value | `MultiplayerPanelWindow`, `MultiplayerPanelWindowProbe` | The window a panel is drawn in, so the opener can close it. In the menu bar it closes through the dismissal, not the window. |
+| Value | `MultiplayerPanelDismissal`, `multiplayerMenuBarPanel()` | SwiftUI's `dismiss` for the `MenuBarExtra` panel, handed down from the scene's content. Nil in any other window. |
 | Molecule | `MultiplayerOpenInWindowRow` | One native button in the tray's skin. It receives a link and emits one request through the opener. It reads no model. |
 | Molecule | `MultiplayerWindowLinkRow`, `MultiplayerWindowLinkRows` | The compact form, inside a band: it receives a shortcut and emits one request through the opener. The group stacks rows in the order given. |
 | Atom | `MultiplayerLeavesTrayMark` | The out arrow after a verb (`MultiplayerRowVerb.opensWindow`) or a work row's state that opens the window. |
@@ -83,7 +84,7 @@ The triage tray opens main-window pages through two molecules and their values, 
 
 `MultiplayerPanel` (the page) builds the link for its route and places the row first on the page; a page that left the tray is that row alone. Each tab composes a band heading and window link rows where its dense section was. The tray depends on the request value and the router's `open(_:)` only.
 
-These tray organisms and pages were deleted with their pages: `MultiplayerSharingBand`, `MultiplayerTeamsBand`, `MultiplayerGroupsBand`, `MultiplayerServerTeamsBand`, `MultiplayerGroupRow`, `MultiplayerHandoffList`, `MultiplayerGroupsPage`, `MultiplayerWorkspacesPage`, `MultiplayerWorkspacePage`, `MultiplayerHostsPage`, `MultiplayerKnowledgeLibrary`, `MultiplayerDirectorySearchPage`, and the molecules only they used (`MultiplayerStateTally`, `MultiplayerCardRow`). The other page organisms stay because the main window or a host draws them.
+These tray organisms and pages were deleted with their pages: `MultiplayerSharingBand`, `MultiplayerTeamsBand`, `MultiplayerGroupsBand`, `MultiplayerServerTeamsBand`, `MultiplayerGroupRow`, `MultiplayerHandoffList`, `MultiplayerGroupsPage`, `MultiplayerWorkspacesPage`, `MultiplayerWorkspacePage`, `MultiplayerHostsPage`, `MultiplayerKnowledgeLibrary`, `MultiplayerDirectorySearchPage`, and the molecules only they used (`MultiplayerStateTally`, `MultiplayerCardRow`). The other page organisms stay because the main window or a host draws them. The tray no longer draws `MultiplayerReviewPage` or `MultiplayerPolicyPage`; they stay because the window's Hand-offs page and the policy host draw them.
 
 Changes to the atoms and hosts that go with it:
 
