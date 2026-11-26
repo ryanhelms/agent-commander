@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS mp_friends (
     requester text NOT NULL, accepted boolean NOT NULL DEFAULT false,
     PRIMARY KEY (a,b), CHECK (a < b AND requester IN (a,b))
 );
+ALTER TABLE mp_friends ADD COLUMN IF NOT EXISTS requested_at timestamptz NOT NULL DEFAULT now();
 CREATE TABLE IF NOT EXISTS mp_leases (
     device text PRIMARY KEY, owner_id text NOT NULL, edge text NOT NULL,
     session text NOT NULL, generation bigint NOT NULL, expires_at timestamptz NOT NULL,

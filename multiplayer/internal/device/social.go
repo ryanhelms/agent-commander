@@ -34,6 +34,7 @@ type Friend struct {
 	LastSeen      string `json:"lastSeen,omitempty"`
 	HasAvatar     bool   `json:"hasAvatar,omitempty"`
 	ContactKey    string `json:"contactKey,omitempty"`
+	RequestedAt   string `json:"requestedAt,omitempty"`
 }
 
 // Event is one relay activity event.

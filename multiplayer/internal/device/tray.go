@@ -123,7 +123,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	}
 	friends, incoming, outgoing := []map[string]any{}, []map[string]any{}, []map[string]any{}
 	for _, f := range social.Friends {
-		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online, "displayName": f.DisplayName, "statusMessage": f.StatusMessage, "presence": f.Presence, "hasAvatar": f.HasAvatar, "contactKey": f.ContactKey, "lastSeen": f.LastSeen}
+		row := map[string]any{"id": f.Handle, "handle": f.Handle, "online": f.Online, "displayName": f.DisplayName, "statusMessage": f.StatusMessage, "presence": f.Presence, "hasAvatar": f.HasAvatar, "contactKey": f.ContactKey, "lastSeen": f.LastSeen, "requestedAt": f.RequestedAt}
 		switch f.Status {
 		case "accepted":
 			friends = append(friends, row)
@@ -608,7 +608,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.audit(ctx, s, in.Resource, peer)
 	case "avatar", "membership", "membership-set", "invite-create", "me":
 		return a.socialVerb(ctx, s, verb, in)
-	case "search", "request", "accept", "unfriend":
+	case "search", "request", "accept", "unfriend", "decline":
 		handle := in.Handle
 		if handle == "" {
 			handle = in.ID
@@ -622,7 +622,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			e = a.remote(ctx, s, "GET", "/v1/users/"+part, nil, &u)
 			return u, e
 		}
-		method := map[string]string{"request": "POST", "accept": "PUT", "unfriend": "DELETE"}[verb]
+		// decline refuses an incoming request; the relay deletes the pending pair either way.
+		method := map[string]string{"request": "POST", "accept": "PUT", "unfriend": "DELETE", "decline": "DELETE"}[verb]
 		return nil, a.remote(ctx, s, method, "/v1/friends/"+part, nil, nil)
 	case "resource-add", "resource-update":
 		return a.publishResource(ctx, s, in, verb == "resource-update")
