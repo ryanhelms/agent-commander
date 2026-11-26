@@ -19,6 +19,7 @@ import (
 // SentRequest is a request this device sent from the tray.
 type SentRequest struct {
 	ID       string    `json:"id"`
+	Child    string    `json:"child"`
 	Resource string    `json:"resource"`
 	Action   string    `json:"action"`
 	Title    string    `json:"title"`
@@ -108,7 +109,8 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 		if title == "" {
 			title = in.Capability
 		}
-		if e = a.logSent(SentRequest{ID: id, Resource: in.Resource, Action: in.Capability, Title: title, At: time.Now().UTC()}); e != nil {
+		child, _ := row["id"].(string)
+		if e = a.logSent(SentRequest{ID: id, Child: child, Resource: in.Resource, Action: in.Capability, Title: title, At: time.Now().UTC()}); e != nil {
 			return nil, e
 		}
 		row["request"] = id
@@ -121,7 +123,7 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			if verb == "handoffs" && r.Action != "agent.handoff" {
 				continue
 			}
-			row := map[string]any{"request": r.ID, "resource": r.Resource, "action": r.Action, "title": r.Title, "at": r.At}
+			row := map[string]any{"request": r.ID, "child": r.Child, "resource": r.Resource, "action": r.Action, "title": r.Title, "at": r.At}
 			if res, e := a.receipt(ctx, s, r.ID); e == nil {
 				fr := firstRow(res)
 				row["status"], row["value"] = fr["status"], fr["value"]
@@ -137,9 +139,9 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			return nil, errors.New("name a request")
 		}
 		// A request this device sent: the thread lives on the owner's device.
-		if i := slices.IndexFunc(a.sentLog(), func(r SentRequest) bool { return r.ID == in.Request }); i >= 0 {
+		if i := slices.IndexFunc(a.sentLog(), func(r SentRequest) bool { return r.ID == in.Request || r.Child == in.Request }); i >= 0 {
 			r := a.sentLog()[i]
-			action, body := "thread.read", map[string]string{"request": r.ID}
+			action, body := "thread.read", map[string]string{"request": r.Child}
 			if verb == "comment" {
 				action, body["text"] = "thread.comment", in.Text
 			}
