@@ -937,7 +937,7 @@ struct CockpitScreen: View {
     private func coordinatorPane(_ run: RunContent) -> some View {
         VStack(spacing: 0) {
             SectionBar {
-                SectionTitle(symbol: "terminal", title: "Coordinator")
+                WallHeading(symbol: "terminal", title: "Coordinator")
             } trailing: {
                 EmptyView()
             }
@@ -975,49 +975,39 @@ struct CockpitScreen: View {
     @ViewBuilder private func workerRegion(_ run: RunContent) -> some View {
         if let remoteID = ui.zoomedRemoteWorkerID {
             // A remote worker's output, read-only (network tray, increment 4 Watch).
-            let name = MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+            let remote = shell?.wall.remoteWorkers.first { $0.id == remoteID }
+            let name = shell == nil
+                ? MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+                : remote?.agent ?? "Remote worker"
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                        MultiplayerReadOnlyBadge()
-                    }
+                    WallCrumb(name: name, back: { returnToWall() }) { MultiplayerReadOnlyBadge() }
                 } trailing: {
                     HStack(spacing: 12) {
+                        // The hand-off's report, artifacts and thread are on its page.
+                        if let remote, shell != nil {
+                            Button("Open hand-off") { openWork(.handoff, request: remote.request, on: remote.server) }
+                                .buttonStyle(ThemeButtonStyle(compact: true))
+                                .help("Open this hand-off in Hand-offs: its report, what it left to apply, and its thread")
+                        }
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
                         AttentionPresentationMenu(selection: presentationChoice)
                     }
                 }
-                MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                if let shell {
+                    if let zoom = shell.wallActions.zoom {
+                        zoom(remoteID) { ui.zoomedRemoteWorkerID = nil }
+                    } else {
+                        Color.clear.onAppear { ui.zoomedRemoteWorkerID = nil }
+                    }
+                } else {
+                    MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                }
             }
         } else if let zoomed = zoomed {
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(zoomed.name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                    }
+                    WallCrumb(name: zoomed.name, back: { returnToWall() })
                 } trailing: {
                     HStack(spacing: 12) {
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
@@ -1026,12 +1016,13 @@ struct CockpitScreen: View {
                 }
                 tile(zoomed, variant: .focused)
                     .coordinateSpace(.named(ConsoleVisibility.viewport))
+                controlDock(for: zoomed)
             }
         } else {
             let count = run.wall.workers.count
             VStack(spacing: 0) {
                 SectionBar {
-                    SectionTitle(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
+                    WallHeading(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
                 } trailing: {
                   HStack(spacing: 12) {
                     // Offered only where the wall can actually be regrouped.
@@ -1057,13 +1048,13 @@ struct CockpitScreen: View {
                 WorkerWall(layout: run.wall, collapsed: ui.collapsedGroups,
                            reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
                            toggleGroup: { id in toggleGroup(id) }) { worker in
-                    tile(worker, variant: .wall)
+                    // The dock sits under the tile, outside its shell.
+                    VStack(spacing: 0) {
+                        tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        controlDock(for: worker)
+                    }
                 }
-                // Hand-offs running on friends' Macs, as remote workers (network tray).
-                MultiplayerRemoteWorkerBand(model: .shared) { worker in
-                    ui.zoomedWorkerID = nil
-                    ui.zoomedRemoteWorkerID = worker.id
-                }
+                remoteBand
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
@@ -1074,6 +1065,58 @@ struct CockpitScreen: View {
                 .padding(.bottom, -11)
             }
         }
+    }
+
+    /// Hand-offs running on friends' Macs, as remote workers, and the reviews and fan-outs that
+    /// still need a look. The redesigned shell draws them from values in the wall's own frame;
+    /// without it the network's own band stands in.
+    @ViewBuilder private var remoteBand: some View {
+        if let shell {
+            let wall = shell.wall
+            Group {
+                if !wall.remoteWorkers.isEmpty || !wall.work.isEmpty {
+                    WallRemoteBand(workers: wall.remoteWorkers, work: wall.work, now: wall.now,
+                                   zoom: { worker in
+                                       ui.zoomedWorkerID = nil
+                                       ui.zoomedRemoteWorkerID = worker.id
+                                   },
+                                   openHandoffs: { show(place: NetworkPlace.handoffs) },
+                                   openWork: { item in openWork(item.kind, request: item.request, on: item.server) })
+                        .padding(.top, Metric.wallRowGap)
+                        .transition(.opacity)
+                }
+            }
+            .animation(theme.motion.animation(theme.motion.standard), value: wall.remoteWorkers.isEmpty && wall.work.isEmpty)
+            .onAppear { shell.wallActions.appeared() }
+            .onDisappear { shell.wallActions.disappeared() }
+        } else {
+            MultiplayerRemoteWorkerBand(model: .shared) { worker in
+                ui.zoomedWorkerID = nil
+                ui.zoomedRemoteWorkerID = worker.id
+            }
+        }
+    }
+
+    /// Who holds control of this worker and what a friend suggests for it, under its tile.
+    @ViewBuilder private func controlDock(for worker: WorkerPresentation) -> some View {
+        if let shell {
+            let wall = shell.wall
+            WallControlDock(controls: wall.controls(forWorker: worker.id), suggestions: wall.suggestions(forWorker: worker.id),
+                            now: wall.now, isBusy: wall.isBusy,
+                            takeBack: { control in shell.wallActions.takeBack(control) },
+                            openShared: { show(place: NetworkPlace.shared) },
+                            review: { suggestion in
+                                shell.actions.openLink(.approval(id: suggestion.approval, server: suggestion.server))
+                                show(place: NetworkPlace.approvals)
+                            })
+        }
+    }
+
+    /// Opens a hand-off, a review or a fan-out in the network and goes to the page that shows it.
+    private func openWork(_ kind: MultiplayerRemoteWork.Kind, request: String, on server: String) {
+        guard let shell else { return }
+        shell.wallActions.openWork(kind, request, server)
+        show(place: WallLiveWork.place(for: kind))
     }
 
     /// The drawer reaches the pane's trailing and bottom edges, outside the wall's insets.
@@ -1634,7 +1677,9 @@ struct CockpitView: View {
                                           networkPage: { place, go in
                                               AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
                                                                       openPanel: networkActions.openNetworkPanel))
-                                          }))
+                                          },
+                                          // The wall's live work, read from the network model as values.
+                                          wall: WallLiveWork(model: network), wallActions: .live(network)))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }

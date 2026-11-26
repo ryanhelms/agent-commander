@@ -8,7 +8,8 @@ import SwiftUI
 //
 //   ShellNetwork          the network model's state the shell shows, as values
 //   ShellNetworkActions   the network model's intents the shell can ask for
-//   ShellContext          both, plus how the toolbar is drawn; given to CockpitScreen by the live page
+//   ShellContext          both, plus how the toolbar is drawn and the wall's live work (WallLiveWork);
+//                         given to CockpitScreen by the live page
 //   LiveShell             place IDs, navigation(…) and inbox(…) built from live state
 //   LiveNeedsYouPage      the inbox page, re-read each second while a request counts down
 
@@ -109,6 +110,10 @@ struct ShellContext {
     /// The page for a network place. `go` takes the window to another place. Nil leaves the
     /// placeholder.
     var networkPage: (@MainActor (_ place: String, _ go: @escaping (String) -> Void) -> AnyView)? = nil
+    /// What the network adds to the coordinator wall: remote workers, who holds control of a
+    /// worker, and suggestions waiting. Empty leaves the wall as it is without a network.
+    var wall = WallLiveWork()
+    var wallActions = WallLiveWorkActions()
 }
 
 enum LiveShell {

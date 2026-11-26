@@ -161,6 +161,19 @@ struct Theme: Equatable, Sendable {
         let pageInset, rowHeight: CGFloat
     }
 
+    /// The coordinator wall's own frame: its pane headings, their counts and the worker groups.
+    /// The console tiles inside it read none of this.
+    struct Wall: Equatable, Sendable {
+        let headingType: ThemeFont
+        let headingInk: ThemeColor
+        let countType: ThemeFont
+        let countInk, countFill, countEdge: ThemeColor
+        let countRadius: CGFloat
+        let groupTitleType, groupNoteType: ThemeFont
+        let groupFill, groupEdge: ThemeColor
+        let groupRadius: CGFloat
+    }
+
     struct Motion: Equatable, Sendable {
         enum Curve: String, Sendable { case easeOut, easeInOut }
 
@@ -185,6 +198,7 @@ struct Theme: Equatable, Sendable {
     let type: TypeScale
     let pageType: PageType
     let space: Space
+    let wall: Wall
     let motion: Motion
 
     static func named(_ id: ThemeID) -> Theme {
@@ -254,6 +268,11 @@ extension Theme {
             space: Space(sectionInset: 25, bandTop: 22, bandBottom: 22, sectionGap: 24,
                          controlHeight: 31, controlHeightLarge: 35, fieldHeight: 40, rowIcon: 37,
                          tabHeight: 44, chipHeightMin: 24, chipHeightMax: 24, pageInset: 36, rowHeight: 54),
+            wall: Wall(headingType: system(14, .semibold), headingInk: color.foreground,
+                       countType: mono(10), countInk: ink(0xC4CFD0), countFill: ink(0xFFFFFF, 0.07),
+                       countEdge: ink(0xFFFFFF, 0.12), countRadius: 4,
+                       groupTitleType: system(12, .semibold), groupNoteType: system(10.5),
+                       groupFill: ink(0x101117, 0.73), groupEdge: ink(0xFFFFFF, 0.22), groupRadius: 15),
             motion: Motion(fast: 0.15, standard: 0.25, slow: 0.35, pulse: 1.7, travel: 0, curve: .easeInOut))
     }()
 
@@ -295,6 +314,11 @@ extension Theme {
             space: Space(sectionInset: 14, bandTop: 10, bandBottom: 12, sectionGap: 18,
                          controlHeight: 24, controlHeightLarge: 28, fieldHeight: 30, rowIcon: 28,
                          tabHeight: 34, chipHeightMin: 16, chipHeightMax: 18, pageInset: 24, rowHeight: 34),
+            wall: Wall(headingType: type.heading, headingInk: color.secondary,
+                       countType: type.heading, countInk: color.foreground, countFill: color.window.opacity(0),
+                       countEdge: color.window.opacity(0), countRadius: 1,
+                       groupTitleType: type.heading, groupNoteType: type.sub,
+                       groupFill: color.panel, groupEdge: color.hair, groupRadius: 2),
             motion: Motion(fast: 0.10, standard: 0.18, slow: 0.25, pulse: 1.4, travel: 6, curve: .easeOut))
     }()
 }

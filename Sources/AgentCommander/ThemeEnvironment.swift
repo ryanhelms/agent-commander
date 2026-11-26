@@ -77,6 +77,7 @@ struct ThemeInk: ShapeStyle {
         role == \Theme.color.hair || role == \Theme.color.border || role == \Theme.surface.panelEdge
             || role == \Theme.surface.markEdge || role == \Theme.surface.unselectedEdge
             || role == \Theme.surface.fieldEdge || role == \Theme.surface.controlEdge || role == \Theme.surface.tagEdge
+            || role == \Theme.wall.groupEdge
     }
 }
 

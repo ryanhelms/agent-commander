@@ -36,6 +36,8 @@ extension DesignPreviewScenario {
 enum NetworkSample {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
     static let studio = "srv-studio", lab = "srv-lab", harbor = "srv-harbor"
+    /// Where the sample Apply puts an artifact.
+    static let checkout = NSHomeDirectory() + "/GitHub/relay"
 
     private static func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
     private static func stamp(_ seconds: TimeInterval) -> String { MultiplayerTime.format(ago(seconds)) }
@@ -473,6 +475,15 @@ final class NetworkPreviewState {
                 return .done(id: draft.resourceID, server: server,
                              message: "\(draft.handle) can use \(what) until \(MultiplayerTime.display(expires, now: content.now)). "
                                 + (draft.approval == .ask ? "Each use waits for your approval." : "Uses run without asking."))
+            },
+            // The sample has no file panel: every artifact goes to the same sample checkout.
+            chooseCheckout: { _ in NetworkSample.checkout },
+            applyArtifact: { [self] draft, _ in
+                await pause()
+                let message = draft.isPatch ? "Applied \(draft.name) to \(draft.folder). The changes are staged, not committed."
+                                            : "Saved \(draft.name) into \(draft.folder)."
+                content.notice = message
+                return .done(id: draft.request, server: draft.server, message: message)
             })
     }
 
@@ -498,6 +509,10 @@ final class NetworkPreviewState {
                              content.grantRefusal = result.reason
                          }
                      })
+        actions.bindApply(network, results: results,
+                          draft: { [self] in selection.apply },
+                          setDraft: { [self] in selection.apply = $0 },
+                          row: { [self] draft in content.server(draft.server)?.handoffs.first { $0.request == draft.request } })
         actions.setGrantServer = { [self] server in
             grant.server = server
             grant.handle = ""
@@ -578,10 +593,6 @@ final class NetworkPreviewState {
         actions.openHandoff = { [self] request, server in open(.share(server, .handoffDetail(request: request))) }
         actions.check = { [self] row, _, result in
             if let report = NetworkSample.handoffReport(result: result) { content.reports[row.request] = report }
-        }
-        actions.apply = { [self] _, artifact, _, _ in
-            content.notice = artifact.kind == "patch" ? "Applied \(artifact.name) to relay. The changes are staged, not committed."
-                                                      : "Saved \(artifact.name) into relay."
         }
         actions.openReview = { [self] request, server in open(.share(server, .review(request: request))) }
         actions.askPost = { [self] in content.confirmingPost = true }

@@ -119,7 +119,20 @@ extension NetworkPageActions {
                 model.share.prepareGrant(on: server, handle: handle, resourceID: resource, actions: actions)
             },
             // The hosted sheet sends its own grant. This is the same call, for a caller without it.
-            sendGrant: { _ in NetworkActionResult(await model.sendGrant()) })
+            sendGrant: { _ in NetworkActionResult(await model.sendGrant()) },
+            chooseCheckout: { artifact in MultiplayerFilePanel.chooseCheckout(for: artifact) },
+            // `apply` is the share model's own call. It reports through the model's banner, so the
+            // result for this artifact is read from the banner once the call has ended.
+            applyArtifact: { draft, row in
+                guard let task = model.share.apply(artifact: draft.index, of: row, on: draft.server, checkout: draft.checkout) else {
+                    return .failed(id: draft.request, server: draft.server,
+                                   reason: model.isBusy ? "Another network action is still running. Try again when it ends."
+                                                        : "Read the result again with Get result, then apply.")
+                }
+                await task.value
+                if let failure = model.failure { return .failed(id: draft.request, server: draft.server, reason: failure) }
+                return .done(id: draft.request, server: draft.server, message: model.notice)
+            })
     }
 }
 
@@ -212,6 +225,10 @@ struct LiveNetworkPage: View {
                      openGrant: { state.selection.grant = $0 },
                      grantServer: { state.selection.grant },
                      grantFinished: { result in if result.isDone { state.selection.grant = nil } })
+        actions.bindApply(.live(model), results: state.results,
+                          draft: { state.selection.apply },
+                          setDraft: { state.selection.apply = $0 },
+                          row: { share.handoff($0.request, on: $0.server) })
         actions.setGrantServer = { share.setGrantServer($0) }
         actions.reconcileGrant = { share.reconcileGrantActions() }
         actions.toggleGrantAction = { share.toggleGrantAction($0) }
@@ -244,8 +261,11 @@ struct LiveNetworkPage: View {
         // Approvals
         actions.openApproval = { id, server in share.open(.approval(id), on: server) }
 
-        // Hand-offs and reviews. Apply stays in the network panel: `apply` is left nil.
-        actions.openHandoff = { request, server in share.open(.handoffDetail(request: request), on: server) }
+        // Hand-offs and reviews. Apply is bound above: choose a checkout, confirm, then the result.
+        actions.openHandoff = { request, server in
+            state.selection.apply = nil
+            share.open(.handoffDetail(request: request), on: server)
+        }
         actions.check = { row, server, result in share.check(row, on: server, result: result) }
         actions.openReview = { request, server in live.openReview(request, on: server) }
         actions.askPost = { live.askPost() }

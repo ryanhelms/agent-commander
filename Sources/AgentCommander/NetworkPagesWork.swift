@@ -93,11 +93,19 @@ struct NetworkHandoffsPage: View {
         let state = pages.content, actions = pages.actions
         let server = row.flatMap { state.server($0.server) }
         if let row, row.kind == .handoff, let sent = server?.handoffs.first(where: { $0.request == row.request }) {
+            let draft = pages.selection.apply.flatMap { $0.server == row.server && $0.request == sent.request ? $0 : nil }
             NetworkInspector(title: "Hand-off", serverID: row.server, serverName: row.serverName,
                              note: actions.apply == nil ? "Apply an artifact from the network panel." : nil, close: actions.close) {
+                // First in the inspector, so the confirmation and each result are in view without scrolling.
+                NetworkApplyBand(outcomes: NetworkApplyOutcome.list(for: sent.request, on: row.server,
+                                                                    artifacts: state.reports[sent.request]?.artifacts ?? [],
+                                                                    results: state.results, running: state.running),
+                                 draft: draft, isBusy: state.isBusy,
+                                 cancel: actions.cancelApply, confirm: actions.confirmApply)
                 MultiplayerHandoffDetail(row: sent, target: row.target, state: state.state(of: sent),
                                          report: state.reports[sent.request], now: state.now,
-                                         isBusy: state.isBusy || (actions.apply == nil && actions.openPanel == nil),
+                                         // One artifact at a time: a waiting confirmation holds the others.
+                                         isBusy: state.isBusy || draft != nil || (actions.apply == nil && actions.openPanel == nil),
                                          onApply: { index, artifact in
                                              if let apply = actions.apply { apply(index, artifact, sent, row.server) } else { actions.openPanel?() }
                                          })
@@ -136,6 +144,146 @@ struct NetworkHandoffsPage: View {
             NetworkInspectorNote(text: "Commander can’t find this request any more.")
         } else {
             NetworkInspectorNote(text: "Choose a hand-off to check its run, read its result and see what it left to apply.")
+        }
+    }
+}
+
+// MARK: - Apply
+
+/// How applying one artifact of a hand-off's result ended, or that it is running.
+struct NetworkApplyOutcome: Identifiable, Equatable {
+    enum State: Equatable { case running, done(String), failed(String) }
+
+    let index: Int
+    let name: String
+    let state: State
+
+    var id: Int { index }
+
+    var lamp: MultiplayerLamp.Kind {
+        switch state {
+        case .running: .waiting
+        case .done: .on
+        case .failed: .error
+        }
+    }
+
+    var word: String {
+        switch state {
+        case .running: "Applying"
+        case .done: "Done"
+        case .failed: "Not applied"
+        }
+    }
+
+    var tone: Tone {
+        switch state {
+        case .running: .neutral
+        case .done: .working
+        case .failed: .failure
+        }
+    }
+
+    /// The sentence under the artifact's name.
+    var sentence: String {
+        switch state {
+        case .running: "Writing it into the checkout…"
+        case .done(let message): message
+        case .failed(let reason): reason
+        }
+    }
+
+    /// One outcome per artifact that was applied or is being applied, in the artifacts' order.
+    static func list(for request: String, on server: String, artifacts: [MultiplayerArtifact],
+                     results: [String: NetworkActionResult], running: Set<String>) -> [NetworkApplyOutcome] {
+        artifacts.enumerated().compactMap { index, artifact in
+            let key = NetworkApplyDraft.key(request: request, index: index, on: server)
+            let name = artifact.name.multiplayerDisplay
+            if running.contains(key) { return NetworkApplyOutcome(index: index, name: name, state: .running) }
+            switch results[key] {
+            case .done(_, _, let message)?:
+                return NetworkApplyOutcome(index: index, name: name, state: .done(message ?? "Done. Nothing was overwritten."))
+            case .failed(_, _, let reason)?:
+                return NetworkApplyOutcome(index: index, name: name, state: .failed(reason))
+            case nil:
+                return nil
+            }
+        }
+    }
+}
+
+/// Under a hand-off's artifacts: the confirmation for the artifact about to be applied, naming
+/// the checkout, and how each artifact applied so far ended. It sits in the tray's hand-off
+/// detail, so it is built from the tray's own band, well and state label.
+struct NetworkApplyBand: View {
+    static let confirmation = "network-apply-confirmation"
+
+    let outcomes: [NetworkApplyOutcome]
+    let draft: NetworkApplyDraft?
+    let isBusy: Bool
+    let cancel: () -> Void
+    let confirm: () -> Void
+
+    var body: some View {
+        if draft != nil || !outcomes.isEmpty {
+            MultiplayerBand {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    MultiplayerBandHeading(title: outcomes.isEmpty ? "Apply to a checkout" : "Applied", count: outcomes.isEmpty ? nil : "\(outcomes.count)")
+                    ForEach(outcomes) { outcome in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                                Text(outcome.name).font(MultiplayerTheme.data).foregroundStyle(MultiplayerTheme.foreground)
+                                    .lineLimit(1).truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if outcome.state == .running { MultiplayerSpinner() }
+                                MultiplayerStateLabel(lamp: outcome.lamp, text: outcome.word, tone: outcome.tone)
+                            }
+                            Text(outcome.sentence)
+                                .font(MultiplayerTheme.sub)
+                                .foregroundStyle(outcome.tone == .failure ? AnyShapeStyle(MultiplayerTheme.failure) : AnyShapeStyle(.inkSecondary))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(outcome.name): \(outcome.word). \(outcome.sentence)")
+                        .multiplayerArriving()
+                    }
+                    if let draft {
+                        MultiplayerWell(edge: MultiplayerTheme.attention.opacity(0.6)) {
+                            VStack(alignment: .leading, spacing: Space.s) {
+                                Text(draft.question)
+                                    .font(MultiplayerTheme.name)
+                                    .foregroundStyle(MultiplayerTheme.foreground)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityAddTraits(.isHeader)
+                                Text(draft.shownPath)
+                                    .font(MultiplayerTheme.mono)
+                                    .foregroundStyle(MultiplayerTheme.focus)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                                    .accessibilityLabel("Checkout folder: \(draft.shownPath)")
+                                Text(draft.consequence)
+                                    .font(MultiplayerTheme.sub)
+                                    .foregroundStyle(.inkSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                HStack(spacing: Space.s) {
+                                    Spacer(minLength: 0)
+                                    Button(draft.isPatch ? "Don’t apply" : "Don’t save", action: cancel)
+                                        .buttonStyle(MultiplayerTrayButtonStyle())
+                                        .keyboardShortcut(.cancelAction)
+                                    Button(draft.confirmTitle, action: confirm)
+                                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                                        .disabled(isBusy)
+                                }
+                            }
+                        }
+                        .multiplayerArriving()
+                        .id(Self.confirmation)
+                        .accessibilityIdentifier(Self.confirmation)
+                    }
+                }
+                .multiplayerStreaming(draft)
+            }
         }
     }
 }

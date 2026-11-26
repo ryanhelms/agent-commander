@@ -559,6 +559,54 @@ struct NetworkPagesSelection: Equatable {
     var shared: String? = nil
     /// The server the grant sheet is open on. Nil while it is closed.
     var grant: String? = nil
+    /// The artifact waiting for its confirmation, with the checkout chosen for it.
+    var apply: NetworkApplyDraft? = nil
+}
+
+/// One artifact of a hand-off's result and the checkout the person chose for it. Nothing is
+/// written until they confirm.
+struct NetworkApplyDraft: Equatable {
+    let server: String
+    /// The hand-off's request.
+    let request: String
+    let index: Int
+    let name: String
+    let kind: String
+    /// The checkout's full path.
+    let checkout: String
+
+    /// The checkout's folder name, as the confirmation and the result name it.
+    var folder: String { Self.folder(of: checkout) }
+    var isPatch: Bool { kind == "patch" }
+
+    static func folder(of checkout: String) -> String {
+        let name = URL(fileURLWithPath: checkout).lastPathComponent
+        return name.isEmpty || name == "/" ? checkout : name
+    }
+
+    /// The path with the home folder as "~", for one line of mono.
+    var shownPath: String {
+        let home = NSHomeDirectory()
+        return checkout == home || checkout.hasPrefix(home + "/") ? "~" + checkout.dropFirst(home.count) : checkout
+    }
+
+    var question: String { isPatch ? "Apply \(name) to \(folder)?" : "Save \(name) into \(folder)?" }
+
+    /// What confirming does, and what it never does.
+    var consequence: String {
+        isPatch
+            ? "Runs git apply in this checkout and stages the changes. Nothing is committed. If the patch doesn’t fit, nothing changes."
+            : "Saves it as a new file in this folder. If a file with that name is already there, it is saved under a new name. Nothing is overwritten."
+    }
+
+    var confirmTitle: String { isPatch ? "Apply to \(folder)" : "Save into \(folder)" }
+
+    /// The key an artifact's result is kept under: one per artifact of a hand-off.
+    static func key(request: String, index: Int, on server: String) -> String {
+        NetworkActionResult.key(.artifact, "\(request)#\(index)", on: server)
+    }
+
+    var key: String { Self.key(request: request, index: index, on: server) }
 }
 
 /// What is being edited, as bindings into whoever owns the text.
@@ -633,6 +681,9 @@ struct NetworkPagesActions {
     var check: (MultiplayerSentRequest, String, _ result: Bool) -> Void = { _, _, _ in }
     /// Apply one artifact of a result. Nil leaves Apply to the network panel.
     var apply: ((Int, MultiplayerArtifact, MultiplayerSentRequest, String) -> Void)? = nil
+    /// Applies the artifact waiting in `selection.apply` to its checkout, or puts it away.
+    var confirmApply: () -> Void = {}
+    var cancelApply: () -> Void = {}
     var openReview: (String, String) -> Void = { _, _ in }
     var askPost: () -> Void = {}
     var cancelPost: () -> Void = {}
@@ -691,7 +742,7 @@ enum NetworkActionResult: Equatable, Sendable {
     case failed(id: String, server: String, reason: String)
 
     /// What an action was taken on.
-    enum Subject: String, Sendable { case approval, access, friend, grant }
+    enum Subject: String, Sendable { case approval, access, friend, grant, artifact }
 
     var id: String {
         switch self {
@@ -744,6 +795,11 @@ struct NetworkPageActions {
         = { _, _, _, _ in false }
     var sendGrant: @MainActor (_ server: String) async -> Result
         = { server in .failed(id: "", server: server, reason: "Not available.") }
+    /// Asks which checkout an artifact goes to. Nil when the person chose none.
+    var chooseCheckout: (@MainActor (_ artifact: String) -> String?)? = nil
+    /// Applies or saves one artifact of a hand-off's result into a checkout. Nil leaves Apply to
+    /// the network panel.
+    var applyArtifact: (@MainActor (NetworkApplyDraft, MultiplayerSentRequest) async -> Result)? = nil
 }
 
 /// Runs one action for a row and keeps how it ended while the row shows it: a success for a
@@ -756,7 +812,8 @@ final class NetworkRowResults {
     var dwell: Duration = .milliseconds(2400)
 
     /// Runs `work` unless the row's action is already running. `finished` is called with the result.
-    func run(_ key: String, _ work: @escaping @MainActor () async -> NetworkActionResult,
+    /// `keeps` leaves a success in place: an artifact's result stays beside it.
+    func run(_ key: String, keeps: Bool = false, _ work: @escaping @MainActor () async -> NetworkActionResult,
              finished: @escaping @MainActor (NetworkActionResult) -> Void = { _ in }) {
         guard !running.contains(key) else { return }
         running.insert(key)
@@ -766,7 +823,7 @@ final class NetworkRowResults {
             running.remove(key)
             results[key] = result
             finished(result)
-            guard result.isDone else { return }
+            guard result.isDone, !keeps else { return }
             try? await Task.sleep(for: dwell)
             if results[key] == result { results[key] = nil }
         }
@@ -805,6 +862,39 @@ extension NetworkPagesActions {
         confirmGrant = {
             guard let server = grantServer() else { return }
             results.run(NetworkActionResult.key(.grant, "sheet", on: server), { await network.sendGrant(server) }, finished: grantFinished)
+        }
+    }
+}
+
+extension NetworkPagesActions {
+    /// Apply in three steps, each a value the page can show: choose the checkout, confirm, result.
+    /// Choosing a checkout only fills `selection.apply`; nothing is written until `confirmApply`.
+    ///   draft     the artifact waiting for its confirmation
+    ///   setDraft  shows or puts away the confirmation
+    ///   row       the hand-off a draft belongs to, as the network holds it now
+    @MainActor mutating func bindApply(_ network: NetworkPageActions, results: NetworkRowResults,
+                                       draft: @escaping @MainActor () -> NetworkApplyDraft?,
+                                       setDraft: @escaping @MainActor (NetworkApplyDraft?) -> Void,
+                                       row: @escaping @MainActor (NetworkApplyDraft) -> MultiplayerSentRequest?) {
+        guard let choose = network.chooseCheckout, let send = network.applyArtifact else { return }
+        apply = { index, artifact, sent, server in
+            guard let checkout = choose(artifact.name.multiplayerDisplay), checkout.hasPrefix("/") else { return }
+            let next = NetworkApplyDraft(server: server, request: sent.request, index: index,
+                                         name: artifact.name.multiplayerDisplay, kind: artifact.kind, checkout: checkout)
+            results.clear(next.key)
+            setDraft(next)
+        }
+        cancelApply = { setDraft(nil) }
+        confirmApply = {
+            guard let waiting = draft() else { return }
+            setDraft(nil)
+            guard let sent = row(waiting) else {
+                results.run(waiting.key, keeps: true) {
+                    .failed(id: waiting.request, server: waiting.server, reason: "Commander can’t find this hand-off any more.")
+                }
+                return
+            }
+            results.run(waiting.key, keeps: true) { await send(waiting, sent) }
         }
     }
 }

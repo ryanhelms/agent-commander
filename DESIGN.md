@@ -16,6 +16,7 @@ Sources of truth in code:
 | Teams components (increment 5) | `MultiplayerTeamsViews.swift`, `MultiplayerMarkdown.swift` |
 | Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
 | Themes | `themes` in `design/system/tokens.json`, `Theme` in `ThemeTokens.swift` |
+| The wall's frame and its live work | `WallFrame.swift`, `WallLiveWork.swift` |
 
 The app has two themes. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. Console is the default. Black glass is chosen in Settings and kept under `appearance.theme`. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
@@ -73,6 +74,21 @@ Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `we
 Reduce Transparency forces the opaque fill in both themes. The web Remote page is unaffected.
 
 Black glass draws the same components through its own tokens: the sidebar floats as a glass sheet, groups are separated by space rather than rules, the selected row has a rounded fill and outline with no marker, and a hot count uses the highlight fill.
+
+### Wall
+
+The coordinator wall's own frame reads the `wall` roles. The console tiles inside it read none of them.
+
+| Token | Console | Black glass |
+|---|---|---|
+| Pane heading | `heading`, in `secondary` | System 14 semibold, in `foreground` |
+| Pane count | `heading` in `foreground`, no fill | Mono 10 on a 4 pt-radius badge |
+| Group title | `heading` | System 12 semibold |
+| Group note | `sub` | System 10.5 |
+| Group fill and edge | `panel` with a `hair` edge | Glass fill `#101117` at 73% with a 22% white edge |
+| Group radius | 2 pt | 15 pt |
+
+Increase Contrast swaps the group edge for the strong border, like every other outline.
 
 ### Shape
 
@@ -244,6 +260,20 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Compare columns, page form | A fan-out's answers side by side, each column as wide as the page allows and 248 pt at least; more than fit scroll sideways. The winner's column is `selection` at 35% with a 2 pt `focus` top edge. |
 | People grid | Friends by server on one panel: a header line per server (swatch, name, "2 of 3 online"), then that server's friend rows in as many columns of 248 pt as fit. |
 
+### The wall's frame (main window)
+
+| Component | What it is |
+|---|---|
+| Wall heading | The heading over a pane of the cockpit (Coordinator, Worker wall): a 12 pt symbol, the title in the pane heading role, and the pane count. |
+| Wall crumb | Over a zoomed worker: a back chevron and "Worker wall" in the pane heading role, a slash, then the worker's name in regular weight, then what marks it (a Read-only badge on a remote worker). |
+| Group frame | The container a group of tiles sits in: group fill, a hairline group edge and the group radius, with 9 pt between the edge and the tiles. A folded group has no room under its heading. |
+| Remote band | Hand-offs on friends' Macs, in the group frame under the local workers. Its heading is a symbol, "Remote workers" as a group title, the count in `foreground`, a group note, and a trailing link to Hand-offs that says how many more are there. Up to three remote worker tiles follow, then at most two wall work rows split by hairlines. It draws nothing when there is neither. |
+| Wall work row | A review or a fan-out you sent that still needs you (a review not yet posted, a fan-out with no winner): its kind glyph, the title in `name`, the target in `sub`, the state right-aligned in its tone, and a chevron. The whole 28 pt row opens its page. |
+| Control dock | Under a worker's tile, 4 pt below it and outside its shell, while the network has something to say about that worker. A friend who holds it gets the tray's holder row as it is: the Holder badge, the worker and server, the countdown and Take back. The dock's edge is the attention edge while someone holds control. A waiting Co-pilot suggestion is a suggestion row. Rows are split by hairlines. Under a zoomed worker the dock sits below the console. |
+| Suggestion row | A "Suggestion" badge in `attention`, one line in `sub` ("jonah suggests: …"), and Review, which opens the suggestion in Approvals. |
+| Apply confirmation | In the Hand-offs inspector, first under its header. Apply… or Save… on an artifact asks for the checkout, then shows a well with an `attention` edge: the question naming the artifact and the folder ("Apply retry-budget.patch to relay?"), the full path in mono `focus`, one `sub` sentence saying what happens and that nothing is overwritten, then "Don’t apply" and a primary "Apply to relay". Nothing is written before the primary button. The other artifacts' buttons are off while it waits. |
+| Apply outcome | One per artifact applied, under an "Applied" band heading and kept while the hand-off is open: the artifact's name in `data`, a state label (a spinner and "Applying", "Done" in `working`, "Not applied" in `failure`), and the device's sentence under it. |
+
 ### Organisms (in the tray today)
 
 The need row is something waiting on the person: the server's swatch, a title in `name`, one line in `sub`, then the answer. A friend request's line names the server and, when the relay says, how long ago it came ("On home, 5m ago"). A request that can be refused has Decline first and the answer after it as the primary button. Declining a friend request takes one press: it refuses, the sender can ask again, and nothing is deleted.
@@ -277,8 +307,8 @@ Increment 5 (teams) adds:
 - **Second presses:** deleting a group, removing a member, releasing a claim, releasing a card you hold, removing a branch from the merge queue, suspending a member and revoking a device each use the inline confirm. The first button ends in "…" and is disabled while its confirm is open. Leaving the page ends the confirm.
 - **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
 - **Pull-request workspace:** a "Pull requests" band in place of the merge queue. Its heading carries the open count and a trailing Repository button that opens the repository's pull-request list. Each open pull request is a pull request row, split by hairlines. The device reads them with the person's own `gh` only as the page opens and when its Refresh is pressed. While reading, the band shows the spinner and "Reading the open pull requests…"; with none open, one `sub` sentence; when the read fails, the reason in `failure` with Try again (a missing or signed-out `gh` says what to check). At the device's limit of 50, a `sub` line points to the repository for the rest.
-- **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in a Remote workers band under the local workers: a hairline frame with the 2 pt tile radius and a mono band heading with its count. The band draws nothing until there is a hand-off.
-- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note.
+- **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in the remote band under the local workers (see "The wall's frame"). The band draws nothing until there is a hand-off, a review or a fan-out to show.
+- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note. In the main window the bar over it is a wall crumb with a Read-only badge and one standard action, "Open hand-off", which goes to the hand-off on its page.
 
 Increment 6 (the tray's Remote band, on the Network tab) adds:
 - **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device. The device agent names its unused code, so a tray that reopens shows the same QR code, code, link and countdown.
@@ -340,6 +370,8 @@ The tray keeps its own versions of these:
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
 - **Refused answers.** When a network answer isn't taken or fails, the row returns to its waiting form and the reason shows in an `error` load note above the list.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
+- **Live work on the wall.** A local worker is matched to the network by the resource it is shared as. Take back on the dock ends the friend's control at once. A remote worker tile zooms; the band's link, a wall work row and "Open hand-off" go to Hand-offs or Fan-out with that request open.
+- **Apply.** Apply never overwrites: a patch runs `git apply` and stages the changes without committing, and a file or report is saved under a new name when its name is taken. The confirmation says so and names the checkout before anything is written. Each artifact shows its own result.
 - **One route.** The main window's network pages show what the network model has open: a server, an approval, a hand-off, a thread, the audit log, a fan-out. Opening one in the window opens it in the tray too, and the other way round. The grant sheet is the exception: a view outside the tray hosts it and the tray does not move.
 - **Answers per row.** An answer given on a row (approve, deny, decline, withdraw, accept) comes back for that row alone and shows there as a row outcome. The page's alert band still carries the model's own sentence.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
@@ -348,4 +380,4 @@ The tray keeps its own versions of these:
 
 - **Unify the token layers.** `Theme` (`ThemeTokens.swift`) now holds both themes' roles, type, radii, spacing and motion, checked against `design/system/tokens.json`. `MultiplayerTheme` reads `Theme.console`, so the tray always draws in the console theme; making the tray follow the person's choice is a separate decision. Rename the components from `Multiplayer*` to app-wide names once they are shared. The design must stay pluggable and themeable: a skin redefines one token layer.
 - **Coordinate the files.** `MultiplayerTray.swift` (1,522 lines) and `MultiplayerShareViews.swift` (1,355 lines) need splitting. The tray session is still changing every `Sources/AgentCommander/Multiplayer*.swift` file. Promote shared components only by agreement with that session. Increment 5 also edits `CockpitView.swift`, `Organisms.swift` and `Molecules.swift` to put hand-off cards on the cockpit wall (D8).
-- **Bring the wall's own groups to hard lines.** The Remote workers band uses the 2 pt tile radius. The local worker groups beside it still use the main window's older `Radius.group` (15 pt) and `Radius.tile` (13 pt), as do the console tiles inside the band. Restyle them together when the main window adopts this language.
+- **The wall's frame follows the theme; its controls don't yet.** The pane headings, the worker groups, the remote band and the control dock read the `wall` roles. Still in the earlier look in both themes: the run header above the wall, the "Group by parent" control, the presentation menu and the key hints under the wall. The console tiles keep their own shell and radius by design.
