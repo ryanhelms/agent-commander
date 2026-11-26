@@ -586,7 +586,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
-	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove":
+	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs":
 		return a.teamVerb(ctx, s, verb, in)
 	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "claim", "release", "knowledge":
 		return a.namedTeamRelay(ctx, s, verb, in)

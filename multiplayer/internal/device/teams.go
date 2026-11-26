@@ -46,6 +46,8 @@ func (a *Agent) teamVerb(ctx context.Context, s identity.Session, verb string, i
 		return installKnowledge(ctx, in, knowledgePassword)
 	case "queue", "queue-add", "queue-merge", "queue-remove":
 		return a.queueVerb(ctx, s, verb, in)
+	case "workspace-prs":
+		return a.workspacePRs(ctx, s, in)
 	}
 	return nil, errors.New("unknown operation")
 }
