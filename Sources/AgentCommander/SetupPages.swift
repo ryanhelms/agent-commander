@@ -18,21 +18,21 @@ import SwiftUI
 
 /// Small picture of how one attention presentation arranges the window.
 struct PresentationThumbnail: View {
+    @Environment(\.theme) private var theme
     let mode: AttentionPresentation
 
-    private let quiet = Color(hex: 0x2A2B33)
-    private let bright = Color(hex: 0x3A3C46)
-    private let ink = Color(hex: 0xA9ADBA)
+    private var block: RoundedRectangle { RoundedRectangle(cornerRadius: min(2, theme.radius.chip)) }
 
     var body: some View {
+        let frame = RoundedRectangle(cornerRadius: min(6, theme.radius.control))
         HStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 2).fill(quiet).frame(width: 26)
+            block.fill(.theme(\.color.border)).frame(width: 26)
             content
         }
         .padding(5)
         .frame(width: 126, height: 76)
-        .background(Color(hex: 0x1B1C22), in: RoundedRectangle(cornerRadius: 6))
-        .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white.opacity(0.12)) }
+        .background(theme.surface.markFill.color, in: frame)
+        .overlay { frame.strokeBorder(.theme(\.surface.markEdge)) }
         .accessibilityHidden(true)
     }
 
@@ -59,58 +59,57 @@ struct PresentationThumbnail: View {
         VStack(spacing: 4) {
             ForEach(0..<2, id: \.self) { _ in
                 HStack(spacing: 4) {
-                    ForEach(0..<columns, id: \.self) { _ in RoundedRectangle(cornerRadius: 2).fill(quiet) }
+                    ForEach(0..<columns, id: \.self) { _ in block.fill(.theme(\.color.border)) }
                 }
             }
         }
     }
 
     private func panel(lines: Int, filled: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let shape = RoundedRectangle(cornerRadius: min(3, theme.radius.control))
+        return VStack(alignment: .leading, spacing: 4) {
             ForEach(0..<lines, id: \.self) { index in
-                Capsule().fill(ink).frame(width: filled ? nil : (index == 0 ? 26 : 18), height: filled ? 4 : 2)
+                Capsule().fill(.theme(\.color.secondary)).frame(width: filled ? nil : (index == 0 ? 26 : 18), height: filled ? 4 : 2)
             }
             if !filled { Spacer(minLength: 0) }
         }
         .padding(6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(bright, in: RoundedRectangle(cornerRadius: 3))
-        .overlay { RoundedRectangle(cornerRadius: 3).strokeBorder(Color.white.opacity(0.55)) }
+        .background(theme.surface.fieldEdge.color, in: shape)
+        .overlay { shape.strokeBorder(.theme(\.color.secondary)) }
     }
 }
 
 /// One attention presentation as a selectable card.
 struct PresentationChoiceCard: View {
+    @Environment(\.theme) private var theme
     let mode: AttentionPresentation
     let isSelected: Bool
     let choose: () -> Void
 
     var body: some View {
+        let well = RoundedRectangle(cornerRadius: min(7, theme.radius.control))
         Button(action: choose) {
             VStack(alignment: .leading, spacing: 0) {
                 PresentationThumbnail(mode: mode)
                     .frame(maxWidth: .infinity, minHeight: 118)
-                    .background(Palette.well.opacity(0.75), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(.inkHairline) }
+                    .background(theme.color.well.color.opacity(0.75), in: well)
+                    .overlay { well.strokeBorder(.theme(\.color.hair)) }
                 HStack(spacing: 9) {
-                    ZStack {
-                        Circle().strokeBorder(isSelected ? Palette.focus : Color(hex: 0x5B6070), lineWidth: 1)
-                        if isSelected { Circle().fill(Palette.focus).padding(3) }
-                    }
-                    .frame(width: 15, height: 15)
-                    Text(mode.title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.foreground)
+                    ChoiceMark(isSelected: isSelected)
+                    Text(mode.title).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
                         .lineLimit(1)
-                    Spacer(minLength: 4)
+                    Spacer(minLength: Space.xs)
                     if isSelected {
-                        Text("Selected").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.working)
+                        Text("Selected").themeType(theme.type.state).foregroundStyle(.theme(\.color.working))
                     }
                 }
-                .padding(.top, 19)
-                Text(mode.detail).font(.system(size: 13)).lineSpacing(4).foregroundStyle(.inkSecondary)
+                .padding(.top, Space.l + 3)
+                Text(mode.detail).themeType(theme.type.sub).lineSpacing(4).foregroundStyle(.theme(\.color.secondary))
                     .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
-                    .padding(.top, 12)
+                    .padding(.top, Space.m)
             }
-            .padding(16)
+            .padding(Space.l)
             .selectionCard(isSelected, radius: 11)
         }
         .buttonStyle(.plain)
@@ -404,6 +403,7 @@ struct HostsPage: View {
     let enroll: () -> Void
     let recover: (EnrolledHost) -> Void
 
+    @Environment(\.theme) private var theme
     @State private var selection: String
     @State private var checking = false
     @State private var lastCheck = "just now"
@@ -429,7 +429,7 @@ struct HostsPage: View {
         WorkspacePage {
             PageHeader(kicker: "Workspace / Infrastructure", title: "Hosts", subtitle: subtitle) {
                 Button(action: enroll) { Label("Enroll SSH host", systemImage: "plus") }
-                    .buttonStyle(CapsuleButtonStyle(prominent: true))
+                    .buttonStyle(ThemeButtonStyle(prominent: true))
             }
         } content: {
             CollectionInspector(collectionWidth: 382) {
@@ -437,48 +437,48 @@ struct HostsPage: View {
             } inspector: {
                 if let host { detail(host) }
             }
-            HStack(spacing: 15) {
+            HStack(spacing: Space.l - 1) {
                 IconTile(symbol: "checkmark.shield", tone: .focus)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(policyTitle).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.foreground)
-                    Text(policyDetail).font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                    Text(policyTitle).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
+                    Text(policyDetail).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                 }
-                Spacer(minLength: 12)
-                StatusLabel(text: policyStatus, tone: .focus, symbol: "pause.circle", size: 12)
+                Spacer(minLength: Space.m)
+                ThemeStatus(text: policyStatus, tone: .focus, symbol: "pause.circle")
             }
-            .padding(.horizontal, 24).padding(.vertical, 22)
-            .panelSurface()
+            .padding(.horizontal, theme.space.sectionInset).padding(.vertical, theme.space.bandTop)
+            .themePanel()
             .accessibilityElement(children: .combine)
         }
     }
 
     private var hostList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Space.s) {
             HStack {
-                Kicker(text: "Enrolled hosts")
-                Spacer(minLength: 8)
+                ThemeHeading(text: "Enrolled hosts")
+                Spacer(minLength: Space.s)
                 MetaText(text: "\(hosts.count)", monospaced: true)
             }
-            .padding(.horizontal, 15).padding(.top, 8).padding(.bottom, 12)
+            .padding(.horizontal, Space.l - 1).padding(.top, Space.s).padding(.bottom, Space.m)
             ForEach(hosts) { item in
                 let isSelected = item.id == host?.id
                 Button {
                     selection = item.id
                     lastCheck = "just now"
                 } label: {
-                    HStack(spacing: 13) {
+                    HStack(spacing: Space.m + 1) {
                         IconTile(symbol: item.symbol, tone: isSelected && item.isConnected ? .working : .neutral, size: 31)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.foreground)
-                            Text(item.kind).font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                        VStack(alignment: .leading, spacing: Space.xs) {
+                            Text(item.name).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
+                            Text(item.kind).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                         }
-                        Spacer(minLength: 8)
-                        StatusLabel(text: item.isConnected ? "Connected" : "Disconnected",
+                        Spacer(minLength: Space.s)
+                        ThemeStatus(text: item.isConnected ? "Connected" : "Disconnected",
                                     tone: item.isConnected ? .working : .attention,
-                                    symbol: item.isConnected ? "checkmark.circle.fill" : "bolt.slash", size: 11.5)
+                                    symbol: item.isConnected ? "checkmark.circle.fill" : "bolt.slash")
                     }
-                    .padding(.horizontal, 15)
-                    .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+                    .padding(.horizontal, Space.l - 1)
+                    .frame(maxWidth: .infinity, minHeight: theme.space.rowHeight + 24, alignment: .leading)
                     .background {
                         if isSelected { Color.clear.selectionCard(true) }
                     }
@@ -488,58 +488,59 @@ struct HostsPage: View {
                 .accessibilityLabel("\(item.name), \(item.kind), \(item.isConnected ? "connected" : "disconnected")")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
-            Hairline().padding(.horizontal, 14).padding(.top, 14)
-            HStack(spacing: 12) {
-                Image(systemName: "book").font(.system(size: 13)).foregroundStyle(.inkSecondary)
+            ThemeRule().padding(.horizontal, 14).padding(.top, 14)
+            HStack(spacing: Space.m) {
+                Image(systemName: "book").font(.system(size: theme.type.body.size - 1)).foregroundStyle(.theme(\.color.secondary))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("SSH configuration").font(.system(size: 13)).foregroundStyle(Color(hex: 0xD3D6E0))
-                    Text(configPath).font(TypeRole.monoID).foregroundStyle(.inkSecondary)
+                    Text("SSH configuration").themeType(theme.type.sub).foregroundStyle(.theme(\.surface.softInk))
+                    Text(configPath).themeType(theme.type.mono).foregroundStyle(.theme(\.color.secondary))
                 }
             }
-            .padding(.horizontal, 15).padding(.top, 10).padding(.bottom, 6)
+            .padding(.horizontal, Space.l - 1).padding(.top, 10).padding(.bottom, 6)
         }
         .padding(10)
-        .panelSurface()
+        .themePanel()
     }
 
     private func detail(_ host: EnrolledHost) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 16) {
+        let inset = theme.space.sectionInset + 1
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Space.l) {
                 IconTile(symbol: host.symbol, tone: host.isConnected ? .working : .attention, size: 46)
                 VStack(alignment: .leading, spacing: 6) {
-                    Kicker(text: host.typeLabel)
-                    Text(host.name).font(.system(size: 30, weight: .semibold)).tracking(-0.9)
-                        .foregroundStyle(Palette.foreground).accessibilityAddTraits(.isHeader)
+                    ThemeHeading(text: host.typeLabel)
+                    Text(host.name).themeType(theme.pageType.detailTitle)
+                        .foregroundStyle(.theme(\.color.foreground)).accessibilityAddTraits(.isHeader)
                 }
-                Spacer(minLength: 12)
-                StatusLabel(text: host.isConnected ? "Connected" : "Disconnected",
+                Spacer(minLength: Space.m)
+                ThemeStatus(text: host.isConnected ? "Connected" : "Disconnected",
                             tone: host.isConnected ? .working : .attention,
-                            symbol: host.isConnected ? "checkmark.circle.fill" : "bolt.slash", size: 12)
+                            symbol: host.isConnected ? "checkmark.circle.fill" : "bolt.slash")
             }
-            .padding(.horizontal, 26).padding(.top, 24)
-            HStack(alignment: .top, spacing: 16) {
+            .padding(.horizontal, inset).padding(.top, theme.space.bandTop + 2)
+            HStack(alignment: .top, spacing: Space.l) {
                 FactColumn(label: "Connection mode", value: host.mode)
-                Hairline(vertical: true).frame(height: 42)
+                ThemeRule(vertical: true).frame(height: 42)
                 FactColumn(label: "Project checkout", value: host.checkout, monospaced: true)
-                Hairline(vertical: true).frame(height: 42)
+                ThemeRule(vertical: true).frame(height: 42)
                 FactColumn(label: "Active run", value: host.activeRun ?? "None")
             }
-            .padding(.horizontal, 26).padding(.top, 24).padding(.bottom, 24)
-            Hairline()
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Connection capabilities").font(.system(size: 22, weight: .semibold)).tracking(-0.6)
-                    .foregroundStyle(Palette.foreground).accessibilityAddTraits(.isHeader)
+            .padding(.horizontal, inset).padding(.vertical, theme.space.bandTop + 2)
+            ThemeRule()
+            VStack(alignment: .leading, spacing: Space.l) {
+                Text("Connection capabilities").themeType(theme.pageType.sectionTitle)
+                    .foregroundStyle(.theme(\.color.foreground)).accessibilityAddTraits(.isHeader)
                 DataTable(headers: ["During an SSH outage", "Persistent helper", "SSH-only"], weights: [36, 33, 31],
                           rows: capabilities, carded: false, rowHeight: 51) { row, column in
                     switch column {
                     case 0:
-                        Text(row.id).font(.system(size: 14)).foregroundStyle(Palette.foreground)
+                        Text(row.id).themeType(theme.type.body).foregroundStyle(.theme(\.color.foreground))
                     case 1:
-                        Text(row.persistentHelper).font(.system(size: 14))
-                            .foregroundStyle(host.mode == "Persistent helper" ? Palette.working : Palette.secondary)
+                        Text(row.persistentHelper).themeType(theme.type.body)
+                            .foregroundStyle(.theme(host.mode == "Persistent helper" ? \.color.working : \.color.secondary))
                     default:
-                        Text(row.sshOnly).font(.system(size: 14))
-                            .foregroundStyle(host.mode == "SSH-only" ? Palette.working : Palette.secondary)
+                        Text(row.sshOnly).themeType(theme.type.body)
+                            .foregroundStyle(.theme(host.mode == "SSH-only" ? \.color.working : \.color.secondary))
                     }
                 }
                 if !host.isConnected {
@@ -548,28 +549,28 @@ struct HostsPage: View {
                             tone: .attention)
                 }
             }
-            .padding(.horizontal, 26).padding(.vertical, 24)
-            Hairline()
+            .padding(.horizontal, inset).padding(.vertical, theme.space.bandTop + 2)
+            ThemeRule()
             HStack(spacing: 10) {
                 if checking { ProgressView().controlSize(.small) } else {
-                    Image(systemName: "waveform.path.ecg").font(.system(size: 12)).foregroundStyle(.inkSecondary)
+                    Image(systemName: "waveform.path.ecg").font(.system(size: theme.pageType.meta.size)).foregroundStyle(.theme(\.color.secondary))
                 }
                 Text(checking ? "Checking connection…" : "Last connection check \(lastCheck)")
-                    .font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
-                Spacer(minLength: 12)
+                    .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                Spacer(minLength: Space.m)
                 if !host.isConnected {
                     Button { recover(host) } label: { Label("Review recovery", systemImage: "arrow.right") }
-                        .buttonStyle(CapsuleButtonStyle())
+                        .buttonStyle(ThemeButtonStyle())
                 }
                 Button(action: check) { Label("Check connection", systemImage: "arrow.clockwise") }
-                    .buttonStyle(CapsuleButtonStyle())
+                    .buttonStyle(ThemeButtonStyle())
                     .disabled(checking)
             }
-            .padding(.horizontal, 26)
-            .frame(minHeight: 66)
-            .background(Palette.footer.opacity(0.6))
+            .padding(.horizontal, inset)
+            .frame(minHeight: theme.space.controlHeightLarge + 31)
+            .background(theme.surface.footerFill.color)
         }
-        .panelSurface()
+        .themePanel()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Host \(host.name)")
     }
@@ -1328,30 +1329,45 @@ struct PreferencesPage: View {
     let showsSystemAppearance: Bool
     let presentation: AttentionPresentation
     let choosePresentation: (AttentionPresentation) -> Void
+    /// The themes on offer. The current one comes from the environment.
+    let themes: [Theme]
+    let chooseTheme: (ThemeID) -> Void
 
+    @Environment(\.theme) private var theme
     @Environment(\.usesOpaqueSurfaces) private var opaqueSurfaces
     @Environment(\.usesStrongContrast) private var strongContrast
     @State private var recording = true
     @State private var retention: String
 
     init(projectName: String, retention: String, retentionOptions: [String], showsSystemAppearance: Bool,
-         presentation: AttentionPresentation, choosePresentation: @escaping (AttentionPresentation) -> Void) {
+         presentation: AttentionPresentation, choosePresentation: @escaping (AttentionPresentation) -> Void,
+         themes: [Theme] = ThemeID.allCases.map(Theme.named), chooseTheme: @escaping (ThemeID) -> Void = { _ in }) {
         self.projectName = projectName
         self.retentionOptions = retentionOptions
         self.showsSystemAppearance = showsSystemAppearance
         self.presentation = presentation
         self.choosePresentation = choosePresentation
+        self.themes = themes
+        self.chooseTheme = chooseTheme
         _retention = State(initialValue: retention)
     }
 
     var body: some View {
         WorkspacePage {
             PageHeader(kicker: "Workspace / Settings", title: "Preferences",
-                       subtitle: "Set how Commander presents pending decisions and records project activity.") {
+                       subtitle: "Set how Commander looks, presents pending decisions and records project activity.") {
                 EmptyView()
             }
         } content: {
             if showsSystemAppearance { systemAppearance }
+            heading("Appearance", "Theme", note: "This Mac", symbol: "desktopcomputer")
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(themes, id: \.id) { option in
+                    ThemeChoiceCard(option: option, isSelected: option.id == theme.id) { chooseTheme(option.id) }
+                }
+            }
+            Label("Consoles, terminals and the pretty view look the same in every theme.", systemImage: "terminal")
+                .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
             heading("Attention", "When a worker needs you", note: "Workspace preference", symbol: "desktopcomputer")
             HStack(alignment: .top, spacing: 14) {
                 ForEach(AttentionPresentation.allCases) { mode in
@@ -1363,12 +1379,11 @@ struct PreferencesPage: View {
                 SettingRow(title: "Record terminal output",
                            detail: "Make timestamped worker output searchable for \(projectName).") {
                     HStack(spacing: 9) {
-                        Text(recording ? "On" : "Off").font(.system(size: 13)).foregroundStyle(Color(hex: 0xD3D6E0))
-                        Toggle("Record terminal output", isOn: $recording).toggleStyle(.switch).labelsHidden()
-                            .tint(Palette.accentBottom)
+                        Text(recording ? "On" : "Off").themeType(theme.type.sub).foregroundStyle(.theme(\.surface.softInk))
+                        Toggle("Record terminal output", isOn: $recording).labelsHidden().themeSwitch()
                     }
                 }
-                Hairline()
+                ThemeRule()
                 SettingRow(title: "Keep recordings for",
                            detail: "Expired output and its search index entries are removed together.") {
                     MenuField(name: "Keep recordings for", options: retentionOptions, selection: $retention)
@@ -1376,46 +1391,47 @@ struct PreferencesPage: View {
                         .disabled(!recording)
                 }
             }
-            .panelSurface()
+            .themePanel()
             Label("Transcripts are private to your local user. Recording captures terminal output and excludes raw input keystrokes.",
                   systemImage: "lock")
-                .font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
         }
+        .animation(theme.motion.animation(theme.motion.standard), value: theme.id)
     }
 
     private func heading(_ kicker: String, _ title: String, note: String, symbol: String) -> some View {
         HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 11) {
-                Kicker(text: kicker)
-                Text(title).font(.system(size: 22, weight: .semibold)).tracking(-0.7).foregroundStyle(Palette.foreground)
+            VStack(alignment: .leading, spacing: Space.m - 1) {
+                ThemeHeading(text: kicker)
+                Text(title).themeType(theme.pageType.sectionTitle).foregroundStyle(.theme(\.color.foreground))
                     .accessibilityAddTraits(.isHeader)
             }
-            Spacer(minLength: 12)
-            Label(note, systemImage: symbol).font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+            Spacer(minLength: Space.m)
+            Label(note, systemImage: symbol).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
         }
         .padding(.top, 6)
     }
 
     private var systemAppearance: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: Space.l) {
             IconTile(symbol: "desktopcomputer", size: 44)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("System appearance").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.foreground)
-                Text("Follows macOS display settings").font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("System appearance").themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
+                Text("Follows macOS display settings").themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.m)
             systemState("Reduce Transparency", isOn: opaqueSurfaces)
             systemState("Increase Contrast", isOn: strongContrast)
         }
-        .padding(.horizontal, 24).padding(.vertical, 18)
-        .panelSurface()
+        .padding(.horizontal, theme.space.sectionInset).padding(.vertical, theme.space.bandTop - 4)
+        .themePanel()
     }
 
     private func systemState(_ name: String, isOn: Bool) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(name).font(.system(size: 12)).foregroundStyle(.inkSecondary)
+            Text(name).themeType(theme.pageType.meta).foregroundStyle(.theme(\.color.secondary))
             Label(isOn ? "On" : "Off", systemImage: isOn ? "checkmark" : "minus")
-                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.foreground)
+                .themeType(theme.type.state).foregroundStyle(.theme(\.color.foreground))
         }
         .padding(.horizontal, 18)
         .accessibilityElement(children: .ignore)

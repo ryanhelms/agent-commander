@@ -157,11 +157,12 @@ struct TranscriptInspector: View {
     let term: String
     let openWorker: () -> Void
     let openRun: () -> Void
+    @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             PanelTitle(symbol: "terminal", kicker: "Selected transcript", title: match.worker)
-            Hairline().padding(.top, 18).padding(.bottom, 16)
+            ThemeRule().padding(.top, 18).padding(.bottom, 16)
             HStack(spacing: 8) {
                 CapabilityChip(text: "\(match.runID) · \(match.runTitle)")
                 CapabilityChip(text: match.client)
@@ -176,31 +177,31 @@ struct TranscriptInspector: View {
             transcript
             if let gapTitle = match.gapTitle {
                 HStack(alignment: .top, spacing: 11) {
-                    Image(systemName: "clock").font(.system(size: 12)).foregroundStyle(Palette.attention).padding(.top, 2)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(gapTitle).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Palette.attention)
+                    Image(systemName: "clock").font(.system(size: theme.pageType.meta.size)).foregroundStyle(.theme(\.color.attention)).padding(.top, 2)
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        Text(gapTitle).themeType(theme.type.state).foregroundStyle(.theme(\.color.attention))
                         if let detail = match.gapDetail {
-                            Text(detail).font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                            Text(detail).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                         }
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
-                .background(Palette.attentionFill)
-                .overlay(alignment: .leading) { Rectangle().fill(Color(hex: 0xDFB476)).frame(width: 2) }
+                .background(theme.surface.attentionFill.color)
+                .overlay(alignment: .leading) { Rectangle().fill(.theme(\.color.attention)).frame(width: 2) }
                 .padding(.top, 9)
                 .accessibilityElement(children: .combine)
             }
             if let resolution = match.resolution {
-                Label(resolution, systemImage: "checkmark").font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                Label(resolution, systemImage: "checkmark").themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                     .padding(.top, 14)
             }
-            Hairline().padding(.top, 16).padding(.bottom, 15)
+            ThemeRule().padding(.top, 16).padding(.bottom, 15)
             HStack(spacing: 9) {
                 Button(action: openWorker) { Label("Open worker", systemImage: "terminal") }
-                    .buttonStyle(CapsuleButtonStyle())
+                    .buttonStyle(ThemeButtonStyle())
                 Button(action: openRun) { Label("Open run", systemImage: "arrow.right") }
-                    .buttonStyle(CapsuleButtonStyle())
+                    .buttonStyle(ThemeButtonStyle())
             }
         }
         .inspectorCard()
@@ -209,25 +210,25 @@ struct TranscriptInspector: View {
     }
 
     private var transcript: some View {
-        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: min(6, theme.radius.control), style: .continuous)
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(match.lines) { line in
                 HStack(alignment: .top, spacing: 14) {
-                    Text("\(line.id)").font(TypeRole.monoID).foregroundStyle(Color(hex: 0x6F7483))
+                    Text("\(line.id)").themeType(theme.type.fingerprint).foregroundStyle(.theme(\.surface.quietInk))
                         .frame(width: 30, alignment: .trailing).padding(.top, 1)
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
                         if let time = line.time {
                             Text([time, line.speaker].compactMap { $0 }.joined(separator: "  "))
-                                .font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
+                                .themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary))
                         }
                         HighlightedText(text: line.text, term: term, monospaced: true)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(line.isHit ? Color.white.opacity(0.06) : Color.clear)
+                .background(line.isHit ? theme.surface.hitFill.color : Color.clear)
                 .overlay(alignment: .leading) {
-                    if line.isHit { Rectangle().fill(Color(hex: 0x8E93A6)).frame(width: 2) }
+                    if line.isHit { Rectangle().fill(.theme(\.surface.hitMarker)).frame(width: 2) }
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(line.isHit ? .isSelected : [])
@@ -235,8 +236,8 @@ struct TranscriptInspector: View {
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.well, in: shape)
-        .overlay { shape.strokeBorder(.inkEdge) }
+        .background(theme.color.well.color, in: shape)
+        .overlay { shape.strokeBorder(.theme(\.surface.panelEdge)) }
         .textSelection(.enabled)
     }
 }
@@ -661,6 +662,7 @@ struct HistoryPage: View {
     @State private var run = "All runs"
     @State private var host = "All hosts"
     @State private var selection: String?
+    @Environment(\.theme) private var theme
 
     init(kicker: String, subtitle: String, query: String, project: String, matches: [TranscriptMatch],
          sharingNote: String, retention: String,
@@ -710,15 +712,15 @@ struct HistoryPage: View {
                     FilterChip(name: "Host", symbol: "server.rack", options: options("All hosts", matches.map(\.host)),
                                selection: $host)
                 }
-                Hairline().padding(.top, 6)
+                ThemeRule().padding(.top, 6)
                 HStack {
-                    Kicker(text: "Transcript matches")
+                    ThemeHeading(text: "Transcript matches")
                     Spacer(minLength: 8)
                     MetaText(text: found.count == 1 ? "1 result" : "\(found.count) results")
                 }
                 if found.isEmpty {
                     Text(term.isEmpty ? "Type to search recorded terminal output." : "No recorded output matches “\(term)”.")
-                        .font(.system(size: 13)).foregroundStyle(.inkSecondary).padding(.vertical, 10)
+                        .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary)).padding(.vertical, 10)
                 }
                 ForEach(found) { match in
                     matchRow(match, isSelected: match.id == selected?.id)
@@ -732,11 +734,11 @@ struct HistoryPage: View {
                 ContentUnavailableView("No transcript selected", systemImage: "text.magnifyingglass",
                                        description: Text("Matches open here with their worker, time and line."))
                     .frame(maxWidth: .infinity, minHeight: 320)
-                    .panelSurface()
+                    .themePanel()
             }
         } footer: {
             HStack {
-                Label(sharingNote, systemImage: "eye").font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                Label(sharingNote, systemImage: "eye").themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                 Spacer(minLength: 12)
                 MetaText(text: retention, monospaced: true)
             }
@@ -749,11 +751,11 @@ struct HistoryPage: View {
         Button { selection = match.id } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(match.worker).font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.foreground)
-                    Spacer(minLength: 8)
-                    Text(match.time).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
+                    Text(match.worker).themeType(theme.type.title).foregroundStyle(.theme(\.color.foreground))
+                    Spacer(minLength: Space.s)
+                    Text(match.time).themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary))
                 }
-                Text("\(match.runID) · \(match.runTitle)").font(TypeRole.meta).foregroundStyle(.inkSecondary)
+                Text("\(match.runID) · \(match.runTitle)").themeType(theme.pageType.meta).foregroundStyle(.theme(\.color.secondary))
                 HighlightedText(text: match.excerpt, term: term).lineLimit(2).padding(.top, 3)
             }
             .padding(.horizontal, 14).padding(.vertical, 13)

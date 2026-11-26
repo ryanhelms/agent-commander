@@ -406,6 +406,12 @@ struct DesignPreviewPage: View {
 /// gallery; the arrows (⌥⌘← and ⌥⌘→) step through the states in order.
 struct PreviewGalleryControl: View {
     @Bindable var store: PreviewStore
+    /// The persisted theme choice, so every preview view can be seen in either theme.
+    @AppStorage(ThemeChoice.key) private var storedTheme = ThemeChoice.fallback.rawValue
+
+    private var themeID: Binding<ThemeID> {
+        Binding(get: { ThemeChoice.id(for: storedTheme) }, set: { storedTheme = $0.rawValue })
+    }
 
     var body: some View {
         HStack(spacing: 2) {
@@ -431,6 +437,11 @@ struct PreviewGalleryControl: View {
                     }
                 }
                 Divider()
+                Picker("Theme", selection: themeID) {
+                    ForEach(ThemeID.allCases) { id in Text(Theme.named(id).name).tag(id) }
+                }
+                .pickerStyle(.inline)
+                Divider()
                 Toggle("Live sample activity", isOn: $store.liveActivity)
                 Button("Reset sample data") { store.go(to: store.scenario) }
             } label: {
@@ -447,6 +458,17 @@ struct PreviewGalleryControl: View {
                 .accessibilityLabel("Next preview view")
                 .accessibilityIdentifier("preview-gallery-next")
                 .id("preview-gallery-next")
+            Button {
+                let all = ThemeID.allCases
+                let index = all.firstIndex(of: themeID.wrappedValue) ?? 0
+                themeID.wrappedValue = all[(index + 1) % all.count]
+            } label: { Image(systemName: "circle.lefthalf.filled") }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                .help("Switch theme: \(Theme.named(themeID.wrappedValue).name) (⌥⌘T)")
+                .accessibilityLabel("Switch theme")
+                .accessibilityValue(Theme.named(themeID.wrappedValue).name)
+                .accessibilityIdentifier("preview-gallery-theme")
+                .id("preview-gallery-theme")
         }
     }
 }
@@ -539,7 +561,8 @@ struct PreviewCanvas: View {
                             retentionOptions: ["7 days", "30 days", "90 days", "1 year"],
                             showsSystemAppearance: store.scenario == .reducedTransparency,
                             presentation: store.presentation,
-                            choosePresentation: { mode in store.presentation = mode })
+                            choosePresentation: { mode in store.presentation = mode },
+                            chooseTheme: { id in ThemeChoice.select(id) })
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
              .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker:
             // Drawn by CockpitScreen in DesignPreviewPage.

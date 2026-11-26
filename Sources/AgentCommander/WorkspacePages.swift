@@ -169,6 +169,7 @@ struct AllAgentsPage: View {
     @State private var run = "All runs"
     @State private var client = "All clients"
     @State private var showsList = false
+    @Environment(\.theme) private var theme
 
     init(agents: [AgentConsole], project: String = "All projects",
          open: @escaping (AgentConsole) -> Void, startRun: @escaping () -> Void, saveView: @escaping () -> Void) {
@@ -214,14 +215,7 @@ struct AllAgentsPage: View {
             Label(moreCount == 0 ? "Run, client & more" : "Run, client & more · \(moreCount)",
                   systemImage: "slider.horizontal.3")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .font(.system(size: 12.5))
-        .foregroundStyle(Color(hex: 0xE3E5EE))
-        .padding(.horizontal, 11)
-        .frame(height: 31)
-        .background(Color(hex: 0x1A1B22), in: Capsule())
-        .overlay { Capsule().strokeBorder(Palette.controlEdge).allowsHitTesting(false) }
+        .filterChipFrame()
         .accessibilityLabel("Run, client and more: \(moreCount == 0 ? "no filter" : "\(moreCount) active")")
         .accessibilityIdentifier("all-agents-more-filters")
     }
@@ -241,13 +235,13 @@ struct AllAgentsPage: View {
             PageHeader(kicker: "Workspace", title: "All agents",
                        subtitle: "Live consoles across projects and enrolled hosts.") {
                 Button(action: startRun) { Label("Start run", systemImage: "plus") }
-                    .buttonStyle(CapsuleButtonStyle(prominent: true))
+                    .buttonStyle(ThemeButtonStyle(prominent: true))
             }
         } content: {
             VStack(alignment: .leading, spacing: 14) {
-                Hairline()
+                ThemeRule()
                 filters
-                Hairline()
+                ThemeRule()
             }
             SectionHeading(title: "Live consoles") {
                 MetaText(text: "\(visible.count) visible  ·  Sorted by recent activity")
@@ -270,7 +264,7 @@ struct AllAgentsPage: View {
                 Spacer(minLength: 12)
                 Text("Open a tile to focus its console")
             }
-            .font(.system(size: 12)).foregroundStyle(.inkSecondary)
+            .themeType(theme.pageType.meta).foregroundStyle(.theme(\.color.secondary))
         }
     }
 
@@ -288,25 +282,25 @@ struct AllAgentsPage: View {
                     project = "All projects"; host = "All hosts"; state = "All states"; role = "All roles"
                     run = "All runs"; client = "All clients"
                 }
-                .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Palette.focus)
+                .buttonStyle(.plain).themeType(theme.pageType.meta).foregroundStyle(.theme(\.color.focus))
                 .accessibilityLabel("Clear filters")
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.m)
             Button(action: saveView) { Label("Save view", systemImage: "line.3.horizontal.decrease") }
-                .buttonStyle(CapsuleButtonStyle(height: 33))
+                .buttonStyle(ThemeButtonStyle(compact: true))
             HStack(spacing: 2) {
                 layoutButton("square.grid.2x2", "Grid layout", active: !showsList) { showsList = false }
                 layoutButton("list.bullet", "List layout", active: showsList) { showsList = true }
             }
             .padding(.horizontal, 5)
-            .frame(height: 33)
-            .overlay { Capsule().strokeBorder(Palette.controlEdge) }
+            .frame(height: theme.space.controlHeight)
+            .overlay { theme.controlShape.strokeBorder(.theme(\.surface.controlEdge)) }
         }
     }
 
     private func layoutButton(_ symbol: String, _ label: String, active: Bool, action: @escaping () -> Void) -> some View {
         SymbolButton(symbol: symbol, label: label, action: action)
-            .foregroundStyle(active ? Palette.focus : Palette.secondary)
+            .foregroundStyle(.theme(active ? \.color.focus : \.color.secondary))
             .accessibilityAddTraits(active ? .isSelected : [])
     }
 
@@ -317,21 +311,21 @@ struct AllAgentsPage: View {
             case 0:
                 Button { open(agent) } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(agent.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.foreground)
-                        Text("\(agent.role) · \(agent.client.displayName)").font(TypeRole.meta).foregroundStyle(.inkSecondary)
+                        Text(agent.title).themeType(theme.type.title).foregroundStyle(.theme(\.color.foreground))
+                        Text("\(agent.role) · \(agent.client.displayName)").themeType(theme.pageType.meta).foregroundStyle(.theme(\.color.secondary))
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Open \(agent.title)")
             case 1:
-                Text("\(agent.project) · \(agent.runID)").font(.system(size: 12.5)).foregroundStyle(Color(hex: 0xD3D6E0))
+                Text("\(agent.project) · \(agent.runID)").themeType(theme.type.sub).foregroundStyle(.theme(\.surface.softInk))
             case 2:
-                Text(agent.host).font(.system(size: 12.5)).foregroundStyle(Color(hex: 0xD3D6E0))
+                Text(agent.host).themeType(theme.type.sub).foregroundStyle(.theme(\.surface.softInk))
             case 3:
                 ValueTag(text: agent.branch)
             default:
-                StatusLabel(text: agent.state, tone: agent.tone, size: 12)
+                ThemeStatus(text: agent.state, tone: agent.tone)
             }
         }
     }

@@ -20,33 +20,35 @@ struct DataTable<Row: Identifiable, Cell: View>: View {
     let weights: [CGFloat]
     let rows: [Row]
     var carded = true
-    var rowHeight: CGFloat = 54
+    /// The most a row needs. The theme's row height caps it.
+    var rowHeight: CGFloat = .infinity
     @ViewBuilder let cell: (Row, Int) -> Cell
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        if carded { table.panelSurface() } else { table }
+        if carded { table.themePanel() } else { table }
     }
 
     private var table: some View {
         VStack(spacing: 0) {
             WeightedRow(weights: weights) {
                 ForEach(Array(headers.enumerated()), id: \.offset) { _, header in
-                    Text(header).font(.system(size: 12, weight: .semibold)).foregroundStyle(.inkSecondary)
+                    Text(header).themeType(theme.type.label).foregroundStyle(.theme(\.color.secondary))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(minHeight: 44)
-            .background(Color.white.opacity(0.03))
+            .padding(.horizontal, Space.l)
+            .frame(minHeight: theme.space.tabHeight)
+            .background(theme.surface.headerFill.color)
             ForEach(rows) { row in
-                Hairline()
+                ThemeRule()
                 WeightedRow(weights: weights) {
                     ForEach(0..<headers.count, id: \.self) { column in
                         cell(row, column).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(.horizontal, 16)
-                .frame(minHeight: rowHeight)
+                .padding(.horizontal, Space.l)
+                .frame(minHeight: min(rowHeight, theme.space.rowHeight))
                 .accessibilityElement(children: .combine)
             }
         }

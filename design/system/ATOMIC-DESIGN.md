@@ -27,6 +27,21 @@ The live cockpit toolbar composes the native adapter-update button and a popover
 
 A named Swift type earns its place through a shared behavior, a meaningful platform boundary, or a layout with its own invariant. A single native label, a spacer, a decorative stroke, a terminal cell and an arbitrary horizontal stack rarely need Commander wrappers. A genuinely unique integration form can remain composed in its feature until a second use or a concrete maintenance problem justifies extraction.
 
+### The theme layer
+
+Foundations come in two themes, black glass and console, with the same roles (`themes` in [tokens.json](tokens.json), `Theme` in `ThemeTokens.swift`). A component outside the console, terminal and pretty view reads its values from `@Environment(\.theme)` and never asks which theme is active.
+
+| Level | Theme-aware components | File |
+| --- | --- | --- |
+| Foundations | `Theme`, `ThemeInk`, `themeType` | `ThemeTokens.swift`, `ThemeEnvironment.swift` |
+| Atoms | `ThemeRule`, `themePanel`, `themeField`, `ThemeHeading`, `ThemeStatus`, `ThemeButtonStyle`, `themeSwitch`, `ThemeCanvas` | `ThemeAtoms.swift` |
+| Molecules | `ThemeThumbnail`, `ThemeChoiceCard`, `ChoiceMark`, and the workspace molecules (`PageHeader`, `IconTile`, `FilterChip`, `SelectionCard`, `Callout`, `SettingRow`, `FactColumn`, `MenuField` and others) | `ThemeMolecules.swift`, `WorkspaceMolecules.swift` |
+| Organisms | `DataTable`, `PresentationChoiceCard`, `TranscriptInspector` | `WorkspaceOrganisms.swift`, `SetupPages.swift`, `DelegationPages.swift` |
+| Templates | `WorkspacePage`, `TaskSheet`, and the window material in `CockpitShell` | `Templates.swift` |
+| Pages | Preferences, Hosts, All agents, Search history | `SetupPages.swift`, `WorkspacePages.swift`, `DelegationPages.swift` |
+
+The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
+
 ## Native composition and ownership
 
 The focused native terminal window reuses the existing console title bar and surface. `NativeTerminalWell` is the AppKit leaf for a read-only SwiftTerm grid, and `NativeTerminalHeader` combines worker identity with detach, reconnect and close. The `NativeTerminalViewer` organism receives the attachment state from `NativeTerminalViewerModel`. The existing console display menu opens the matching worker’s window by value. [Terminal well](../../Sources/AgentCommander/NativeTerminalWell.swift) · [Window components](../../Sources/AgentCommander/NativeTerminalComponents.swift)

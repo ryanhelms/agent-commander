@@ -36,6 +36,7 @@ struct AgentCommander: App {
             }
             .environment(consoleModes)
             .environment(nativeTerminals)
+            .appTheme()
             .frame(minWidth: 800, minHeight: 540)
             .preferredColorScheme(.dark)
             .singleInstanceCockpitScene()
