@@ -16,10 +16,10 @@ Let a relay and the devices that use it meet on a Headscale or Tailscale network
 
 ## Relay side: a Tailscale sidecar in Docker mode
 
-`remote.py deploy docker` takes a tailnet option:
+`commander-relay deploy docker` takes a tailnet option:
 
 ```sh
-python3 -B multiplayer/deploy/remote/remote.py deploy docker ops@server \
+dist/commander-relay deploy docker ops@server \
   --tailnet-login-server https://adag.bytedesk.ai \
   --tailnet-auth-key-file ~/relay.key \
   --tailnet-hostname agent-relay \
@@ -71,12 +71,12 @@ This is frontend work under AGENTS.md: Fable with the `frontend-design` skill, D
 
 ## Verification
 
-`multiplayer/deploy/remote/testhosts/rehearse.py --mode tailnet` starts a disposable Headscale container on a private Docker network and never touches the production server. It:
+`go run ./deploy/remote/testhosts --mode tailnet` (from `multiplayer`) starts a disposable Headscale container on a private Docker network and never touches the production server. It:
 
 1. creates a Headscale user and two tagged pre-auth keys;
 2. deploys the relay to the Docker test host with the userspace sidecar and no published port;
 3. checks that neither 443 nor the loopback port answers on the test host's own address;
-4. starts a client node on the same Headscale, runs `remote.py connect` against `https://agent-relay.tail.internal`, and runs the Linux device agent there: `tailnet-status`, `tailnet-relays` and `server-probe` on the listed URL, with the pin matching the deploy;
+4. starts a client node on the same Headscale, runs `commander-relay deploy connect` against `https://agent-relay.tail.internal`, and runs the Linux device agent there: `tailnet-status`, `tailnet-relays` and `server-probe` on the listed URL, with the pin matching the deploy;
 5. redeploys without an auth key and confirms the node name, address and pin are unchanged.
 
 The tray verbs have unit tests against a fake `tailscale` CLI.

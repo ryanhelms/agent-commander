@@ -13,6 +13,7 @@ require (
 
 require (
 	agent-acp.local/transport v0.1.3 // indirect
+	agentcommander.network/hostkit v0.0.0
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
@@ -24,3 +25,5 @@ require (
 replace agent-acp.local/sdks/go => ../agent-acp/sdks/go
 
 replace agent-acp.local/transport => ../agent-acp-transport
+
+replace agentcommander.network/hostkit => ./multiplayer/hostkit

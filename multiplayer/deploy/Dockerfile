@@ -1,6 +1,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY hostkit ./hostkit
 RUN go mod download
 COPY cmd/commander-relay ./cmd/commander-relay
 COPY internal ./internal

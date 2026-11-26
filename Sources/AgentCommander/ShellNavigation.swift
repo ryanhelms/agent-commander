@@ -41,6 +41,8 @@ struct CommanderPlace: Identifiable, Equatable, Sendable {
 
     /// What sits at the row's trailing edge, if anything.
     var badge: String? { figure ?? (count > 0 ? "\(count)" : nil) }
+    /// A figure with a letter in it is a name ("acx-headless"), not a tally ("2/3").
+    var figureIsName: Bool { figure?.contains(where: \.isLetter) ?? false }
 
     /// What VoiceOver says for the row.
     var spoken: String {

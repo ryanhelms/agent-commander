@@ -34,7 +34,7 @@ task_management:
 # Task worktrees: `agentflow start <issue> --worktree` creates <root>/<repo>/<branch>.
 worktree:
   go_work: # resolves go.mod's agent-acp.local modules from the sibling repos
-    use: [".", "multiplayer"]
+    use: [".", "multiplayer", "multiplayer/hostkit"]
     siblings:
       agent-acp.local/sdks/go: {repo: agent-acp, path: sdks/go}
       agent-acp.local/transport: {repo: agent-acp-transport, path: .}

@@ -575,23 +575,152 @@ struct ServiceStatusError: LocalizedError, Equatable {
     var isWithdrawn: Bool { status == 404 || status == 409 }
 }
 
-// All GUI operations use the local HTTP API. The serialized client keeps short
-// requests off the UI thread and sends project paths and prompt text as JSON data.
-actor ServiceClient {
-    private let socket: String
-    private let command: URL?
+/// The service the app talks to now: this Mac's own, or a headless host's through its
+/// SSH-forwarded socket. One value is shared by every client path (requests, the two event
+/// streams and the agentctl children), and each reads it when it starts a request, so a change
+/// reaches all of them. `CommanderHostsModel` is the only writer.
+final class ServiceEndpoint: @unchecked Sendable {
+    /// A headless host's service, reached through the socket `agentctl host connect` forwards.
+    struct Remote: Equatable, Sendable {
+        let destination: String
+        let socket: String
+    }
+
+    /// The endpoint the running app uses.
+    static let live = ServiceEndpoint()
+
+    /// This Mac's service socket.
+    let localSocket: String
+    private let lock = NSLock()
+    private var selected: Remote?
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         let home = environment["AGENT_COMMANDER_HOME"].map { URL(filePath: $0, directoryHint: .isDirectory) } ??
             FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Agent Commander")
-        socket = environment["AGENT_COMMANDER_SOCKET"] ?? environment["AC_SOCKET"] ?? home.appending(path: "service.sock").path
-        if let path = environment["AGENT_COMMANDER_CLI"] ?? environment["AC_CLI"] {
-            command = URL(filePath: path)
-        } else {
-            command = Bundle.main.url(forAuxiliaryExecutable: "agentctl") ??
-                Bundle.main.executableURL?.deletingLastPathComponent().appending(path: "agentctl")
+        localSocket = environment["AGENT_COMMANDER_SOCKET"] ?? environment["AC_SOCKET"] ?? home.appending(path: "service.sock").path
+    }
+
+    /// The selected host, or nil while the app uses this Mac's service.
+    var remote: Remote? {
+        lock.lock()
+        defer { lock.unlock() }
+        return selected
+    }
+
+    /// The socket every request goes to.
+    var socket: String { remote?.socket ?? localSocket }
+
+    /// Points every client path at a host's forwarded socket, or back at this Mac with nil.
+    /// Returns whether the socket changed.
+    @discardableResult func select(_ remote: Remote?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let changed = selected?.socket != remote?.socket
+        selected = remote
+        return changed
+    }
+
+    /// The environment for an agentctl child that must reach the selected service: a remote
+    /// host's forwarded socket replaces the socket setting. This Mac's settings are left as given.
+    func agentctlEnvironment(from base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        guard let remote else { return base }
+        var values = base
+        values.removeValue(forKey: "AC_SOCKET")
+        values["AGENT_COMMANDER_SOCKET"] = remote.socket
+        return values
+    }
+
+    /// The agentctl the app runs: the named override, else the one bundled beside the executable.
+    static func agentctl(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        if let path = environment["AGENT_COMMANDER_CLI"] ?? environment["AC_CLI"] { return URL(filePath: path) }
+        return Bundle.main.url(forAuxiliaryExecutable: "agentctl") ??
+            Bundle.main.executableURL?.deletingLastPathComponent().appending(path: "agentctl")
+    }
+}
+
+extension FileHandle {
+    /// What is written to this handle, in the chunks it arrives in, read on the handle's own
+    /// dispatch source. The stream ends when the writer closes its end.
+    ///
+    /// `FileHandle.bytes` reads every handle in the process through one shared actor, one blocking
+    /// read at a time. A handle that stays quiet, like the output of `agentctl host connect`
+    /// between events, holds that actor, and nothing reaches any other `bytes` reader until the
+    /// quiet handle has data. Every long-lived child (both event streams and the host connection)
+    /// is read this way instead, so each is independent of the others.
+    var ownChunks: AsyncStream<Data> {
+        AsyncStream { output in
+            readabilityHandler = { handle in
+                let data = handle.availableData
+                // No data means the writer closed its end.
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    output.finish()
+                } else {
+                    output.yield(data)
+                }
+            }
+            output.onTermination = { [weak self] _ in self?.readabilityHandler = nil }
         }
     }
+
+    /// The lines written to this handle, read as `ownChunks` reads.
+    var ownLines: AsyncStream<String> {
+        let chunks = ownChunks
+        return AsyncStream { output in
+            let reader = Task.detached {
+                var buffer = LineBuffer()
+                for await chunk in chunks {
+                    for line in buffer.take(chunk) { output.yield(line) }
+                }
+                if let rest = buffer.rest() { output.yield(rest) }
+                output.finish()
+            }
+            output.onTermination = { _ in reader.cancel() }
+        }
+    }
+}
+
+/// Splits what a child writes into lines.
+struct LineBuffer {
+    private var pending = Data()
+
+    /// The lines `chunk` completes.
+    mutating func take(_ chunk: Data) -> [String] {
+        pending.append(chunk)
+        var lines: [String] = []
+        while let end = pending.firstIndex(of: 10) {
+            lines.append(String(decoding: pending[pending.startIndex..<end], as: UTF8.self))
+            pending.removeSubrange(pending.startIndex...end)
+        }
+        return lines
+    }
+
+    /// A last line that was not ended, once the writer closed.
+    mutating func rest() -> String? {
+        defer { pending.removeAll() }
+        return pending.isEmpty ? nil : String(decoding: pending, as: UTF8.self)
+    }
+}
+
+// All GUI operations use the service's HTTP API over the selected endpoint's socket. The
+// serialized client keeps short requests off the UI thread and sends project paths and prompt
+// text as JSON data.
+actor ServiceClient {
+    private let endpoint: ServiceEndpoint
+    private let command: URL?
+
+    /// The selected service's socket, read for each request.
+    private nonisolated var socket: String { endpoint.socket }
+
+    /// `endpoint` is the shared selection. Without one the client keeps to the local service the
+    /// environment names.
+    init(environment: [String: String] = ProcessInfo.processInfo.environment, endpoint: ServiceEndpoint? = nil) {
+        self.endpoint = endpoint ?? ServiceEndpoint(environment: environment)
+        command = ServiceEndpoint.agentctl(environment: environment)
+    }
+
+    /// The socket a request started now would use.
+    nonisolated var currentSocket: String { socket }
 
     func runs() throws -> [Run] {
         try Run.list(json: request("/v1/runs"))
@@ -826,6 +955,10 @@ actor ServiceClient {
     }
 
     func startService() throws {
+        // A headless host's service is started on that host. Only this Mac's is started from here.
+        if let remote = endpoint.remote {
+            throw ServiceError.offline("The service on \(remote.destination) is unreachable.")
+        }
         guard let command, FileManager.default.isExecutableFile(atPath: command.path) else {
             throw ServiceError.offline("Start the local service with agentctl start, or open the built Agent Commander app.")
         }
@@ -875,7 +1008,7 @@ actor ServiceClient {
         let bytes = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw ServiceError.offline("The local service is unreachable at \(socket).")
+            throw ServiceError.offline("The service is unreachable at \(socket).")
         }
         guard let separator = bytes.lastIndex(of: 10), let status = Int(String(decoding: bytes.suffix(from: separator + 1), as: UTF8.self)) else {
             throw ServiceError.rejected("The service returned an unreadable response.")

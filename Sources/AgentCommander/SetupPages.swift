@@ -371,6 +371,45 @@ struct FirstRunPage: View {
 
 // MARK: - Hosts and capabilities
 
+/// One host in a host list (molecule): its mark, its name over what kind of host it is, then its
+/// state. The chosen row is a selection card. `badge` is a short note beside the name ("In use").
+struct HostListRow: View {
+    let symbol: String
+    let name: String
+    let kind: String
+    let status: String
+    let tone: Tone
+    let statusSymbol: String
+    var isSelected = false
+    /// The mark takes the working ink on the chosen row.
+    var isLit = false
+    var badge: String? = nil
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: Space.m + 1) {
+            IconTile(symbol: symbol, tone: isSelected && isLit ? .working : .neutral, size: 31)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.s) {
+                    Text(name).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
+                        .lineLimit(1).truncationMode(.middle)
+                    if let badge { MultiplayerBadge(text: badge, symbol: "checkmark", tone: .working) }
+                }
+                Text(kind).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: Space.s)
+            ThemeStatus(text: status, tone: tone, symbol: statusSymbol)
+        }
+        .padding(.horizontal, Space.l - 1)
+        .frame(maxWidth: .infinity, minHeight: theme.space.rowHeight + 24, alignment: .leading)
+        .background {
+            if isSelected { Color.clear.selectionCard(true) }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 struct EnrolledHost: Identifiable, Equatable {
     let id: String
     let kind: String
@@ -466,23 +505,11 @@ struct HostsPage: View {
                     selection = item.id
                     lastCheck = "just now"
                 } label: {
-                    HStack(spacing: Space.m + 1) {
-                        IconTile(symbol: item.symbol, tone: isSelected && item.isConnected ? .working : .neutral, size: 31)
-                        VStack(alignment: .leading, spacing: Space.xs) {
-                            Text(item.name).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
-                            Text(item.kind).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
-                        }
-                        Spacer(minLength: Space.s)
-                        ThemeStatus(text: item.isConnected ? "Connected" : "Disconnected",
-                                    tone: item.isConnected ? .working : .attention,
-                                    symbol: item.isConnected ? "checkmark.circle.fill" : "bolt.slash")
-                    }
-                    .padding(.horizontal, Space.l - 1)
-                    .frame(maxWidth: .infinity, minHeight: theme.space.rowHeight + 24, alignment: .leading)
-                    .background {
-                        if isSelected { Color.clear.selectionCard(true) }
-                    }
-                    .contentShape(Rectangle())
+                    HostListRow(symbol: item.symbol, name: item.name, kind: item.kind,
+                                status: item.isConnected ? "Connected" : "Disconnected",
+                                tone: item.isConnected ? .working : .attention,
+                                statusSymbol: item.isConnected ? "checkmark.circle.fill" : "bolt.slash",
+                                isSelected: isSelected, isLit: item.isConnected)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(item.name), \(item.kind), \(item.isConnected ? "connected" : "disconnected")")

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agentcommander.network/hostkit/systemd"
 )
 
 const mockSystemctl = `#!/bin/sh
@@ -42,7 +44,7 @@ func TestSystemdUserInstallUninstall(t *testing.T) {
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 	for _, line := range []string{
-		"ExecStart=" + systemdQuote(exe) + ` host --dir "` + dir + `"`,
+		"ExecStart=" + systemdQuote(exe) + ` "host" "--dir" "` + dir + `"`,
 		`Environment="COMMANDER_PG_BIN=` + filepath.Join(dir, "my postgres", "bin") + `"`,
 		"Restart=always", "KillMode=mixed", "WantedBy=default.target",
 	} {
@@ -82,10 +84,9 @@ func TestSystemdUserInstallUninstall(t *testing.T) {
 }
 
 func TestSystemUnitSandboxesServiceAccount(t *testing.T) {
-	data, err := renderUnit(unitSpec{
-		Exec: systemdQuote("/usr/local/bin/commander-relay") + " host --dir " + systemdQuote("/var/lib/agent-commander/relay"),
-		User: "agent-commander", Group: "agent-commander", Dir: "/var/lib/agent-commander/relay", System: true,
-	})
+	u := relayUnit("/usr/local/bin/commander-relay", "/var/lib/agent-commander/relay", "", true)
+	u.User, u.Group = "agent-commander", "agent-commander"
+	data, err := systemd.Render(u)
 	if err != nil {
 		t.Fatal(err)
 	}

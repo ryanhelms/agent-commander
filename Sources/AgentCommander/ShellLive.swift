@@ -139,6 +139,8 @@ struct ShellContext {
     /// worker, and suggestions waiting. Empty leaves the wall as it is without a network.
     var wall = WallLiveWork()
     var wallActions = WallLiveWorkActions()
+    /// The services the app can talk to and the choice of one. Nil leaves the Hosts place out.
+    var hosts: CommanderHostsContext? = nil
 }
 
 enum LiveShell {
@@ -147,6 +149,8 @@ enum LiveShell {
     static let needsYou = "needs-you"
     static let newRun = "new-run"
     static let settings = "settings"
+    /// The services the app can talk to: this Mac and the headless hosts.
+    static let hosts = "hosts"
     static let people = "network.people"
     static let servers = "network.servers"
     static let approvals = "network.approvals"
@@ -171,7 +175,7 @@ enum LiveShell {
     // MARK: Navigation
 
     /// The whole navigation of the live window.
-    ///   Agents    Needs you, Runs, New run, then one place per project
+    ///   Agents    Needs you, Runs, New run, Hosts, then one place per project
     ///   Network   Servers, Directory, Approvals, Hand-offs, Threads, Audit, Fan-out, Shared
     ///   People    People
     ///   Teams     one place per workspace, then the team tools: Groups, Hosts, Knowledge, Directory
@@ -179,8 +183,11 @@ enum LiveShell {
     ///   Settings  Settings, at the foot of the rail
     /// `place` is where the window is; on the wall the selected row is the open run's project, and
     /// the new-run form selects New run.
+    /// `serviceHost` is the headless host in use, shown as the Hosts row's figure; `showsHosts`
+    /// lists the Hosts place.
     static func navigation(runs: [RunSummary], openRunPath: String?, composing: Bool, place: String,
-                           needsYou: Int, network: ShellNetwork, isOnline: Bool = true) -> CommanderNavigation {
+                           needsYou: Int, network: ShellNetwork, isOnline: Bool = true,
+                           showsHosts: Bool = false, serviceHost: String? = nil) -> CommanderNavigation {
         func row(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                  hot: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -212,13 +219,15 @@ enum LiveShell {
             CommanderPlace(id: wall, title: "Runs", mark: .symbol("rectangle.split.2x1"), count: runs.count, countNoun: "runs"),
             // A run can't start while the local service is offline, so the row is off like ⌘N.
             CommanderPlace(id: newRun, title: "New run", mark: .symbol("plus"), isDisabled: !isOnline)
-        ] + projects + networkPlaces + [
+        ] + (showsHosts ? [CommanderPlace(id: hosts, title: "Hosts", mark: .symbol("desktopcomputer"),
+                                          figure: serviceHost)] : []) + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
         ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin) + [
             CommanderPlace(id: settings, title: "Settings", mark: .symbol("gearshape"))
         ]
 
-        var agentSections = [CommanderPlaceGroup(id: "workspace", title: "Workspace", placeIDs: [Self.needsYou, wall, newRun])]
+        var agentSections = [CommanderPlaceGroup(id: "workspace", title: "Workspace",
+                                                 placeIDs: [Self.needsYou, wall, newRun] + (showsHosts ? [hosts] : []))]
         if !projects.isEmpty {
             agentSections.append(CommanderPlaceGroup(id: "projects", title: "Projects", placeIDs: projects.map(\.id)))
         }

@@ -112,6 +112,31 @@ export AGENT_COMMANDER_SSH_AGENTCTL=/absolute/remote/bin/agentctl
 
 Start a run in the configured local checkout and ask the coordinator to delegate one worker locally and one to `dev-linux`. The optional `host` field is available on `commander_delegate` and the worker creation API. The wall shows the SSH alias and remote checkout for the remote worker. Its conversation runs on the SSH host while its controlling tmux pane runs on this Mac. A disconnected SSH-only runtime may require a new assignment. [SSH verification](design/verification/ssh-worker.md)
 
+## Run Commander headless on a Linux server
+
+The headless service is the Commander service with no app, running on a Linux server under a systemd user unit. Deploy any release from this Mac over SSH:
+
+```sh
+agentctl host releases
+agentctl host deploy ops@server --version v0.2.0-pilot.4 --sudo-linger
+```
+
+`deploy` downloads the release for the server's architecture, checks it against `SHA256SUMS` and, when GitHub published one, its build attestation. It streams the archive over SSH and refuses a release whose API version differs from this Commander unless you pass `--force`. Then the server installs it and waits for it to report healthy. A new version that does not start rolls back to the previous one. Use `--version` to pick a release, or leave it out for the newest. `--sudo-linger` keeps the service running after you log out. `--install-prerequisites` installs git, tmux and curl with the server's package manager.
+
+```sh
+agentctl host status ops@server
+agentctl host rollback ops@server
+agentctl host remove ops@server
+```
+
+To install on the server itself, run the one-liner there. It needs `gh` signed in with access to this repository:
+
+```sh
+gh release download v0.2.0-pilot.4 -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- v0.2.0-pilot.4
+```
+
+The service also needs Node 24 or newer, Claude Code, the Claude ACP adapter and a Claude sign-in on the server. `agentctl host doctor` on the server lists what is missing. [Headless Commander](design/HEADLESS-COMMANDER.md)
+
 ## Try a planning run
 
 Choose **New run**, select a project directory and enter a planning task. For a quick first run, enter the following task in a small project.

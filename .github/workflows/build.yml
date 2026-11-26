@@ -43,6 +43,11 @@ jobs:
     needs: changelog
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      # Optional build attestations for the headless archives.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -71,11 +76,37 @@ jobs:
           docker build --platform linux/amd64 --file multiplayer/deploy/Dockerfile \
             --tag commander-relay:pilot-linux-amd64 multiplayer
           docker image save commander-relay:pilot-linux-amd64 | gzip -n > release-assets/commander-relay-pilot-linux-amd64.tar.gz
+      - name: Build headless Commander archives
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('ci-{0}', github.sha) }}
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 python3 packaging/go-with-sdk.py build -trimpath -buildvcs=false \
+              -ldflags "-X agentcommander/internal/buildinfo.Version=$VERSION" \
+              -o "$RUNNER_TEMP/headless/agentctl-linux-$arch" ./cmd/agentctl
+          done
+          GOWORK=off go run ./packaging/headless --version "$VERSION" --output release-assets \
+            --binary amd64="$RUNNER_TEMP/headless/agentctl-linux-amd64" \
+            --binary arm64="$RUNNER_TEMP/headless/agentctl-linux-arm64"
+      # Attestations need a public repository or GitHub Enterprise Cloud.
+      # They are optional: a deploy verifies one when it exists.
+      - name: Attest headless archives
+        if: github.ref_type == 'tag'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-assets/agent-commander-headless-linux-amd64.tar.gz
+            release-assets/agent-commander-headless-linux-arm64.tar.gz
+            release-assets/install.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         with:
           name: linux-release
-          path: release-assets/*.tar.gz
+          path: |
+            release-assets/*.tar.gz
+            release-assets/install.sh
           if-no-files-found: error
 
   macos:
@@ -139,12 +170,14 @@ jobs:
           visibility=$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)
           [[ "$visibility" == PRIVATE ]] || { echo 'The pilot release requires a private repository.'; exit 1; }
           python3 packaging/changelog.py notes "$TAG" > "$RUNNER_TEMP/release-notes.md"
-          printf '\n### Installation\n\nThe universal ZIP is an ad hoc macOS 26+ pilot build. Verify it against SHA256SUMS before use.\n' >> "$RUNNER_TEMP/release-notes.md"
+          # shellcheck disable=SC2016 # the backticks are Markdown
+          printf '\n### Installation\n\nThe universal ZIP is an ad hoc macOS 26+ pilot build. Verify it against SHA256SUMS before use.\n\nInstall the headless service on a Linux server with `gh release download %s -R %s -p install.sh -O - | sh -s -- %s`, or from a Mac with `agentctl host deploy DESTINATION --version %s`.\n' "$TAG" "$GITHUB_REPOSITORY" "$TAG" "$TAG" >> "$RUNNER_TEMP/release-notes.md"
           (
             cd release-assets
             sha256sum Agent-Commander-Multiplayer-Pilot-macOS-universal.zip \
               agent-commander-relay-linux-{amd64,arm64}.tar.gz \
-              commander-relay-pilot-linux-amd64.tar.gz > SHA256SUMS
+              commander-relay-pilot-linux-amd64.tar.gz \
+              agent-commander-headless-linux-{amd64,arm64}.tar.gz install.sh > SHA256SUMS
           )
           if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
             [[ "$draft" == true ]] || { echo 'This tag already has a published release.'; exit 0; }

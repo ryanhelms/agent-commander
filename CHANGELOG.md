@@ -9,10 +9,17 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
 - Provide a scoped live ACP source subscription with cursor expiration and recovery.
 - Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
+- Run the Commander service headless on a Linux server. `agentctl host install` installs it as a systemd user unit, keeps earlier versions and switches back when a new version does not report healthy. `agentctl host doctor` lists what the server still needs.
+- Publish the headless service for Linux amd64 and arm64 with each release, with `install.sh` for a one-line install on the server: `gh release download TAG -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- TAG`.
+- Deploy, upgrade, check, roll back and remove the headless service from a Mac with `agentctl host releases|deploy|status|rollback|remove DESTINATION`. A deploy verifies the checksum and any build attestation, refuses an incompatible API version and rolls back a version that does not become healthy.
+- `agentctl host connect DESTINATION` forwards a headless host's service socket to this Mac over SSH and reconnects after a drop. `agentctl host list` shows the hosts this Mac deployed to.
+- A Hosts place in Agents › Workspace lists This Mac and each headless host. Choosing a host points the whole app at its service through `agentctl host connect`; Use This Mac returns to the local service.
 - Add Restart Agent Commander to the app menu, and `make reload` and `make dev` to rebuild and reopen the app, and optionally restart the local service and relay, after a source change.
 
 ### Changed
 
+- `commander-relay deploy` replaces `remote.py` for deploying a relay over SSH, with the same Docker, systemd and tailnet modes. `commander-relay host provision` replaces `systemd-install.sh`, and `go run ./deploy/remote/testhosts` replaces `rehearse.py`. The deploying Mac no longer needs Python or OpenSSL.
+- `/v1/health` also reports the service's version and API version.
 - Publish first structured ACP text promptly, wake workers when owner controls change, and build a single replay index for stopped conversations.
 - Negotiate a windowed persistent SSH connection with compatible endpoints and preserve the legacy connection for older endpoints.
 
