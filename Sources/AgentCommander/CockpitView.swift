@@ -87,6 +87,12 @@ final class CockpitPresentationState {
     /// Worker whose source inspector is open. The console showing that worker presents it; the
     /// cockpit page starts and abandons the reading as this changes.
     var sourceInspectorWorkerID: String?
+    /// Worker whose provider-session panel is open. The console showing that worker presents it;
+    /// the cockpit page starts and abandons the reading as this changes.
+    var providerSessionWorkerID: String?
+    /// Worker whose input-request panel is open. The console showing that worker presents it; the
+    /// cockpit page starts and abandons the reading as this changes.
+    var elicitationWorkerID: String?
 
     /// Opens a worker's source inspector on its console, once the menu or list that asked for it
     /// has closed and, after a reveal, once that console is in place.
@@ -94,6 +100,24 @@ final class CockpitPresentationState {
         Task {
             try? await Task.sleep(for: delay)
             sourceInspectorWorkerID = workerID
+        }
+    }
+
+    /// Opens a worker's provider-session panel on its console, once the menu that asked for it
+    /// has closed.
+    func presentProviderSession(of workerID: String, after delay: Duration = .milliseconds(120)) {
+        Task {
+            try? await Task.sleep(for: delay)
+            providerSessionWorkerID = workerID
+        }
+    }
+
+    /// Opens a worker's input-request panel on its console, once the menu that asked for it has
+    /// closed.
+    func presentElicitations(of workerID: String, after delay: Duration = .milliseconds(120)) {
+        Task {
+            try? await Task.sleep(for: delay)
+            elicitationWorkerID = workerID
         }
     }
 
@@ -443,6 +467,10 @@ struct CockpitScreen: View {
             // One inspector at a time. Opening it on a worker starts that worker's reading, and
             // closing it or moving to another worker abandons the one in flight.
             .onChange(of: ui.sourceInspectorWorkerID) { _, workerID in actions.source?.inspect(workerID) }
+            // The same for the provider-session panel: one worker at a time, read while it is open.
+            .onChange(of: ui.providerSessionWorkerID) { _, workerID in actions.providerSession?.inspect(workerID) }
+            // And for input requests: read on opening and while open, dropped on closing.
+            .onChange(of: ui.elicitationWorkerID) { _, workerID in actions.elicitations?.inspect(workerID) }
             .onAppear { seedFocus() }
     }
 
@@ -780,6 +808,7 @@ struct CockpitScreen: View {
         let sendInput: ((String) async -> Bool)? = controlAllowed ? actions.sendFollowUp.map { send in
             { text in await send(worker.id, text) }
         } : nil
+        let followUpContext = sendInput == nil ? nil : followUpContextAccess(worker)
         let takeControl: (() -> Void)? = !held && canControl
             ? actions.takeControl.map { take in { take(worker.id) } } : nil
         let interrupt: (() -> Void)? = canInterrupt
@@ -802,6 +831,7 @@ struct CockpitScreen: View {
             copyID: { copy(worker.id) },
             handBack: handBack,
             sendInput: sendInput,
+            followUpContext: followUpContext,
             isBusy: actions.workerIsBusy?(worker.id) ?? false,
             viewAssignment: showWorker,
             followUp: followUp,
@@ -817,7 +847,9 @@ struct CockpitScreen: View {
             }) : nil
         return WorkerTile(worker: worker, variant: variant, isKeyFocused: paneFocus == worker.id,
                           reply: variant == .focused ? replyContext : nil, actions: tileActions,
-                          menuPresented: menuPresented, source: sourceAccess(worker))
+                          menuPresented: menuPresented, source: sourceAccess(worker),
+                          providerSession: providerSessionAccess(worker),
+                          elicitations: elicitationAccess(worker))
             .focusable()
             .focusEffectDisabled()
             .focused($paneFocus, equals: worker.id)
@@ -867,6 +899,68 @@ struct CockpitScreen: View {
             revision: "\(worker.transcript.count) \(worker.state)")
         return ConsoleSourceAccess(workerName: worker.name, client: worker.client, session: session,
                                    open: { ui.presentSource(of: id) }, panel: panel)
+    }
+
+    /// File context for a worker's focused follow-up, bound to that worker's checkout and the
+    /// prompt content its session accepts. Nil where the session or the service offers none.
+    private func followUpContextAccess(_ worker: WorkerPresentation) -> FollowUpContextAccess? {
+        guard let scope = worker.followUpContextScope, let sendContext = actions.sendFollowUpWithContext,
+              let prepare = actions.prepareFollowUpContext else { return nil }
+        let id = worker.id
+        return FollowUpContextAccess(
+            linkUnavailable: scope.linkUnavailableReason,
+            snapshotUnavailable: scope.snapshotUnavailableReason,
+            prepare: { url, kind in prepare(url, kind, scope) },
+            send: { text, context in await sendContext(id, text, context) })
+    }
+
+    /// Provider-session access for a worker console: a wall tile or the focused worker. Nil for a
+    /// worker without a bound session and where the service offers none. The reading is handed
+    /// over only when it is this worker's, and reattach always names this worker.
+    private func providerSessionAccess(_ worker: WorkerPresentation) -> ProviderSessionAccess? {
+        guard !worker.isCoordinator, let session = worker.session, let intents = actions.providerSession else { return nil }
+        let id = worker.id
+        let isPresented = Binding(
+            get: { ui.providerSessionWorkerID == id },
+            set: { shown in
+                if shown { ui.providerSessionWorkerID = id }
+                else if ui.providerSessionWorkerID == id { ui.providerSessionWorkerID = nil }
+            })
+        let panel = ProviderSessionAccess.Panel(
+            isPresented: isPresented,
+            inspection: intents.inspection().flatMap { $0.workerID == id ? $0 : nil },
+            refresh: { intents.refresh() },
+            discover: { intents.discover() },
+            loadMore: { intents.loadMore() },
+            reattach: { acknowledge in intents.reattach(id, acknowledge) },
+            copy: { text in copy(text) })
+        return ProviderSessionAccess(workerID: id, workerName: worker.name, client: worker.client, session: session,
+                                     open: { ui.presentProviderSession(of: id) }, panel: panel)
+    }
+
+    /// Input-request access for a worker console: a wall tile or the focused worker. Nil for a
+    /// worker without a bound session and where the service offers none. The reading is handed
+    /// over only when it is this worker's, and every reply and open names this worker; the model
+    /// checks each against the worker's bound session.
+    private func elicitationAccess(_ worker: WorkerPresentation) -> ElicitationAccess? {
+        guard !worker.isCoordinator, let session = worker.session, let intents = actions.elicitations else { return nil }
+        let id = worker.id
+        let isPresented = Binding(
+            get: { ui.elicitationWorkerID == id },
+            set: { shown in
+                if shown { ui.elicitationWorkerID = id }
+                else if ui.elicitationWorkerID == id { ui.elicitationWorkerID = nil }
+            })
+        let panel = ElicitationAccess.Panel(
+            isPresented: isPresented,
+            inspection: intents.inspection().flatMap { $0.workerID == id ? $0 : nil },
+            refresh: { intents.refresh() },
+            edit: { elicitationID, field, value in intents.edit(elicitationID, field, value) },
+            reply: { elicitationID, action in intents.reply(id, elicitationID, action) },
+            open: { elicitationID in intents.open(id, elicitationID) },
+            copy: { text in copy(text) })
+        return ElicitationAccess(workerID: id, workerName: worker.name, client: worker.client, session: session,
+                                 open: { ui.presentElicitations(of: id) }, panel: panel)
     }
 
     // MARK: Intents
@@ -1042,6 +1136,8 @@ struct CockpitScreen: View {
         ui.collapsedGroups.removeAll()
         ui.showingRunDetails = false
         ui.sourceInspectorWorkerID = nil
+        // A panel left open on the previous run's worker would keep reading it out of view.
+        ui.elicitationWorkerID = nil
         ui.returnFocusWorkerID = ui.zoomedWorkerID ?? run?.coordinator?.id
     }
 
@@ -1247,6 +1343,15 @@ struct CockpitView: View {
             // of them apply (see the `can…` queries below).
             handBack: { workerID in Task { await model.handBack(workerID) } },
             sendFollowUp: { workerID, text in await model.sendFollowUp(to: workerID, text: text) },
+            sendFollowUpWithContext: { workerID, text, context in
+                await model.sendFollowUp(to: workerID, text: text, context: context)
+            },
+            // The chosen file is read on this Mac, for the named worker's scope only.
+            prepareFollowUpContext: { url, kind, scope in FollowUpContextReader.prepare(url, kind: kind, scope: scope) },
+            // Status, discovery and reattach name the worker only. The model owns every request.
+            providerSession: model.providerSessionIntents,
+            // Input requests name the worker; the model checks its bound session and owns replies.
+            elicitations: model.elicitationIntents,
             takeControl: { workerID in Task { await model.takeControl(workerID) } },
             interruptWorker: { workerID in Task { await model.interruptWorker(workerID) } },
             stopWorker: { workerID in Task { await model.stopWorker(workerID) } },

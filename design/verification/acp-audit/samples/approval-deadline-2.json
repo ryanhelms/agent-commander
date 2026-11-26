@@ -1,0 +1,233 @@
+{
+  "projection": "incremental",
+  "binary_sha256": "6e74f62668b1fff3299cad5b8024f1ca053653f47bb8310818b3b09aa12ad669",
+  "host": {
+    "system": "Darwin",
+    "version": "26.7.3",
+    "arch": "arm64",
+    "logical_cpus": 10,
+    "start_load_average_1m_5m_15m": [
+      64.9296875,
+      53.986328125,
+      50.890625
+    ],
+    "end_load_average_1m_5m_15m": [
+      113.75537109375,
+      65.173828125,
+      54.92724609375
+    ]
+  },
+  "panes": 30,
+  "idle": {
+    "approval_visible": {
+      "n": 12,
+      "median_ms": 28.26,
+      "p95_ms": 46.06,
+      "max_ms": 46.06,
+      "samples_ms": [
+        27.75,
+        33.79,
+        28.76,
+        45.9,
+        16.86,
+        25.75,
+        28.89,
+        13.58,
+        37.81,
+        15.85,
+        11.55,
+        46.06
+      ]
+    },
+    "reply_http": {
+      "n": 12,
+      "median_ms": 8.92,
+      "p95_ms": 21.5,
+      "max_ms": 21.5,
+      "samples_ms": [
+        14.98,
+        6.45,
+        21.5,
+        6.64,
+        6.64,
+        9.97,
+        14.09,
+        7.86,
+        14.43,
+        5.38,
+        5.86,
+        10.26
+      ]
+    },
+    "reply_visible": {
+      "n": 12,
+      "median_ms": 10.25,
+      "p95_ms": 29.87,
+      "max_ms": 29.87,
+      "samples_ms": [
+        18.02,
+        6.59,
+        21.76,
+        8.11,
+        6.65,
+        14.08,
+        15.58,
+        8.57,
+        29.87,
+        6.31,
+        6.01,
+        11.93
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 12,
+      "median_ms": 9.47,
+      "p95_ms": 29.85,
+      "max_ms": 29.85,
+      "samples_ms": [
+        15.37,
+        7.05,
+        22.61,
+        8.03,
+        7.16,
+        13.95,
+        15.48,
+        7.94,
+        29.85,
+        5.81,
+        6.11,
+        10.92
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 12,
+      "median_ms": 41.28,
+      "p95_ms": 69.78,
+      "max_ms": 69.78,
+      "samples_ms": [
+        44.97,
+        38.56,
+        54.94,
+        35.17,
+        10.44,
+        43.38,
+        45.3,
+        34.53,
+        69.78,
+        36.05,
+        39.17,
+        46.12
+      ]
+    },
+    "service_rss_peak_sampled_mib": 25.64,
+    "workspace_payload_bytes": 56871
+  },
+  "loaded": {
+    "approval_visible": {
+      "n": 12,
+      "median_ms": 31.2,
+      "p95_ms": 111.5,
+      "max_ms": 111.5,
+      "samples_ms": [
+        28.71,
+        57.79,
+        31.9,
+        29.84,
+        30.51,
+        30.29,
+        46.48,
+        27.53,
+        111.5,
+        35.65,
+        24.71,
+        77.58
+      ]
+    },
+    "reply_http": {
+      "n": 12,
+      "median_ms": 14.18,
+      "p95_ms": 41.02,
+      "max_ms": 41.02,
+      "samples_ms": [
+        20.8,
+        11.68,
+        20.71,
+        10.69,
+        13.38,
+        10.42,
+        22.49,
+        14.98,
+        41.02,
+        9.14,
+        30.02,
+        9.98
+      ]
+    },
+    "reply_visible": {
+      "n": 12,
+      "median_ms": 15.46,
+      "p95_ms": 64.9,
+      "max_ms": 64.9,
+      "samples_ms": [
+        64.9,
+        13.07,
+        23.98,
+        10.9,
+        15.01,
+        11.02,
+        22.77,
+        15.91,
+        41.04,
+        9.31,
+        32.09,
+        10.83
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 12,
+      "median_ms": 15.95,
+      "p95_ms": 39.53,
+      "max_ms": 39.53,
+      "samples_ms": [
+        23.05,
+        12.01,
+        24.45,
+        10.88,
+        15.37,
+        11.36,
+        23.56,
+        16.53,
+        39.53,
+        10.53,
+        32.27,
+        9.67
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 12,
+      "median_ms": 52.25,
+      "p95_ms": 72.09,
+      "max_ms": 72.09,
+      "samples_ms": [
+        65.01,
+        38.65,
+        54.29,
+        37.32,
+        25.45,
+        37.85,
+        53.15,
+        51.36,
+        66.3,
+        37.68,
+        60.76,
+        72.09
+      ]
+    },
+    "service_rss_peak_sampled_mib": 49.98,
+    "workspace_payload_bytes": 3112721,
+    "reconnect_with_pending_approval_ms": 276.65,
+    "reconnected_reply_sample_index": 0
+  },
+  "attachment_bytes_retrieved": 420000,
+  "cold_snapshot_contains_attachment_bytes": false
+}

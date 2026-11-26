@@ -58,6 +58,7 @@ def approve():
 def main():
     turn = None
     for line in sys.stdin:
+        received_ns = time.monotonic_ns()
         frame = json.loads(line)
         method = frame.get("method")
         if method == "initialize":
@@ -68,16 +69,27 @@ def main():
         elif method == "session/prompt":
             turn = frame["id"]
             role = frame["params"]["prompt"][0]["text"]
-            update("READY:" + role + "\n")
-            if role in ("heavy", "approval"):
-                threading.Thread(target=flood if role == "heavy" else approve, daemon=True).start()
+            if role.startswith("textprobe "):
+                ticket = int(role.split()[1])
+                update(f"FIRST:{ticket}:{time.monotonic_ns()}:chunk")
+                time.sleep(2)
+                (ROOT / f"text-finished-{ticket}").write_text(str(time.monotonic_ns()))
+                send(id=turn, result={"stopReason": "end_turn"})
+                turn = None
+            else:
+                update("READY:" + role + "\n")
+                if role == "textprobe-ready":
+                    send(id=turn, result={"stopReason": "end_turn"})
+                    turn = None
+                elif role in ("heavy", "approval"):
+                    threading.Thread(target=flood if role == "heavy" else approve, daemon=True).start()
         elif method == "session/cancel" and turn is not None:
             stop.set()
             send(id=turn, result={"stopReason": "cancelled"})
             turn = None
         elif not method and str(frame.get("id", "")).startswith("approval-"):
             outcome = frame.get("result", {}).get("outcome", {})
-            update(f"ACK:{frame['id']}:{outcome.get('optionId', '(none)')}\n")
+            update(f"ACK:{frame['id']}:{outcome.get('optionId', '(none)')}:{received_ns}\n")
 
 
 if __name__ == "__main__":

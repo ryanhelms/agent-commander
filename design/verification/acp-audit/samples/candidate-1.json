@@ -1,0 +1,172 @@
+{
+  "projection": "incremental",
+  "binary_sha256": "557c1f827f7e4d843375cf7024177add2c8e9f2b923508716a591046d2dfa86a",
+  "host": {
+    "system": "Darwin",
+    "version": "26.7.3",
+    "arch": "arm64",
+    "logical_cpus": 10,
+    "start_load_average_1m_5m_15m": [
+      47.52392578125,
+      50.04833984375,
+      38.68603515625
+    ],
+    "end_load_average_1m_5m_15m": [
+      42.6962890625,
+      48.927734375,
+      38.42041015625
+    ]
+  },
+  "panes": 30,
+  "idle": {
+    "approval_visible": {
+      "n": 6,
+      "median_ms": 19.82,
+      "p95_ms": 30.97,
+      "max_ms": 30.97,
+      "samples_ms": [
+        9.1,
+        19.61,
+        20.04,
+        17.36,
+        30.97,
+        30.95
+      ]
+    },
+    "reply_http": {
+      "n": 6,
+      "median_ms": 6.63,
+      "p95_ms": 13.05,
+      "max_ms": 13.05,
+      "samples_ms": [
+        5.2,
+        7.65,
+        6.13,
+        5.94,
+        7.14,
+        13.05
+      ]
+    },
+    "reply_visible": {
+      "n": 6,
+      "median_ms": 6.75,
+      "p95_ms": 18.11,
+      "max_ms": 18.11,
+      "samples_ms": [
+        5.22,
+        7.67,
+        6.33,
+        5.97,
+        7.17,
+        18.11
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 6,
+      "median_ms": 6.6,
+      "p95_ms": 17.09,
+      "max_ms": 17.09,
+      "samples_ms": [
+        5.6,
+        7.45,
+        6.28,
+        5.94,
+        6.91,
+        17.09
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 6,
+      "median_ms": 88.87,
+      "p95_ms": 128.28,
+      "max_ms": 128.28,
+      "samples_ms": [
+        60.25,
+        128.28,
+        85.55,
+        125.49,
+        92.18,
+        62.19
+      ]
+    },
+    "service_rss_peak_sampled_mib": 25.73,
+    "workspace_payload_bytes": 18163
+  },
+  "loaded": {
+    "approval_visible": {
+      "n": 6,
+      "median_ms": 29.14,
+      "p95_ms": 30.26,
+      "max_ms": 30.26,
+      "samples_ms": [
+        21.07,
+        28.42,
+        30.26,
+        16.98,
+        29.85,
+        30.05
+      ]
+    },
+    "reply_http": {
+      "n": 6,
+      "median_ms": 11.84,
+      "p95_ms": 15.34,
+      "max_ms": 15.34,
+      "samples_ms": [
+        10.26,
+        14.11,
+        15.34,
+        11.94,
+        10.65,
+        11.74
+      ]
+    },
+    "reply_visible": {
+      "n": 6,
+      "median_ms": 12.1,
+      "p95_ms": 17.41,
+      "max_ms": 17.41,
+      "samples_ms": [
+        10.29,
+        14.82,
+        17.41,
+        11.97,
+        11.08,
+        12.23
+      ]
+    },
+    "reply_observed_at_adapter": {
+      "n": 6,
+      "median_ms": 11.91,
+      "p95_ms": 15.64,
+      "max_ms": 15.64,
+      "samples_ms": [
+        10.82,
+        13.69,
+        15.64,
+        11.87,
+        10.89,
+        11.96
+      ]
+    },
+    "reply_ack_visible": {
+      "n": 6,
+      "median_ms": 103.22,
+      "p95_ms": 122.1,
+      "max_ms": 122.1,
+      "samples_ms": [
+        60.53,
+        106.05,
+        103.02,
+        122.1,
+        103.43,
+        100.34
+      ]
+    },
+    "service_rss_peak_sampled_mib": 51.78,
+    "workspace_payload_bytes": 2346961,
+    "reconnect_with_pending_approval_ms": 25.23
+  },
+  "attachment_bytes_retrieved": 420000,
+  "cold_snapshot_contains_attachment_bytes": false
+}

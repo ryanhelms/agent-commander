@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure a pinned Commander service with 30 disposable tmux panes."""
 import argparse
+import math
 import base64
 import contextlib
 import hashlib
@@ -150,19 +151,23 @@ def elapsed(start):
 
 
 def metrics(samples):
-    return {"median_ms": round(statistics.median(samples), 2), "max_ms": max(samples), "samples_ms": samples}
+    ordered = sorted(samples)
+    return {"n": len(samples), "median_ms": round(statistics.median(samples), 2),
+            "p95_ms": ordered[math.ceil(0.95 * len(samples)) - 1],
+            "max_ms": max(samples), "samples_ms": samples}
 
 
-def phase(root, path, approval, feed, pid, load):
+def phase(root, path, approval, feed, pid, load, samples):
     shown = []
     command = []
     projection = []
     delivery = []
+    delivery_view = []
     memory = [rss(pid)]
-    start_ticket = SAMPLES if load else 0
+    start_ticket = samples if load else 0
     before = feed.payload_bytes
     previous_subscription_bytes = 0
-    for ticket in range(start_ticket, start_ticket + SAMPLES):
+    for ticket in range(start_ticket, start_ticket + samples):
         started = time.monotonic()
         (root / f"request-{ticket}").touch()
         pending = feed.until(lambda runs: (
@@ -181,27 +186,38 @@ def phase(root, path, approval, feed, pid, load):
                                   "the same approval after reconnect")
             assert restored
             reconnect = elapsed(feed.requested)
-        started = time.monotonic()
+        started_ns = time.monotonic_ns()
+        started = started_ns / 1e9
         reply = api(path, "POST", "/v1/requests/" + pending["id"] + "/reply", {"answer": "allow_once"})
         assert reply["status"] == "answered" and reply["answer"] == "allow_once"
         command.append(elapsed(started))
         feed.until(lambda runs: question(runs, approval, ticket).get("status") == "answered", "answered approval")
         projection.append(elapsed(started))
-        marker = f"ACK:approval-{ticket}:allow_once"
-        feed.until(lambda runs: marker in output_text(worker(runs, approval)), "ACP reply acknowledgement")
-        delivery.append(elapsed(started))
+        marker = f"ACK:approval-{ticket}:allow_once:"
+
+        def peer_timestamp(runs):
+            text = output_text(worker(runs, approval))
+            _, found, tail = text.partition(marker)
+            stamp, newline, _ = tail.partition("\n")
+            return int(stamp) if found and newline and stamp.isdecimal() else 0
+
+        received_ns = feed.until(peer_timestamp, "timestamped ACP peer acknowledgement")
+        delivery_view.append(elapsed(started))
+        delivery.append(round((received_ns - started_ns) / 1e6, 2))
         memory.append(rss(pid))
     result = {
         "approval_visible": metrics(shown), "reply_http": metrics(command), "reply_visible": metrics(projection),
-        "reply_observed_at_adapter": metrics(delivery), "service_rss_peak_sampled_mib": max(memory),
+        "reply_observed_at_adapter": metrics(delivery),
+        "reply_ack_visible": metrics(delivery_view), "service_rss_peak_sampled_mib": max(memory),
         "workspace_payload_bytes": previous_subscription_bytes + feed.payload_bytes - before,
     }
     if load:
         result["reconnect_with_pending_approval_ms"] = reconnect
+        result["reconnected_reply_sample_index"] = 0
     return result, feed
 
 
-def create_panes(path, workspace):
+def create_panes(path, workspace, first_text=False):
     ids = {}
     for group in range(3):
         role = ("heavy", "approval", "quiet")[group]
@@ -209,9 +225,46 @@ def create_panes(path, workspace):
         if role in ("heavy", "approval"):
             ids[role] = run["coordinator_id"]
         for index in range(9):
-            api(path, "POST", f"/v1/runs/{run['id']}/workers",
-                {"client": "fixture", "name": f"Quiet {group}-{index}", "task": "quiet"}, 201)
+            text_probe = first_text and group == 2 and index == 0
+            row = api(path, "POST", f"/v1/runs/{run['id']}/workers",
+                      {"client": "fixture", "name": f"Quiet {group}-{index}",
+                       "task": "textprobe-ready" if text_probe else "quiet"}, 201)
+            if text_probe:
+                ids["text"] = row["id"]
     return ids
+
+
+def first_structured_text(root, path, worker_id, feed, count):
+    route = f"/v1/workers/{worker_id}"
+    row = feed.until(lambda runs: (
+        w if (w := worker(runs, worker_id)).get("state") in ("idle", "completed") else {}
+    ), "idle first-text fixture")
+    held = api(path, "POST", route + "/control", {"held": True, "generation": row["control"]["generation"]})
+    generation = held["generation"]
+    samples, early, wire_terminal_time = [], [], []
+    for ticket in range(count):
+        operation = api(path, "POST", route + "/messages",
+                        {"generation": generation, "text": f"textprobe {ticket}"}, 202)
+        marker = re.compile(rf"FIRST:{ticket}:(\d+):chunk")
+
+        def first(runs):
+            for message in worker(runs, worker_id).get("messages", []):
+                if message.get("role") == "assistant":
+                    match = marker.search(message.get("content") or "")
+                    if match:
+                        return int(match[1]), time.monotonic_ns()
+            return None
+
+        sent_ns, received_ns = feed.until(first, f"first structured text {ticket}")
+        feed.until(lambda runs: any(m["id"] == operation["id"] and m["status"] == "completed"
+                                   for m in worker(runs, worker_id).get("control", {}).get("messages", [])),
+                   f"terminal outcome for first-text fixture {ticket}")
+        terminal_ns = int((root / f"text-finished-{ticket}").read_text())
+        samples.append(round((received_ns - sent_ns) / 1e6, 2))
+        early.append(received_ns < terminal_ns)
+        wire_terminal_time.append(round((terminal_ns - sent_ns) / 1e6, 2))
+    return {"subscriber": metrics(samples), "arrived_before_peer_terminal": early,
+            "peer_terminal_delay": metrics(wire_terminal_time)}
 
 
 def attachment(root, path, heavy, feed):
@@ -253,7 +306,8 @@ def wait_for_service(process, path):
     raise TimeoutError("Fixture service did not become available")
 
 
-def benchmark(binary, output, projection):
+def benchmark(binary, output, projection, first_text=False, samples=SAMPLES):
+    start_load_average = os.getloadavg()
     stream_route = "/v1/ag-ui/events" + ("?projection=incremental" if projection == "incremental" else "")
     with tempfile.TemporaryDirectory(prefix="ac-30-", dir="/tmp") as name:
         root = Path(name).resolve()
@@ -276,7 +330,7 @@ def benchmark(binary, output, projection):
             process = subprocess.Popen([binary, "serve"], env=env, stdout=log, stderr=log)
             try:
                 wait_for_service(process, path)
-                ids = create_panes(path, workspace)
+                ids = create_panes(path, workspace, first_text)
                 feed = Workspace(path, stream_route)
                 feed.until(lambda runs: sum("READY:" in output_text(w) and bool(w.get("native_session"))
                                            for r in runs for w in r.get("workers", [])) == PANES,
@@ -284,11 +338,13 @@ def benchmark(binary, output, projection):
                 panes = subprocess.check_output(["tmux", "-L", label, "list-panes", "-a", "-F", "#{pane_id}"], env=env)
                 assert len(panes.splitlines()) == PANES
                 print(f"Confirmed {PANES} active tmux panes.", flush=True)
-                baseline, feed = phase(root, path, ids["approval"], feed, process.pid, False)
+                baseline, feed = phase(root, path, ids["approval"], feed, process.pid, False, samples)
                 (root / "flood").touch()
                 feed.until(lambda runs: re.search(r"FIXTURE_TICK:[1-9][0-9]{2,}\n", output_text(worker(runs, ids["heavy"]))),
                            "sustained heavy output")
-                loaded, feed = phase(root, path, ids["approval"], feed, process.pid, True)
+                loaded, feed = phase(root, path, ids["approval"], feed, process.pid, True, samples)
+                if first_text:
+                    loaded["first_structured_text"] = first_structured_text(root, path, ids["text"], feed, samples)
                 bytes_read, cursor = attachment(root, path, ids["heavy"], feed)
                 run_ids = [r["id"] for r in feed.runs]
                 feed.close()
@@ -318,7 +374,10 @@ def benchmark(binary, output, projection):
                 feed.until(restored, "cold restoration of the original tool result")
                 result = {"projection": projection, "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                           "host": {"system": platform.system(), "version": platform.mac_ver()[0],
-                                   "arch": platform.machine()}, "panes": PANES, "idle": baseline,
+                                   "arch": platform.machine(), "logical_cpus": os.cpu_count(),
+                                   "start_load_average_1m_5m_15m": start_load_average,
+                                   "end_load_average_1m_5m_15m": os.getloadavg()},
+                          "panes": PANES, "idle": baseline,
                           "loaded": loaded, "attachment_bytes_retrieved": bytes_read,
                           "cold_snapshot_contains_attachment_bytes": feed.leaked}
                 output.write_text(json.dumps(result, indent=2) + "\n")
@@ -339,8 +398,12 @@ def main():
     parser.add_argument("--agentctl", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--projection", choices=["incremental", "legacy"], default="legacy")
+    parser.add_argument("--first-text", action="store_true", help="also measure first newline-free text under load")
+    parser.add_argument("--samples", type=int, default=SAMPLES, help="number of decisions per idle and loaded phase")
     args = parser.parse_args()
-    benchmark(args.agentctl.resolve(), args.output, args.projection)
+    if args.samples < 1:
+        parser.error("--samples must be positive")
+    benchmark(args.agentctl.resolve(), args.output, args.projection, args.first_text, args.samples)
 
 
 if __name__ == "__main__":

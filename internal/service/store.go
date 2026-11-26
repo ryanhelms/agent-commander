@@ -25,6 +25,7 @@ type LaunchSpec struct {
 	ID, RunID, ParentID, Name, Task, Role, Path, Token, Client string
 	Host, Worktree                                             string
 	CodingSource                                               *worktrees.Checkout
+	Reattach                                                   *ReattachSpec `json:",omitempty"`
 }
 
 type Launcher interface {
@@ -50,31 +51,33 @@ type ConsoleEvent struct {
 }
 
 type Worker struct {
-	ID                   string              `json:"id"`
-	Name                 string              `json:"name"`
-	Role                 string              `json:"role"`
-	ParentID             string              `json:"parent_id"`
-	RunID                string              `json:"run_id"`
-	State                string              `json:"state"`
-	Host                 string              `json:"host"`
-	Worktree             string              `json:"worktree"`
-	Branch               string              `json:"branch,omitempty"`
-	Client               string              `json:"client,omitempty"`
-	CreatedAt            string              `json:"created_at,omitempty"`
-	Task                 string              `json:"task"`
-	Output               string              `json:"output"`
-	Error                string              `json:"error,omitempty"`
-	Result               string              `json:"result,omitempty"`
-	Console              []ConsoleEvent      `json:"console,omitempty"`
-	Control              *WorkerControl      `json:"control,omitempty"`
-	NativeSession        *NativeSession      `json:"native_session,omitempty"`
-	Connection           string              `json:"connection,omitempty"`
-	Coding               *worktrees.Checkout `json:"coding,omitempty"`
-	Handoff              *CodingHandoff      `json:"handoff,omitempty"`
-	FrontendTools        bool                `json:"frontend_tools,omitempty"`
-	Telemetry            *WorkerTelemetry    `json:"telemetry,omitempty"`
-	ClaudeProgress       *ClaudeProgress     `json:"claude_progress,omitempty"`
-	ProviderAvailability string              `json:"provider_availability,omitempty"`
+	ID                   string               `json:"id"`
+	Name                 string               `json:"name"`
+	Role                 string               `json:"role"`
+	ParentID             string               `json:"parent_id"`
+	RunID                string               `json:"run_id"`
+	State                string               `json:"state"`
+	Host                 string               `json:"host"`
+	Worktree             string               `json:"worktree"`
+	Branch               string               `json:"branch,omitempty"`
+	Client               string               `json:"client,omitempty"`
+	CreatedAt            string               `json:"created_at,omitempty"`
+	Task                 string               `json:"task"`
+	Output               string               `json:"output"`
+	Error                string               `json:"error,omitempty"`
+	Result               string               `json:"result,omitempty"`
+	Console              []ConsoleEvent       `json:"console,omitempty"`
+	Control              *WorkerControl       `json:"control,omitempty"`
+	NativeSession        *NativeSession       `json:"native_session,omitempty"`
+	ProviderBinding      string               `json:"provider_binding,omitempty"`
+	PeerCapabilities     *SessionCapabilities `json:"peer_session_capabilities,omitempty"`
+	Connection           string               `json:"connection,omitempty"`
+	Coding               *worktrees.Checkout  `json:"coding,omitempty"`
+	Handoff              *CodingHandoff       `json:"handoff,omitempty"`
+	FrontendTools        bool                 `json:"frontend_tools,omitempty"`
+	Telemetry            *WorkerTelemetry     `json:"telemetry,omitempty"`
+	ClaudeProgress       *ClaudeProgress      `json:"claude_progress,omitempty"`
+	ProviderAvailability string               `json:"provider_availability,omitempty"`
 }
 
 type Question struct {
@@ -110,30 +113,39 @@ type retryReceipt struct {
 	Target string `json:"target"`
 }
 
+type providerPermission struct {
+	Turn    string `json:"turn"`
+	Request string `json:"request"`
+}
+
 type database struct {
-	OutputBatches map[string]outputReceipt `json:"output_batches,omitempty"` // legacy workers persist their output
-	Runs          []*Run                   `json:"runs"`
-	Tokens        map[string]string        `json:"tokens"` // SHA-256(token) to worker ID
-	Receipts      map[string]retryReceipt  `json:"receipts"`
-	PromptParts   map[string][]PromptPart  `json:"prompt_parts,omitempty"`
+	Permissions   map[string]providerPermission `json:"provider_permissions,omitempty"`
+	OutputBatches map[string]outputReceipt      `json:"output_batches,omitempty"` // legacy workers persist their output
+	Runs          []*Run                        `json:"runs"`
+	Tokens        map[string]string             `json:"tokens"` // SHA-256(token) to worker ID
+	Receipts      map[string]retryReceipt       `json:"receipts"`
+	PromptParts   map[string][]PromptPart       `json:"prompt_parts,omitempty"`
 }
 
 type service struct {
-	liveOutputBatches  map[string]outputReceipt // disposable with the native console window
-	mu                 sync.Mutex
-	process            sync.Mutex // order launches and stops across their external effects
-	integrateBranch    sync.Mutex // serialize checked-out branch updates
-	path               string
-	state              database
-	launcher           Launcher
-	tools              *toolregistry.Registry
-	consoleObservers   map[chan struct{}]struct{} // guarded by mu
-	operationObservers map[chan struct{}]string
-	workspace          *workspaceProjection // owner-only workspace cache, guarded by mu
-	consoleInstance    string
-	readingHistory     map[string]bool
-	frontendRounds     map[string][]*frontendRound
-	liveSource         liveSourceStore
+	liveOutputBatches   map[string]outputReceipt // disposable with the native console window
+	mu                  sync.Mutex
+	process             sync.Mutex // order launches and stops across their external effects
+	integrateBranch     sync.Mutex // serialize checked-out branch updates
+	path                string
+	state               database
+	launcher            Launcher
+	tools               *toolregistry.Registry
+	consoleObservers    map[chan struct{}]struct{} // guarded by mu
+	operationObservers  map[chan struct{}]string
+	workspace           *workspaceProjection // owner-only workspace cache, guarded by mu
+	consoleInstance     string
+	controlChanged      chan struct{}
+	readingHistory      map[string]bool
+	stoppedHistoryReads map[string]int
+	frontendRounds      map[string][]*frontendRound
+	liveSource          liveSourceStore
+	elicitations        map[string]*activeElicitation
 }
 
 func randomID(prefix string) string {
@@ -190,6 +202,10 @@ func (s *service) load(stateDir string) error {
 func (s *service) persist() error {
 	if err := writeStateJSON(s.path, s.durableState()); err != nil {
 		return err
+	}
+	if s.controlChanged != nil {
+		close(s.controlChanged)
+		s.controlChanged = nil
 	}
 	s.notifyConsole()
 	return nil
@@ -407,9 +423,13 @@ func (s *service) launch(spec LaunchSpec) {
 		defer s.mu.Unlock()
 		r, w = s.worker(spec.ID)
 		if r != nil && r.Status == "running" && w.State == "starting" {
-			w.State, w.Error = "failed", err.Error()
-			r.cancelQuestions(w.ID)
-			r.refreshOutcome()
+			if spec.Reattach != nil {
+				failReattachment(r, w, err.Error())
+			} else {
+				w.State, w.Error = "failed", err.Error()
+				r.cancelQuestions(w.ID)
+				r.refreshOutcome()
+			}
 			s.saveBackground()
 		}
 	}

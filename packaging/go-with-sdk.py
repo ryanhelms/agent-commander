@@ -80,6 +80,10 @@ def main():
             download(TRANSPORT, version, source)
         local_public_proxy = (Path(configured["GOMODCACHE"]) / "cache/download").resolve().as_uri()
         env["GOPROXY"] = ",".join(filter(None, [local_public_proxy, configured["GOPROXY"]]))
+        if options.action == "test":
+            # Integration fixtures build agentctl in child Go commands. Inherit
+            # these same pins even when a fixture runs outside the root package.
+            env["GOFLAGS"] = f'-mod=readonly "-modfile={modfile}"'
         subprocess.run(["go", options.action, "-mod=readonly", "-modfile=" + str(modfile), *options.args],
                        cwd=ROOT, env=env, check=True)
 

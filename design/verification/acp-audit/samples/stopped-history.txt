@@ -1,0 +1,60 @@
+baseline exit=0 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=25.578084ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=180.298375ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.919437459s
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=20.118209ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=157.532292ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.617043917s
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=15.584334ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=121.770375ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.706826333s
+
+candidate exit=0 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=17.517292ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=28.441834ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=90.35675ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=14.996209ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=29.784625ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=88.983792ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=12.520792ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=28.96175ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=89.735583ms
+
+candidate exit=0 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=13.959583ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=27.666125ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=92.467375ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=12.378042ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=27.066917ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=88.224125ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=12.681041ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=28.148542ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=88.140958ms
+
+baseline exit=0 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=14.283666ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=116.9595ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.455114958s
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=15.058916ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=125.054ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.474214416s
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=17.649666ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=122.890375ms
+source=2048 rows=2048 pages=16 initializes=16 loads=16 wire_updates=32768 elapsed=1.47005725s
+
+baseline-burst exit=2 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=12.031916ms
+source=512 rows=512 pages=4 initializes=4 loads=4 wire_updates=2048 elapsed=51.852541ms
+ time=2026-11-24T23:48:22.018-05:00 level=ERROR msg="failed to queue notification; closing connection"
+panic: session/load: {"code":-32603,"message":"Internal error","data":{"error":"peer disconnected before response"}}
+
+goroutine 1 [running]:
+main.run(0x800)
+	/private/tmp/commander-replay-audit.tm6bTT/main.go:50 +0x6a8
+main.main()
+	/private/tmp/commander-replay-audit.tm6bTT/main.go:61 +0x88
+
+candidate-burst exit=0 source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=14.861916ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=19.046083ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=26.668792ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=12.455792ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=21.484958ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=47.273375ms
+source=128 rows=128 pages=1 initializes=1 loads=1 wire_updates=128 elapsed=17.8385ms
+source=512 rows=512 pages=4 initializes=1 loads=1 wire_updates=512 elapsed=17.271791ms
+source=2048 rows=2048 pages=16 initializes=1 loads=1 wire_updates=2048 elapsed=42.075084ms
