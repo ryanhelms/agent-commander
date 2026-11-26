@@ -366,7 +366,15 @@ struct WorkspaceToolbar: ToolbarContent {
     /// display menu and the adapter notice are the console's own controls and keep their look.
     private var capsule: Visibility { title == nil ? .automatic : .hidden }
 
+    /// The body is split in two because a toolbar builder block takes at most ten items on the
+    /// Swift toolchain the release runner uses. The order on screen is leading, then trailing.
     var body: some ToolbarContent {
+        leadingItems
+        trailingItems
+    }
+
+    /// The navigation toggle, the title, the flexible space and the console's own controls.
+    @ToolbarContentBuilder private var leadingItems: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Button { sidebarExpanded.toggle() } label: { Image(systemName: "sidebar.left") }
                 .buttonStyle(.plain)
@@ -415,6 +423,10 @@ struct WorkspaceToolbar: ToolbarContent {
         if let adapterUpdates {
             AdapterUpdateToolbarItem(feed: adapterUpdates)
         }
+    }
+
+    /// The service state and the redesigned shell's readouts, in their trailing order.
+    @ToolbarContentBuilder private var trailingItems: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             ConnectionIndicator(connection: connection, host: serviceHost)
         }
