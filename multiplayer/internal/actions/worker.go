@@ -92,9 +92,10 @@ func PrepareLocalResource(ctx context.Context, socket string, resource Resource)
 // marker distinguishes this command's submitted turn from earlier console history.
 func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, recoverOnly bool) (json.RawMessage, error) {
 	var input struct {
-		Text string `json:"text"`
+		Text    string        `json:"text"`
+		Context []ContextItem `json:"context"`
 	}
-	if strict(raw, &input) != nil || strings.TrimSpace(input.Text) == "" || len(input.Text) > 15<<10 || !identifier.MatchString(r.Target) {
+	if strict(raw, &input) != nil || strings.TrimSpace(input.Text) == "" || len(input.Text) > 15<<10 || !identifier.MatchString(r.Target) || !validContext(input.Context) {
 		return nil, ErrInvalid
 	}
 	client, e := commanderClient(cfg.CommanderSocket)
@@ -103,7 +104,7 @@ func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, rec
 	}
 	defer client.CloseIdleConnections()
 	base := workerURL(r.Target)
-	prompt := "[Shared operation " + id + "]\n" + input.Text
+	prompt := "[Shared operation " + id + "]\n" + input.Text + renderContext(input.Context)
 	var operation string
 	var request *http.Request
 	if recoverOnly {

@@ -20,6 +20,8 @@ const (
 	issueNumberProperty  = `"number":{"type":"integer","minimum":1,"maximum":2147483647}`
 )
 
+const contextProperty = `"context":{"type":"array","maxItems":16,"items":{"type":"object","additionalProperties":false,"required":["name","content"],"properties":{"name":{"type":"string","minLength":1,"maxLength":256},"content":{"type":"string","maxLength":98304}}}}`
+
 var registry = register(
 	descriptor{
 		kind: "repo", name: "git.head", recoverable: true, run: repoHandler,
@@ -55,8 +57,23 @@ var registry = register(
 	},
 	descriptor{
 		kind: "agent", name: "agent.ask", recoverable: true, run: agentHandler,
-		description:   "Submit one prompt to the owner's shared worker and return its addressed answer. The prompt is limited to 15 KiB.",
-		payloadSchema: closedObject + `,"required":["text"],"properties":{"text":{"type":"string","minLength":1,"maxLength":15360}}}`,
+		description:   "Submit one prompt to the owner's shared worker and return its addressed answer. The prompt is limited to 15 KiB. Optional context items (files, diffs, logs) are limited to 96 KiB in total.",
+		payloadSchema: closedObject + `,"required":["text"],"properties":{"text":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
+	},
+	descriptor{
+		kind: "agent", name: "agent.handoff", recoverable: true, run: handoffHandler,
+		description:   "Hand a task to the owner's agent. The owner's Commander starts a new run for it in the shared worker's project and returns the run ID at once. Track it with agent.status and agent.result.",
+		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
+	},
+	descriptor{
+		kind: "agent", name: "agent.status", recoverable: true, run: handoffHandler,
+		description:   "Read the state and latest summary of a run you handed off.",
+		payloadSchema: closedObject + `,"required":["run"],"properties":{"run":{"type":"string","minLength":1,"maxLength":128}}}`,
+	},
+	descriptor{
+		kind: "agent", name: "agent.result", recoverable: true, run: handoffHandler,
+		description:   "Read the result and artifacts (report, branch) of a run you handed off.",
+		payloadSchema: closedObject + `,"required":["run"],"properties":{"run":{"type":"string","minLength":1,"maxLength":128}}}`,
 	},
 	descriptor{
 		kind: "coordinator", name: "agent.message", recoverable: true, run: coordinatorMessage,
