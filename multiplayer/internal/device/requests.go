@@ -24,11 +24,38 @@ type SentRequest struct {
 	Action   string    `json:"action"`
 	Title    string    `json:"title"`
 	At       time.Time `json:"at"`
+	Run      string    `json:"run,omitempty"` // target of an agent.status or agent.result follow-up
+	// Children lists every recipient of a fan-out, so each child's result and
+	// thread stay reachable after a restart.
+	Children []SentChild `json:"children,omitempty"`
+}
+
+// SentChild is one recipient of a fan-out.
+type SentChild struct {
+	ID       string `json:"id"`
+	Resource string `json:"resource"`
+}
+
+// allRows returns every child row of a receipt, with result also under value.
+func allRows(res any) []map[string]any {
+	b, _ := json.Marshal(res)
+	var rows []map[string]any
+	if json.Unmarshal(b, &rows) != nil {
+		var obj struct{ Children []map[string]any }
+		_ = json.Unmarshal(b, &obj)
+		rows = obj.Children
+	}
+	for _, row := range rows {
+		if result, ok := row["result"]; ok {
+			row["value"] = result
+		}
+	}
+	return rows
 }
 
 func (a *Agent) sentPath() string { return filepath.Join(a.cfg.Dir, "sent.jsonl") }
 
-func (a *Agent) sentLog() []SentRequest {
+func (a *Agent) sentLog(user string) []SentRequest {
 	f, e := os.Open(a.sentPath())
 	if e != nil {
 		return nil
@@ -38,7 +65,12 @@ func (a *Agent) sentLog() []SentRequest {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		var r SentRequest
-		if json.Unmarshal(sc.Bytes(), &r) == nil {
+		if json.Unmarshal(sc.Bytes(), &r) != nil {
+			continue
+		}
+		// The tray's historical index is server-wide. The frozen submission
+		// under the signed-in user's directory identifies their requests.
+		if _, err := os.Stat(filepath.Join(a.cfg.Dir, key(user), "submissions", key(r.ID)+".json")); err == nil {
 			out = append(out, r)
 		}
 	}
@@ -71,7 +103,9 @@ func (a *Agent) sendOne(ctx context.Context, s identity.Session, resource, actio
 			return id, nil, e
 		}
 		row := firstRow(res)
-		if st, _ := row["status"].(string); st != "" && st != "pending" && st != "queued" && st != "claimed" || time.Now().After(deadline) {
+		status, _ := row["status"].(string)
+		waiting := status == "" || status == "pending" || status == "queued" || status == "claimed" || status == "processing"
+		if !waiting || time.Now().After(deadline) {
 			return id, row, nil
 		}
 		if !waitCtx(ctx, 500*time.Millisecond) {
@@ -85,14 +119,19 @@ func waitCtx(ctx context.Context, d time.Duration) bool { return wait(ctx, d) }
 func firstRow(res any) map[string]any {
 	b, _ := json.Marshal(res)
 	var rows []map[string]any
-	if json.Unmarshal(b, &rows) == nil && len(rows) > 0 {
-		return rows[0]
+	if json.Unmarshal(b, &rows) != nil {
+		var obj struct{ Children []map[string]any }
+		_ = json.Unmarshal(b, &obj)
+		rows = obj.Children
 	}
-	var obj struct{ Children []map[string]any }
-	if json.Unmarshal(b, &obj) == nil && len(obj.Children) > 0 {
-		return obj.Children[0]
+	if len(rows) == 0 {
+		return map[string]any{}
 	}
-	return map[string]any{}
+	row := rows[0]
+	if result, ok := row["result"]; ok {
+		row["value"] = result
+	}
+	return row
 }
 
 func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb string, in input) (any, error) {
@@ -106,27 +145,77 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			return nil, e
 		}
 		title := in.Name
+		if title == "" && in.Capability == "agent.handoff" {
+			var task struct{ Title string }
+			if json.Unmarshal(in.Payload, &task) == nil {
+				title = task.Title
+			}
+		}
 		if title == "" {
 			title = in.Capability
 		}
 		child, _ := row["id"].(string)
-		if e = a.logSent(SentRequest{ID: id, Child: child, Resource: in.Resource, Action: in.Capability, Title: title, At: time.Now().UTC()}); e != nil {
+		record := SentRequest{ID: id, Child: child, Resource: in.Resource, Action: in.Capability, Title: title, At: time.Now().UTC()}
+		if in.Capability == "agent.status" || in.Capability == "agent.result" {
+			var target struct{ Run string }
+			if json.Unmarshal(in.Payload, &target) == nil {
+				record.Run = target.Run
+			}
+		}
+		if e = a.logSent(record); e != nil {
 			return nil, e
 		}
 		row["request"] = id
 		return row, nil
 	case "sent", "handoffs":
-		log := a.sentLog()
+		log := a.sentLog(s.User)
 		slices.Reverse(log)
 		out := []map[string]any{}
+		var handles map[string]string
 		for _, r := range log {
 			if verb == "handoffs" && r.Action != "agent.handoff" {
 				continue
 			}
 			row := map[string]any{"request": r.ID, "child": r.Child, "resource": r.Resource, "action": r.Action, "title": r.Title, "at": r.At}
+			var fr map[string]any
 			if res, e := a.receipt(ctx, s, r.ID); e == nil {
-				fr := firstRow(res)
+				fr = firstRow(res)
 				row["status"], row["value"] = fr["status"], fr["value"]
+				if len(r.Children) > 0 {
+					if handles == nil {
+						handles = a.friendHandles(ctx, s)
+					}
+					children := allRows(res)
+					for _, c := range children {
+						peer, _ := c["peer"].(string)
+						c["handle"] = handles[peer]
+					}
+					row["children"] = children
+				}
+			}
+			if verb == "handoffs" {
+				if handles == nil {
+					handles = a.friendHandles(ctx, s)
+				}
+				peer, _ := fr["peer"].(string)
+				row["id"], row["server"], row["friend"], row["handle"] = r.ID, a.cfg.ServerID, handles[peer], handles[peer]
+				row["state"], row["updatedAt"] = "unknown", r.At
+				if status, ok := fr["status"].(string); ok {
+					row["state"] = status
+				}
+				value, _ := fr["value"].(map[string]any)
+				if run, _ := value["run"].(string); run != "" {
+					row["state"] = "started"
+					if latest, at := a.handoffUpdate(ctx, s, log, peer, r.Resource, run, false); latest != nil {
+						value, row["updatedAt"] = latest, at
+					}
+				}
+				if state, _ := value["state"].(string); state != "" {
+					row["state"] = state
+				}
+				if at, _ := value["updatedAt"].(string); at != "" {
+					row["updatedAt"] = at
+				}
 			}
 			out = append(out, row)
 			if len(out) == 50 {
@@ -139,8 +228,14 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			return nil, errors.New("name a request")
 		}
 		// A request this device sent: the thread lives on the owner's device.
-		if i := slices.IndexFunc(a.sentLog(), func(r SentRequest) bool { return r.ID == in.Request || r.Child == in.Request }); i >= 0 {
-			r := a.sentLog()[i]
+		log := a.sentLog(s.User)
+		if i := slices.IndexFunc(log, func(r SentRequest) bool {
+			return r.ID == in.Request || r.Child == in.Request || slices.ContainsFunc(r.Children, func(c SentChild) bool { return c.ID == in.Request })
+		}); i >= 0 {
+			r := log[i]
+			if j := slices.IndexFunc(r.Children, func(c SentChild) bool { return c.ID == in.Request }); j >= 0 {
+				r.Child, r.Resource = r.Children[j].ID, r.Children[j].Resource
+			}
 			action, body := "thread.read", map[string]string{"request": r.Child}
 			if verb == "comment" {
 				action, body["text"] = "thread.comment", in.Text
@@ -155,7 +250,13 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 		// A request this device received: read or write the local thread.
 		cfg := a.localConfig(s)
 		if verb == "comment" {
-			return actions.AddComment(cfg, in.Request, actions.Comment{Author: a.handle, AuthorKind: "person", Text: in.Text})
+			if !a.receivedRequest(s.User, "", "", in.Request) {
+				return nil, errors.New("this device neither sent nor received that request")
+			}
+			a.mu.Lock()
+			author := a.handle
+			a.mu.Unlock()
+			return actions.AddComment(cfg, in.Request, actions.Comment{Author: author, AuthorKind: "person", Text: in.Text})
 		}
 		return actions.ReadThread(cfg, in.Request)
 	case "apply-artifact":
@@ -164,19 +265,61 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 	return nil, errors.New("unknown operation")
 }
 
-// applyArtifact applies a hand-off's patch artifact into a local checkout.
+// handoffUpdate reads the newest signed status or result for this owner's run.
+// Old sent logs have no run ID, so match those using the verified receipt.
+func (a *Agent) handoffUpdate(ctx context.Context, s identity.Session, newestFirst []SentRequest, peer, resource, run string, resultOnly bool) (map[string]any, time.Time) {
+	for _, r := range newestFirst {
+		if r.Resource != resource || (r.Run != "" && r.Run != run) {
+			continue
+		}
+		if r.Action != "agent.result" && (resultOnly || r.Action != "agent.status") {
+			continue
+		}
+		res, err := a.receipt(ctx, s, r.ID)
+		if err != nil {
+			continue
+		}
+		row := firstRow(res)
+		value, _ := row["value"].(map[string]any)
+		if row["peer"] == peer && row["status"] == "completed" && value["run"] == run {
+			return value, r.At
+		}
+	}
+	return nil, time.Time{}
+}
+
+// applyArtifact applies a selected artifact into the requester's chosen checkout.
 func (a *Agent) applyArtifact(ctx context.Context, s identity.Session, in input) (any, error) {
 	if !filepath.IsAbs(in.Checkout) {
 		return nil, errors.New("name the absolute path of a local checkout")
 	}
-	res, e := a.receipt(ctx, s, in.Request)
+	request := in.Handoff
+	if request == "" {
+		request = in.Request
+	}
+	res, e := a.receipt(ctx, s, request)
 	if e != nil {
 		return nil, e
 	}
 	var value struct {
 		Artifacts []struct{ Kind, Name, Content, URL string }
 	}
-	b, _ := json.Marshal(firstRow(res)["value"])
+	row := firstRow(res)
+	result, _ := row["value"].(map[string]any)
+	if row["status"] != "completed" || (row["action"] != "agent.handoff" && row["action"] != "agent.result") {
+		return nil, errors.New("name a completed handoff or agent.result request")
+	}
+	if row["action"] == "agent.handoff" {
+		log := a.sentLog(s.User)
+		slices.Reverse(log)
+		peer, _ := row["peer"].(string)
+		resource, _ := row["resource"].(string)
+		run, _ := result["run"].(string)
+		if run != "" {
+			result, _ = a.handoffUpdate(ctx, s, log, peer, resource, run, true)
+		}
+	}
+	b, _ := json.Marshal(result)
 	if json.Unmarshal(b, &value) != nil || in.Artifact < 0 || in.Artifact >= len(value.Artifacts) {
 		return nil, errors.New("no such artifact; read the result with agent.result first")
 	}
@@ -191,14 +334,78 @@ func (a *Agent) applyArtifact(ctx context.Context, s identity.Session, in input)
 		return map[string]string{"applied": art.Name}, nil
 	case "report", "file":
 		name := filepath.Base(art.Name)
-		if name == "." || name == "/" || name == "" {
+		if name == "." || name == ".." || name == "/" || name == "" {
 			name = "handoff-result.md"
 		}
 		path := filepath.Join(in.Checkout, name)
-		if e := os.WriteFile(path, []byte(art.Content), 0644); e != nil {
-			return nil, e
+		for {
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+			if errors.Is(err, os.ErrExist) {
+				path = filepath.Join(in.Checkout, name+"."+newID()[:8])
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			_, err = f.WriteString(art.Content)
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				_ = os.Remove(path)
+				return nil, err
+			}
+			return map[string]string{"saved": path}, nil
 		}
-		return map[string]string{"saved": path}, nil
+	case "branch":
+		return nil, errors.New("fetch the branch " + art.Name + " from the owner's repository into your checkout")
 	}
-	return nil, errors.New("this artifact kind is not applied automatically; fetch the branch from the owner's repository")
+	return nil, errors.New("this artifact kind cannot be applied locally")
+}
+
+func (a *Agent) receivedRequest(user, peer, resource, id string) bool {
+	matches := func(sender, target, action string) bool {
+		return (peer == "" || sender == peer) && (resource == "" || target == resource) && !actions.IsFollowUp(action)
+	}
+	a.mu.Lock()
+	p, pending := a.pending[id]
+	a.mu.Unlock()
+	if pending && p.child.Owner == user && matches(p.child.Sender, p.child.Resource, p.child.Action) {
+		return true
+	}
+	found := false
+	_ = a.walkOwnerAudit(func(entry AuditEntry) bool {
+		if entry.Unverified || entry.Request != id || !matches(entry.Peer, entry.Resource, entry.Action) {
+			return true
+		}
+		found = entry.Recipient == user
+		if !found && entry.Recipient == "" {
+			// Older audit rows omit the recipient. The executed action's receipt
+			// is in that user's state directory, even on a shared server.
+			cfg := a.localConfig(identity.Session{User: user})
+			found = actions.HasRequestReceipt(cfg, entry.Peer, entry.Resource, id)
+		}
+		return !found
+	})
+	return found
+}
+
+func (a *Agent) walkOwnerAudit(visit func(AuditEntry) bool) error {
+	f, err := os.Open(a.auditPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		var e AuditEntry
+		if json.Unmarshal(sc.Bytes(), &e) == nil && !visit(e) {
+			break
+		}
+	}
+	return sc.Err()
 }

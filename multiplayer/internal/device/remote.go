@@ -8,10 +8,12 @@ import (
 	"encoding/base32"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -189,11 +191,9 @@ func (m *Manager) remoteHandler() http.Handler {
 		http.SetCookie(w, &http.Cookie{Name: "ac_remote", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: d.Expires})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
+	// The page itself holds no data, so it is served without a session and shows
+	// its own pairing instructions when the API answers 401.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		if !rs.session(r) {
-			http.Error(w, "Pair this device from the Agent Commander tray first.", http.StatusUnauthorized)
-			return
-		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
 		_, _ = w.Write(remotePage)
@@ -201,7 +201,10 @@ func (m *Manager) remoteHandler() http.Handler {
 	api := func(pattern string, f func(*http.Request) (any, error)) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			if !rs.session(r) {
-				reply(w, nil, errors.New("not paired"))
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "not paired"})
 				return
 			}
 			if r.Method == "POST" && r.Header.Get("X-Commander-Remote") != "1" {
@@ -213,9 +216,12 @@ func (m *Manager) remoteHandler() http.Handler {
 		})
 	}
 	api("GET /api/overview", func(r *http.Request) (any, error) {
-		return map[string]any{"servers": m.Summaries(), "approvals": m.allApprovals(), "activity": m.activity()}, nil
+		handoffs, _ := m.perServer(r.Context(), "handoffs", input{})
+		return map[string]any{"servers": m.Summaries(), "approvals": m.allApprovals(r.Context()), "activity": m.activity(), "handoffs": activeHandoffs(handoffs)}, nil
 	})
-	api("GET /api/approvals", func(r *http.Request) (any, error) { return map[string]any{"approvals": m.allApprovals()}, nil })
+	api("GET /api/approvals", func(r *http.Request) (any, error) {
+		return map[string]any{"approvals": m.allApprovals(r.Context())}, nil
+	})
 	api("POST /api/approvals/{server}/{id}/{decision}", func(r *http.Request) (any, error) {
 		a, e := m.agentUse(r.PathValue("server"), false)
 		if e != nil {
@@ -225,9 +231,44 @@ func (m *Manager) remoteHandler() http.Handler {
 		if d != "approve" && d != "deny" {
 			return nil, errors.New("unknown decision")
 		}
-		return struct{}{}, a.decide(r.Context(), nil, r.PathValue("id"), d == "approve", "")
+		return a.tray(r.Context(), d, input{ID: r.PathValue("id")})
 	})
 	api("GET /api/activity", func(r *http.Request) (any, error) { return m.activity(), nil })
+	api("POST /api/activity/seen", func(r *http.Request) (any, error) {
+		var in struct {
+			Cursor string `json:"cursor"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in) != nil {
+			return nil, errors.New("invalid body")
+		}
+		return struct{}{}, m.activitySeen(in.Cursor)
+	})
+	api("GET /api/watchable", func(r *http.Request) (any, error) {
+		out := []map[string]any{}
+		for _, sum := range m.Summaries() {
+			if !sum.SignedIn {
+				continue
+			}
+			a, e := m.agentUse(sum.ID, false)
+			if e != nil {
+				continue
+			}
+			sess, e := a.getSession(r.Context())
+			if e != nil {
+				continue
+			}
+			rs, e := a.resources(r.Context(), sess)
+			if e != nil {
+				continue
+			}
+			for _, res := range rs {
+				if res.Owner != sess.User && slices.Contains(res.Actions, "agent.watch") {
+					out = append(out, map[string]any{"server": sum.ID, "resource": res})
+				}
+			}
+		}
+		return map[string]any{"resources": out}, nil
+	})
 	api("GET /api/handoffs", func(r *http.Request) (any, error) { return m.perServer(r.Context(), "handoffs", input{}) })
 	api("GET /api/watch/{server}/{resource}", func(r *http.Request) (any, error) {
 		a, e := m.agentUse(r.PathValue("server"), false)
@@ -238,13 +279,29 @@ func (m *Manager) remoteHandler() http.Handler {
 		if e != nil {
 			return nil, e
 		}
-		return a.liveVerb(r.Context(), s, "watch", input{Resource: r.PathValue("resource"), After: r.URL.Query().Get("after")})
+		v, e := a.liveVerb(r.Context(), s, "watch", input{Resource: r.PathValue("resource"), After: r.URL.Query().Get("after")})
+		if e != nil {
+			return nil, e
+		}
+		// Unwrap the request row: the page gets {status, events, cursor, state}.
+		row, _ := v.(map[string]any)
+		out := map[string]any{"status": row["status"], "events": []any{}, "cursor": r.URL.Query().Get("after"), "state": ""}
+		value, _ := row["value"].(map[string]any)
+		if value == nil {
+			value, _ = row["result"].(map[string]any)
+		}
+		for _, k := range []string{"events", "cursor", "state"} {
+			if x, ok := value[k]; ok && x != nil {
+				out[k] = x
+			}
+		}
+		return out, nil
 	})
 	return mux
 }
 
 // allApprovals lists pending approvals on every server.
-func (m *Manager) allApprovals() []map[string]any {
+func (m *Manager) allApprovals(ctx context.Context) []map[string]any {
 	m.mu.Lock()
 	agents := map[string]*Agent{}
 	for id, a := range m.agents {
@@ -253,7 +310,11 @@ func (m *Manager) allApprovals() []map[string]any {
 	m.mu.Unlock()
 	out := []map[string]any{}
 	for id, a := range agents {
-		list, _ := a.approvals()["approvals"].([]Approval)
+		s, err := a.getSession(ctx)
+		if err != nil {
+			continue
+		}
+		list, _ := a.approvals(ctx, s)["approvals"].([]Approval)
 		for _, ap := range list {
 			out = append(out, map[string]any{"server": id, "approval": ap})
 		}
@@ -281,4 +342,26 @@ func (m *Manager) perServer(ctx context.Context, verb string, in input) (any, er
 		}
 	}
 	return out, nil
+}
+
+// activeHandoffs keeps only the hand-offs still in progress, keyed by server.
+func activeHandoffs(perServer any) map[string]any {
+	finished := map[string]bool{"completed": true, "done": true, "failed": true, "denied": true, "expired": true, "cancelled": true, "rejected": true, "error": true, "succeeded": true}
+	out := map[string]any{}
+	byServer, _ := perServer.(map[string]any)
+	for id, v := range byServer {
+		b, _ := json.Marshal(v)
+		var list struct {
+			Handoffs []map[string]any `json:"handoffs"`
+		}
+		_ = json.Unmarshal(b, &list)
+		active := []map[string]any{}
+		for _, h := range list.Handoffs {
+			if st, _ := h["state"].(string); !finished[st] {
+				active = append(active, h)
+			}
+		}
+		out[id] = active
+	}
+	return out
 }

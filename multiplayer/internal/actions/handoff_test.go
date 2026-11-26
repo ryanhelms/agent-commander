@@ -49,11 +49,12 @@ func TestHandoffCreatesRunAndOnlyItsPeerCanRead(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 
 	cfg := Config{StateDir: filepath.Join(dir, "state"), CommanderSocket: socket,
-		Resources: []Resource{{ID: "res", Name: "Agent", Kind: "agent", Target: "worker"}},
+		Resources: []Resource{{ID: "res", Name: "Agent", Kind: "agent", Target: "worker"}, {ID: "other", Kind: "agent", Target: "worker"}},
 		Grants: []Grant{
-			{Peer: "sam", Resource: "res", Action: "agent.handoff", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 5},
-			{Peer: "sam", Resource: "res", Action: "agent.result", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 5},
+			{Peer: "sam", Resource: "res", Action: "agent.handoff", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 1},
+			{Peer: "sam", Resource: "res", Action: "agent.result", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 1},
 			{Peer: "eve", Resource: "res", Action: "agent.result", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 5},
+			{Peer: "sam", Resource: "other", Action: "agent.result", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 1},
 		}}
 	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
 		t.Fatal(err)
@@ -73,5 +74,11 @@ func TestHandoffCreatesRunAndOnlyItsPeerCanRead(t *testing.T) {
 	}
 	if _, err = Execute(ctx, cfg, Request{ID: "op3", Peer: "eve", Resource: "res", Action: "agent.result", Payload: json.RawMessage(`{"run":"r-new"}`)}); err == nil {
 		t.Fatal("another peer read a run it did not hand off")
+	}
+	if _, err = Execute(ctx, cfg, Request{ID: "op4", Peer: "sam", Resource: "other", Action: "agent.result", Payload: json.RawMessage(`{"run":"r-new"}`)}); err == nil {
+		t.Fatal("a grant on another resource reached the run")
+	}
+	if _, err = Execute(ctx, cfg, Request{ID: "op5", Peer: "sam", Resource: "res", Action: "agent.result", Payload: json.RawMessage(`{"run":"r-new"}`)}); err != nil {
+		t.Fatalf("reading a result consumed a use: %v", err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agentcommander.network/pilot/internal/sharing"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -177,13 +178,7 @@ func (s *Service) friendChange(ctx context.Context, p Principal, r *http.Request
 	return nil, err
 }
 
-type Capabilities struct {
-	Harness      string   `json:"harness,omitempty"`
-	Model        string   `json:"model,omitempty"`
-	Slots        *int     `json:"slots,omitempty"`
-	Tools        []string `json:"tools,omitzero"`
-	Environments []string `json:"environments,omitzero"`
-}
+type Capabilities = sharing.Capabilities
 
 type Resource struct {
 	ID           string        `json:"id"`
@@ -267,8 +262,8 @@ func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (
 	r.actions,r.capabilities,r.listed,`+resourceEndorsements+`,coalesce(access.actions,'{}'),coalesce(f.accepted,false) FROM mp_resources r
     JOIN mp_profiles p ON p.user_id=r.owner_id
     LEFT JOIN mp_friends f ON f.a=least($1,r.owner_id) AND f.b=greatest($1,r.owner_id)
-    LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_effective_actions
-        WHERE resource=r.id AND grantee=$1 AND action=ANY(r.actions) AND expires_at>now() AND used<max_uses) access ON true
+    LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_available_actions
+        WHERE resource=r.id AND grantee=$1 AND action=ANY(r.actions)) access ON true
     WHERE r.owner_id=$1 OR (cardinality(r.actions)>0 AND f.accepted) OR cardinality(access.actions)>0
     ORDER BY p.handle,r.id`, p.User)
 	if err != nil {

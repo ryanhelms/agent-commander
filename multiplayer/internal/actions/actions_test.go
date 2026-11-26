@@ -266,7 +266,8 @@ func TestIssueEffectsReceiptsRevocationAndUnknownOutcome(t *testing.T) {
 	}
 }
 
-func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
+func serveCommander(t *testing.T, handler http.Handler) string {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "ac-s-")
 	if err != nil {
 		t.Fatal(err)
@@ -277,17 +278,30 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	var ready atomic.Bool
-	var calls atomic.Int32
-	var drop atomic.Bool
-	var savedID, savedText atomic.Value
-	srv := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	srv := &http.Server{Handler: handler}
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	return socket
+}
+
+type askWorker struct {
+	socket      string
+	ready, drop atomic.Bool
+	calls       atomic.Int32
+	savedText   atomic.Value
+}
+
+func startAskWorker(t *testing.T, response string) *askWorker {
+	t.Helper()
+	worker := &askWorker{}
+	var savedID atomic.Value
+	worker.socket = serveCommander(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("Authorization") != "" {
 			t.Error("peer supplied credentials")
 		}
 		if req.Method == "GET" && req.URL.Path == "/v1/ag-ui/workers/worker" {
 			g := 0
-			if ready.Load() {
+			if worker.ready.Load() {
 				g = 9
 			}
 			fmt.Fprintf(w, `{"workerId":"worker","role":"worker","generation":%d}`, g)
@@ -302,9 +316,9 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 			fmt.Fprintf(w, `{"operationId":"op-1","runId":%q}`, savedID.Load())
 			return
 		case req.Method == "GET" && req.URL.Path == "/v1/ag-ui/workers/worker/operations/op-1":
-			runID, prompt = savedID.Load().(string), savedText.Load().(string)
+			runID, prompt = savedID.Load().(string), worker.savedText.Load().(string)
 		case req.Method == "POST" && req.URL.Path == "/v1/ag-ui/workers/worker/run":
-			calls.Add(1)
+			worker.calls.Add(1)
 			var in struct {
 				RunID          string
 				ForwardedProps struct{ Generation int }
@@ -316,8 +330,8 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 			}
 			runID, prompt = in.RunID, in.Messages[0].Content
 			savedID.Store(runID)
-			savedText.Store(prompt)
-			if drop.Load() {
+			worker.savedText.Store(prompt)
+			if worker.drop.Load() {
 				w.WriteHeader(502)
 				return
 			}
@@ -327,38 +341,67 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: "+`{"type":"STATE_SNAPSHOT","snapshot":{"workerId":"worker","operationId":"op-1","operationStatus":"completed"}}`+"\n\n")
-		msgs, _ := json.Marshal(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]string{{"role": "assistant", "content": "older private turn"}, {"role": "user", "content": prompt}, {"role": "tool", "content": "private trace"}, {"role": "assistant", "content": "scoped answer"}}})
+		usage := func(turn string, counts map[string]int) map[string]any {
+			return map[string]any{"role": "system", "metadata": map[string]any{"acp": map[string]any{
+				"source": "live", "kind": "acp.prompt_result", "turnId": turn, "turnTokens": counts,
+			}}}
+		}
+		counts := map[string]int{"inputTokens": 2, "outputTokens": 1, "cachedReadTokens": 4}
+		if req.Method == http.MethodPost {
+			counts["totalTokens"] = 7
+		}
+		msgs, _ := json.Marshal(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]any{
+			{"role": "assistant", "content": "older private turn"}, usage("earlier", map[string]int{"totalTokens": 100}),
+			{"role": "user", "content": prompt}, {"role": "tool", "content": "private trace"}, {"role": "assistant", "content": response},
+			usage("op-1", counts),
+		}})
 		fmt.Fprintf(w, "data: %s\n\ndata: {\"type\":\"RUN_FINISHED\",\"runId\":%q}\n\n", msgs, runID)
-	})}
-	go srv.Serve(l)
-	defer srv.Close()
-	cfg := Config{StateDir: dir, CommanderSocket: socket, Resources: []Resource{{ID: "coach", Kind: "agent", Target: "worker"}}, Grants: []Grant{{ID: "allow", Peer: "alice", Resource: "coach", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute)}}}
-	if _, err := PrepareLocalResource(context.Background(), socket, cfg.Resources[0]); err != nil {
+	}))
+	return worker
+}
+
+func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
+	worker := startAskWorker(t, "scoped answer")
+	cfg := Config{StateDir: t.TempDir(), CommanderSocket: worker.socket, Resources: []Resource{{ID: "coach", Kind: "agent", Target: "worker"}}, Grants: []Grant{{ID: "allow", Peer: "alice", Resource: "coach", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute), BudgetTokens: 14}}}
+	if _, err := PrepareLocalResource(context.Background(), worker.socket, cfg.Resources[0]); err != nil {
 		t.Fatal("existing worker must be enrollable before input is held", err)
 	}
 	msg := map[string]string{"text": "Please summarize"}
-	if _, e := action(t, cfg, "early", "alice", "coach", "agent.ask", msg); !errors.Is(e, ErrDenied) || calls.Load() != 0 {
+	if _, e := action(t, cfg, "early", "alice", "coach", "agent.ask", msg); !errors.Is(e, ErrDenied) || worker.calls.Load() != 0 {
 		t.Fatal(e)
 	}
-	ready.Store(true)
+	worker.ready.Store(true)
 	for i := 0; i < 2; i++ {
 		r, e := action(t, cfg, "ask", "alice", "coach", "agent.ask", msg)
-		if e != nil || r["text"] != "scoped answer" || r["operationId"] != "op-1" {
+		if e != nil || r["text"] != "scoped answer" || r["operationId"] != "op-1" || r["tokens"] != float64(7) {
 			t.Fatal(r, e)
 		}
 	}
-	if calls.Load() != 1 {
+	if worker.calls.Load() != 1 {
 		t.Fatal("duplicate worker turn")
 	}
-	drop.Store(true)
+	worker.drop.Store(true)
 	if _, e := action(t, cfg, "lost", "alice", "coach", "agent.ask", msg); !errors.Is(e, ErrUncertain) {
 		t.Fatal(e)
 	}
 	result, e := action(t, cfg, "lost", "alice", "coach", "agent.ask", msg)
-	if e != nil || result["text"] != "scoped answer" || calls.Load() != 2 {
-		t.Fatal(result, e, calls.Load())
+	if e != nil || result["text"] != "scoped answer" || worker.calls.Load() != 2 {
+		t.Fatal(result, e, worker.calls.Load())
 	}
-
+	// Upgrade an existing grant using its legacy fingerprint when editing
+	// its expiration. Both previously completed turns remain chargeable.
+	cfg.Grants[0].UsageID = cfg.Grants[0].ReceiptKey()
+	cfg.Grants[0].ExpiresAt = time.Now().Add(time.Hour)
+	req := Request{ID: "over", Peer: "alice", Resource: "coach", Action: "agent.ask"}
+	if e := CheckBudget(cfg, req); !errors.Is(e, ErrBudgetExhausted) {
+		t.Fatalf("approval preflight should refuse a spent budget: %v", e)
+	}
+	if _, e := action(t, cfg, "over", "alice", "coach", "agent.ask", msg); FailureCode(e) != "budget_exhausted" || worker.calls.Load() != 2 {
+		t.Fatalf("spent budget sent another prompt: %v, %d calls", e, worker.calls.Load())
+	}
+	if _, e := action(t, cfg, "ask", "alice", "coach", "agent.ask", msg); e != nil || worker.calls.Load() != 2 {
+		t.Fatalf("replaying an answer should succeed after the budget is spent: %v", e)
+	}
 }
 
 func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {

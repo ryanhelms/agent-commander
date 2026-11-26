@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review fixture for the Commander network tray (increments 1 to 4).
+"""Review fixture for the Commander network tray (increments 1 to 5).
 
 Stands in for `commander-network tray VERB` so the panel can be previewed without a relay:
 
@@ -29,7 +29,25 @@ trace starts with a few lines and gains one on each `watch` call. "Live remote w
 finished review (two findings; `review-post` checks the URL and posts nothing) and a fan-out to
 sam-agent and mei-agent with both answers in. A suggestion stays pending unless its text contains
 "approve"; a review whose title contains "wait" stays pending; a fan-out prompt containing "wait"
-leaves its last worker pending. `sent` rows of a fan-out carry `children` here.
+leaves its last worker pending. `sent` rows of a fan-out carry `children` here. `handovers` rows carry
+`handle` and `server` beside `user`, as the device agent sends them, and `handback` takes the friend's
+handle or that account ID under `handle`.
+
+Increment 6: Remote starts off with two paired devices. `remote-enable` serves nothing: it answers a
+tailnet-shaped address with a new eight-character code that lasts ten minutes. `remote-devices`,
+`remote-revoke` and `remote-disable` keep their state in the scratch file. These verbs name no
+server and refuse any field they don't know, as the device agent does.
+
+Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
+(Relay reconnect on a merge queue with claims, a board and three queued branches; iOS onboarding on
+pull requests), a host you lend (studio-mac) and two that friends lend (jonas-mac-mini is granted,
+mei-gpu-box only offered), a knowledge library of four items with versions, reputation figures and
+endorsements, a directory search and an admin policy. A grant may name `group` in place of `handle`.
+`host.run` answers with exit 0; a command or argument containing "fail" exits 1 and one containing
+"wait" stays pending. Sharing knowledge whose content looks like a secret is refused. A claim that
+overlaps a live one is refused with its holder. `queue-merge` merges each queued branch, except one
+whose name contains "fail" (tests fail) or "conflict". `knowledge-install` writes nothing. Suspending
+"fixture-nobody" or revoking device "d-unknown" is refused as not found.
 
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
 already trusts. Any other address passes and asks for its fingerprint to be confirmed.
@@ -80,7 +98,94 @@ def seed():
             {"id": "res-1", "name": "relay", "kind": "repo", "actions": REPO_ACTIONS},
             {"id": "res-2", "name": "relay-worker", "kind": "agent", "actions": AGENT_ACTIONS,
              "capabilities": {"harness": "claude", "model": "opus", "slots": 2, "tools": ["gh", "xcodebuild"],
-                              "environments": ["ios-simulator"]}}]},
+                              "environments": ["ios-simulator"]}},
+            {"id": "res-3", "name": "studio-mac", "kind": "host", "actions": ["host.run"],
+             "capabilities": {"tools": ["run-relay-benchmarks"], "environments": ["apple-silicon", "128gb"]}}]},
+        "groups": {"s-fixture-home": [
+            {"id": "grp-relay", "name": "relay-team", "owner": "u-ryan", "ownerHandle": "fixture-ryan",
+             "members": ["fixture-ryan", "fixture-sam", "fixture-mei"]},
+            {"id": "grp-ios", "name": "ios-crew", "owner": "u-jonas", "ownerHandle": "fixture-jonas",
+             "members": ["fixture-jonas", "fixture-ryan"]}]},
+        "workspaces": {"s-fixture-home": [
+            {"id": "ws-relay", "owner": "u-ryan", "group": "grp-relay", "name": "Relay reconnect",
+             "goal": "Make reconnects survive a lease renewal without dropping queued requests.",
+             "repository": "github.com/example/relay", "base": "main", "integration": "queue",
+             "claims": [
+                 {"id": "cl-1", "kind": "paths", "key": "Sources/Relay/Lease.swift,Tests/Relay", "holder": "fixture-sam/sam-agent",
+                  "expiresAt": now(42)},
+                 {"id": "cl-2", "kind": "card", "key": "card-2", "holder": "fixture-ryan/relay-worker", "expiresAt": now(55)},
+                 {"id": "cl-3", "kind": "issue", "key": "#212", "holder": "fixture-mei/mei-agent", "expiresAt": now(18)}]},
+            {"id": "ws-ios", "owner": "u-jonas", "group": "grp-ios", "name": "iOS onboarding",
+             "goal": "Ship the three-screen first-run flow behind a flag.",
+             "repository": "github.com/example/commander-ios", "base": "develop", "integration": "pull_request",
+             "claims": [{"id": "cl-4", "kind": "issue", "key": "#48", "holder": "fixture-jonas/jonas-ios",
+                         "expiresAt": now(30)}]}]},
+        "cards": {"ws-relay": [
+            {"id": "card-1", "title": "Bound the renewal wait with a deadline", "state": "open", "assignee": "", "result": "",
+             "body": "`relay.renewed()` has no deadline. Pass a 2 second timeout so a lost renewal fails the test."},
+            {"id": "card-2", "title": "Key lease waiters by lease ID", "state": "claimed",
+             "assignee": "fixture-ryan/relay-worker", "result": "",
+             "body": "## Why\n\n`renewed()` resumes every waiter, including ones for an older lease.\n\n"
+                     "## Done when\n\n- Waiters are keyed by lease ID\n- `LeaseTests` cover two overlapping leases"},
+            {"id": "card-3", "title": "Replay queued requests after reconnect", "state": "claimed",
+             "assignee": "fixture-sam/sam-agent", "result": "", "body": ""},
+            {"id": "card-4", "title": "Add a reconnect soak test to CI", "state": "open", "assignee": "", "result": "", "body": ""},
+            {"id": "card-5", "title": "Reproduce the CI flake locally", "state": "done", "assignee": "fixture-sam/sam-agent",
+             "result": "Reproduced in 1 of 5 runs. The link drops before the renewal lands. Branch `collab/repro-flake`.",
+             "body": ""},
+            {"id": "card-6", "title": "Write down the lease state machine", "state": "done", "assignee": "fixture-mei/mei-agent",
+             "result": "See `docs/lease-states.md` in pull request 207.", "body": ""}],
+            "ws-ios": [
+            {"id": "card-7", "title": "Welcome screen copy", "state": "open", "assignee": "", "result": "", "body": ""}]},
+        "queue": [
+            {"workspace": "ws-relay", "branch": "collab/repro-flake", "checkout": "/Users/fixture/relay",
+             "test": ["swift", "test"], "added": now(-190), "state": "merged", "output": ""},
+            {"workspace": "ws-relay", "branch": "collab/soak-test", "checkout": "/Users/fixture/relay",
+             "test": ["swift", "test"], "added": now(-75), "state": "failed",
+             "output": "Test Case 'ReconnectSoakTests.testThousandRenewals' started.\n"
+                       "ReconnectSoakTests.swift:61: error: expected 1000 renewals, got 997\n"
+                       "Executed 212 tests, with 1 failure (0 unexpected) in 48.201 seconds"},
+            {"workspace": "ws-relay", "branch": "collab/lease-waiters", "checkout": "/Users/fixture/relay",
+             "test": ["swift", "test"], "added": now(-12), "state": "queued", "output": ""},
+            {"workspace": "ws-relay", "branch": "collab/replay-queue", "checkout": "/Users/fixture/relay",
+             "test": ["swift", "test"], "added": now(-4), "state": "queued", "output": ""}],
+        "knowledge": {"s-fixture-home": [
+            {"id": "kn-skill", "owner": "u-sam", "kind": "skill", "name": "relay-triage", "visibility": "group:grp-relay",
+             "version": 3, "createdAt": now(-300),
+             "content": "# Relay triage\n\nUse this when a relay test flakes.\n\n1. Read the failing test and the lease code.\n"
+                        "2. Run the test 20 times: `swift test --filter Reconnect`.\n3. Report the failure rate before changing anything.\n"},
+            {"id": "kn-mcp", "owner": "u-ryan", "kind": "mcp", "name": "github-issues", "visibility": "friend:fixture-sam",
+             "version": 1, "createdAt": now(-1500),
+             "content": "{\n  \"mcpServers\": {\n    \"github\": {\n      \"command\": \"gh-mcp\",\n"
+                        "      \"env\": {\"GITHUB_TOKEN\": \"${GITHUB_TOKEN}\"}\n    }\n  }\n}"},
+            {"id": "kn-prompt", "owner": "u-mei", "kind": "prompt", "name": "Review for races", "visibility": "server",
+             "version": 2, "createdAt": now(-2900),
+             "content": "Review this diff for **data races** only. For each one, name the two accesses and the missing guard."},
+            {"id": "kn-notes", "owner": "u-ryan", "kind": "instructions", "name": "Commit style", "visibility": "private",
+             "version": 1, "createdAt": now(-5000),
+             "content": "Write commit subjects in the imperative. Keep them under 60 characters."}]},
+        "knowledgeVersions": {
+            "kn-skill": [
+                {"version": 1, "visibility": "private", "createdAt": now(-9000),
+                 "content": "# Relay triage\n\nRead the failing test first."},
+                {"version": 2, "visibility": "friend:fixture-ryan", "createdAt": now(-4000),
+                 "content": "# Relay triage\n\n1. Read the failing test and the lease code.\n2. Run the test 20 times."}],
+            "kn-prompt": [
+                {"version": 1, "visibility": "friend:fixture-ryan", "createdAt": now(-6000),
+                 "content": "Review this diff for data races."}]},
+        "reputation": {
+            "dir-sam-agent": {"completed": 41, "accepted": 33, "rejected": 4, "medianSeconds": 412.0},
+            "dir-jonas-mini": {"completed": 18, "accepted": 15, "rejected": 1, "medianSeconds": 96.0},
+            "res-2": {"completed": 12, "accepted": 9, "rejected": 2, "medianSeconds": 1840.0},
+            "res-3": {"completed": 3, "accepted": 3, "rejected": 0, "medianSeconds": 55.0}},
+        "endorsements": {
+            "dir-sam-agent": [{"handle": "fixture-mei", "skill": "swift concurrency"},
+                              {"handle": "fixture-jonas", "skill": "swift concurrency"},
+                              {"handle": "fixture-jonas", "skill": "flaky tests"}],
+            "dir-jonas-mini": [{"handle": "fixture-sam", "skill": "ios ui tests"}]},
+        "policy": {"knowledgeDefault": "private", "knowledgeWidest": "server", "reputationVisibility": "friends",
+                   "directory": True, "maxGrantDays": 30, "maxBudgetTokens": 0, "retentionDays": 90},
+        "suspended": [], "revokedDevices": [],
         "grants": {"s-fixture-home": [
             {"id": "g-1", "handle": "fixture-sam", "kind": "agent", "resource": "res-2", "capability": "agent.ask",
              "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
@@ -90,7 +195,11 @@ def seed():
              "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
             {"id": "g-4", "handle": "fixture-jonas", "kind": "agent", "resource": "res-2", "capability": "agent.ask",
              "maxUses": 5, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 50000, "attribution": "owner"}]},
-        "handovers": {"s-fixture-home": [{"user": "u-sam", "resource": "res-2", "until": now(24)}]},
+        "handovers": {"s-fixture-home": [{"user": "u-sam", "handle": "fixture-sam", "server": "s-fixture-home",
+                                          "resource": "res-2", "until": now(24)}]},
+        "remote": {"running": False, "url": "", "code": "", "devices": [
+            {"id": "RD7K2MQA", "name": "Ryan’s iPhone", "paired": now(-60 * 24 * 3), "expires": now(60 * 24 * 27)},
+            {"id": "RD3XW9PT", "name": "iPad mini", "paired": now(-60 * 24 * 21), "expires": now(60 * 24 * 9)}]},
         "approvals": {"s-fixture-home": [
             {"id": "ap-3", "peer": "fixture-sam", "resource": "res-2", "action": "agent.suggest",
              "summary": json.dumps({"text": "Pin the lease clock in the test instead of sleeping for the renewal."}),
@@ -199,7 +308,13 @@ DIRECTORY = {
          "capabilities": {"harness": "claude", "model": "opus", "slots": 1, "tools": ["xcodebuild"],
                           "environments": ["ios-simulator"]}},
         {"id": "dir-mei-docs", "owner": "u-mei", "handle": "fixture-mei", "device": "d-mei", "kind": "repo",
-         "name": "mei-docs", "actions": ["issue.comment", "issue.read"], "grantedActions": []}],
+         "name": "mei-docs", "actions": ["issue.comment", "issue.read"], "grantedActions": []},
+        {"id": "dir-jonas-mini", "owner": "u-jonas", "handle": "fixture-jonas", "device": "d-jonas", "kind": "host",
+         "name": "jonas-mac-mini", "actions": ["host.run"], "grantedActions": ["host.run"], "listed": True,
+         "capabilities": {"tools": ["run-ios-ui-tests", "build-release"], "environments": ["ios-simulator", "xcode-16"]}},
+        {"id": "dir-mei-gpu", "owner": "u-mei", "handle": "fixture-mei", "device": "d-mei", "kind": "host",
+         "name": "mei-gpu-box", "actions": ["host.run"], "grantedActions": [], "listed": True,
+         "capabilities": {"tools": ["train-eval", "render-batch", "run-benchmarks"], "environments": ["gpu", "linux", "cuda-12"]}}],
     "s-fixture-studio": [
         {"id": "sh-1", "owner": "u-sam", "handle": "fixture-sam", "device": "d-sam", "kind": "agent",
          "name": "sam-agent", "actions": AGENT_ACTIONS, "grantedActions": ["agent.ask", "thread.read", "thread.comment"]}],
@@ -273,7 +388,8 @@ def status(state, server):
         "shared": [{"id": row["id"], "name": row["name"], "kind": row["kind"], "owner": row["handle"],
                     "actions": row["grantedActions"], "capabilities": row.get("capabilities")}
                    for row in DIRECTORY.get(server["id"], []) if row["grantedActions"]],
-        "directory": DIRECTORY.get(server["id"], []),
+        "directory": [dict(row, endorsements=share(state, "endorsements").get(row["id"], []))
+                      for row in DIRECTORY.get(server["id"], [])],
     }
 
 
@@ -302,6 +418,20 @@ def answer(request):
         if "approve" in payload.get("text", ""):
             return "ok", {"text": "Fixture answer. The owner approved it and the worker took the suggestion."}
         return "pending", None
+    if action == "host.run":
+        command, args = payload.get("command", ""), payload.get("args") or []
+        text = " ".join([command] + args)
+        if "wait" in text:
+            return "pending", None
+        if "fail" in text:
+            return "ok", {"command": command, "exitCode": 1, "seconds": 41,
+                          "output": "Test Suite 'OnboardingUITests' started.\n"
+                                    "OnboardingUITests.swift:88: error: -[OnboardingUITests testSkipFlow] : "
+                                    "XCTAssertTrue failed - the Skip button never appeared\n"
+                                    "Executed 14 tests, with 1 failure (0 unexpected) in 39.870 seconds\n** TEST FAILED **"}
+        return "ok", {"command": command, "exitCode": 0, "seconds": 37,
+                      "output": "Test Suite 'OnboardingUITests' started.\n"
+                                "Executed 14 tests, with 0 failures (0 unexpected) in 36.412 seconds\n** TEST SUCCEEDED **"}
     if action == "review.request":
         return ("pending", None) if "wait" in payload.get("title", "") else ("ok", REVIEW)
     if action in ("agent.status", "agent.result"):
@@ -334,9 +464,11 @@ def live(state, verb, request):
         return {"handovers": held}
     if verb in ("handover", "handback"):
         handle, resource = request.get("handle") or "", request.get("resource") or ""
-        if not any(friend[1] == handle for friend in FRIENDS.get(server, [])):
+        # The tray may name the holder by handle or, for handback, by the account ID `handovers` lists.
+        by_id = verb == "handback" and any(row["user"] == handle and row["resource"] == resource for row in held)
+        if not by_id and not any(friend[1] == handle for friend in FRIENDS.get(server, [])):
             raise ValueError("unknown friend")
-        user = "u-" + handle.split("-", 1)[-1]
+        user = handle if by_id else "u-" + handle.split("-", 1)[-1]
         held[:] = [row for row in held if not (row["user"] == user and row["resource"] == resource)]
         if verb == "handback":
             save(state)
@@ -344,7 +476,7 @@ def live(state, verb, request):
         minutes = request.get("minutes") or 0
         if not resource or not 1 <= minutes <= 240:
             raise ValueError("handover needs a friend, a resource and 1–240 minutes")
-        held.append({"user": user, "resource": resource, "until": now(minutes)})
+        held.append({"user": user, "handle": handle, "server": server, "resource": resource, "until": now(minutes)})
         save(state)
         return {"handle": handle, "resource": resource, "until": now(minutes)}
     if verb == "watch":
@@ -389,6 +521,37 @@ def live(state, verb, request):
     raise ValueError("unknown tray operation")
 
 
+REMOTE_URL = "http://100.64.0.7:8780"
+
+
+def remote(state, verb, request):
+    """Increment 6: the web view's switch, pairing code and paired devices. Nothing is served."""
+    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"}}.get(verb, set())
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    if "remote" not in state:
+        state["remote"] = seed()["remote"]
+    held = state["remote"]
+    if verb == "remote-enable":
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        code = "".join(alphabet[byte % 32] for byte in os.urandom(8))
+        held.update(running=True, url=REMOTE_URL, code=code)
+        save(state)
+        return {"url": REMOTE_URL, "code": code, "expiresAt": now(10), "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
+    if verb == "remote-disable":
+        held.update(running=False, url="", code="")
+        save(state)
+        return {}
+    if verb == "remote-revoke":
+        kept = [row for row in held["devices"] if row["id"] != request.get("device")]
+        if len(kept) == len(held["devices"]):
+            raise ValueError("unknown device")
+        held["devices"] = kept
+        save(state)
+        return {}
+    return {"devices": held["devices"], "url": held["url"], "running": held["running"]}
+
+
 def sharing(state, verb, request):
     server = find(state, request)["id"]
     if verb == "approvals":
@@ -416,7 +579,7 @@ def sharing(state, verb, request):
         if not any(row["id"] == request.get("id") for row in rows):
             kind = request.get("kind")
             rows.append({"id": request.get("id"), "name": request.get("name"), "kind": kind,
-                         "actions": AGENT_ACTIONS if kind == "agent" else REPO_ACTIONS})
+                         "actions": AGENT_ACTIONS if kind == "agent" else ["host.run"] if kind == "host" else REPO_ACTIONS})
         save(state)
         return {"id": request.get("id")}
     if verb == "grant":
@@ -426,12 +589,22 @@ def sharing(state, verb, request):
         if not own or request.get("capability") not in own[0]["actions"]:
             raise ValueError("unsupported local resource or capability")
         rows = share(state, "grants").setdefault(server, [])
-        ident = "g-%s-%s-%s" % (request["resource"], request.get("handle"), request["capability"])
-        rows[:] = [row for row in rows if row["id"] != ident]
-        rows.append({"id": ident, "handle": request.get("handle"), "kind": own[0]["kind"], "resource": request["resource"],
-                     "capability": request["capability"], "maxUses": request.get("maxUses", 100),
-                     "expiresAt": request.get("expiresAt") or now(60 * 24), "approval": request.get("approval", "ask"),
-                     "budgetTokens": request.get("budgetTokens", 0), "attribution": request.get("attribution", "owner")})
+        handles = [request.get("handle")]
+        if request.get("group"):
+            # A grant to a group is expanded to one grant per member, the owner aside.
+            group = [g for g in share(state, "groups").get(server, []) if g["id"] == request["group"]]
+            if not group or group[0]["ownerHandle"] != "fixture-ryan":
+                raise ValueError("only the group's owner can share with it")
+            handles = [member for member in group[0]["members"] if member != "fixture-ryan"]
+        elif not request.get("handle"):
+            raise ValueError("name a friend or a group")
+        for handle in handles:
+            ident = "g-%s-%s-%s" % (request["resource"], handle, request["capability"])
+            rows[:] = [row for row in rows if row["id"] != ident]
+            rows.append({"id": ident, "handle": handle, "kind": own[0]["kind"], "resource": request["resource"],
+                         "capability": request["capability"], "maxUses": request.get("maxUses", 100),
+                         "expiresAt": request.get("expiresAt") or now(60 * 24), "approval": request.get("approval", "ask"),
+                         "budgetTokens": request.get("budgetTokens", 0), "attribution": request.get("attribution", "owner")})
         for row in share(state, "access").get(server, []):
             if row["resource"] == request["resource"] and row["requesterHandle"] == request.get("handle"):
                 row["status"] = "granted"
@@ -473,7 +646,7 @@ def sharing(state, verb, request):
     if verb == "relay":
         path, method = request.get("path") or "", (request.get("method") or "").upper()
         if not path.startswith("/v1/access-requests"):
-            raise ValueError("that relay route is not available to the tray")
+            return teams_relay(state, server, method, path, request.get("body") or {})
         rows = share(state, "access").setdefault(server, [])
         if method == "GET":
             return {"requests": rows}
@@ -498,6 +671,284 @@ def sharing(state, verb, request):
             return {}
     raise ValueError("unknown tray operation")
 
+
+
+SECRET = __import__("re").compile(
+    r"(?i)(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(password|passwd|secret|token|api[_-]?key)\s*[=:]\s*[\"']?[^\s\"'${}]{6,})")
+SECRET_REFUSAL = "this item seems to contain a secret; replace it with a ${NAME} placeholder before sharing"
+
+
+def overlaps(kind, a, b):
+    if kind != "paths":
+        return a == b
+    left, right = [p.strip().rstrip("/") + "/" for p in a.split(",")], [p.strip().rstrip("/") + "/" for p in b.split(",")]
+    return any(x.startswith(y) or y.startswith(x) for x in left for y in right)
+
+
+def teams_relay(state, server, method, path, body):
+    """Increment 5: the relay's team routes, as the device's `relay` verb reaches them."""
+    from urllib.parse import unquote, urlsplit
+    split = urlsplit(path)
+    parts = [unquote(part) for part in split.path.strip("/").split("/")][1:]
+    head = parts[0] if parts else ""
+    friends = [handle for _, handle, _, _ in FRIENDS.get(server, [])]
+    if head == "groups":
+        rows = share(state, "groups").setdefault(server, [])
+        if method == "GET":
+            return {"groups": rows}
+        if method == "POST":
+            name = (body.get("name") or "").strip()
+            if not name or len(name.encode()) > 128:
+                raise ValueError("provide a group name of 1–128 bytes")
+            ident = "grp-%s" % hashlib.sha256((name + now()).encode()).hexdigest()[:8]
+            rows.append({"id": ident, "name": name, "owner": "u-ryan", "ownerHandle": "fixture-ryan", "members": ["fixture-ryan"]})
+            save(state)
+            return {"id": ident}
+        group = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
+        if not group:
+            raise ValueError("not found")
+        if group[0]["ownerHandle"] != "fixture-ryan":
+            raise ValueError("forbidden")
+        if len(parts) == 2 and method == "DELETE":
+            rows.remove(group[0])
+        elif len(parts) == 4 and parts[2] == "members":
+            handle = parts[3]
+            if handle == "fixture-ryan":
+                raise ValueError("the group owner is a permanent member")
+            if method == "PUT":
+                if handle not in friends:
+                    raise ValueError("only friends can be added to a group")
+                if handle not in group[0]["members"]:
+                    group[0]["members"].append(handle)
+            else:
+                group[0]["members"] = [member for member in group[0]["members"] if member != handle]
+        save(state)
+        return {}
+    if head == "workspaces":
+        rows = share(state, "workspaces").setdefault(server, [])
+        if len(parts) == 1 and method == "GET":
+            return {"workspaces": rows}
+        if len(parts) == 1 and method == "POST":
+            if not all((body.get(field) or "").strip() for field in ("name", "goal", "repository", "base", "group")):
+                raise ValueError("provide a name, goal, repository, base and group")
+            if body.get("integration") not in ("queue", "pull_request"):
+                raise ValueError("integration must be queue or pull_request")
+            ident = "ws-%s" % hashlib.sha256((body["name"] + now()).encode()).hexdigest()[:8]
+            rows.append({"id": ident, "owner": "u-ryan", "group": body["group"], "name": body["name"], "goal": body["goal"],
+                         "repository": body["repository"], "base": body["base"], "integration": body["integration"],
+                         "claims": []})
+            save(state)
+            return {"id": ident}
+        workspace = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
+        if not workspace:
+            raise ValueError("not found")
+        workspace = workspace[0]
+        cards = share(state, "cards").setdefault(workspace["id"], [])
+        if parts[2:3] == ["claims"]:
+            if method == "POST":
+                kind, key, holder = body.get("kind"), (body.get("key") or "").strip(), body.get("holder") or ""
+                if kind not in ("issue", "paths", "card") or not key:
+                    raise ValueError("claim kind must be issue, paths or card")
+                if not holder.startswith("fixture-ryan/"):
+                    raise ValueError("holder must be handle/agent")
+                for claim in workspace["claims"]:
+                    if claim["kind"] == kind and overlaps(kind, key, claim["key"]):
+                        raise ValueError("already claimed by %s" % claim["holder"])
+                claim = {"id": "cl-%s" % hashlib.sha256((key + now()).encode()).hexdigest()[:8], "kind": kind, "key": key,
+                         "holder": holder, "expiresAt": now(60)}
+                workspace["claims"].append(claim)
+                save(state)
+                return claim
+            hit = [claim for claim in workspace["claims"] if claim["id"] == parts[3] and claim["holder"].startswith("fixture-ryan/")]
+            if not hit:
+                raise ValueError("not found")
+            workspace["claims"].remove(hit[0])
+            for card in cards:
+                if hit[0]["kind"] == "card" and card["id"] == hit[0]["key"]:
+                    card.update(state="open", assignee="")
+            save(state)
+            return {}
+        if parts[2:3] == ["cards"]:
+            if len(parts) == 3 and method == "GET":
+                return {"cards": cards}
+            if len(parts) == 3 and method == "POST":
+                if not (body.get("title") or "").strip():
+                    raise ValueError("provide a card title")
+                card = {"id": "card-%s" % hashlib.sha256((body["title"] + now()).encode()).hexdigest()[:8],
+                        "title": body["title"].strip(), "body": body.get("body", ""), "state": "open", "assignee": "", "result": ""}
+                cards.append(card)
+                save(state)
+                return card
+            card = [row for row in cards if row["id"] == parts[3]]
+            if not card:
+                raise ValueError("not found")
+            card = card[0]
+            if method == "GET":
+                return card
+            if body.get("state") not in (None, "open", "claimed", "done"):
+                raise ValueError("state must be open, claimed or done")
+            if card["state"] == "claimed" and not card["assignee"].startswith("fixture-ryan/"):
+                raise ValueError("already claimed by %s" % card["assignee"])
+            was = card["state"]
+            card["state"] = body.get("state", was)
+            if "result" in body:
+                card["result"] = body["result"]
+            if "assignee" in body:
+                card["assignee"] = body["assignee"]
+            elif was == "claimed" and card["state"] == "open":
+                card["assignee"] = ""
+            claims = workspace["claims"]
+            claims[:] = [claim for claim in claims if not (claim["kind"] == "card" and claim["key"] == card["id"])]
+            if card["state"] == "claimed":
+                claims.append({"id": "cl-%s" % card["id"], "kind": "card", "key": card["id"], "holder": card["assignee"],
+                               "expiresAt": now(60)})
+            save(state)
+            return card
+    if head == "knowledge":
+        rows = share(state, "knowledge").setdefault(server, [])
+        versions = share(state, "knowledgeVersions")
+        if len(parts) == 1 and method == "GET":
+            return {"items": rows}
+        if len(parts) == 3 and parts[2] == "versions":
+            item = [row for row in rows if row["id"] == parts[1]]
+            if not item:
+                raise ValueError("not found")
+            older = [dict(item[0], **version) for version in versions.get(parts[1], [])]
+            return {"versions": older + [item[0]]}
+        if SECRET.search(body.get("content") or ""):
+            raise ValueError(SECRET_REFUSAL)
+        widest = ["private", "friend", "group", "server"]
+        scope = (body.get("visibility") or "private").split(":")[0]
+        if scope not in widest:
+            raise ValueError("use private, friend:<handle>, group:<id> or server")
+        if widest.index(scope) > widest.index(share(state, "policy")["knowledgeWidest"]):
+            raise ValueError("forbidden")
+        if method == "POST":
+            if body.get("kind") not in ("prompt", "skill", "instructions", "mcp", "summary") or not (body.get("name") or "").strip() \
+                    or not (body.get("content") or "").strip():
+                raise ValueError("provide a knowledge kind, name and content")
+            item = {"id": "kn-%s" % hashlib.sha256((body["name"] + now()).encode()).hexdigest()[:8], "owner": "u-ryan",
+                    "kind": body["kind"], "name": body["name"].strip(), "content": body["content"],
+                    "visibility": body.get("visibility") or "private", "version": 1, "createdAt": now()}
+            rows.insert(0, item)
+            save(state)
+            return item
+        item = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
+        if not item or item[0]["owner"] != "u-ryan":
+            raise ValueError("not found")
+        item = item[0]
+        versions.setdefault(item["id"], []).append({key: item[key] for key in ("version", "visibility", "createdAt", "content")})
+        item.update({key: body[key] for key in ("name", "content", "visibility") if body.get(key)})
+        item.update(version=item["version"] + 1, createdAt=now())
+        save(state)
+        return item
+    if head == "reputation" and method == "GET":
+        figures = share(state, "reputation").get(parts[1] if len(parts) > 1 else "")
+        if parts[1:2] == ["dir-mei-gpu"]:
+            raise ValueError("forbidden")
+        figures = figures or {"completed": 0, "accepted": 0, "rejected": 0, "medianSeconds": None}
+        return dict(figures, resource=parts[1])
+    if head == "outcomes" and method == "POST":
+        if not body.get("resource") or not body.get("request") or not isinstance(body.get("accepted"), bool):
+            raise ValueError("provide a resource, request and accepted flag")
+        figures = share(state, "reputation").setdefault(body["resource"], {"completed": 1, "accepted": 0, "rejected": 0,
+                                                                              "medianSeconds": None})
+        figures["accepted" if body["accepted"] else "rejected"] += 1
+        save(state)
+        return {}
+    if head == "endorsements" and method == "POST":
+        if not body.get("resource") or not (body.get("skill") or "").strip():
+            raise ValueError("provide a resource and skill")
+        if not any(row["id"] == body["resource"] and row["grantedActions"] for row in DIRECTORY.get(server, [])):
+            raise ValueError("forbidden")
+        rows = share(state, "endorsements").setdefault(body["resource"], [])
+        entry = {"handle": "fixture-ryan", "skill": body["skill"].strip()}
+        if entry not in rows:
+            rows.append(entry)
+        save(state)
+        return {}
+    if head == "directory" and method == "GET":
+        if not share(state, "policy")["directory"]:
+            raise ValueError("forbidden")
+        from urllib.parse import parse_qs
+        query = (parse_qs(split.query).get("q") or [""])[0].lower()
+        listed = [row for row in DIRECTORY.get(server, []) if row.get("listed")]
+        hits = [row for row in listed if query in json.dumps([row["name"], row["handle"], row["actions"],
+                                                                row.get("capabilities")]).lower()]
+        handles = sorted({handle for handle in friends + ["fixture-ryan"]
+                          if query in handle and (query or any(row["handle"] == handle for row in listed))})
+        return {"handles": handles, "resources": [
+            {"id": row["id"], "handle": row["handle"], "name": row["name"], "kind": row["kind"], "actions": row["actions"],
+             "capabilities": row.get("capabilities"), "endorsements": share(state, "endorsements").get(row["id"], [])}
+            for row in hits]}
+    if head == "admin":
+        if server != "s-fixture-home":
+            raise ValueError("forbidden")
+        if parts[1:] == ["policy"] and method == "PUT":
+            policy = share(state, "policy")
+            unknown = set(body) - set(policy)
+            if unknown:
+                raise ValueError("invalid policy setting")
+            merged = dict(policy, **body)
+            widest = ["private", "friend", "group", "server"]
+            if merged["knowledgeDefault"] not in widest or merged["knowledgeWidest"] not in widest \
+                    or widest.index(merged["knowledgeDefault"]) > widest.index(merged["knowledgeWidest"]):
+                raise ValueError("knowledgeDefault must be an allowed scope within knowledgeWidest")
+            if merged["retentionDays"] < 1 or merged["maxGrantDays"] < 0 or merged["maxBudgetTokens"] < 0:
+                raise ValueError("grant limits must be nonnegative and retentionDays must be positive")
+            policy.update(merged)
+            save(state)
+            return policy
+        if len(parts) == 4 and parts[1] == "members" and parts[3] in ("suspend", "unsuspend") and method == "POST":
+            if parts[2] not in friends:
+                raise ValueError("not found")
+            rows = share(state, "suspended")
+            rows[:] = [handle for handle in rows if handle != parts[2]] + ([parts[2]] if parts[3] == "suspend" else [])
+            save(state)
+            return {}
+        if len(parts) == 3 and parts[1] == "devices" and method == "DELETE":
+            if parts[2] == "d-unknown":
+                raise ValueError("not found")
+            share(state, "revokedDevices").append(parts[2])
+            save(state)
+            return {}
+    raise ValueError("that relay route is not available to the tray")
+
+
+def teams(state, verb, request):
+    """Increment 5: the device's own team verbs."""
+    server = find(state, request)["id"]
+    if verb == "knowledge-share":
+        return teams_relay(state, server, "POST", "/v1/knowledge", request.get("item") or {})
+    if verb == "knowledge-install":
+        item = request.get("item") or {}
+        if not item.get("name"):
+            raise ValueError("invalid knowledge item")
+        name = item["name"].replace(" ", "-")
+        if item.get("kind") == "skill":
+            return {"installed": "~/.claude/skills/%s/SKILL.md" % name}
+        if not (request.get("destination") or "").startswith("/"):
+            raise ValueError("choose where to save this item")
+        return {"installed": request["destination"]}
+    rows = share(state, "queue")
+    if verb == "queue-add":
+        if not (request.get("checkout") or "").startswith("/") or not request.get("branch") or not request.get("workspace"):
+            raise ValueError("queue-add needs a workspace, a branch and the absolute checkout path")
+        rows.append({"workspace": request["workspace"], "branch": request["branch"], "checkout": request["checkout"],
+                     "test": request.get("testCommand") or [], "added": now(), "state": "queued", "output": ""})
+    if verb == "queue-merge":
+        for row in rows:
+            if row["state"] != "queued" or (request.get("workspace") and row["workspace"] != request["workspace"]):
+                continue
+            if "conflict" in row["branch"]:
+                row.update(state="conflict", output="CONFLICT (content): Merge conflict in Sources/Relay/Lease.swift")
+            elif "fail" in row["branch"]:
+                row.update(state="failed", output="Executed 212 tests, with 2 failures (0 unexpected) in 47.9 seconds")
+            else:
+                row.update(state="merged", output="")
+    save(state)
+    return {"queue": rows}
 
 
 def summary(server, state=None):
@@ -554,6 +1005,8 @@ def probe(request):
 
 def run(verb, request):
     state = load()
+    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke"):
+        return remote(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
         favorites = sorted([s for s in ordered if s["favorite"]], key=lambda s: s.get("lastUsedAt") or "", reverse=True)
@@ -682,6 +1135,8 @@ def run(verb, request):
         return sharing(state, verb, request)
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
+    if verb in ("queue", "queue-add", "queue-merge", "knowledge-share", "knowledge-install"):
+        return teams(state, verb, request)
     return {}
 
 

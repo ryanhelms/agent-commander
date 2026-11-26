@@ -170,13 +170,13 @@ func TestShareGrantLimitsAndDottedSubmissions(t *testing.T) {
 	}
 	lease := shareResponse[leaseProof](t, call("alice", "POST", "/v1/session", nil, 200))
 	call("alice", "PUT", "/v1/session", lease, 200)
-	claim := shareResponse[struct{ Claimed bool }](t, call("alice", "POST", "/v1/children/agent.result/claim", lease, 200))
+	claim := shareResponse[struct{ Claimed bool }](t, call("alice", "POST", "/v1/children/agent.handoff/claim", lease, 200))
 	if !claim.Claimed {
 		t.Fatal("owner could not claim a request for local approval")
 	}
 	// Editing a policy retains usage. A spent limit cannot fulfill a new access request.
-	call("bob", "POST", "/v1/access-requests", map[string]any{"resource": "worker", "actions": []string{"agent.result"}}, 200)
-	limits[1]["max_uses"] = 1
+	call("bob", "POST", "/v1/access-requests", map[string]any{"resource": "worker", "actions": []string{"agent.handoff"}}, 200)
+	limits[0]["max_uses"] = 1
 	call("alice", "PUT", path, map[string]any{"limits": limits}, 200)
 	requests := shareResponse[struct{ Requests []AccessRequest }](t, call("bob", "GET", "/v1/access-requests", nil, 200))
 	if len(requests.Requests) != 1 || requests.Requests[0].Status != "pending" {
@@ -186,5 +186,31 @@ func TestShareGrantLimitsAndDottedSubmissions(t *testing.T) {
 		limits[1][field] = value
 		call("alice", "PUT", path, map[string]any{"limits": limits}, 400)
 		delete(limits[1], field)
+	}
+}
+
+func TestFollowUpsRemainAvailableAfterLastAggregateUse(t *testing.T) {
+	call := sharingAPI(t)
+	actions := []string{"agent.handoff", "agent.status", "agent.result", "thread.comment", "thread.read"}
+	until := time.Now().Add(time.Hour)
+	call("alice", "PUT", "/v1/resources/worker", map[string]any{"kind": "agent", "name": "Worker", "actions": actions}, 200)
+	call("alice", "PUT", "/v1/grants/worker/bob", map[string]any{"actions": actions, "max_uses": 1, "expires_at": until}, 200)
+	lease := shareResponse[leaseProof](t, call("alice", "POST", "/v1/session", nil, 200))
+	call("alice", "PUT", "/v1/session", lease, 200)
+	for _, action := range actions {
+		child := Addressed{ID: action, Resource: "worker", Device: "alice-device", Action: action, ExpiresAt: until, Envelope: json.RawMessage(`"hdr..iv.ciphertext.tag"`)}
+		call("bob", "POST", "/v1/submissions", map[string]any{"id": action, "children": []Addressed{child}}, 200)
+		claim := shareResponse[struct{ Claimed bool }](t, call("alice", "POST", "/v1/children/"+action+"/claim", lease, 200))
+		if !claim.Claimed {
+			t.Fatalf("could not claim %s", action)
+		}
+	}
+	grants := shareResponse[struct{ Grants []Grant }](t, call("alice", "GET", "/v1/grants", nil, 200)).Grants
+	if len(grants) != 1 || grants[0].Used != 1 {
+		t.Fatalf("follow-ups debited an aggregate grant: %+v", grants)
+	}
+	rows := shareResponse[struct{ Resources []Resource }](t, call("bob", "GET", "/v1/resources", nil, 200)).Resources
+	if len(rows) != 1 || !slices.Equal(rows[0].Actions, []string{"agent.result", "agent.status", "thread.comment", "thread.read"}) {
+		t.Fatalf("discovery after the initiating use: %+v", rows)
 	}
 }

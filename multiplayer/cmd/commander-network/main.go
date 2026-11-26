@@ -275,7 +275,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	if len(raw) > 98304 {
+	if len(raw) > 196608 {
 		return errors.New("tray input too large")
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {

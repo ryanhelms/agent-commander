@@ -1,4 +1,577 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Commander</title></head>
-<body><h1>Agent Commander</h1><p>Remote view placeholder. The designed page replaces this file.</p><pre id="o"></pre>
-<script>fetch('/api/overview').then(r=>r.json()).then(j=>{document.getElementById('o').textContent=JSON.stringify(j,null,2)})</script></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#090A0D" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F5F6F8" media="(prefers-color-scheme: light)">
+<title>Agent Commander Remote</title>
+<style>
+/* Roles from DESIGN.md section 2. Components use roles, never raw hex. */
+:root{
+  --window:#090A0D;--panel:#14151A;--well:#0B0C10;--hair:#26282F;--border:#383B44;
+  --foreground:#F5F5F9;--secondary:#B7BAC6;--focus:#B5D6FF;--working:#A8E0C0;
+  --attention:#F1C587;--failure:#EC9B92;--selection:#283344;--on-accent:#101825;
+  --sw0:#4ADE80;--sw1:#38BDF8;--sw2:#F472B6;--sw3:#A3E635;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --fast:.1s;--standard:.18s;--slow:.25s;--pulse:1.4s;--travel:6px;
+  --inset:14px;--touch:44px;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --window:#F5F6F8;--panel:#FFFFFF;--well:#ECEDF1;--hair:#D8DAE1;--border:#B3B7C2;
+    --foreground:#101116;--secondary:#4B4E5A;--focus:#1D5BB8;--working:#1A7548;
+    --attention:#8A5800;--failure:#B2362A;--selection:#DBE6F7;--on-accent:#FFFFFF;
+    --sw0:#16A34A;--sw1:#0284C7;--sw2:#DB2777;--sw3:#65A30D;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--window);color:var(--foreground);font:15px/1.4 var(--sans);
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+.page{max-width:560px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;border-inline:1px solid var(--hair)}
+[hidden]{display:none!important}
+h1,h2,p,ul,ol{margin:0;padding:0}
+ul,ol{list-style:none}
+.mono{font-family:var(--mono)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+[tabindex="-1"]:focus{outline:none}
+
+/* Header */
+.head{display:flex;align-items:center;gap:10px;padding:0 0 0 var(--inset);border-bottom:1px solid var(--hair);min-height:56px}
+.head .titles{flex:1;min-width:0;padding:8px 0}
+.title{font-size:16px;font-weight:600;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.title+.state{margin-top:4px}
+.icon-btn{flex:none;width:52px;align-self:stretch;min-height:var(--touch);display:grid;place-items:center;background:none;border:0;
+  border-left:1px solid var(--hair);color:var(--secondary);cursor:pointer;transition:background var(--fast) ease-out}
+.icon-btn.lead{border-left:0;border-right:1px solid var(--hair);margin-left:calc(-1 * var(--inset))}
+.icon-btn:active{background:color-mix(in srgb,var(--foreground) 10%,transparent)}
+.icon-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:square}
+.icon-btn.turn svg{animation:turn 1.1s linear infinite}
+
+/* Lamp plus word */
+.state{display:inline-flex;align-items:center;gap:6px;font:600 12px/1.2 var(--mono);color:var(--secondary);white-space:nowrap}
+.lamp{flex:none;width:9px;height:9px;display:inline-block}
+.lamp.on{border-radius:50%;background:var(--working)}
+.lamp.off{border-radius:50%;border:1.5px solid var(--secondary)}
+.lamp.waiting{border-radius:50%;border:1.5px solid var(--attention);border-right-color:transparent;transform:rotate(45deg)}
+.lamp.error{background:var(--failure);transform:rotate(45deg) scale(.82)}
+.lamp.busy{background:var(--attention)}
+.lamp.unknown{border-radius:50%;border:1.5px solid var(--focus)}
+.lamp.live{animation:pulse var(--pulse) ease-out infinite}
+.t-working{color:var(--working)}.t-attention{color:var(--attention)}.t-failure{color:var(--failure)}.t-focus{color:var(--focus)}
+
+/* Status strip */
+.strip{display:grid;grid-template-columns:repeat(4,1fr);background:var(--well);border-bottom:1px solid var(--hair)}
+.strip.three{grid-template-columns:repeat(3,1fr)}
+.readout{padding:9px 10px 10px;border-left:1px solid var(--hair);min-width:0}
+.readout:first-child{border-left:0}
+.readout dt{font:600 11px/1.2 var(--mono);color:var(--secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.readout dd{margin:5px 0 0;font:600 17px/1 var(--mono);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.readout dd small{font-size:11px;font-weight:500;color:var(--secondary)}
+.readout.hot dd{color:var(--attention)}
+.readout.text dd{font-size:13px;line-height:17px}
+dl{margin:0}
+.tick{animation:tick var(--standard) ease-out}
+
+/* Bands */
+.band{border-bottom:1px solid var(--hair);padding:12px 0 0}
+.band-head{display:flex;align-items:baseline;gap:8px;padding:0 var(--inset) 10px}
+.band-head h2{font:600 13px/1.2 var(--mono);color:var(--secondary)}
+.band-head .count{font:600 13px/1.2 var(--mono)}
+.band-head .count.hot{background:var(--attention);color:var(--on-accent);padding:1px 5px;border-radius:1px}
+.rows>li{border-top:1px solid var(--hair);padding:11px var(--inset) 12px}
+.arrive{animation:arrive var(--standard) ease-out}
+.leave{opacity:0;transition:opacity var(--standard) ease-out}
+
+/* Load note: never a blank region */
+.note{border-top:1px solid var(--hair);padding:12px var(--inset) 14px;font-size:13.5px;color:var(--secondary);display:flex;gap:9px;align-items:flex-start}
+.note .lamp{margin-top:5px}
+.alert{border-bottom:1px solid color-mix(in srgb,var(--failure) 45%,transparent);background:color-mix(in srgb,var(--failure) 12%,transparent);
+  padding:10px var(--inset);font-size:13.5px;display:flex;gap:9px;align-items:flex-start}
+.alert .lamp{margin-top:5px}
+
+/* Row parts */
+.row-top{display:flex;align-items:baseline;gap:10px}
+.name{flex:1;min-width:0;font-size:15px;font-weight:500;overflow-wrap:anywhere}
+.time{font:11.5px/1.2 var(--mono);color:var(--secondary);white-space:nowrap}
+.sub{font-size:13.5px;color:var(--secondary);margin-top:3px;overflow-wrap:anywhere}
+.meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;padding-left:8px;border-left:2px solid var(--sw,var(--border))}
+.meta .srv{font:500 12px/1.2 var(--mono);color:var(--secondary)}
+.chip{display:inline-flex;font:600 11px/1 var(--mono);border:1px solid var(--border);border-radius:1px;max-width:100%}
+.chip span{padding:4px 6px;border-left:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip span:first-child{border-left:0}
+.chip .cell-ok{color:var(--working)}
+.chip .cell-bad{color:var(--failure)}
+.badge{display:inline-flex;align-items:center;gap:5px;font:600 11px/1 var(--mono);padding:4px 6px;border-radius:1px;border:1px solid var(--border);color:var(--secondary)}
+.badge.tone{color:var(--attention);border-color:color-mix(in srgb,var(--attention) 45%,transparent);background:color-mix(in srgb,var(--attention) 12%,transparent)}
+.mark{flex:none;width:28px;height:28px;display:grid;place-items:center;background:var(--well);border:1px solid var(--border);border-radius:2px;font:600 14px/1 var(--mono);color:var(--secondary)}
+.with-mark{display:flex;gap:10px}
+.with-mark>.body{flex:1;min-width:0}
+.swatch{flex:none;width:4px;height:12px;background:var(--sw);display:inline-block;align-self:center}
+
+/* Buttons and verb strip */
+.btn{font:600 13px/1 var(--mono);min-height:var(--touch);padding:0 14px;background:none;color:var(--foreground);border:1px solid var(--border);
+  border-radius:2px;cursor:pointer;transition:background var(--fast) ease-out,opacity var(--fast) ease-out}
+.btn:active{background:color-mix(in srgb,var(--foreground) 10%,transparent)}
+.btn.primary{background:var(--focus);border-color:var(--focus);color:var(--on-accent)}
+.btn.primary:active{opacity:.82}
+.btn.primary:focus-visible{outline-color:var(--foreground);outline-offset:2px}
+.btn.danger{color:var(--failure);border-color:color-mix(in srgb,var(--failure) 45%,transparent)}
+.btn[disabled]{opacity:.5;cursor:default}
+.verbs{display:grid;grid-template-columns:1fr 1fr;margin-top:10px}
+.verbs .btn+.btn{border-top-left-radius:0;border-bottom-left-radius:0}
+.verbs .btn:first-child{border-right:0;border-top-right-radius:0;border-bottom-right-radius:0}
+.verbs.one{grid-template-columns:1fr}
+.verbs.one .btn:first-child{border:1px solid var(--border);border-radius:2px}
+
+/* Decision row: countdown drains toward the expiry */
+.drain{height:2px;background:var(--hair);margin-top:10px}
+.drain i{display:block;height:100%;background:var(--attention);transition:width 1s linear}
+.need.late .drain i{background:var(--failure)}
+.need.late .left{color:var(--failure)}
+.need .outcome{margin-top:10px;min-height:var(--touch);display:flex;align-items:center;gap:8px;padding:0 12px;border:1px solid var(--hair);background:var(--well);border-radius:2px}
+.need .fail{margin-top:8px;font-size:13px;color:var(--failure)}
+
+/* Trace */
+.trace{font:12.5px/1.45 var(--mono)}
+.trace li{display:grid;grid-template-columns:auto 4.4em 1fr;gap:8px;padding:6px var(--inset) 6px 10px;border-bottom:1px solid var(--hair);border-left:2px solid var(--foreground)}
+.trace li.k-tool{border-left-color:var(--focus)}
+.trace li.k-status{border-left-color:var(--attention)}
+.trace .at,.trace .kind{color:var(--secondary)}
+.trace li.k-tool .kind{color:var(--focus)}
+.trace li.k-status .kind{color:var(--attention)}
+.trace .text{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.spinner{flex:none;width:12px;height:12px;border-radius:50%;border:1.5px solid var(--focus);border-right-color:transparent;animation:turn 1.1s linear infinite}
+.watch-foot{position:sticky;bottom:0;margin-top:auto;display:flex;align-items:center;gap:8px;padding:10px var(--inset);background:var(--well);border-top:1px solid var(--hair);font:11.5px/1.2 var(--mono);color:var(--secondary)}
+.watch-meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px var(--inset);border-bottom:1px solid var(--hair);font-size:13px;color:var(--secondary)}
+#watch:not([hidden]){display:flex;flex-direction:column;flex:1}
+
+.foot{margin-top:auto;padding:12px var(--inset) 16px;background:var(--well);font-size:12.5px;color:var(--secondary)}
+
+/* Not paired */
+.unpaired{padding:28px var(--inset)}
+.unpaired h1{font-size:19px;font-weight:600;margin-top:14px}
+.unpaired ol{margin:16px 0 18px;border-top:1px solid var(--hair)}
+.unpaired ol li{display:flex;gap:10px;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--hair);font-size:14.5px}
+.unpaired ol .n{font:600 12px/1 var(--mono);color:var(--secondary);width:1.2em}
+.unpaired .btn{width:100%}
+
+@keyframes arrive{from{opacity:0;transform:translateY(var(--travel))}}
+@keyframes tick{from{opacity:.25;transform:translateY(-3px)}}
+@keyframes fade{from{opacity:0}}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes turn{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){
+  .arrive,.tick{animation-name:fade}
+  .lamp.live,.spinner,.icon-btn.turn svg{animation:none}
+  .drain i{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- Overview -->
+<div id="home">
+  <header class="head">
+    <div class="titles">
+      <h1 class="title">Agent Commander</h1>
+      <div class="state" id="link" role="status"><i class="lamp waiting"></i><span>Reading your Mac</span></div>
+    </div>
+    <button class="icon-btn" id="refresh" type="button" aria-label="Refresh now">
+      <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M15 9a6 6 0 1 1-1.8-4.3M15 2.5v3.2h-3.2"/></svg>
+    </button>
+  </header>
+  <dl class="strip" id="strip" aria-label="Overview"></dl>
+  <div class="alert" id="alert" role="alert" hidden><i class="lamp error"></i><span id="alert-text"></span></div>
+  <main>
+    <section class="band" aria-labelledby="h-needs">
+      <div class="band-head"><h2 id="h-needs">Needs you</h2><span class="count" id="c-needs"></span></div>
+      <ul class="rows" id="needs"></ul>
+    </section>
+    <section class="band" aria-labelledby="h-hand">
+      <div class="band-head"><h2 id="h-hand">Hand-offs</h2><span class="count" id="c-hand"></span></div>
+      <div id="hand"></div>
+    </section>
+    <section class="band" aria-labelledby="h-act">
+      <div class="band-head"><h2 id="h-act">Activity</h2><span class="count" id="c-act"></span></div>
+      <div id="act"></div>
+    </section>
+    <section class="band" aria-labelledby="h-srv">
+      <div class="band-head"><h2 id="h-srv">Servers</h2><span class="count" id="c-srv"></span></div>
+      <div id="srv"></div>
+    </section>
+  </main>
+</div>
+
+<!-- Watch -->
+<div id="watch" hidden>
+  <header class="head">
+    <button class="icon-btn lead" id="back" type="button" aria-label="Back to overview">
+      <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M11 3.5 5.5 9l5.5 5.5"/></svg>
+    </button>
+    <div class="titles">
+      <h1 class="title mono" id="w-title" tabindex="-1"></h1>
+      <div class="state" id="w-sub"></div>
+    </div>
+  </header>
+  <dl class="strip three" id="w-strip" aria-label="Watch status"></dl>
+  <div class="watch-meta">
+    <span class="badge"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M.8 5S2.3 2 5 2s4.2 3 4.2 3S7.7 8 5 8 .8 5 .8 5Z"/><circle cx="5" cy="5" r="1.2"/></svg>Read-only</span>
+    <span>Steer this worker from the Mac.</span>
+  </div>
+  <main>
+    <ol class="trace" id="w-trace" aria-label="Worker output"></ol>
+    <div id="w-note"></div>
+  </main>
+  <div class="watch-foot"><i class="spinner" id="w-spin" role="img" aria-label="In progress"></i><span id="w-foot">every 2 s</span></div>
+</div>
+
+<!-- Not paired -->
+<div id="unpaired" class="unpaired" hidden>
+  <div class="state"><i class="lamp off"></i><span>Not paired</span></div>
+  <h1 tabindex="-1" id="u-title">This phone isn't paired with your Mac</h1>
+  <ol>
+    <li><span class="n">1</span><span>On the Mac, open the Agent Commander tray.</span></li>
+    <li><span class="n">2</span><span>Turn on Remote. It shows a QR code for 10 minutes.</span></li>
+    <li><span class="n">3</span><span>Scan the QR code with this phone's camera.</span></li>
+  </ol>
+  <button class="btn" id="recheck" type="button">Check again</button>
+</div>
+
+<footer class="foot" id="foot">Served by your Mac over the tailnet. This phone is paired for 30 days.</footer>
+<div class="vh" id="announce" aria-live="polite" aria-atomic="true"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id)};
+function h(tag,attrs){
+  var e=document.createElement(tag),k,v,i,c;
+  for(k in attrs||{}){v=attrs[k];if(v==null||v===false)continue;
+    if(k==='class')e.className=v;else if(k==='text')e.textContent=v;
+    else if(k.slice(0,2)==='on')e.addEventListener(k.slice(2),v);else e.setAttribute(k,v===true?'':v)}
+  for(i=2;i<arguments.length;i++){c=arguments[i];if(c==null||c===false)continue;
+    if(Array.isArray(c))c.forEach(function(x){if(x)e.append(x)});else e.append(c)}
+  return e;
+}
+function lamp(kind,live){return h('i',{class:'lamp '+kind+(live?' live':''),'aria-hidden':'true'})}
+function stateLabel(kind,word,tone,live){return h('span',{class:'state'+(tone?' t-'+tone:'')},lamp(kind,live),h('span',{text:word}))}
+function note(kind,text){return h('p',{class:'note'},lamp(kind),h('span',{text:text}))}
+function pad(n){return n<10?'0'+n:''+n}
+function clock(d,sec){d=new Date(d);if(isNaN(d))return '';return pad(d.getHours())+':'+pad(d.getMinutes())+(sec?':'+pad(d.getSeconds()):'')}
+function when(at){var d=new Date(at),n=new Date();if(isNaN(d))return '';
+  return d.toDateString()===n.toDateString()?clock(d):d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}
+/* Stable FNV-1a hash of the server ID picks its swatch, as in the tray. */
+function swatch(id){var x=2166136261,i;id=String(id||'');for(i=0;i<id.length;i++){x^=id.charCodeAt(i);x=Math.imul(x,16777619)}return 'var(--sw'+((x>>>0)%4)+')'}
+function cut(s){s=String(s||'');return s.length>18?s.slice(0,10)+'…'+s.slice(-6):s}
+
+/* API. Every reply is {ok, data} or {ok:false, error}. */
+function Unpaired(){this.unpaired=true}
+function Offline(){this.offline=true;this.message="Can't reach your Mac."}
+function api(path,post){
+  return fetch(path,{method:post?'POST':'GET',headers:post?{'X-Commander-Remote':'1'}:{},credentials:'same-origin',cache:'no-store'})
+    .catch(function(){throw new Offline()})
+    .then(function(r){return r.json().catch(function(){return null}).then(function(j){
+      if(r.status===401||(j&&j.error==='not paired'))throw new Unpaired();
+      if(!j||!j.ok)throw new Error((j&&j.error)||('The Mac answered '+r.status+'.'));
+      return j.data;
+    })});
+}
+
+var S={servers:null,approvals:null,activity:null,handoffs:null,err:{},first:true,read:null,names:{}};
+var view='home',timer=null,slow=0,busy=false;
+
+/* Views */
+function show(v){
+  view=v;['home','watch','unpaired'].forEach(function(id){$(id).hidden=id!==v});
+  $('foot').hidden=v!=='home';window.scrollTo(0,0);
+}
+function unpaired(){stopWatch();clearTimeout(timer);show('unpaired');$('u-title').focus()}
+
+/* Readouts */
+var lastFig={};
+function readout(host,key,label,figure,opts){
+  opts=opts||{};var id='ro-'+key,el=$(id);
+  if(!el){el=h('div',{class:'readout',id:id},h('dt',{text:label}),h('dd'));host.append(el)}
+  el.className='readout'+(opts.hot?' hot':'')+(opts.text?' text':'');
+  var dd=el.lastChild,sig=figure+'|'+(opts.small||'')+'|'+(opts.lamp||'');
+  if(lastFig[id]!==sig){
+    dd.textContent='';if(opts.lamp)dd.append(lamp(opts.lamp,opts.live));
+    var f=h('span',{text:figure});dd.append(f);if(opts.small)dd.append(h('small',{text:opts.small}));
+    if(lastFig[id]!==undefined)f.className='tick';lastFig[id]=sig;
+  }
+}
+var DONE=/^(completed|complete|done|failed|denied|expired|cancell?ed|rejected|error)$/;
+function handoffList(){
+  var out=[],k;if(!S.handoffs)return null;
+  for(k in S.handoffs)(S.handoffs[k]&&S.handoffs[k].handoffs||[]).forEach(function(x){x=Object.assign({},x);x.server=x.server||k;out.push(x)});
+  out.sort(function(a,b){return String(b.updatedAt||b.at).localeCompare(String(a.updatedAt||a.at))});
+  return out;
+}
+function renderStrip(){
+  var st=$('strip'),sv=S.servers,ap=S.approvals,ho=handoffList(),dash='–';
+  var online=sv?sv.filter(function(s){return s.state==='online'}).length:0;
+  readout(st,'srv','Servers',sv?''+online:dash,{small:sv?'of '+sv.length:'',lamp:sv?(online?'on':'off'):null});
+  readout(st,'app','Approvals',ap?''+ap.length:dash,{hot:ap&&ap.length>0,lamp:ap&&ap.length?'waiting':null});
+  readout(st,'uns','Unseen',S.activity?''+(S.activity.unseen||0):dash,{});
+  var active=ho?ho.filter(function(x){return !DONE.test(x.state||'')}).length:0;
+  readout(st,'han','Hand-offs',ho?''+active:dash,{small:ho?'active':'',lamp:active?'on':null,live:active>0});
+}
+
+/* Needs you */
+var needEls={};
+function needKey(a){return a.server+'/'+a.approval.id}
+function needTitle(ap){
+  var who=ap.handle||ap.friend||cut(ap.peer)||'someone';
+  return ap.action==='agent.suggest'?'Suggestion from '+who:'Request from '+who;
+}
+function decide(a,el,verb){
+  var ap=a.approval,btns=el.querySelectorAll('button'),fail=el.querySelector('.fail');
+  btns.forEach(function(b){b.disabled=true});if(fail)fail.remove();
+  var pressed=el.querySelector('[data-verb='+verb+']'),was=pressed.textContent;
+  pressed.textContent=verb==='approve'?'Approving…':'Denying…';
+  el.dataset.held='1';
+  api('/api/approvals/'+encodeURIComponent(a.server)+'/'+encodeURIComponent(ap.id)+'/'+verb,true).then(function(){
+    var word=verb==='approve'?'Approved':'Denied';
+    el.querySelector('.verbs').replaceWith(h('div',{class:'outcome'},stateLabel(verb==='approve'?'on':'off',word,verb==='approve'?'working':null)));
+    el.querySelector('.drain').remove();el.querySelector('.left').textContent='';
+    $('announce').textContent=word+': '+needTitle(ap)+'.';
+    setTimeout(function(){el.classList.add('leave');setTimeout(function(){delete needEls[needKey(a)];el.remove();refresh()},200)},1100);
+  },function(e){
+    if(e.unpaired)return unpaired();
+    delete el.dataset.held;btns.forEach(function(b){b.disabled=false});pressed.textContent=was;
+    el.append(h('p',{class:'fail',role:'alert',text:(verb==='approve'?"Couldn't approve. ":"Couldn't deny. ")+e.message}));
+  });
+}
+function needRow(a){
+  var ap=a.approval,el=h('li',{class:'need'});
+  el.style.setProperty('--sw',swatch(a.server));
+  el.dataset.arrived=ap.arrived||'';el.dataset.expires=ap.expires||'';
+  el.append(
+    h('div',{class:'row-top'},lamp('waiting'),h('span',{class:'name',text:needTitle(ap)}),h('span',{class:'time left'})),
+    ap.summary?h('p',{class:'sub',text:ap.summary}):null,
+    h('div',{class:'meta'},
+      h('span',{class:'srv',text:S.names[a.server]||a.server}),
+      ap.resource?h('span',{class:'chip'},h('span',{text:ap.resource})):null,
+      ap.action?h('span',{class:'badge'+(ap.action==='agent.suggest'?' tone':''),text:ap.action}):null),
+    h('div',{class:'drain','aria-hidden':'true'},h('i')),
+    h('div',{class:'verbs'},
+      h('button',{class:'btn danger',type:'button','data-verb':'deny',text:'Deny','aria-label':'Deny: '+needTitle(ap),onclick:function(){decide(a,el,'deny')}}),
+      h('button',{class:'btn primary',type:'button','data-verb':'approve',text:'Approve','aria-label':'Approve: '+needTitle(ap),onclick:function(){decide(a,el,'approve')}}))
+  );
+  return el;
+}
+function countdowns(){
+  var now=Date.now();
+  document.querySelectorAll('.need').forEach(function(el){
+    var t=el.querySelector('.left'),bar=el.querySelector('.drain i'),ex=Date.parse(el.dataset.expires),ar=Date.parse(el.dataset.arrived);
+    if(!bar||isNaN(ex))return;
+    var left=Math.max(0,ex-now),s=Math.ceil(left/1000);
+    t.textContent=left?Math.floor(s/60)+':'+pad(s%60)+' left':'Expired';
+    el.classList.toggle('late',left<60000);
+    bar.style.width=(isNaN(ar)||ex<=ar?0:Math.min(100,100*left/(ex-ar)))+'%';
+  });
+}
+function renderNeeds(){
+  var host=$('needs'),list=S.approvals,c=$('c-needs'),k,seen={},fresh=[];
+  host.querySelectorAll('.note').forEach(function(n){n.remove()});
+  if(!list){
+    c.textContent='';c.className='count';
+    host.append(h('li',{class:'note'},lamp(S.err.overview?'error':'waiting'),
+      h('span',{text:S.err.overview?"Couldn't read approvals. "+S.err.overview:'Reading approvals from your Mac.'})));
+    return;
+  }
+  list.forEach(function(a){
+    if(!a||!a.approval)return;k=needKey(a);seen[k]=1;
+    if(!needEls[k]){var el=needRow(a);if(!S.first){el.classList.add('arrive');fresh.push(needTitle(a.approval))}needEls[k]=el;host.prepend(el)}
+  });
+  for(k in needEls)if(!seen[k]&&!needEls[k].dataset.held){needEls[k].remove();delete needEls[k]}
+  var n=Object.keys(needEls).length;
+  c.textContent=n;c.className='count'+(n?' hot':'');
+  if(!n)host.append(h('li',{class:'note'},lamp('on'),h('span',{text:'Nothing is waiting for you.'})));
+  if(fresh.length)$('announce').textContent=(fresh.length===1?'New approval: ':fresh.length+' new approvals: ')+fresh.join(', ')+'.';
+  countdowns();
+}
+
+/* Regions that redraw only when their data changes */
+var sigs={};
+function region(id,sig,build){if(sigs[id]===sig)return;var anim=sigs[id]!==undefined&&!S.first;sigs[id]=sig;var host=$(id);host.textContent='';
+  var n=build();if(anim)n.classList.add('arrive');host.append(n)}
+function handState(s){
+  s=s||'unknown';
+  if(/^(completed|complete|done)$/.test(s))return stateLabel('on',s,'working');
+  if(/^(failed|denied|expired|rejected|error|cancell?ed)$/.test(s))return stateLabel('error',s,'failure');
+  if(/^(pending|queued|claimed)$/.test(s))return stateLabel('waiting',s,'attention');
+  if(s==='unknown')return stateLabel('unknown',s,null);
+  return stateLabel('on',s,'working',true);
+}
+function renderHand(){
+  var list=handoffList();
+  $('c-hand').textContent=list?list.length:'';
+  region('hand',JSON.stringify([list,S.err.handoffs,S.names]),function(){
+    if(!list)return note(S.err.handoffs?'error':'waiting',S.err.handoffs?"Couldn't read hand-offs. "+S.err.handoffs:'Reading hand-offs from each server.');
+    if(!list.length)return note('off','No hand-offs yet. Work you hand to a friend’s agent shows up here.');
+    return h('ul',{class:'rows'},list.map(function(x){
+      var li=h('li',{class:'with-mark'},
+        h('span',{class:'mark','aria-hidden':'true',text:'↗'}),
+        h('div',{class:'body'},
+          h('div',{class:'row-top'},h('span',{class:'name',text:x.title||x.resource||x.id}),handState(x.state)),
+          h('div',{class:'meta'},
+            h('span',{class:'srv',text:S.names[x.server]||x.server}),
+            x.handle?h('span',{class:'badge',text:'to '+x.handle}):null,
+            x.resource?h('span',{class:'chip'},h('span',{text:x.resource})):null,
+            h('span',{class:'time',text:when(x.updatedAt||x.at)})),
+          x.resource?h('div',{class:'verbs one'},h('button',{class:'btn',type:'button',text:'Watch','aria-label':'Watch '+x.resource,
+            onclick:function(){location.hash='#watch/'+encodeURIComponent(x.server)+'/'+encodeURIComponent(x.resource)}})):null));
+      li.style.setProperty('--sw',swatch(x.server));return li;
+    }));
+  });
+}
+var KIND={'approval.pending':'approval','person':'person','request':'request'};
+function renderAct(){
+  var a=S.activity,ev=a&&a.events||[];
+  $('c-act').textContent=a?ev.length:'';
+  region('act',JSON.stringify([a&&ev.slice(0,40),S.err.activity,S.names]),function(){
+    if(!a)return note(S.err.activity?'error':'waiting',S.err.activity?"Couldn't read activity. "+S.err.activity:'Reading activity from your Mac.');
+    if(!ev.length)return note('off','No activity yet. Requests and friends coming online show up here.');
+    return h('ul',{class:'rows'},ev.slice(0,40).map(function(e){
+      var li=h('li',null,
+        h('div',{class:'row-top'},h('span',{class:'name',text:e.actor||'Someone'}),h('span',{class:'time',text:when(e.at)})),
+        e.detail?h('p',{class:'sub',text:e.detail}):null,
+        h('div',{class:'meta'},
+          h('span',{class:'srv',text:S.names[e.server]||e.server||''}),
+          h('span',{class:'badge'+(e.kind==='approval.pending'?' tone':''),text:KIND[e.kind]||e.kind||'event'}),
+          e.resource?h('span',{class:'chip'},h('span',{text:e.resource})):null));
+      li.style.setProperty('--sw',swatch(e.server));return li;
+    }));
+  });
+}
+var SRV={online:['on','Online','working'],connecting:['waiting','Connecting','attention'],signedOut:['off','Signed out',null],
+  offline:['off','Offline',null],error:['error','Error','failure'],certChanged:['error','Key changed','failure']};
+function renderSrv(){
+  var sv=S.servers;$('c-srv').textContent=sv?sv.length:'';
+  region('srv',JSON.stringify([sv,S.err.overview]),function(){
+    if(!sv)return note(S.err.overview?'error':'waiting',S.err.overview?"Couldn't read servers. "+S.err.overview:'Reading servers from your Mac.');
+    if(!sv.length)return note('off','No servers yet. Add one from the tray on your Mac.');
+    return h('ul',{class:'rows'},sv.map(function(s){
+      var m=SRV[s.state]||['unknown',s.state||'Unknown',null],bad=s.state==='certChanged';
+      var li=h('li',null,
+        h('div',{class:'row-top'},h('i',{class:'swatch','aria-hidden':'true'}),h('span',{class:'name',text:s.name||s.url||s.id}),stateLabel(m[0],m[1],m[2],s.state==='online')),
+        s.error?h('p',{class:'sub t-failure',text:s.error}):null,
+        h('div',{class:'meta'},
+          s.handle?h('span',{class:'srv',text:'@'+String(s.handle).replace(/^@/,'')}):null,
+          s.pin?h('span',{class:'chip',role:'group','aria-label':(bad?'Key changed, ':'Pinned key, ')+s.pin},
+            h('span',{class:bad?'cell-bad':'cell-ok',text:bad?'Changed':'Pinned'}),h('span',{text:cut(s.pin)})):h('span',{class:'badge',text:'System trust'}),
+          s.signedIn?h('span',{class:'time',text:(s.friendsOnline||0)+' online'}):null));
+      li.style.setProperty('--sw',swatch(s.id));return li;
+    }));
+  });
+}
+
+function renderLink(offline){
+  var el=$('link');el.textContent='';
+  if(offline)el.append(lamp('error'),h('span',{class:'t-failure',text:'No answer from your Mac'}));
+  else el.append(lamp('on',true),h('span',{text:'Live, read '+clock(S.read,true)}));
+  $('alert').hidden=!offline;
+  if(offline)$('alert-text').textContent="Can't reach your Mac. Check that this phone is on the tailnet and Remote is on in the tray. Trying again every 5 s."+(S.read?' Showing what was read at '+clock(S.read,true)+'.':'');
+}
+function render(){renderStrip();renderNeeds();renderHand();renderAct();renderSrv()}
+
+/* Polling: overview and activity every 5 s, hand-offs every 15 s (each row costs the Mac a relay read). */
+function refresh(force){
+  clearTimeout(timer);if(view!=='home'||busy)return;
+  busy=true;$('refresh').classList.add('turn');
+  var gone=false,offline=false;
+  function fail(key){return function(e){if(e.unpaired)gone=true;else{if(e.offline)offline=true;S.err[key]=e.message}}}
+  var jobs=[
+    api('/api/overview').then(function(d){S.err.overview=null;S.servers=d.servers||[];S.approvals=d.approvals||[];
+      S.names={};S.servers.forEach(function(s){S.names[s.id]=s.name||s.url||s.id})},fail('overview')),
+    api('/api/activity').then(function(d){S.err.activity=null;S.activity=d},fail('activity'))
+  ];
+  if(force===true||!S.handoffs||slow++%3===0)jobs.push(api('/api/handoffs').then(function(d){S.err.handoffs=null;S.handoffs=d||{}},fail('handoffs')));
+  Promise.all(jobs).then(function(){
+    busy=false;$('refresh').classList.remove('turn');
+    if(gone)return unpaired();
+    if(!offline)S.read=new Date();
+    render();renderLink(offline);if(!offline)S.first=false;
+    if(!document.hidden&&view==='home')timer=setTimeout(refresh,5000);
+  });
+}
+
+/* Watch: one page of agent.watch every 2 s while open. Read-only. */
+var W=null;
+function stopWatch(){if(W){clearTimeout(W.timer);W.open=false;W=null}}
+function watchReadouts(w){
+  var st=$('w-strip'),s=w.state||'–';
+  readout(st,'w-state','State',s,{text:true,lamp:w.state?(/^(idle|done|stopped|exited|completed)$/.test(s)?'off':'on'):null,live:true});
+  readout(st,'w-lines','Lines',''+w.lines,{});
+  readout(st,'w-read','Last read',w.read?clock(w.read,true):'–',{text:true});
+}
+function watchNote(kind,text){var n=$('w-note');n.textContent='';if(text)n.append(note(kind,text))}
+function poll(w){
+  if(!w.open)return;
+  api('/api/watch/'+encodeURIComponent(w.server)+'/'+encodeURIComponent(w.resource)+'?after='+encodeURIComponent(w.cursor)).then(function(d){
+    if(!w.open)return;
+    /* The route returns the request's receipt row; the watch page is in its value. */
+    var v=(d&&(d.value||d.result))||d||{},st=d&&d.status;
+    if(st&&/^(denied|failed|expired|rejected|error)$/.test(st)){
+      watchNote('error','The owner’s device answered “'+st+'”. Watching needs a grant for agent.watch on this worker.');
+    }else if(!v.events&&st&&st!=='completed'){
+      watchNote('waiting','Waiting for the owner’s device to answer ('+st+').');
+    }else{
+      var ev=v.events||[],trace=$('w-trace'),stick=window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-80;
+      ev.forEach(function(e){
+        var k=/^(tool|status)$/.test(e.kind)?e.kind:'message';
+        trace.append(h('li',{class:'k-'+k+(w.read?' arrive':'')},h('span',{class:'at',text:clock(e.at,true)}),h('span',{class:'kind',text:k}),h('span',{class:'text',text:e.text||''})));
+        w.lines++;
+      });
+      while(trace.children.length>500)trace.firstChild.remove();
+      if(v.cursor!=null&&v.cursor!=='')w.cursor=v.cursor;
+      if(v.state)w.state=v.state;w.read=new Date();
+      watchNote('off',w.lines?'':'No output yet. New lines appear here as the worker runs.');
+      if(ev.length&&stick)window.scrollTo(0,document.documentElement.scrollHeight);
+    }
+    $('w-foot').textContent='every 2 s';$('w-spin').hidden=false;watchReadouts(w);
+  },function(e){
+    if(!w.open)return;if(e.unpaired)return unpaired();
+    $('w-spin').hidden=true;$('w-foot').textContent='trying again every 2 s';
+    watchNote('error',e.offline?"Can't reach your Mac. Check that this phone is on the tailnet.":"Couldn't read this worker. "+e.message);
+  }).then(function(){if(w.open&&!document.hidden)w.timer=setTimeout(function(){poll(w)},2000)});
+}
+function openWatch(server,resource){
+  stopWatch();clearTimeout(timer);
+  W={server:server,resource:resource,cursor:'',lines:0,state:'',read:null,open:true};
+  $('w-title').textContent=resource;
+  var sub=$('w-sub');sub.textContent='';var sw=h('i',{class:'swatch','aria-hidden':'true'});sw.style.setProperty('--sw',swatch(server));
+  sub.append(sw,h('span',{text:S.names[server]||server}));
+  $('w-trace').textContent='';['ro-w-state','ro-w-lines','ro-w-read'].forEach(function(id){delete lastFig[id]});
+  watchReadouts(W);watchNote('waiting','Reading this worker’s output through your Mac.');
+  show('watch');$('w-title').focus();poll(W);
+}
+function route(){
+  if(view==='unpaired')return;
+  var m=/^#watch\/([^/]+)\/(.+)$/.exec(location.hash),server,resource;
+  if(m){try{server=decodeURIComponent(m[1]);resource=decodeURIComponent(m[2])}catch(e){m=null}}
+  if(m)openWatch(server,resource);else{stopWatch();show('home');refresh()}
+}
+
+$('refresh').addEventListener('click',function(){refresh(true)});
+$('back').addEventListener('click',function(){location.hash=''});
+$('recheck').addEventListener('click',function(){view='home';route()});
+window.addEventListener('hashchange',route);
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden)return;
+  if(view==='home')refresh();else if(W){clearTimeout(W.timer);poll(W)}
+});
+setInterval(countdowns,1000);
+render();route();
+})();
+</script>
+</body>
+</html>

@@ -76,7 +76,7 @@ func TestTwoDevicesPushAndCloseIssue(t *testing.T) {
 	runDevicePilot(t, configure, func(ctx context.Context, alice, bob *pilotPeer, revision, branch string) {
 		bob.must(t, ctx, "/tray/repo-credential", input{Resource: "bob-repo", Token: token}, nil)
 		for _, action := range []string{"git.push", "issue.read", "issue.comment", "issue.close"} {
-			bob.must(t, ctx, "/tray/grant", input{Resource: "bob-repo", Handle: alice.handle, Capability: action, ExpiresAt: time.Now().Add(time.Hour), MaxUses: 4}, nil)
+			bob.must(t, ctx, "/tray/grant", input{Approval: "auto", Resource: "bob-repo", Handle: alice.handle, Capability: action, ExpiresAt: time.Now().Add(time.Hour), MaxUses: 4}, nil)
 		}
 		send := func(action string, value any) map[string]any {
 			t.Helper()

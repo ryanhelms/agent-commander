@@ -435,9 +435,9 @@ struct WorkerTile: View {
                 Button(worker.isDisconnected ? "View request" : "Reply to request", action: openRequest)
             }
             if let source { Button("Inspect source…", action: source.open) }
-            if let share = actions.share { Button("Share…", action: share) }
             if let elicitations { Button("Input requests…", action: elicitations.open) }
             if let providerSession { Button("Provider session…", action: providerSession.open) }
+            if let share = actions.share { Button("Share…", action: share) }
             Divider()
             Button("Copy worker ID", action: actions.copyID)
         } label: {

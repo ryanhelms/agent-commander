@@ -93,15 +93,19 @@ type Grant struct {
 	MaxUses   int64        `json:"max_uses"`
 	Used      int64        `json:"used"`
 	Limits    []LimitUsage `json:"limits,omitempty"`
+	// Sources lets the owner mirror each group independently of direct grants.
+	// The empty key names the direct grant.
+	Sources map[string][]string `json:"sources,omitempty"`
 }
 
 func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	rows, err := s.pool.Query(ctx, `SELECT pair.resource,r.owner_id,r.device,pair.grantee,coalesce(p.handle,''),
 		coalesce(a.actions,'{}'),pair.expires_at,pair.max_uses,pair.used,
-		CASE WHEN pair.needs_limits THEN a.limits END
+		CASE WHEN pair.needs_limits THEN a.limits END, CASE WHEN r.owner_id=$1 THEN pair.sources END
 		FROM (
 			SELECT g.resource,g.grantee,max(g.expires_at) AS expires_at,sum(g.max_uses)::bigint AS max_uses,
-				sum(g.used)::bigint AS used,count(*)>1 OR bool_or(g.per_action) AS needs_limits
+				sum(g.used)::bigint AS used,count(*)>1 OR bool_or(g.per_action) AS needs_limits,
+				jsonb_object_agg(g.source,g.actions) AS sources
 			FROM mp_grants g JOIN mp_resources r ON r.id=g.resource
 			WHERE r.owner_id=$1 OR g.grantee=$1 GROUP BY g.resource,g.grantee
 		) pair JOIN mp_resources r ON r.id=pair.resource JOIN mp_profiles p ON p.user_id=pair.grantee
@@ -118,7 +122,7 @@ func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any
 	results := []Grant{}
 	for rows.Next() {
 		var g Grant
-		if err := rows.Scan(&g.Resource, &g.Owner, &g.Device, &g.Grantee, &g.Handle, &g.Actions, &g.ExpiresAt, &g.MaxUses, &g.Used, &g.Limits); err != nil {
+		if err := rows.Scan(&g.Resource, &g.Owner, &g.Device, &g.Grantee, &g.Handle, &g.Actions, &g.ExpiresAt, &g.MaxUses, &g.Used, &g.Limits, &g.Sources); err != nil {
 			return nil, err
 		}
 		results = append(results, g)
@@ -205,8 +209,7 @@ func (g grantPolicy) apply(ctx context.Context, tx pgx.Tx, res, peer, actor, sou
 	// A replacement retains previous debits. Only actions with remaining uses fulfill a request.
 	if _, err := tx.Exec(ctx, `UPDATE mp_access_requests SET status='granted'
 		WHERE resource=$1 AND requester=$2 AND status='pending' AND actions <@ ARRAY(
-		    SELECT action FROM mp_effective_actions WHERE resource=$1 AND grantee=$2
-		    AND expires_at>statement_timestamp() AND used<max_uses)`, res, peer); err != nil {
+		    SELECT action FROM mp_available_actions WHERE resource=$1 AND grantee=$2)`, res, peer); err != nil {
 		return err
 	}
 	return recordEvent(ctx, tx, peer, "grant.received", actor, res)
@@ -285,17 +288,20 @@ func denyUnavailableForGrant(ctx context.Context, tx pgx.Tx, resource, sender st
 // Consume under the same serializable transaction as the child execution claim.
 // A refused claim leaves both usage ledgers unchanged.
 func consume(ctx context.Context, tx pgx.Tx, c Child) (string, bool, error) {
-	var perAction bool
+	var perAction, spendsUse bool
 	var source string
-	err := tx.QueryRow(ctx, `SELECT g.per_action,g.source FROM mp_resources r JOIN mp_grants g ON g.resource=r.id
+	err := tx.QueryRow(ctx, `SELECT g.per_action,g.source,mp_action_spends_use(a.action) FROM mp_resources r JOIN mp_grants g ON g.resource=r.id
         JOIN mp_selected_grant_actions a ON (a.resource,a.grantee,a.source)=(g.resource,g.grantee,g.source) AND a.action=$5
         WHERE g.grantee=$1 AND r.id=$2 AND r.device=$3 AND r.owner_id=$4 AND $5=ANY(r.actions) AND $5=ANY(g.actions)
-        AND $6::timestamptz>clock_timestamp() FOR UPDATE OF g`, c.Sender, c.Resource, c.Device, c.Owner, c.Action, c.ExpiresAt).Scan(&perAction, &source)
+        AND a.expires_at>clock_timestamp() AND $6::timestamptz>clock_timestamp() FOR UPDATE OF g`, c.Sender, c.Resource, c.Device, c.Owner, c.Action, c.ExpiresAt).Scan(&perAction, &source, &spendsUse)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
+	}
+	if !spendsUse {
+		return source, true, nil
 	}
 	if perAction {
 		tag, err := tx.Exec(ctx, `UPDATE mp_grant_limits SET used=used+1 WHERE resource=$1 AND grantee=$2 AND action=$3 AND source=$5 AND used<max_uses AND expires_at>clock_timestamp() AND $4::timestamptz>clock_timestamp()`, c.Resource, c.Sender, c.Action, c.ExpiresAt, source)

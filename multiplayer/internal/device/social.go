@@ -127,6 +127,7 @@ func (a *Agent) presenceMode() string {
 func (a *Agent) eventsLoop() {
 	for a.ctx.Err() == nil {
 		a.pollEvents(a.ctx)
+		a.pollReceipts(a.ctx)
 		a.refreshSummary(a.ctx)
 		if !wait(a.ctx, 15*time.Second) {
 			return

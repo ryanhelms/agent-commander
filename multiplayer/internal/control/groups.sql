@@ -31,6 +31,13 @@ BEGIN
     END IF;
 END $$;
 
+-- The device checks the sealed request/run reference and its originating peer.
+-- The relay checks the follow-up grant and its expiry without debiting a use.
+CREATE OR REPLACE FUNCTION mp_action_spends_use(action text) RETURNS boolean
+LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT action NOT IN ('agent.status','agent.result','thread.read','thread.comment')
+$$;
+
 -- Pick a complete policy for an action. Never combine one source's higher
 -- budget with another source's later expiration or automatic approval.
 CREATE OR REPLACE VIEW mp_selected_grant_actions AS
@@ -52,6 +59,9 @@ FROM (
                JOIN mp_group_members owner ON owner.group_id=t.group_id AND owner.user_id=r.owner_id
                WHERE t.group_id=g.source AND t.resource=g.resource))
 ) candidates
-ORDER BY resource,grantee,action,(expires_at>statement_timestamp() AND used<max_uses) DESC NULLS LAST, source;
+ORDER BY resource,grantee,action,(expires_at>statement_timestamp() AND (used<max_uses OR NOT mp_action_spends_use(action))) DESC NULLS LAST, source;
 CREATE OR REPLACE VIEW mp_effective_actions AS
 SELECT resource,grantee,action,expires_at,max_uses,used FROM mp_selected_grant_actions;
+CREATE OR REPLACE VIEW mp_available_actions AS
+SELECT * FROM mp_selected_grant_actions
+WHERE expires_at>statement_timestamp() AND (used<max_uses OR NOT mp_action_spends_use(action));

@@ -33,6 +33,7 @@ func (s *Service) workspaceRoutes(routes map[string]endpoint) {
 type workspace struct {
 	ID          string           `json:"id"`
 	Owner       string           `json:"owner"`
+	OwnerHandle string           `json:"ownerHandle"`
 	Group       string           `json:"group"`
 	Name        string           `json:"name"`
 	Goal        string           `json:"goal"`
@@ -70,22 +71,20 @@ func (s *Service) createWorkspace(ctx context.Context, p Principal, r *http.Requ
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
-			SELECT $1,$2,$3,$4,$5,$6,$7,$8 FROM mp_group_members WHERE group_id=$3 AND user_id=$2`,
-			w.ID, w.Owner, w.Group, w.Name, w.Goal, w.Repository, w.Base, w.Integration)
-		if err == nil && tag.RowsAffected() == 0 {
-			return missing()
-		}
-		return err
+		return tx.QueryRow(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
+			SELECT $1,$2,$3,$4,$5,$6,$7,$8 FROM mp_group_members WHERE group_id=$3 AND user_id=$2
+			RETURNING (SELECT coalesce(handle,'') FROM mp_profiles WHERE user_id=$2)`,
+			w.ID, w.Owner, w.Group, w.Name, w.Goal, w.Repository, w.Base, w.Integration).Scan(&w.OwnerHandle)
 	})
 	return w, err
 }
 
 func (s *Service) workspaces(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	rows, err := s.pool.Query(ctx, `SELECT w.id,w.owner_id,w.group_id,w.name,w.goal,w.repository,w.base,w.integration,
+	rows, err := s.pool.Query(ctx, `SELECT w.id,w.owner_id,coalesce(owner.handle,''),w.group_id,w.name,w.goal,w.repository,w.base,w.integration,
 		coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'kind',kind,'key',key,'holder',holder,'expiresAt',expires_at) ORDER BY kind,key,id)
 		FROM mp_live_workspace_claims c WHERE c.workspace_id=w.id),'[]'::jsonb)
-		FROM mp_workspaces w JOIN mp_group_members m ON m.group_id=w.group_id AND m.user_id=$1 ORDER BY w.name,w.id`, p.User)
+		FROM mp_workspaces w JOIN mp_profiles owner ON owner.user_id=w.owner_id
+		JOIN mp_group_members m ON m.group_id=w.group_id AND m.user_id=$1 ORDER BY w.name,w.id`, p.User)
 	if err != nil {
 		return nil, err
 	}

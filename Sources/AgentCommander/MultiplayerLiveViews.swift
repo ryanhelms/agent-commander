@@ -6,7 +6,8 @@ import SwiftUI
 // of two points or less, monospace for data, a lamp and a word for every state. Motion comes only
 // from MultiplayerTheme.Motion: trace lines arrive by sliding in under a fade, a countdown ticks,
 // a live lamp beats, and all of it stands still with Reduce Motion.
-//   Molecules:  MultiplayerVerbStrip, MultiplayerSignedBadge, MultiplayerTraceRow, MultiplayerCountdown,
+//   Atoms:      MultiplayerSignedBadge, MultiplayerHolderBadge, MultiplayerReadOnlyBadge
+//   Molecules:  MultiplayerVerbStrip, MultiplayerTraceRow, MultiplayerCountdown,
 //               MultiplayerHolderRow, MultiplayerFindingRow
 //   Organisms:  MultiplayerControlBand, MultiplayerWatchView, MultiplayerControlPage,
 //               MultiplayerReviewComposer, MultiplayerReviewPage, MultiplayerFanoutComposer,
@@ -67,6 +68,25 @@ struct MultiplayerSignedBadge: View {
     }
 }
 
+/// Who holds control of a worker: "<handle> has control", in the attention tone with a hand.
+struct MultiplayerHolderBadge: View {
+    let who: String
+
+    var body: some View {
+        MultiplayerBadge(text: "\(who) has control", symbol: "hand.raised.fill", tone: .attention)
+            .accessibilityLabel("\(who) has control")
+    }
+}
+
+/// Marks a watch view the viewer cannot steer.
+struct MultiplayerReadOnlyBadge: View {
+    var body: some View {
+        MultiplayerBadge(text: "Read-only", symbol: "eye", tone: .neutral)
+            .help("You can read this worker’s output. Nothing you type reaches it.")
+            .accessibilityLabel("Read-only")
+    }
+}
+
 /// One line of a watched worker's output: when, what kind, and the text.
 struct MultiplayerTraceRow: View {
     let event: MultiplayerWatchEvent
@@ -106,17 +126,22 @@ struct MultiplayerTraceRow: View {
         .padding(.leading, 8)
         .overlay(alignment: .leading) { Rectangle().fill(color.opacity(event.kind == .message ? 0.35 : 0.9)).frame(width: 2) }
         .overlay(alignment: .bottom) { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(event.kindTitle): \(event.text)")
-        .accessibilityValue(event.at.map { $0.formatted(date: .omitted, time: .standard) } ?? "")
+        // One static text per line, so assistive apps get a role with the label.
+        .accessibilityRepresentation {
+            Text("\(event.kindTitle): \(event.text)")
+                .accessibilityValue(event.at.map { $0.formatted(date: .omitted, time: .standard) } ?? "")
+        }
     }
 }
 
-/// Time left, ticking each second, over a line that drains with it when the length is known.
+/// Time left, ticking each second, over a line that drains with it.
 struct MultiplayerCountdown: View {
+    static let lineWidth: CGFloat = 56
+
     let until: Date
-    /// How long the whole span is, in seconds.
-    var span: TimeInterval? = nil
+    /// How long the whole span is, in seconds. The line is full at the span and empty at zero.
+    let span: TimeInterval
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -128,19 +153,24 @@ struct MultiplayerCountdown: View {
                     .font(MultiplayerTheme.figure.monospacedDigit())
                     .foregroundStyle(color)
                     .multiplayerTicking(text)
-                if let span, span > 0 {
-                    Rectangle().fill(MultiplayerTheme.hair)
-                        .frame(width: 56, height: 2)
-                        .overlay(alignment: .leading) {
-                            Rectangle().fill(color)
-                                .frame(width: 56 * min(left / span, 1), height: 2)
-                                .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.slow), value: text)
-                        }
-                }
+                Rectangle().fill(MultiplayerTheme.hair)
+                    .frame(width: Self.lineWidth, height: 2)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(color)
+                            .frame(width: Self.lineWidth * Self.fraction(left: left, span: span), height: 2)
+                            // The line moves evenly through each second; it steps with Reduce Motion.
+                            .animation(reduceMotion ? nil : .linear(duration: 1), value: text)
+                    }
+                    .accessibilityHidden(true)
             }
             .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isStaticText)
             .accessibilityLabel(MultiplayerHandover.spoken(left))
         }
+    }
+
+    static func fraction(left: TimeInterval, span: TimeInterval) -> Double {
+        span > 0 ? min(max(left / span, 0), 1) : 0
     }
 }
 
@@ -150,17 +180,16 @@ struct MultiplayerHolderRow: View {
     let resourceName: String
     var serverName: String? = nil
     var color: Color? = nil
+    let now: Date
     let isBusy: Bool
     var onOpen: (() -> Void)? = nil
     let onTakeBack: () -> Void
 
     var body: some View {
-        let who = handover.handle.multiplayerDisplay
+        let who = handover.who
         HStack(spacing: Space.s) {
-            MultiplayerLamp(kind: .on, pulses: true)
-                .frame(width: 20)
             label(who)
-            MultiplayerCountdown(until: handover.until, span: handover.minutes.map { Double($0) * 60 })
+            MultiplayerCountdown(until: handover.until, span: handover.span(now: now))
             Button("Take back", action: onTakeBack)
                 .buttonStyle(MultiplayerTrayButtonStyle())
                 .disabled(isBusy)
@@ -170,11 +199,8 @@ struct MultiplayerHolderRow: View {
     }
 
     @ViewBuilder private func label(_ who: String) -> some View {
-        let text = VStack(alignment: .leading, spacing: 1) {
-            Text("\(who) has control")
-                .font(MultiplayerTheme.name)
-                .foregroundStyle(MultiplayerTheme.foreground)
-                .lineLimit(1)
+        let text = VStack(alignment: .leading, spacing: 4) {
+            MultiplayerHolderBadge(who: who)
             HStack(spacing: 5) {
                 if let color { MultiplayerSwatch(color: color) }
                 Text(serverName.map { "\(resourceName) on \($0)" } ?? resourceName)
@@ -189,10 +215,13 @@ struct MultiplayerHolderRow: View {
         if let onOpen {
             Button(action: onOpen) { text }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(who) has control of \(resourceName)")
+                .accessibilityLabel("\(who) has control of \(resourceName)\(serverName.map { " on \($0)" } ?? "")")
                 .accessibilityHint("Opens control for this worker")
         } else {
-            text.accessibilityElement(children: .combine)
+            text
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isStaticText)
+                .accessibilityLabel("\(who) has control of \(resourceName)")
         }
     }
 }
@@ -228,8 +257,9 @@ struct MultiplayerFindingRow: View {
             Rectangle().fill(finding.isImportant ? MultiplayerTheme.attention : MultiplayerTheme.border).frame(width: 2)
         }
         .overlay(alignment: .bottom) { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(finding.severityTitle), \(finding.file.isEmpty ? "no file" : finding.location). \(finding.text)")
+        .accessibilityRepresentation {
+            Text("\(finding.severityTitle), \(finding.file.isEmpty ? "no file" : finding.location). \(finding.text)")
+        }
     }
 }
 
@@ -254,6 +284,7 @@ struct MultiplayerControlBand: View {
     let items: [MultiplayerPending<MultiplayerHandover>]
     let resourceName: (MultiplayerPending<MultiplayerHandover>) -> String
     let serverName: (String) -> String
+    let now: Date
     let isBusy: Bool
     let onOpen: (MultiplayerPending<MultiplayerHandover>) -> Void
     let onTakeBack: (MultiplayerPending<MultiplayerHandover>) -> Void
@@ -266,7 +297,7 @@ struct MultiplayerControlBand: View {
                     ForEach(items) { item in
                         MultiplayerHolderRow(handover: item.item, resourceName: resourceName(item).multiplayerDisplay,
                                              serverName: serverName(item.server),
-                                             color: MultiplayerTheme.swatch(for: item.server), isBusy: isBusy,
+                                             color: MultiplayerTheme.swatch(for: item.server), now: now, isBusy: isBusy,
                                              onOpen: { onOpen(item) }, onTakeBack: { onTakeBack(item) })
                             .multiplayerArriving()
                     }
@@ -283,6 +314,7 @@ struct MultiplayerControlPage: View {
     let holders: [MultiplayerHandover]
     let candidates: [String]
     @Binding var draft: MultiplayerHandoverDraft
+    let now: Date
     let isBusy: Bool
     let onTakeBack: (MultiplayerHandover) -> Void
 
@@ -301,15 +333,23 @@ struct MultiplayerControlPage: View {
                     .accessibilityElement(children: .combine)
                 }
                 ForEach(holders) { handover in
-                    MultiplayerHolderRow(handover: handover, resourceName: resourceName, isBusy: isBusy,
+                    MultiplayerHolderRow(handover: handover, resourceName: resourceName, now: now, isBusy: isBusy,
                                          onTakeBack: { onTakeBack(handover) })
                         .multiplayerArriving()
                 }
             }
             .multiplayerStreaming(holders.map(\.id))
         }
-        MultiplayerEditorTemplate(title: "Hand over control",
-                                  intro: "For the time you choose, one friend’s prompts and suggestions to \(resourceName) run without asking. Control returns when the time ends, or at once when you take it back.") {
+        // A band with a mono heading, like "Who has control" above it.
+        MultiplayerBand {
+          VStack(alignment: .leading, spacing: Space.m) {
+            VStack(alignment: .leading, spacing: 4) {
+                MultiplayerBandHeading(title: "Hand over control")
+                Text("For the time you choose, one friend’s prompts and suggestions to \(resourceName) run without asking. Control returns when the time ends, or at once when you take it back.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if candidates.isEmpty {
                 liveNote("No friend can prompt or suggest to \(resourceName) yet. Share it with Consult or Suggest first.")
             } else {
@@ -322,6 +362,8 @@ struct MultiplayerControlPage: View {
                                   selection: $draft.length,
                                   note: "It still runs on this Mac with your provider account, within the grant’s uses and budget.")
             }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -338,6 +380,8 @@ struct MultiplayerWatchView: View {
     let interval: Int
     @Binding var suggestion: String
     let reply: MultiplayerSentRequest?
+    /// False where the view only reads, such as the cockpit's zoom.
+    var allowsSuggestion = true
     let onRetry: () -> Void
 
     private var isLive: Bool { watch.phase == .live }
@@ -367,7 +411,7 @@ struct MultiplayerWatchView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 5) {
-                    MultiplayerBadge(text: "Read-only", symbol: "eye", tone: .neutral)
+                    MultiplayerReadOnlyBadge()
                     if isLive { MultiplayerSignedBadge() }
                 }
             }
@@ -390,6 +434,7 @@ struct MultiplayerWatchView: View {
                             Text("every \(interval) s").font(MultiplayerTheme.label).foregroundStyle(.inkSecondary)
                         }
                         .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isStaticText)
                         .accessibilityLabel("Reading every \(interval) seconds")
                     }
                 }
@@ -401,7 +446,7 @@ struct MultiplayerWatchView: View {
             }
             .multiplayerStreaming(watch.total)
         }
-        if entry?.canSuggest == true {
+        if allowsSuggestion, entry?.canSuggest == true {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: Space.s) {
                     MultiplayerField(label: "Suggest a message",
@@ -454,29 +499,44 @@ struct MultiplayerWatchView: View {
         }
     }
 
-    private var stateTitle: String {
-        switch watch.phase {
+    private var stateTitle: String { watch.stateTitle }
+    private var stateTone: Tone { watch.stateTone }
+    private var lamp: MultiplayerLamp.Kind { watch.lamp }
+}
+
+extension MultiplayerWatchState {
+    /// True when the worker has stopped to wait for a person: "awaiting_input", "waiting".
+    var isAwaiting: Bool {
+        let raw = state.lowercased()
+        return raw.contains("await") || raw.contains("waiting")
+    }
+
+    var stateTitle: String {
+        switch phase {
         case .connecting: "Connecting"
         case .waiting: "Waiting"
         case .stopped: "Stopped"
         case .failed: "No signal"
-        case .live: watch.state.isEmpty ? "Live" : MultiplayerRequestState.title(watch.state)
+        case .live: state.isEmpty ? "Live" : MultiplayerRequestState.title(state)
         }
     }
 
-    private var stateTone: Tone {
-        switch watch.phase {
+    var stateTone: Tone {
+        switch phase {
         case .connecting, .waiting: .focus
         case .stopped, .failed: .failure
-        case .live: watch.state.isEmpty ? .working : MultiplayerRequestState.tone(watch.state)
+        case .live: state.isEmpty ? .working : isAwaiting ? .attention : MultiplayerRequestState.tone(state)
         }
     }
 
-    private var lamp: MultiplayerLamp.Kind {
-        switch watch.phase {
+    /// The lamp beside the worker's state. A worker waiting for input shows the open arc.
+    var lamp: MultiplayerLamp.Kind {
+        switch phase {
         case .connecting, .waiting: .waiting
         case .stopped, .failed: .error
-        case .live: stateTone == .failure ? .error : stateTone == .attention ? .busy : stateTone == .neutral ? .off : .on
+        case .live:
+            isAwaiting ? .waiting : stateTone == .failure ? .error : stateTone == .attention ? .busy
+                : stateTone == .neutral ? .off : .on
         }
     }
 }
@@ -561,8 +621,29 @@ struct MultiplayerReviewPage: View {
     let isBusy: Bool
     let onCancel: () -> Void
     let onConfirm: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Names the confirmation for the page's scroll view.
+    static let confirmation = "multiplayer.review.post-confirmation"
 
     var body: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) { bands }
+                // The confirmation opens under the fold. Bring it into view once it is laid out.
+                .onChange(of: confirming) { _, isOn in
+                    guard isOn else { return }
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(30))
+                        withAnimation(reduceMotion ? nil : MultiplayerTheme.Motion.ease()) {
+                            proxy.scrollTo(Self.confirmation, anchor: .bottom)
+                        }
+                    }
+                }
+                .onAppear { if confirming { proxy.scrollTo(Self.confirmation, anchor: .bottom) } }
+        }
+    }
+
+    @ViewBuilder private var bands: some View {
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.s) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
@@ -576,7 +657,7 @@ struct MultiplayerReviewPage: View {
                               review == nil ? MultiplayerRequestState.tone(row.status) : .working)
                 }
                 MultiplayerSummaryLine(label: "Reviewer", value: target)
-                MultiplayerSummaryLine(label: "Sent", value: MultiplayerActivityRow.time(row.at, now: now))
+                MultiplayerSummaryLine(label: "Sent", value: MultiplayerActivityRow.time(row.at, now: now), monospaced: true)
                 if review != nil {
                     HStack(spacing: 6) {
                         MultiplayerSignedBadge()
@@ -643,6 +724,7 @@ struct MultiplayerReviewPage: View {
                             }
                         }
                         .multiplayerArriving()
+                        .id(Self.confirmation)
                     } else if let posted {
                         liveNote("Posted to \(posted.multiplayerDisplay).")
                     } else {
@@ -743,8 +825,8 @@ struct MultiplayerComparePage: View {
                         .multiplayerTicking(fanout.answered)
                 }
                 HStack(spacing: 6) {
-                    Text("\(columns.count) workers, sent \(MultiplayerActivityRow.time(fanout.at, now: now))")
-                        .font(MultiplayerTheme.sub)
+                    (Text("\(columns.count) workers, sent ").font(MultiplayerTheme.sub)
+                        + Text(MultiplayerActivityRow.time(fanout.at, now: now)).font(MultiplayerTheme.fingerprint))
                         .foregroundStyle(.inkSecondary)
                     Spacer(minLength: 0)
                     if fanout.answered > 0 { MultiplayerSignedBadge() }

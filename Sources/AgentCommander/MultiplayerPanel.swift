@@ -331,6 +331,7 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
                 content
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                    .background { MultiplayerScrollerSilencer().accessibilityHidden(true) }
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(max(contentHeight, 120), MultiplayerLayout.maxBodyHeight))
@@ -339,6 +340,27 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
         .frame(width: MultiplayerLayout.width)
         .background(MultiplayerTheme.panel)
     }
+}
+
+/// Takes the scroll bar's own parts out of the accessibility tree. AppKit offers a scroller as four
+/// buttons with no names (line and page, each way) after the last row of every page. The scroll
+/// area still scrolls for VoiceOver and the keyboard, and the scroller is still drawn.
+struct MultiplayerScrollerSilencer: NSViewRepresentable {
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            silence()
+        }
+
+        func silence() {
+            guard let scroll = enclosingScrollView else { return }
+            scroll.verticalScroller?.setAccessibilityElement(false)
+            scroll.horizontalScroller?.setAccessibilityElement(false)
+        }
+    }
+
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) { view.silence() }
 }
 
 /// A title and a sentence above one editor's fields and actions, as one band. The tray's header

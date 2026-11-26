@@ -133,7 +133,8 @@ func (s *Service) Handler() http.Handler {
 		"PUT /v1/resources/{id}": s.putResource, "GET /v1/resources": s.resources, "GET /v1/grants": s.grants, "PUT /v1/grants/{resource}/{handle}": s.changeGrant, "DELETE /v1/grants/{resource}/{handle}": s.changeGrant,
 		"POST /v1/access-requests": s.requestAccess, "GET /v1/access-requests": s.accessRequests, "DELETE /v1/access-requests/{id}": s.deleteAccessRequest,
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
-		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership, "PUT /v1/admin/policy": s.setPolicy,
+		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
+		"GET /v1/admin/policy": s.policy, "PUT /v1/admin/policy": s.setPolicy,
 		"POST /v1/invites":     s.createInvite,
 		"POST /v1/submissions": s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
 	}
@@ -233,9 +234,9 @@ func (s *Service) CanLookup(ctx context.Context, viewer, owner string) (bool, er
 	// Either party needs the other's public key to use a grant. A final
 	// debit may exhaust it before the requester reads the sealed receipt.
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM mp_friends WHERE a=$1 AND b=$2 AND accepted)
-		OR EXISTS(SELECT FROM mp_selected_grant_actions g JOIN mp_resources r ON r.id=g.resource
+		OR EXISTS(SELECT FROM mp_available_actions g JOIN mp_resources r ON r.id=g.resource
 			WHERE ((g.grantee=$1 AND r.owner_id=$2) OR (g.grantee=$2 AND r.owner_id=$1))
-			AND g.source<>'' AND g.action=ANY(r.actions) AND g.expires_at>now() AND g.used<g.max_uses)
+			AND g.source<>'' AND g.action=ANY(r.actions))
 		OR EXISTS(SELECT FROM mp_children c
 			JOIN mp_group_members sender ON sender.group_id=c.grant_source AND sender.user_id=c.sender
 			JOIN mp_group_members owner ON owner.group_id=c.grant_source AND owner.user_id=c.owner_id

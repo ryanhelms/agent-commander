@@ -325,6 +325,7 @@ struct MultiplayerStateLabel: View {
                 .lineLimit(1)
         }
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityLabel(text)
     }
 }

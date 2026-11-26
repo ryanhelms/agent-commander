@@ -65,17 +65,40 @@ func readRun(ctx context.Context, client *http.Client, id string) (commanderRun,
 	return run, nil
 }
 
-// handoffs records which runs each peer created, so a peer can read only its own.
-func handoffPath(cfg Config, peer string) string {
-	return filepath.Join(cfg.StateDir, "handoffs", hash([]byte(peer))+".json")
+func handoffPath(cfg Config, peer, resource, run string) string {
+	return filepath.Join(cfg.StateDir, "handoffs", hash([]byte(peer+"\x00"+resource+"\x00"+run))+".json")
 }
 
-func handoffRuns(cfg Config, peer string) []string {
-	var runs []string
-	if b, e := os.ReadFile(handoffPath(cfg, peer)); e == nil {
-		_ = json.Unmarshal(b, &runs)
+func ownsHandoff(cfg Config, peer, resource, run string) bool {
+	if _, err := os.Stat(handoffPath(cfg, peer, resource, run)); err == nil {
+		return true
 	}
-	return runs
+	// Earlier devices indexed runs by peer only. Use the original action
+	// receipt to establish that the run also belongs to this resource.
+	var legacy []string
+	b, err := os.ReadFile(filepath.Join(cfg.StateDir, "handoffs", hash([]byte(peer))+".json"))
+	if err != nil || json.Unmarshal(b, &legacy) != nil || !slices.Contains(legacy, run) {
+		return false
+	}
+	for _, g := range cfg.Grants {
+		if g.Action != "agent.handoff" || g.Resource != resource || g.Peer != peer {
+			continue
+		}
+		key := g.ReceiptKey()
+		entries, _ := os.ReadDir(receiptDir(cfg))
+		for _, entry := range entries {
+			if filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			r, err := load(filepath.Join(receiptDir(cfg), entry.Name()))
+			var original struct{ Run string }
+			if err == nil && r.Grant == key && r.Status == "completed" &&
+				json.Unmarshal(r.Result, &original) == nil && original.Run == run {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func handoffHandler(ctx context.Context, cfg Config, r Resource, req Request, id string, recoverOnly bool) (json.RawMessage, error) {
@@ -94,7 +117,7 @@ func handoffHandler(ctx context.Context, cfg Config, r Resource, req Request, id
 		var in struct {
 			Run string `json:"run"`
 		}
-		if strict(req.Payload, &in) != nil || !identifier.MatchString(in.Run) || !slices.Contains(handoffRuns(cfg, req.Peer), in.Run) {
+		if strict(req.Payload, &in) != nil || !identifier.MatchString(in.Run) || !ownsHandoff(cfg, req.Peer, req.Resource, in.Run) {
 			return nil, ErrDenied
 		}
 		run, e := readRun(ctx, client, in.Run)
@@ -165,15 +188,14 @@ func handoff(ctx context.Context, cfg Config, client *http.Client, r Resource, r
 	if json.Unmarshal(data, &run) != nil || !identifier.MatchString(run.ID) {
 		return nil, ErrUncertain
 	}
-	runs := handoffRuns(cfg, req.Peer)
-	if !slices.Contains(runs, run.ID) {
-		runs = append(runs, run.ID)
-		if e := privateDir(filepath.Dir(handoffPath(cfg, req.Peer))); e != nil {
-			return nil, ErrUnavailable
-		}
-		if e := save(handoffPath(cfg, req.Peer), runs); e != nil {
-			return nil, ErrUnavailable
-		}
+	path := handoffPath(cfg, req.Peer, req.Resource, run.ID)
+	if e := privateDir(filepath.Dir(path)); e != nil {
+		return nil, ErrUnavailable
 	}
+	if e := save(path, req.ID); e != nil {
+		return nil, ErrUncertain
+	}
+	// TODO: account for asynchronous hand-off usage when Commander exposes
+	// cumulative per-run tokens. A worker's latest turn is not a run total.
 	return answer(map[string]string{"run": run.ID, "title": in.Title, "state": run.Status})
 }

@@ -6,12 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agentcommander.network/pilot/internal/sharing"
 )
 
 type localWorker struct {
@@ -20,6 +23,9 @@ type localWorker struct {
 	RunID      string `json:"runId"`
 	RunStatus  string `json:"runStatus"`
 	Generation int    `json:"generation"`
+	Client     string `json:"client"`
+	Harness    string `json:"harness"`
+	Model      string `json:"model"`
 }
 
 func commanderClient(socket string) (*http.Client, error) {
@@ -65,6 +71,37 @@ func workerInfo(ctx context.Context, client *http.Client, target string) (localW
 	return info, nil
 }
 
+// ACP prompt results can report a total or only the individual token counts.
+type turnTokens struct {
+	TotalTokens, InputTokens, OutputTokens, ThoughtTokens, CachedReadTokens, CachedWriteTokens *int
+}
+
+func (u *turnTokens) count() *int {
+	if u == nil {
+		return nil
+	}
+	if u.TotalTokens != nil {
+		if *u.TotalTokens < 0 {
+			return nil
+		}
+		return u.TotalTokens
+	}
+	total, reported := 0, false
+	for _, n := range []*int{u.InputTokens, u.OutputTokens, u.ThoughtTokens, u.CachedReadTokens, u.CachedWriteTokens} {
+		if n != nil {
+			if *n < 0 || *n > math.MaxInt-total {
+				return nil
+			}
+			reported = true
+			total += *n
+		}
+	}
+	if !reported {
+		return nil
+	}
+	return &total
+}
+
 // PrepareLocalResource resolves the exact target on the owner's Commander socket.
 // Workers accept supervised turns, coordinators receive addressed inbox messages.
 func PrepareLocalResource(ctx context.Context, socket string, resource Resource) (Resource, error) {
@@ -84,6 +121,20 @@ func PrepareLocalResource(ctx context.Context, socket string, resource Resource)
 	r.Coordinator, r.Run = info.Role == "coordinator", info.RunID
 	if r.Coordinator && (!identifier.MatchString(r.Run) || info.RunStatus != "running") {
 		return r, ErrDenied
+	}
+	if info.Harness == "" {
+		info.Harness = info.Client
+	}
+	harness := strings.ToLower(strings.TrimSpace(info.Harness))
+	switch harness {
+	case "claude code":
+		harness = "claude"
+	case "claude", "codex", "":
+	default:
+		harness = "other"
+	}
+	if harness != "" || info.Model != "" {
+		r.Capabilities = r.Capabilities.WithDefaults(&sharing.Capabilities{Harness: harness, Model: info.Model})
 	}
 	return r, nil
 }
@@ -144,6 +195,7 @@ func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, rec
 	lines := bufio.NewScanner(io.LimitReader(res.Body, 8<<20))
 	lines.Buffer(make([]byte, 4096), 512<<10)
 	var text, state string
+	var tokens *int
 	for lines.Scan() {
 		line := lines.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -158,8 +210,14 @@ func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, rec
 				Status      string `json:"operationStatus"`
 			} `json:"snapshot"`
 			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role     string `json:"role"`
+				Content  string `json:"content"`
+				Metadata struct {
+					ACP struct {
+						Source, Kind, TurnID string
+						TurnTokens           *turnTokens
+					}
+				}
 			} `json:"messages"`
 		}
 		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) != nil {
@@ -184,6 +242,13 @@ func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, rec
 						text = m.Content
 					}
 				}
+				acp := m.Metadata.ACP
+				if acp.Source == "live" && acp.Kind == "acp.prompt_result" &&
+					((acp.TurnID != "" && acp.TurnID == operation) || (acp.TurnID == "" && ours)) {
+					if n := acp.TurnTokens.count(); n != nil {
+						tokens = n
+					}
+				}
 			}
 		case "RUN_FINISHED":
 			if operation == "" || event.RunID != id {
@@ -192,7 +257,11 @@ func ask(ctx context.Context, cfg Config, r Resource, id string, raw []byte, rec
 			if state != "completed" {
 				return nil, ErrInvalid
 			}
-			return answer(map[string]any{"status": "completed", "operationId": operation, "text": text, "resultAvailable": text != ""})
+			result := map[string]any{"status": "completed", "operationId": operation, "text": text, "resultAvailable": text != ""}
+			if tokens != nil {
+				result["tokens"] = *tokens
+			}
+			return answer(result)
 		case "RUN_ERROR":
 			if state == "delivery_unknown" || state == "unavailable" {
 				return nil, ErrUncertain

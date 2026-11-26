@@ -56,7 +56,10 @@ struct MultiplayerPresenceMenu: View {
         .opacity(isEnabled ? 1 : 0.6)
         .help(isEnabled ? "Choose the presence your friends see. Auto shows Busy while agents run and Away when this Mac is idle."
               : "Sign in to a server to set your presence")
-        .accessibilityLabel("Your presence, \(title)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Your presence")
+        .accessibilityValue(title)
+        .accessibilityHint("Opens a list to choose from")
     }
 }
 
@@ -128,12 +131,10 @@ struct MultiplayerActivityBand: View {
 
     private func filter<Items: View>(title: String, label: String, @ViewBuilder items: () -> Items) -> some View {
         Menu(content: items) {
-            // The menu button speaks for the filter; its drawn label is not a second element.
             HStack(spacing: 3) {
                 Text(title).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).accessibilityHidden(true)
             }
-            .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(MultiplayerTrayButtonStyle())

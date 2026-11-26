@@ -180,10 +180,7 @@ func PrepareResource(ctx context.Context, r Resource) (Resource, error) {
 		return r, nil
 	}
 	if r.Kind == "host" {
-		if _, e := LoadHostCommands(r.Target); e != nil {
-			return r, ErrInvalid
-		}
-		return r, nil
+		return prepareHost(r)
 	}
 	if r.Kind != "repo" {
 		return r, ErrInvalid

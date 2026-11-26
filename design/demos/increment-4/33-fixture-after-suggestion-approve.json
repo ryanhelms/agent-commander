@@ -1,0 +1,48 @@
+{
+ "approvals": {
+  "s-fixture-home": [
+   {
+    "id": "ap-1",
+    "peer": "fixture-sam",
+    "resource": "res-2",
+    "action": "agent.ask",
+    "summary": "{\"text\": \"Why does the reconnect test flake on CI but pass locally?\"}",
+    "arrived": "2026-11-26T01:34:33Z",
+    "expires": "2026-11-27T01:34:33Z"
+   },
+   {
+    "id": "ap-2",
+    "peer": "fixture-sam",
+    "resource": "res-2",
+    "action": "agent.handoff",
+    "summary": "{\"title\": \"Run tests on relay\", \"task\": \"Run the relay test suite and report failures.\"}",
+    "arrived": "2026-11-26T01:23:33Z",
+    "expires": "2026-11-27T01:23:33Z"
+   }
+  ]
+ },
+ "audit": [
+  {
+   "request": "ap-3",
+   "peer": "fixture-sam",
+   "resource": "res-2",
+   "action": "agent.suggest",
+   "started": "2026-11-26T01:37:33Z",
+   "ended": "2026-11-26T01:37:33Z",
+   "outcome": "ok",
+   "tokens": 12300,
+   "summary": "Approved by you."
+  },
+  {
+   "request": "rq-in-9",
+   "peer": "fixture-sam",
+   "resource": "res-2",
+   "action": "agent.ask",
+   "started": "2026-11-25T22:17:33Z",
+   "ended": "2026-11-25T22:18:33Z",
+   "outcome": "ok",
+   "tokens": 18400,
+   "summary": "Explained the lease renewal path."
+  }
+ ]
+}

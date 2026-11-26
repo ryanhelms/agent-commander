@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// deviceCoordinator sends the online and thread requests over the private network socket.
+// deviceCoordinator sends the online, thread and board requests over the private network socket.
 type deviceCoordinator struct {
 	client *http.Client
 	token  string
@@ -38,7 +38,7 @@ func newDeviceCoordinator(socket, token, run, actor string) *deviceCoordinator {
 }
 
 func (c *deviceCoordinator) post(ctx context.Context, verb string, body json.RawMessage) (json.RawMessage, error) {
-	if verb != "online" && verb != "thread" {
+	if verb != "online" && verb != "thread" && verb != "board" {
 		return nil, errors.New("unknown coordinator network operation")
 	}
 	if c.token == "" || c.run == "" || c.actor == "" {

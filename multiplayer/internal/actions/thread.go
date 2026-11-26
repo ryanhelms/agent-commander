@@ -73,8 +73,12 @@ func threadHandler(_ context.Context, cfg Config, _ Resource, req Request, _ str
 		Request string `json:"request"`
 		Text    string `json:"text"`
 	}
-	if strict(req.Payload, &in) != nil {
+	if strict(req.Payload, &in) != nil || !identifier.MatchString(in.Request) {
 		return nil, ErrInvalid
+	}
+	if !HasRequestReceipt(cfg, req.Peer, req.Resource, in.Request) &&
+		(cfg.ReceivedRequest == nil || !cfg.ReceivedRequest(req.Peer, req.Resource, in.Request)) {
+		return nil, ErrDenied
 	}
 	if req.Action == "thread.comment" {
 		c, e := AddComment(cfg, in.Request, Comment{Author: req.Peer, AuthorKind: "person", Text: in.Text})

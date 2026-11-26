@@ -27,6 +27,8 @@ func TestRelayPolicy(t *testing.T) {
 		}
 		return shareResponse[Policy](t, r)
 	}
+	socialRequest(t, h, "", "", "GET", route, nil, 401)
+	socialRequest(t, h, "member", "member-device", "GET", route, nil, 403)
 	socialRequest(t, h, "member", "member-device", "PUT", route, map[string]bool{"directory": false}, 403)
 	put(map[string]string{"knowledgeDefault": "server", "knowledgeWidest": "friend"}, 400)
 	put(map[string]int{"retentionDays": 0}, 400)
@@ -38,6 +40,9 @@ func TestRelayPolicy(t *testing.T) {
 	p := put(map[string]string{"reputationVisibility": "users"}, 200)
 	info, err := s.PublicSettings(ctx)
 	want := Policy{"friend", "group", "users", false, 1, 20, 2}
+	if got := shareResponse[Policy](t, socialRequest(t, h, "admin", "admin-device", "GET", route, nil, 200)); got != want {
+		t.Fatalf("admin policy = %+v, want %+v", got, want)
+	}
 	if err != nil || p != want || info.Policy != want || info.AdminContact != "admin@example.test" || info.Membership != "open" {
 		t.Fatalf("policy or public settings: %+v, %+v, %v", p, info, err)
 	}

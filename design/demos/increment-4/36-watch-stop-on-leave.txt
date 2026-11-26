@@ -1,0 +1,3 @@
+Child processes of the demo app (PID 1266) sampled every 50 ms. Each sighting is a fixture helper call.
+Watch page open, 8 s:  7 sightings (6 "(Python)", 1 "(python3.15)"): about one call every 2 s, as the lines readout also showed (9, 10, 11 at 20:37:47, :49, :51).
+After pressing back to Network, 8 s: 0 sightings.

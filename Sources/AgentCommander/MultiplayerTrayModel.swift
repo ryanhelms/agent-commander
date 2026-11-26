@@ -188,6 +188,8 @@ final class MultiplayerModel {
     let client: MultiplayerClient?
     /// Share and consult (increment 3): approvals, access requests, the grant sheet and requests sent.
     let share: MultiplayerShareModel
+    /// Remote: this Mac's web view, its pairing code and its paired devices.
+    let remote: MultiplayerRemoteModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -206,7 +208,7 @@ final class MultiplayerModel {
          steadyPoll: Duration = .seconds(15),
          fastPoll: Duration = .seconds(3),
          notifier: (any MultiplayerNotifying)? = nil,
-         defaults: UserDefaults = .standard,
+         winners: MultiplayerWinnerStore = .scratch(),
          watchInterval: Duration = .seconds(2),
          now: @escaping () -> Date = { Date() }) {
         self.client = client
@@ -216,8 +218,10 @@ final class MultiplayerModel {
         self.steadyPoll = steadyPoll
         self.fastPoll = fastPoll
         self.clock = now
-        self.share = MultiplayerShareModel(client: client, now: now, defaults: defaults, watchInterval: watchInterval)
+        self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval)
+        self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.share.tray = self
+        self.remote.tray = self
     }
 
     /// The one live model: the menu bar panel, the review window and invite links all use it.
@@ -228,7 +232,8 @@ final class MultiplayerModel {
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
             MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
-                             usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess())
+                             usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
+                             winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)))
         case .failure(let failure):
             MultiplayerModel(client: nil, setupFailure: failure)
         }
@@ -403,6 +408,7 @@ final class MultiplayerModel {
         actionTask?.cancel()
         cancelSocial()
         share.cancel()
+        remote.cancel()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -448,6 +454,7 @@ final class MultiplayerModel {
             apply(next)
             refreshSocial()
             share.refresh()
+            remote.refresh()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -733,18 +740,18 @@ final class MultiplayerModel {
     func settle() async {
         while true {
             if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first
-                ?? share.quietTask ?? share.pageTask {
+                ?? share.quietTask ?? share.pageTask ?? remote.quietTask {
                 await task.value
                 continue
             }
-            if let task = share.live.quietTask ?? share.live.pageTask {
+            if let task = share.live.quietTask ?? share.live.pageTask ?? share.teams.quietTask ?? share.teams.pageTask {
                 await task.value
                 continue
             }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, share.live.quietTask == nil,
-               share.live.pageTask == nil { return }
+               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, share.live.quietTask == nil,
+               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil { return }
         }
     }
 }
