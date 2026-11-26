@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "harnesses": [
+    {
+      "id": "claude", "name": "Claude Code", "vendor": "Anthropic", "kind": "agent", "group": "vendor",
+      "website": "https://claude.com/claude-code", "managed": true, "verified": true,
+      "binaries": ["claude"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+      "login": ["auth", "login"],
+      "status": {"args": ["auth", "status", "--json"], "parse": "json", "signed_in_field": "loggedIn",
+        "account_field": "email", "plan_field": "subscriptionType", "method_field": "authMethod", "expires_field": "loginExpiresAt"},
+      "watch": ["~/.claude/.credentials.json"], "keychain": true,
+      "acp_adapter": "claude-agent-acp", "models": ["opus", "sonnet", "haiku"]
+    },
+    {
+      "id": "codex", "name": "Codex", "vendor": "OpenAI", "kind": "agent", "group": "vendor",
+      "website": "https://developers.openai.com/codex/cli", "managed": true, "verified": true,
+      "binaries": ["codex"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@openai/codex"],
+      "login": ["login"],
+      "status": {"args": ["login", "status"], "parse": "exit"},
+      "watch": ["~/.codex/auth.json"],
+      "profile": {"env": "AGENT_COMMANDER_CODEX_PROFILE", "home_env": "CODEX_HOME", "watch": ["auth.json"]},
+      "acp_adapter": "codex-acp", "models": ["gpt-5.5-codex", "gpt-5.5"]
+    },
+    {
+      "id": "gemini", "name": "Gemini CLI", "vendor": "Google", "kind": "agent", "group": "vendor",
+      "website": "https://github.com/google-gemini/gemini-cli",
+      "binaries": ["gemini"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@google/gemini-cli"],
+      "login": [],
+      "credentials": ["~/.gemini/oauth_creds.json"], "credential_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      "watch": ["~/.gemini"]
+    },
+    {
+      "id": "opencode", "name": "OpenCode", "vendor": "SST", "kind": "agent", "group": "open_source",
+      "website": "https://opencode.ai", "verified": true,
+      "binaries": ["opencode"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "opencode-ai"],
+      "login": ["auth", "login"],
+      "status": {"args": ["auth", "list"], "parse": "text", "signed_out_match": "No authenticated"},
+      "watch": ["~/.local/share/opencode/auth.json"]
+    },
+    {
+      "id": "goose", "name": "Goose", "vendor": "Block", "kind": "agent", "group": "open_source",
+      "website": "https://block.github.io/goose",
+      "binaries": ["goose"], "version_args": ["--version"],
+      "install": ["brew", "install", "block-goose-cli"],
+      "login": ["configure"],
+      "credentials": ["~/.config/goose/config.yaml"], "watch": ["~/.config/goose"]
+    },
+    {
+      "id": "aider", "name": "Aider", "vendor": "Aider", "kind": "agent", "group": "open_source",
+      "website": "https://aider.chat",
+      "binaries": ["aider"], "version_args": ["--version"],
+      "install": ["uv", "tool", "install", "aider-chat"],
+      "credential_env": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+      "credentials": ["~/.aider.conf.yml", "~/.env"], "watch": ["~/.aider.conf.yml"]
+    },
+    {
+      "id": "cline", "name": "Cline CLI", "vendor": "Cline", "kind": "agent", "group": "open_source",
+      "website": "https://cline.bot",
+      "binaries": ["cline"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "cline"],
+      "login": ["auth"],
+      "credentials": ["~/.cline/data/secrets.json"], "watch": ["~/.cline"]
+    },
+    {
+      "id": "crush", "name": "Crush", "vendor": "Charm", "kind": "agent", "group": "open_source",
+      "website": "https://charm.land/crush",
+      "binaries": ["crush"], "version_args": ["--version"],
+      "install": ["brew", "install", "charmbracelet/tap/crush"],
+      "credentials": ["~/.local/share/crush/crush.json"], "watch": ["~/.local/share/crush"],
+      "credential_env": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+    },
+    {
+      "id": "qwen", "name": "Qwen Code", "vendor": "Alibaba", "kind": "agent", "group": "open_source",
+      "website": "https://github.com/QwenLM/qwen-code",
+      "binaries": ["qwen"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@qwen-code/qwen-code"],
+      "credentials": ["~/.qwen/oauth_creds.json"], "watch": ["~/.qwen"]
+    },
+    {
+      "id": "copilot", "name": "GitHub Copilot CLI", "vendor": "GitHub", "kind": "agent", "group": "ide",
+      "website": "https://github.com/features/copilot/cli",
+      "binaries": ["copilot"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@github/copilot"],
+      "login": [],
+      "credentials": ["~/.copilot/config.json"], "watch": ["~/.copilot"], "keychain": true
+    },
+    {
+      "id": "cursor", "name": "Cursor CLI", "vendor": "Anysphere", "kind": "agent", "group": "ide",
+      "website": "https://cursor.com/cli",
+      "binaries": ["cursor-agent"], "version_args": ["--version"],
+      "install_script": "curl https://cursor.com/install -fsS | bash",
+      "login": ["login"],
+      "status": {"args": ["status"], "parse": "text", "signed_out_match": "Not logged in"},
+      "watch": ["~/.cursor"], "keychain": true
+    },
+    {
+      "id": "amp", "name": "Amp", "vendor": "Sourcegraph", "kind": "agent", "group": "ide",
+      "website": "https://ampcode.com",
+      "binaries": ["amp"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@sourcegraph/amp"],
+      "login": ["login"],
+      "credentials": ["~/.local/share/amp/secrets.json"], "credential_env": ["AMP_API_KEY"], "watch": ["~/.local/share/amp"]
+    },
+    {
+      "id": "auggie", "name": "Augment Auggie", "vendor": "Augment Code", "kind": "agent", "group": "ide",
+      "website": "https://www.augmentcode.com",
+      "binaries": ["auggie"], "version_args": ["--version"],
+      "install": ["npm", "install", "-g", "@augmentcode/auggie"],
+      "login": ["login"],
+      "credentials": ["~/.augment/session.json"], "watch": ["~/.augment"]
+    },
+    {
+      "id": "kiro", "name": "Kiro CLI", "vendor": "AWS", "kind": "agent", "group": "ide",
+      "website": "https://kiro.dev",
+      "binaries": ["kiro-cli"], "version_args": ["--version"],
+      "install_script": "curl -fsSL https://cli.kiro.dev/install | bash",
+      "login": ["login"],
+      "watch": ["~/.kiro", "~/.aws/sso/cache"]
+    },
+    {
+      "id": "droid", "name": "Factory Droid", "vendor": "Factory", "kind": "agent", "group": "ide",
+      "website": "https://factory.ai",
+      "binaries": ["droid"], "version_args": ["--version"],
+      "install_script": "curl -fsSL https://app.factory.ai/cli | sh",
+      "credentials": ["~/.factory/auth.json"], "credential_env": ["FACTORY_API_KEY"], "watch": ["~/.factory"]
+    },
+    {
+      "id": "warp", "name": "Warp", "vendor": "Warp", "kind": "agent", "group": "ide",
+      "website": "https://www.warp.dev",
+      "binaries": ["warp", "warp-cli"], "apps": ["/Applications/Warp.app"],
+      "install": ["brew", "install", "--cask", "warp"]
+    },
+    {
+      "id": "ollama", "name": "Ollama", "vendor": "Ollama", "kind": "runner", "group": "runner",
+      "website": "https://ollama.com", "verified": true,
+      "binaries": ["ollama"], "version_args": ["--version"],
+      "install": ["brew", "install", "ollama"]
+    },
+    {
+      "id": "lmstudio", "name": "LM Studio", "vendor": "Element Labs", "kind": "runner", "group": "runner",
+      "website": "https://lmstudio.ai", "verified": true,
+      "binaries": ["lms"], "apps": ["/Applications/LM Studio.app"],
+      "install": ["brew", "install", "--cask", "lm-studio"]
+    }
+  ]
+}
