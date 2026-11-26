@@ -89,7 +89,8 @@ struct MultiplayerWorkspaceHost: View {
 // MARK: - Claim
 
 /// Claim for a view outside the tray: an issue or a set of paths in a workspace, for one of the
-/// person's agents. A claim that was made reports its ID.
+/// person's agents. A claim that was made reports its ID. A claim the relay refused because
+/// someone else holds an overlapping one reports who, through `onRefused`, before `onFinish`.
 struct MultiplayerClaimHost: View {
     let model: MultiplayerModel
     let server: String
@@ -97,6 +98,8 @@ struct MultiplayerClaimHost: View {
     var scrolls = true
     var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
+    /// The holder and the blocking claim, so the caller can mark that row.
+    var onRefused: ((MultiplayerClaimRefusal) -> Void)? = nil
     @State private var draft = MultiplayerClaimDraft()
     @State private var refusal: String?
 
@@ -137,10 +140,10 @@ struct MultiplayerClaimHost: View {
         refusal = nil
         let asked = draft
         Task {
-            let result = await model.claim(asked, in: workspace, on: server)
-            if result.isDone { draft = MultiplayerClaimDraft(agent: asked.agent) }
-            refusal = result.reason
-            onFinish(result)
+            let answer = await model.claimAnswer(asked, in: workspace, on: server)
+            if answer.result.isDone { draft = MultiplayerClaimDraft(agent: asked.agent) }
+            refusal = answer.result.reason
+            answer.report(to: onFinish, refused: onRefused)
         }
     }
 }
@@ -148,7 +151,8 @@ struct MultiplayerClaimHost: View {
 // MARK: - Card
 
 /// One card for a view outside the tray. It reads the board itself when it appears and after each
-/// change, and stays open. `onFinish` is called for each change, with the card's ID.
+/// change, and stays open. `onFinish` is called for each change, with the card's ID. A change the
+/// relay refused because someone else holds the card reports who, through `onRefused`, first.
 struct MultiplayerCardHost: View {
     let model: MultiplayerModel
     let server: String
@@ -157,6 +161,8 @@ struct MultiplayerCardHost: View {
     var scrolls = true
     var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
+    /// The holder and the blocking claim, so the caller can mark that row.
+    var onRefused: ((MultiplayerClaimRefusal) -> Void)? = nil
     @State private var cards = MultiplayerLoad<[MultiplayerCard]>.loading
     @State private var result = ""
     @State private var confirmingRelease = false
@@ -230,10 +236,12 @@ struct MultiplayerCardHost: View {
         confirmingRelease = false
         let text = result
         Task {
-            let answer = await model.updateCard(card, in: workspace, on: server, to: state, result: text)
-            if answer.isDone { await load(showingProgress: false) }
-            refusal = answer.reason
-            onFinish(answer)
+            let answer = state == .done
+                ? await model.completeCardAnswer(card, in: workspace, on: server, result: text)
+                : await model.updateCardAnswer(card, in: workspace, on: server, to: state, result: text)
+            if answer.result.isDone { await load(showingProgress: false) }
+            refusal = answer.result.reason
+            answer.report(to: onFinish, refused: onRefused)
         }
     }
 }
@@ -313,6 +321,29 @@ struct MultiplayerKnowledgeHost: View {
     @State private var draft = MultiplayerKnowledgeDraft()
     @State private var secretRefusal: String?
     @State private var refusal: String?
+    /// The widest scope the server lets knowledge reach, read when the host appears. Nil until the
+    /// relay says.
+    @State private var widest: MultiplayerKnowledgeScope?
+
+    /// The widest scope a server allows, as the object of "lets knowledge reach …".
+    static func reach(_ scope: MultiplayerKnowledgeScope) -> String {
+        switch scope {
+        case .private: "only you"
+        case .friend: "one friend"
+        case .group: "a group"
+        case .server: "everyone on it"
+        }
+    }
+
+    /// A refused share with the server's limit named: "Couldn’t share notes. Forbidden. studio
+    /// lets knowledge reach a group at most." The limit is added only when the scope asked for is
+    /// wider than the server allows, which is when the relay answers 403, and only once.
+    static func refusal(_ reason: String?, scope: MultiplayerKnowledgeScope, widest: MultiplayerKnowledgeScope?,
+                        serverName: String) -> String? {
+        guard let reason, let widest, scope.rank > widest.rank else { return reason }
+        let limit = "\(serverName) lets knowledge reach \(reach(widest)) at most."
+        return reason.contains(limit) ? reason : "\(reason) \(limit)"
+    }
 
     var body: some View {
         let place = model.teamsPlace(server)
@@ -337,7 +368,14 @@ struct MultiplayerKnowledgeHost: View {
         .task(id: "\(server)/\(editing?.id ?? "")") {
             draft = MultiplayerKnowledgeDraft(editing: editing)
             secretRefusal = nil
+            await readLimit()
         }
+    }
+
+    /// Reads how widely the server lets knowledge travel, for the host's own refusal.
+    private func readLimit() async {
+        widest = nil
+        if case .loaded(let me) = await model.share.teams.loadMe(on: server) { widest = me.knowledgeWidestScope }
     }
 
     private func send() {
@@ -348,7 +386,9 @@ struct MultiplayerKnowledgeHost: View {
             let result = await model.shareKnowledge(asked, on: server)
             if result.isDone { draft = MultiplayerKnowledgeDraft() }
             if let reason = result.reason, MultiplayerSecretCheck.isRefusal(reason) { secretRefusal = MultiplayerSecretCheck.refusal }
-            refusal = result.reason
+            // A server that only says "Forbidden." has its limit named beside it.
+            if widest == nil, result.reason != nil { await readLimit() }
+            refusal = Self.refusal(result.reason, scope: asked.scope, widest: widest, serverName: model.teamsPlace(server).name)
             onFinish(result)
         }
     }

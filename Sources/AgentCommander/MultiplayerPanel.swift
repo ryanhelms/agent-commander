@@ -980,7 +980,7 @@ struct MultiplayerPanelStage: View {
             Palette.window.ignoresSafeArea()
             ScrollView([.vertical]) {
                 VStack(spacing: Space.m) {
-                    MultiplayerPanel(model: model)
+                    MultiplayerPanel(model: model, closesOnOpen: false)
                         .clipShape(shape)
                         .overlay { shape.strokeBorder(.inkEdge) }
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)

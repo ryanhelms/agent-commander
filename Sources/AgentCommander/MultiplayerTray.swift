@@ -773,17 +773,30 @@ struct MultiplayerPanel: View {
     /// main window uses; whether it follows the person's choice is still to be decided (DESIGN.md
     /// section 6). Its components read `\.theme`, so another theme here restyles all of it.
     var theme: Theme = .console
+    /// Whether an "Open in Agent Commander" row closes the window the panel is in. The review
+    /// stage draws the panel in the cockpit window itself, which must stay.
+    var closesOnOpen = true
 
     var body: some View {
-        MultiplayerPanelContent(model: model).environment(\.theme, theme)
+        MultiplayerPanelContent(model: model, closesOnOpen: closesOnOpen).environment(\.theme, theme)
     }
 }
 
 private struct MultiplayerPanelContent: View {
     @Bindable var model: MultiplayerModel
+    let closesOnOpen: Bool
+    /// The window this panel is in, for the open-in-window row to close.
+    @State private var panelWindow = MultiplayerPanelWindow()
+    @Environment(\.multiplayerWindowOpener) private var opener
 
     @Environment(\.theme) private var theme
     var body: some View {
+        shell
+            .background { MultiplayerPanelWindowProbe(panel: panelWindow).accessibilityHidden(true) }
+            .environment(\.multiplayerWindowOpener, closesOnOpen ? opener.closing { [panelWindow] in panelWindow.close() } : opener)
+    }
+
+    private var shell: some View {
         MultiplayerPanelShell {
             header
         } content: {
@@ -973,6 +986,11 @@ private struct MultiplayerPanelContent: View {
             MultiplayerMembershipPage(state: model.membership, draft: $model.membershipDraft,
                                       onRetry: { model.loadMembership() })
         case .share(let id, let page):
+            // A page that has a window page says so first. The page itself stays until its window
+            // page has passed a running-window check (DESIGN.md, "The triage tray").
+            if let link = MultiplayerWindowLink(page: page, server: id) {
+                MultiplayerOpenInWindowRow(link: link)
+            }
             sharePage(page, on: id)
         }
     }
