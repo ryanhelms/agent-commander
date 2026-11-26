@@ -17,21 +17,20 @@ import SwiftUI
 //   ShellNote            a lamp and one sentence inside a panel (molecule)
 //   ShellPersonCell      a person and the server they are on (molecule)
 //   NetworkInspector     the panel beside a collection: title, an embedded tray organism, footer (organism)
-//   NetworkSplit         a collection beside its inspector, or over it in a narrow window (template)
+//   NetworkSplit         a collection beside its inspector, or over it when both don't fit (template)
+//   NetworkFitWidth      a page's bands at the window's width, or their own least width (template)
 //   NetworkPageScaffold  header, telemetry strip, alert band, then the page's bands (template)
 
 enum NetworkLayout {
     /// The inspector beside a collection. The tray's organisms were drawn for 400 pt, so they sit
     /// in it at their own measure.
     static let inspectorWidth: CGFloat = 420
+    /// The least an inspector narrows to beside a collection: the tray's own width.
+    static let inspectorMinimum: CGFloat = 400
     /// A narrow collection beside a wide detail (fan-out, threads).
     static let listWidth: CGFloat = 340
-    /// The network model's grant sheet scrolls inside itself, so its inspector gives it a height.
-    static let grantHeight: CGFloat = 560
     /// The least a column without a width of its own is given.
     static let flexibleColumn: CGFloat = 132
-    /// The least width a collection keeps beside its inspector. Narrower, the inspector goes under it.
-    static let collectionMinimum: CGFloat = 540
     static let stateColumn: CGFloat = 132
     static let serverColumn: CGFloat = 116
     static let figureColumn: CGFloat = 72
@@ -101,11 +100,14 @@ struct ShellAlertBand: View {
             case .success: MultiplayerLamp(kind: .on)
             case .failure: MultiplayerLamp(kind: .error)
             }
+            // The sentence is one static text and Dismiss is its own button beside it.
             Text(text).themeType(theme.type.body).foregroundStyle(.theme(\.color.foreground))
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("\(spokenKind): \(text)")
+                .accessibilityIdentifier("network-alert-\(kind)")
             Spacer(minLength: Space.s)
             if let dismiss, kind != .progress {
-                SymbolButton(symbol: "xmark", label: "Dismiss", size: 10, action: dismiss)
+                SymbolButton(symbol: "xmark", label: "Dismiss this message", size: 10, action: dismiss)
                     .foregroundStyle(.theme(\.color.secondary))
             }
         }
@@ -113,8 +115,15 @@ struct ShellAlertBand: View {
         .frame(minHeight: theme.space.fieldHeight)
         .background(fill, in: shape)
         .overlay { shape.strokeBorder(edge, lineWidth: theme.line.hairline) }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("network-alert-\(kind)")
+        .accessibilityElement(children: .contain)
+    }
+
+    private var spokenKind: String {
+        switch kind {
+        case .progress: "In progress"
+        case .success: "Done"
+        case .failure: "Failed"
+        }
     }
 
     private var fill: Color {
@@ -339,11 +348,17 @@ struct ShellCellText: View {
 struct NetworkRowVerbs: View {
     let isRunning: Bool
     let result: NetworkActionResult?
+    /// How the row was answered, while the network still lists it: the outcome takes the verbs' place.
+    var answer: MultiplayerAnswer? = nil
     let verbs: [MultiplayerRowVerb]
 
     var body: some View {
         if isRunning {
             MultiplayerSpinner().accessibilityLabel("In progress")
+        } else if let answer {
+            MultiplayerStateLabel(lamp: answer == .approved ? .on : answer == .denied ? .error : .off, text: answer.title,
+                                  tone: answer == .approved ? .working : answer == .denied ? .failure : .neutral)
+                .accessibilityIdentifier("network-row-answered")
         } else if result?.isDone == true {
             MultiplayerStateLabel(lamp: .on, text: "Done", tone: .working)
                 .accessibilityIdentifier("network-row-done")
@@ -393,7 +408,7 @@ struct NetworkInspector<Content: View, Footer: View>: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).themeType(theme.type.title).foregroundStyle(.theme(\.color.foreground))
                         .lineLimit(1).truncationMode(.middle).accessibilityAddTraits(.isHeader)
-                    if let serverName {
+                    if let serverName, !serverName.isEmpty {
                         Text(serverName).themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
                     }
                 }
@@ -441,6 +456,30 @@ extension NetworkInspector where Footer == EmptyView {
 }
 
 /// An inspector with nothing chosen: one sentence saying what choosing a row shows.
+/// A request with no page of its own in the network (an access request, a friend request): who,
+/// what and when, as labelled lines, with one sentence about what the answers do.
+struct NetworkRequestInspector: View {
+    let title: String
+    let serverID: String
+    let serverName: String
+    let lines: [(label: String, value: String)]
+    let note: String
+    let close: () -> Void
+
+    var body: some View {
+        NetworkInspector(title: title, serverID: serverID, serverName: serverName, close: close) {
+            MultiplayerBand {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        MultiplayerSummaryLine(label: line.label, value: line.value)
+                    }
+                    Text(note).font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 struct NetworkInspectorNote: View {
     let text: String
     var lamp: MultiplayerLamp.Kind = .off
@@ -455,29 +494,109 @@ struct NetworkInspectorNote: View {
 /// A collection beside its inspector, on the main window's `CollectionInspector`. When the window
 /// is too narrow for both, the inspector goes under the collection at its own measure.
 struct NetworkSplit<Collection: View, Inspector: View>: View {
-    var minimum = NetworkLayout.collectionMinimum
     @ViewBuilder var collection: Collection
     @ViewBuilder var inspector: Inspector
-    /// The width the page gives this template. Zero until the first layout.
-    @State private var width: CGFloat = 0
-
-    private var sideBySide: Bool {
-        width == 0 || width >= minimum + Space.l + NetworkLayout.inspectorWidth
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Color.clear.frame(maxWidth: .infinity).frame(height: 0)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            if sideBySide {
-                CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) { collection } inspector: { inspector }
-            } else {
-                VStack(alignment: .leading, spacing: Space.l) {
-                    collection
-                    inspector.frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
-                }
-            }
+        NetworkSplitLayout {
+            VStack(alignment: .leading, spacing: 0) { collection }
+            VStack(alignment: .leading, spacing: 0) { inspector }
         }
+    }
+}
+
+/// Places a collection beside its inspector when both fit, and the inspector under the
+/// collection when they don't. It asks the collection for the least width it can take, so a
+/// wide table never pushes the inspector, or the page, past the window's edge.
+///   beside   the inspector at 420 pt, or down to 400 pt (the tray's own measure) when that is
+///            what lets the collection fit
+///   under    the collection at full width, the inspector at up to 540 pt
+struct NetworkSplitLayout: Layout {
+    var spacing = Space.l
+    var inspectorWidth = NetworkLayout.inspectorWidth
+    var inspectorMinimum = NetworkLayout.inspectorMinimum
+    var stackedInspector = NetworkLayout.inspectorWidth + 120
+
+    struct Arrangement: Equatable {
+        var beside: Bool
+        var collection: CGFloat
+        var inspector: CGFloat
+    }
+
+    /// How a width is shared, given the least the collection can take.
+    func arrangement(width: CGFloat, collectionMinimum: CGFloat) -> Arrangement {
+        let room = width - spacing - collectionMinimum
+        if room >= inspectorMinimum {
+            let inspector = min(inspectorWidth, room)
+            return Arrangement(beside: true, collection: width - spacing - inspector, inspector: inspector)
+        }
+        return Arrangement(beside: false, collection: max(width, collectionMinimum), inspector: min(stackedInspector, width))
+    }
+
+    private func arrangement(_ proposal: ProposedViewSize, _ subviews: Subviews) -> Arrangement {
+        let least = subviews[0].sizeThatFits(ProposedViewSize(width: 0, height: nil)).width
+        // With no width on offer, the layout asks for the two side by side.
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? least + spacing + inspectorWidth
+        return arrangement(width: width, collectionMinimum: least)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard subviews.count == 2 else { return .zero }
+        let plan = arrangement(proposal, subviews)
+        let collection = subviews[0].sizeThatFits(ProposedViewSize(width: plan.collection, height: nil))
+        let inspector = subviews[1].sizeThatFits(ProposedViewSize(width: plan.inspector, height: nil))
+        return plan.beside
+            ? CGSize(width: plan.collection + spacing + plan.inspector, height: max(collection.height, inspector.height))
+            : CGSize(width: plan.collection, height: collection.height + spacing + inspector.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        let plan = arrangement(ProposedViewSize(width: bounds.width, height: nil), subviews)
+        let collection = ProposedViewSize(width: plan.collection, height: nil)
+        subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: collection)
+        let inspector = ProposedViewSize(width: plan.inspector, height: nil)
+        if plan.beside {
+            subviews[1].place(at: CGPoint(x: bounds.minX + plan.collection + spacing, y: bounds.minY), anchor: .topLeading, proposal: inspector)
+        } else {
+            let height = subviews[0].sizeThatFits(collection).height
+            subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + height + spacing), anchor: .topLeading, proposal: inspector)
+        }
+    }
+}
+
+/// Gives its one child the container's width, or the least width the child can take when that
+/// is more. Inside a sideways scroll area it keeps a page at the window's width until the page
+/// can't shrink any further, and only then lets it scroll.
+struct NetworkFitWidth: Layout {
+    /// The width of the room the page has. Zero before the first layout.
+    var container: CGFloat
+
+    private func width(_ subviews: Subviews) -> CGFloat {
+        max(container, subviews[0].sizeThatFits(ProposedViewSize(width: 0, height: nil)).width)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let width = width(subviews)
+        return CGSize(width: width, height: child.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: width(subviews), height: nil))
+    }
+}
+
+private struct NetworkPageScrollsSidewaysKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// A network page scrolls sideways when the window is narrower than the least it can take.
+    /// A test turns this off to measure that least width.
+    var networkPageScrollsSideways: Bool {
+        get { self[NetworkPageScrollsSidewaysKey.self] }
+        set { self[NetworkPageScrollsSidewaysKey.self] = newValue }
     }
 }
 
@@ -489,6 +608,9 @@ struct NetworkPageScaffold<Actions: View, Content: View>: View {
     let pages: NetworkPages
     @ViewBuilder var actions: Actions
     @ViewBuilder var content: Content
+    @Environment(\.networkPageScrollsSideways) private var scrollsSideways
+    /// The width the page's bands have. Zero until the first layout.
+    @State private var width: CGFloat = 0
 
     var body: some View {
         let state = pages.content
@@ -515,11 +637,43 @@ struct NetworkPageScaffold<Actions: View, Content: View>: View {
                     } else if let notice = state.notice {
                         ShellAlertBand(kind: .success, text: notice, dismiss: pages.actions.dismissNotice)
                     }
-                    content
+                    composer
+                    bands
                 }
             }
         }
         .accessibilityIdentifier("network-page-\(place)")
+    }
+
+    /// The composer open on the page, under the telemetry strip and above the bands: the network
+    /// model's own host in an inspector panel, at its full height because the page scrolls.
+    @ViewBuilder private var composer: some View {
+        if let composer = pages.selection.composer, let host = pages.composerHost {
+            NetworkInspector(title: composer.title, serverID: composer.server,
+                             serverName: composer.server.map { pages.content.serverName($0) },
+                             close: pages.actions.closeComposer) {
+                host(composer)
+            }
+            .frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
+            // A composer keeps its own draft: another target is another composer.
+            .id(composer)
+            .accessibilityIdentifier("network-composer")
+        }
+    }
+
+    /// The page's bands at the page's width. In a window too narrow for the least they can take,
+    /// they scroll sideways instead of pushing the navigation off the window.
+    @ViewBuilder private var bands: some View {
+        let stack = VStack(alignment: .leading, spacing: theme.space.sectionGap) { content }
+        if scrollsSideways {
+            ScrollView(.horizontal) {
+                NetworkFitWidth(container: width) { stack }
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        } else {
+            stack
+        }
     }
 }
 

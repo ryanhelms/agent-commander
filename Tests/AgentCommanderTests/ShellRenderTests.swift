@@ -22,7 +22,8 @@ let shellRenderDirectory = ProcessInfo.processInfo.environment["SHELL_RENDER_DIR
     }
 
     /// Draws a view at one pixel per point and writes it as a PNG.
-    static func write(_ view: some View, _ name: String, theme: Theme, to folder: URL) async throws {
+    static func write(_ view: some View, _ name: String, theme: Theme, to folder: URL,
+                      size: CGSize = ShellRenderTests.size) async throws {
         let root = view
             .frame(width: size.width, height: size.height)
             .environment(\.theme, theme)

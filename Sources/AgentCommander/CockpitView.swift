@@ -53,6 +53,16 @@ final class CockpitPresentationState {
     let networkPages = NetworkPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
+    /// The last key command pressed and how many there have been. The page runs each one from
+    /// its current state (CockpitShortcuts.swift).
+    private(set) var keyCommand: CockpitCommand?
+    private(set) var keyCommandCount = 0
+
+    /// Records a key command for the page to run.
+    func press(_ command: CockpitCommand) {
+        keyCommand = command
+        keyCommandCount += 1
+    }
     var composingRun = false
     var newRunDraft = NewRunDraft()
     var showingRunChooser = false
@@ -341,8 +351,10 @@ struct WorkspaceToolbar: ToolbarContent {
     var adapterUpdates: AdapterUpdateFeed? = nil
     /// The redesigned shell's wordmark and breadcrumb, in place of the ones drawn here.
     var title: AnyView? = nil
-    /// The redesigned shell's readouts (servers, presence), after the service state.
+    /// The redesigned shell's readouts, after the service state. Each is its own toolbar item, so
+    /// each is its own element for assistive apps: the servers button, then the presence menu.
     var readouts: AnyView? = nil
+    var presence: AnyView? = nil
 
     /// The shell's items sit flat on the toolbar: no shared glass capsule behind them. The console
     /// display menu and the adapter notice are the console's own controls and keep their look.
@@ -389,7 +401,7 @@ struct WorkspaceToolbar: ToolbarContent {
                     .foregroundStyle(Color(hex: 0xE0E1EA))
                     .padding(.horizontal, 6)
                 }
-                .keyboardShortcut("k", modifiers: .command)
+                .keyboardShortcut(KeyEquivalent(CockpitShortcuts.search.key), modifiers: CockpitShortcuts.search.modifiers)
                 .accessibilityLabel("Search workspace")
             }
             .sharedBackgroundVisibility(capsule)
@@ -403,6 +415,10 @@ struct WorkspaceToolbar: ToolbarContent {
         .sharedBackgroundVisibility(capsule)
         if let readouts {
             ToolbarItem(placement: .primaryAction) { readouts }
+                .sharedBackgroundVisibility(capsule)
+        }
+        if let presence {
+            ToolbarItem(placement: .primaryAction) { presence }
                 .sharedBackgroundVisibility(capsule)
         }
     }
@@ -510,6 +526,8 @@ struct CockpitScreen: View {
         chrome
             .consoleRecordAccess(actions, openSource: openSource)
             .onChange(of: run?.id) { _, _ in runChanged() }
+            // A key command is run here, where the page's values are current.
+            .onChange(of: ui.keyCommandCount) { _, _ in if let command = ui.keyCommand { perform(command) } }
             .onChange(of: paneFocus) { _, focus in
                 if let focus { ui.returnFocusWorkerID = focus }
             }
@@ -557,7 +575,8 @@ struct CockpitScreen: View {
                                      // Toolbar items don't inherit the window's theme, so it is handed on.
                                      title: AnyView(ShellToolbarTitle(crumbs: shellCrumbs(shellNavigation))
                                         .environment(\.theme, theme)),
-                                     readouts: AnyView(shellReadouts(shell).environment(\.theme, theme)))
+                                     readouts: AnyView(shellReadouts(shell, part: .servers).environment(\.theme, theme)),
+                                     presence: AnyView(shellReadouts(shell, part: .presence).environment(\.theme, theme)))
                 }
             } else {
                 WorkspaceToolbar(sidebarExpanded: $ui.sidebarExpanded, crumbs: crumbs, connection: content.connection,
@@ -619,8 +638,8 @@ struct CockpitScreen: View {
         return crumbs
     }
 
-    private func shellReadouts(_ shell: ShellContext) -> some View {
-        ShellToolbarReadouts(servers: shell.network.health, profile: shell.network.profile,
+    private func shellReadouts(_ shell: ShellContext, part: ShellToolbarReadouts.Part = .both) -> some View {
+        ShellToolbarReadouts(part: part, servers: shell.network.health, profile: shell.network.profile,
                              openServers: { show(place: LiveShell.servers) },
                              pickPresence: { shell.actions.setPresence($0) })
     }
@@ -796,7 +815,7 @@ struct CockpitScreen: View {
                            action: { ui.showingRunChooser.toggle() }),
             NavigationItem(id: "attention", title: "Attention", mark: .symbol("bell"),
                            badge: content.pending.count, isEnabled: !content.pending.isEmpty,
-                           shortcut: KeyboardShortcut("a", modifiers: [.command, .shift]),
+                           shortcut: CockpitShortcuts.nextRequest.shortcut,
                            action: { nextRequest() })
         ]
 
@@ -825,7 +844,7 @@ struct CockpitScreen: View {
         if let fixtureNavigation { return fixtureNavigation.footer }
         return [NavigationItem(id: "new-run", title: "New run", mark: .symbol("plus"),
                                isActive: ui.composingRun, isEnabled: isOnline,
-                               shortcut: KeyboardShortcut("n", modifiers: .command),
+                               shortcut: CockpitShortcuts.newRun.shortcut,
                                action: { startComposing() })]
     }
 
@@ -847,40 +866,56 @@ struct CockpitScreen: View {
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
-    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return. ⌘N and ⇧⌘A live on their navigation rows.
+    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘5. Each
+    /// button only records its command; `perform` runs it from the page's current state, so a
+    /// shortcut never acts on values captured when the window opened.
     private var shortcuts: some View {
         Group {
-            // The shell's modes: ⌥⌘1 to ⌥⌘5. They come before ⌘1 and name the digit itself on every
-            // keyboard layout, so ⌥ is never read as another key or dropped.
-            if let shell {
-                let navigation = shellNavigation(shell)
-                ForEach(navigation.modeItems) { item in
-                    if let number = item.shortcut, let key = "\(number)".first {
-                        Button(item.mode.title) { act(.selectMode(item.mode.id), in: navigation, shell) }
-                            .keyboardShortcut(KeyboardShortcut(KeyEquivalent(key), modifiers: LiveShell.modeModifiers,
-                                                               localization: .custom))
-                    }
+            // The shell's modes come before ⌘1.
+            if shell != nil {
+                ForEach(CockpitShortcuts.modes) { key in
+                    Button(key.title) { ui.press(key.command) }.keyboardShortcut(key.shortcut)
                 }
             }
-            Button("Focus coordinator") { focusCoordinator() }
-                .keyboardShortcut(KeyboardShortcut("1", modifiers: .command, localization: .custom))
-            Button("Zoom worker") { zoomFocused() }.keyboardShortcut("]", modifiers: .command)
-            Button("Return to wall") { returnToWall() }.keyboardShortcut("[", modifiers: .command)
-                .disabled(ui.zoomedWorkerID == nil && ui.zoomedRemoteWorkerID == nil)
+            Button(CockpitShortcuts.focusCoordinator.title) { ui.press(.focusCoordinator) }
+                .keyboardShortcut(CockpitShortcuts.focusCoordinator.shortcut)
+            Button(CockpitShortcuts.zoomWorker.title) { ui.press(.zoomWorker) }
+                .keyboardShortcut(CockpitShortcuts.zoomWorker.shortcut)
+            Button(CockpitShortcuts.returnToWall.title) { ui.press(.returnToWall) }
+                .keyboardShortcut(CockpitShortcuts.returnToWall.shortcut)
             // The live Attention row carries ⇧⌘A. A supplied navigation model has its own rows, so
             // the shortcut is kept here.
             if fixtureNavigation != nil || shell != nil {
-                Button("Next request") { nextRequest() }.keyboardShortcut("a", modifiers: [.command, .shift])
+                Button(CockpitShortcuts.nextRequest.title) { ui.press(.nextRequest) }
+                    .keyboardShortcut(CockpitShortcuts.nextRequest.shortcut)
             }
             // The shell's New run row has no key of its own, so ⌘N is kept here.
             if shell != nil {
-                Button("New run") { show(place: LiveShell.newRun) }.keyboardShortcut("n", modifiers: .command)
-                    .disabled(!isOnline)
+                Button(CockpitShortcuts.newRun.title) { ui.press(.newRun) }
+                    .keyboardShortcut(CockpitShortcuts.newRun.shortcut)
             }
         }
         .opacity(0)
         .frame(width: 0, height: 0)
         .accessibilityHidden(true)
+    }
+
+    /// Runs a key command against what the page shows now.
+    private func perform(_ command: CockpitCommand) {
+        switch command {
+        case .mode(let index):
+            guard let shell else { return }
+            let navigation = shellNavigation(shell)
+            let modes = navigation.modeItems
+            guard modes.indices.contains(index) else { return }
+            act(.selectMode(modes[index].mode.id), in: navigation, shell)
+        case .focusCoordinator: focusCoordinator()
+        case .zoomWorker: zoomFocused()
+        case .returnToWall: returnToWall()
+        case .nextRequest: nextRequest()
+        // No run can start while the service is offline; `show` leaves the window where it is.
+        case .newRun: if shell != nil { show(place: LiveShell.newRun) }
+        }
     }
 
     // MARK: Canvas
@@ -937,7 +972,7 @@ struct CockpitScreen: View {
     private func coordinatorPane(_ run: RunContent) -> some View {
         VStack(spacing: 0) {
             SectionBar {
-                SectionTitle(symbol: "terminal", title: "Coordinator")
+                WallHeading(symbol: "terminal", title: "Coordinator")
             } trailing: {
                 EmptyView()
             }
@@ -975,49 +1010,39 @@ struct CockpitScreen: View {
     @ViewBuilder private func workerRegion(_ run: RunContent) -> some View {
         if let remoteID = ui.zoomedRemoteWorkerID {
             // A remote worker's output, read-only (network tray, increment 4 Watch).
-            let name = MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+            let remote = shell?.wall.remoteWorkers.first { $0.id == remoteID }
+            let name = shell == nil
+                ? MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+                : remote?.agent ?? "Remote worker"
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                        MultiplayerReadOnlyBadge()
-                    }
+                    WallCrumb(name: name, back: { returnToWall() }) { MultiplayerReadOnlyBadge() }
                 } trailing: {
                     HStack(spacing: 12) {
+                        // The hand-off's report, artifacts and thread are on its page.
+                        if let remote, shell != nil {
+                            Button("Open hand-off") { openWork(.handoff, request: remote.request, on: remote.server) }
+                                .buttonStyle(ThemeButtonStyle(compact: true))
+                                .help("Open this hand-off in Hand-offs: its report, what it left to apply, and its thread")
+                        }
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
                         AttentionPresentationMenu(selection: presentationChoice)
                     }
                 }
-                MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                if let shell {
+                    if let zoom = shell.wallActions.zoom {
+                        zoom(remoteID) { ui.zoomedRemoteWorkerID = nil }
+                    } else {
+                        Color.clear.onAppear { ui.zoomedRemoteWorkerID = nil }
+                    }
+                } else {
+                    MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                }
             }
         } else if let zoomed = zoomed {
             VStack(spacing: 0) {
                 SectionBar {
-                    HStack(spacing: 8) {
-                        Button { returnToWall() } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.inkSecondary)
-                                Text("Worker wall").font(TypeRole.sectionTitle)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Return to worker wall")
-                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
-                        Text(zoomed.name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
-                    }
+                    WallCrumb(name: zoomed.name, back: { returnToWall() })
                 } trailing: {
                     HStack(spacing: 12) {
                         KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
@@ -1026,12 +1051,13 @@ struct CockpitScreen: View {
                 }
                 tile(zoomed, variant: .focused)
                     .coordinateSpace(.named(ConsoleVisibility.viewport))
+                controlDock(for: zoomed)
             }
         } else {
             let count = run.wall.workers.count
             VStack(spacing: 0) {
                 SectionBar {
-                    SectionTitle(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
+                    WallHeading(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
                 } trailing: {
                   HStack(spacing: 12) {
                     // Offered only where the wall can actually be regrouped.
@@ -1057,13 +1083,13 @@ struct CockpitScreen: View {
                 WorkerWall(layout: run.wall, collapsed: ui.collapsedGroups,
                            reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
                            toggleGroup: { id in toggleGroup(id) }) { worker in
-                    tile(worker, variant: .wall)
+                    // The dock sits under the tile, outside its shell.
+                    VStack(spacing: 0) {
+                        tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        controlDock(for: worker)
+                    }
                 }
-                // Hand-offs running on friends' Macs, as remote workers (network tray).
-                MultiplayerRemoteWorkerBand(model: .shared) { worker in
-                    ui.zoomedWorkerID = nil
-                    ui.zoomedRemoteWorkerID = worker.id
-                }
+                remoteBand
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
@@ -1074,6 +1100,58 @@ struct CockpitScreen: View {
                 .padding(.bottom, -11)
             }
         }
+    }
+
+    /// Hand-offs running on friends' Macs, as remote workers, and the reviews and fan-outs that
+    /// still need a look. The redesigned shell draws them from values in the wall's own frame;
+    /// without it the network's own band stands in.
+    @ViewBuilder private var remoteBand: some View {
+        if let shell {
+            let wall = shell.wall
+            Group {
+                if !wall.remoteWorkers.isEmpty || !wall.work.isEmpty {
+                    WallRemoteBand(workers: wall.remoteWorkers, work: wall.work, now: wall.now,
+                                   zoom: { worker in
+                                       ui.zoomedWorkerID = nil
+                                       ui.zoomedRemoteWorkerID = worker.id
+                                   },
+                                   openHandoffs: { show(place: NetworkPlace.handoffs) },
+                                   openWork: { item in openWork(item.kind, request: item.request, on: item.server) })
+                        .padding(.top, Metric.wallRowGap)
+                        .transition(.opacity)
+                }
+            }
+            .animation(theme.motion.animation(theme.motion.standard), value: wall.remoteWorkers.isEmpty && wall.work.isEmpty)
+            .onAppear { shell.wallActions.appeared() }
+            .onDisappear { shell.wallActions.disappeared() }
+        } else {
+            MultiplayerRemoteWorkerBand(model: .shared) { worker in
+                ui.zoomedWorkerID = nil
+                ui.zoomedRemoteWorkerID = worker.id
+            }
+        }
+    }
+
+    /// Who holds control of this worker and what a friend suggests for it, under its tile.
+    @ViewBuilder private func controlDock(for worker: WorkerPresentation) -> some View {
+        if let shell {
+            let wall = shell.wall
+            WallControlDock(controls: wall.controls(forWorker: worker.id), suggestions: wall.suggestions(forWorker: worker.id),
+                            now: wall.now, isBusy: wall.isBusy,
+                            takeBack: { control in shell.wallActions.takeBack(control) },
+                            openShared: { show(place: NetworkPlace.shared) },
+                            review: { suggestion in
+                                shell.actions.openLink(.approval(id: suggestion.approval, server: suggestion.server))
+                                show(place: NetworkPlace.approvals)
+                            })
+        }
+    }
+
+    /// Opens a hand-off, a review or a fan-out in the network and goes to the page that shows it.
+    private func openWork(_ kind: MultiplayerRemoteWork.Kind, request: String, on server: String) {
+        guard let shell else { return }
+        shell.wallActions.openWork(kind, request, server)
+        show(place: WallLiveWork.place(for: kind))
     }
 
     /// The drawer reaches the pane's trailing and bottom edges, outside the wall's insets.
@@ -1634,7 +1712,10 @@ struct CockpitView: View {
                                           networkPage: { place, go in
                                               AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
                                                                       openPanel: networkActions.openNetworkPanel))
-                                          }))
+                                          },
+                                          // The wall's live work, read from the network model as values.
+                                          wall: WallLiveWork(model: network),
+                                          wallActions: .live(network, pages: ui.networkPages)))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }
@@ -1666,8 +1747,9 @@ struct CockpitView: View {
             setPresence: { choice in _ = network.setPresence(choice) },
             answers: .live(network),
             openNetworkPanel: panel,
+            // The window opens the approval on its own page. The tray stays where it is.
             openLink: { link in
-                if case .approval(let id, let server) = link { network.share.open(.approval(id), on: server) }
+                if case .approval(let id, let server) = link { ui.networkPages.open(.share(server, .approval(id))) }
             },
             reviewAccess: { pending in
                 // Fills the grant sheet from the request; Approvals then hosts it beside the request.

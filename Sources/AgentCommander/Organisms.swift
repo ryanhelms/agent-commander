@@ -616,18 +616,19 @@ struct NestedWorkerGroup<Content: View>: View {
     var reconnectingHost: String? = nil
     let toggle: () -> Void
     @ViewBuilder let content: Content
+    /// The group is part of the wall's frame, so it follows the theme. The tiles inside do not.
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
         VStack(spacing: 0) {
             Button(action: toggle) {
                 HStack(spacing: 7) {
                     Image(systemName: collapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 9, weight: .semibold)).frame(width: 12)
                     Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
-                    Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.foreground)
+                    Text(name).themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.color.foreground))
                     Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
-                        .font(.system(size: 10.5))
+                        .themeType(theme.wall.groupNoteType)
                     Spacer(minLength: 8)
                     if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
                     if collapsed, let reconnectingHost {
@@ -648,10 +649,7 @@ struct NestedWorkerGroup<Content: View>: View {
             .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
         }
-        .padding(.horizontal, 9)
-        .padding(.bottom, collapsed ? 0 : 9)
-        .background(Palette.groupFill, in: shape)
-        .overlay { shape.strokeBorder(Palette.groupEdge) }
+        .wallGroupFrame(bottom: collapsed ? 0 : WallFrameLayout.groupInset)
     }
 }
 

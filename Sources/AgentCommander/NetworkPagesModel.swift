@@ -133,6 +133,12 @@ struct NetworkPagesContent {
     var canComment = false
     var canSendFanout = false
     /// How the last action on a row ended, by `NetworkActionResult.key`.
+    /// How an approval or access request just answered came out, by its row's result key, while
+    /// the network still lists it.
+    var answered: [String: MultiplayerAnswer] = [:]
+    /// The threads the person takes part in, by server, as the network listed them. Nil until
+    /// they are read; the list is then built from the requests the model already holds.
+    var threads: [String: [MultiplayerThreadSummary]]? = nil
     var results: [String: NetworkActionResult] = [:]
     /// Rows whose action is still running.
     var running: Set<String> = []
@@ -218,7 +224,7 @@ struct NetworkPagesContent {
                                           resourceName: resourceName(approval.resource, on: server.id),
                                           waiting: approval.arrived.map { max(0, now.timeIntervalSince($0)) },
                                           expiresIn: approval.expires.map { max(0, $0.timeIntervalSince(now)) },
-                                          result: results[key], isRunning: running.contains(key))
+                                          result: results[key], isRunning: running.contains(key), answer: answered[key])
             }
         }
         .sorted { ($0.expiresIn ?? .infinity) < ($1.expiresIn ?? .infinity) }
@@ -233,7 +239,7 @@ struct NetworkPagesContent {
                     return NetworkAccessRow(server: server.id, serverName: server.name, request: request,
                                             resourceName: resourceName(request.resource, on: server.id), isIncoming: incoming,
                                             waiting: request.createdAt.map { max(0, now.timeIntervalSince($0)) },
-                                            result: results[key], isRunning: running.contains(key))
+                                            result: results[key], isRunning: running.contains(key), answer: answered[key])
                 }
             }
             .sorted { ($0.waiting ?? .infinity) < ($1.waiting ?? .infinity) }
@@ -281,6 +287,7 @@ struct NetworkPagesContent {
 
     /// Every request you sent that has a thread: hand-offs, reviews and each fan-out answer.
     var threadRows: [NetworkWorkRow] {
+        if let threads { return Self.rows(threads: threads, in: self) }
         let answers = servers.flatMap { server in
             server.fanouts.flatMap { fanout in
                 fanout.children.map { child in
@@ -293,6 +300,36 @@ struct NetworkPagesContent {
             }
         }
         return (workRows + answers).sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
+    }
+
+    /// The network's own list of threads as rows: sent and received, consults included, newest first.
+    static func rows(threads: [String: [MultiplayerThreadSummary]], in content: NetworkPagesContent) -> [NetworkWorkRow] {
+        content.servers.flatMap { server -> [NetworkWorkRow] in
+            (threads[server.id] ?? []).flatMap { summary -> [NetworkWorkRow] in
+                let name = content.resourceName(summary.resource, on: server.id).multiplayerDisplay
+                let received = summary.direction == .received
+                let who = (summary.handle.isEmpty ? summary.peer : summary.handle).multiplayerDisplay
+                let kind: NetworkWorkRow.Kind = received ? .received
+                    : summary.action == MultiplayerSharePolicy.handoff ? .handoff
+                    : summary.action == MultiplayerSharePolicy.review ? .review
+                    : summary.action.hasPrefix(MultiplayerSharePolicy.fanoutPrefix) ? .fanout : .consult
+                let title = summary.title.isEmpty ? "Untitled \(kind.title)" : summary.title.multiplayerDisplay
+                let comments = summary.comments.map { MultiplayerPlural.count($0, "comment") } ?? ""
+                func row(_ request: String, _ title: String, _ target: String, _ kind: NetworkWorkRow.Kind) -> NetworkWorkRow {
+                    NetworkWorkRow(kind: kind, server: server.id, serverName: server.name, request: request, title: title,
+                                   target: target, state: comments, tone: .neutral, at: summary.lastCommentAt ?? summary.at)
+                }
+                // A fan-out's thread is one per worker it went to.
+                if !summary.children.isEmpty {
+                    return summary.children.map { child in
+                        let worker = content.resourceName(child.resource, on: server.id).multiplayerDisplay
+                        return row(child.request, "\(worker): \(title)", worker, .answer)
+                    }
+                }
+                return [row(summary.request, title, received && !who.isEmpty ? "\(who), to \(name)" : name, kind)]
+            }
+        }
+        .sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
     }
 
     /// What friends offer on every online server: what you can use first, then by owner and name.
@@ -360,8 +397,9 @@ struct NetworkPagesContent {
         case NetworkPlace.approvals:
             let approvals = approvalRows
             let access = accessRows
-            var cells = [cell("approvals", "approvals", approvals.count, tone: .attention),
-                         cell("access", "access requests", access.filter(\.isIncoming).count, tone: .attention),
+            // An answered row still shows its outcome, but it no longer waits and isn't counted.
+            var cells = [cell("approvals", "approvals", approvals.filter { $0.answer == nil }.count, tone: .attention),
+                         cell("access", "access requests", access.filter { $0.isIncoming && $0.answer == nil }.count, tone: .attention),
                          cell("sent", "you asked", access.filter { !$0.isIncoming && $0.request.isPending }.count)]
             if let soonest = approvals.compactMap(\.expiresIn).min() {
                 cells.append(ShellReadout(id: "soonest", label: "first lapses in", value: NeedsYouClock.left(soonest),
@@ -423,7 +461,7 @@ struct NetworkPagesContent {
         case NetworkPlace.directory: return "What friends offer on your servers. Granted actions work now; ask the owner for the rest."
         case NetworkPlace.approvals: return "Uses of your resources that wait for you, and requests for access in both directions."
         case NetworkPlace.handoffs: return "Tasks you handed to friends’ agents and reviews you asked for, newest first."
-        case NetworkPlace.threads: return "The comments on each request you sent. You and the agents write in the same thread."
+        case NetworkPlace.threads: return "The comments on each request you sent or were sent. You and the agents write in the same thread."
         case NetworkPlace.audit: return "Every use of a shared resource, with who asked, how it ended and what it cost."
         case NetworkPlace.fanout: return "One prompt sent to several workers, with their answers side by side."
         case NetworkPlace.shared: return "What you share, who can use it and for how long."
@@ -444,6 +482,8 @@ struct NetworkApprovalRow: Identifiable, Equatable {
     let expiresIn: TimeInterval?
     var result: NetworkActionResult? = nil
     var isRunning = false
+    /// How it came out, while the network still lists the answered row.
+    var answer: MultiplayerAnswer? = nil
 
     var id: String { "\(server)/\(approval.id)" }
     var who: String { approval.peer.isEmpty ? "A friend" : approval.peer.multiplayerDisplay }
@@ -459,6 +499,8 @@ struct NetworkAccessRow: Identifiable, Equatable {
     let waiting: TimeInterval?
     var result: NetworkActionResult? = nil
     var isRunning = false
+    /// How it came out, while the network still lists the answered row.
+    var answer: MultiplayerAnswer? = nil
 
     var id: String { "\(server)/\(request.id)" }
     /// The other person: who asks you, or whom you asked.
@@ -483,12 +525,18 @@ struct NetworkWorkRow: Identifiable, Equatable {
         case handoff, review, fanout
         /// One worker's answer to a fan-out.
         case answer
+        /// A prompt you sent to a friend's worker, or a suggestion.
+        case consult
+        /// A request a friend sent to a resource of yours.
+        case received
 
         var symbol: String {
             switch self {
             case .handoff: "arrow.up.right"
             case .review: "list.bullet.rectangle"
             case .fanout, .answer: "arrow.triangle.branch"
+            case .consult: "bubble.left"
+            case .received: "arrow.down.left"
             }
         }
 
@@ -498,6 +546,8 @@ struct NetworkWorkRow: Identifiable, Equatable {
             case .review: "review"
             case .fanout: "fan-out"
             case .answer: "answer"
+            case .consult: "consult"
+            case .received: "request to you"
             }
         }
     }
@@ -559,6 +609,96 @@ struct NetworkPagesSelection: Equatable {
     var shared: String? = nil
     /// The server the grant sheet is open on. Nil while it is closed.
     var grant: String? = nil
+    /// The artifact waiting for its confirmation, with the checkout chosen for it.
+    var apply: NetworkApplyDraft? = nil
+    /// The access request in the inspector, as its row's ID.
+    var access: String? = nil
+    /// The friend request in the inspector, as its row's ID.
+    var friend: String? = nil
+    /// The composer open on the page. Nil while none is.
+    var composer: NetworkComposer? = nil
+    /// The grant waiting for its second press before it is revoked, as `server/grant`.
+    var revoking: String? = nil
+}
+
+/// A composer the network model hosts for a view outside the tray, with what it is for.
+enum NetworkComposer: Hashable {
+    case consult(server: String, resource: String)
+    case handoff(server: String, resource: String)
+    case reviewRequest(server: String, resource: String)
+    case watch(server: String, resource: String)
+    case addFriend(server: String)
+    case invite(server: String)
+    case membership(server: String)
+    case addServer
+
+    var title: String {
+        switch self {
+        case .consult: "Consult"
+        case .handoff: "Hand off"
+        case .reviewRequest: "Request review"
+        case .watch: "Watch"
+        case .addFriend: "Add friend"
+        case .invite: "Invite someone"
+        case .membership: "Membership"
+        case .addServer: "Add server"
+        }
+    }
+
+    /// The server it is on. Adding a server has none yet.
+    var server: String? {
+        switch self {
+        case .consult(let server, _), .handoff(let server, _), .reviewRequest(let server, _), .watch(let server, _),
+             .addFriend(let server), .invite(let server), .membership(let server): server
+        case .addServer: nil
+        }
+    }
+}
+
+/// One artifact of a hand-off's result and the checkout the person chose for it. Nothing is
+/// written until they confirm.
+struct NetworkApplyDraft: Equatable {
+    let server: String
+    /// The hand-off's request.
+    let request: String
+    let index: Int
+    let name: String
+    let kind: String
+    /// The checkout's full path.
+    let checkout: String
+
+    /// The checkout's folder name, as the confirmation and the result name it.
+    var folder: String { Self.folder(of: checkout) }
+    var isPatch: Bool { kind == "patch" }
+
+    static func folder(of checkout: String) -> String {
+        let name = URL(fileURLWithPath: checkout).lastPathComponent
+        return name.isEmpty || name == "/" ? checkout : name
+    }
+
+    /// The path with the home folder as "~", for one line of mono.
+    var shownPath: String {
+        let home = NSHomeDirectory()
+        return checkout == home || checkout.hasPrefix(home + "/") ? "~" + checkout.dropFirst(home.count) : checkout
+    }
+
+    var question: String { isPatch ? "Apply \(name) to \(folder)?" : "Save \(name) into \(folder)?" }
+
+    /// What confirming does, and what it never does.
+    var consequence: String {
+        isPatch
+            ? "Runs git apply in this checkout and stages the changes. Nothing is committed. If the patch doesn’t fit, nothing changes."
+            : "Saves it as a new file in this folder. If a file with that name is already there, it is saved under a new name. Nothing is overwritten."
+    }
+
+    var confirmTitle: String { isPatch ? "Apply to \(folder)" : "Save into \(folder)" }
+
+    /// The key an artifact's result is kept under: one per artifact of a hand-off.
+    static func key(request: String, index: Int, on server: String) -> String {
+        NetworkActionResult.key(.artifact, "\(request)#\(index)", on: server)
+    }
+
+    var key: String { Self.key(request: request, index: index, on: server) }
 }
 
 /// What is being edited, as bindings into whoever owns the text.
@@ -609,10 +749,13 @@ struct NetworkPagesActions {
     // Directory
     var requestAccess: (MultiplayerDirectoryEntry, String) -> Void = { _, _ in }
     var sendAccessRequest: () -> Void = {}
-    /// Consult, Hand off, Watch and Request review open their composer in the network panel.
+    /// Consult, Hand off, Watch and Request review open their composer on the page.
     var consult: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
     var handOff: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
     var watch: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
+    var requestReview: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
+    /// Puts the open composer away.
+    var closeComposer: () -> Void = {}
 
     // Approvals and access
     var openApproval: (String, String) -> Void = { _, _ in }
@@ -633,6 +776,9 @@ struct NetworkPagesActions {
     var check: (MultiplayerSentRequest, String, _ result: Bool) -> Void = { _, _, _ in }
     /// Apply one artifact of a result. Nil leaves Apply to the network panel.
     var apply: ((Int, MultiplayerArtifact, MultiplayerSentRequest, String) -> Void)? = nil
+    /// Applies the artifact waiting in `selection.apply` to its checkout, or puts it away.
+    var confirmApply: () -> Void = {}
+    var cancelApply: () -> Void = {}
     var openReview: (String, String) -> Void = { _, _ in }
     var askPost: () -> Void = {}
     var cancelPost: () -> Void = {}
@@ -653,6 +799,8 @@ struct NetworkPagesActions {
 
     // Shared
     var takeBack: (MultiplayerHandover, String) -> Void = { _, _ in }
+    /// Ends one grant. The page asks for a second press first. Nil where a grant can't be revoked.
+    var revoke: ((MultiplayerGrant, String) -> Void)? = nil
 
     // People
     var acceptFriend: (MultiplayerIncoming, String) -> Void = { _, _ in }
@@ -680,6 +828,8 @@ struct NetworkPages {
     /// The network model's own grant sheet for a server, with its footer. Nil draws the sheet from
     /// the values above (the previews).
     var grantHost: ((_ server: String) -> AnyView)? = nil
+    /// The network model's own host for a composer. Nil where composers aren't offered.
+    var composerHost: ((NetworkComposer) -> AnyView)? = nil
 }
 
 // MARK: - The action boundary
@@ -691,7 +841,7 @@ enum NetworkActionResult: Equatable, Sendable {
     case failed(id: String, server: String, reason: String)
 
     /// What an action was taken on.
-    enum Subject: String, Sendable { case approval, access, friend, grant }
+    enum Subject: String, Sendable { case approval, access, friend, grant, artifact }
 
     var id: String {
         switch self {
@@ -744,6 +894,11 @@ struct NetworkPageActions {
         = { _, _, _, _ in false }
     var sendGrant: @MainActor (_ server: String) async -> Result
         = { server in .failed(id: "", server: server, reason: "Not available.") }
+    /// Asks which checkout an artifact goes to. Nil when the person chose none.
+    var chooseCheckout: (@MainActor (_ artifact: String) -> String?)? = nil
+    /// Applies or saves one artifact of a hand-off's result into a checkout. Nil leaves Apply to
+    /// the network panel.
+    var applyArtifact: (@MainActor (NetworkApplyDraft, MultiplayerSentRequest) async -> Result)? = nil
 }
 
 /// Runs one action for a row and keeps how it ended while the row shows it: a success for a
@@ -756,7 +911,8 @@ final class NetworkRowResults {
     var dwell: Duration = .milliseconds(2400)
 
     /// Runs `work` unless the row's action is already running. `finished` is called with the result.
-    func run(_ key: String, _ work: @escaping @MainActor () async -> NetworkActionResult,
+    /// `keeps` leaves a success in place: an artifact's result stays beside it.
+    func run(_ key: String, keeps: Bool = false, _ work: @escaping @MainActor () async -> NetworkActionResult,
              finished: @escaping @MainActor (NetworkActionResult) -> Void = { _ in }) {
         guard !running.contains(key) else { return }
         running.insert(key)
@@ -766,7 +922,7 @@ final class NetworkRowResults {
             running.remove(key)
             results[key] = result
             finished(result)
-            guard result.isDone else { return }
+            guard result.isDone, !keeps else { return }
             try? await Task.sleep(for: dwell)
             if results[key] == result { results[key] = nil }
         }
@@ -807,6 +963,61 @@ extension NetworkPagesActions {
             results.run(NetworkActionResult.key(.grant, "sheet", on: server), { await network.sendGrant(server) }, finished: grantFinished)
         }
     }
+}
+
+extension NetworkPagesActions {
+    /// Apply in three steps, each a value the page can show: choose the checkout, confirm, result.
+    /// Choosing a checkout only fills `selection.apply`; nothing is written until `confirmApply`.
+    ///   draft     the artifact waiting for its confirmation
+    ///   setDraft  shows or puts away the confirmation
+    ///   row       the hand-off a draft belongs to, as the network holds it now
+    @MainActor mutating func bindApply(_ network: NetworkPageActions, results: NetworkRowResults,
+                                       draft: @escaping @MainActor () -> NetworkApplyDraft?,
+                                       setDraft: @escaping @MainActor (NetworkApplyDraft?) -> Void,
+                                       row: @escaping @MainActor (NetworkApplyDraft) -> MultiplayerSentRequest?) {
+        guard let choose = network.chooseCheckout, let send = network.applyArtifact else { return }
+        apply = { index, artifact, sent, server in
+            guard let checkout = choose(artifact.name.multiplayerDisplay), checkout.hasPrefix("/") else { return }
+            let next = NetworkApplyDraft(server: server, request: sent.request, index: index,
+                                         name: artifact.name.multiplayerDisplay, kind: artifact.kind, checkout: checkout)
+            results.clear(next.key)
+            setDraft(next)
+        }
+        cancelApply = { setDraft(nil) }
+        confirmApply = {
+            guard let waiting = draft() else { return }
+            setDraft(nil)
+            guard let sent = row(waiting) else {
+                results.run(waiting.key, keeps: true) {
+                    .failed(id: waiting.request, server: waiting.server, reason: "Commander can’t find this hand-off any more.")
+                }
+                return
+            }
+            results.run(waiting.key, keeps: true) { await send(waiting, sent) }
+        }
+    }
+}
+
+/// What a row's clock says aloud, so a label holds what the screen shows.
+enum NetworkSpoken {
+    /// "4 minutes 12 seconds left", "waiting 2 minutes", or nothing when the source gives no time.
+    static func clock(waiting: TimeInterval?, expiresIn: TimeInterval?) -> String? {
+        if let expiresIn { return "\(duration(expiresIn)) left" }
+        if let waiting { return "waiting \(duration(waiting))" }
+        return nil
+    }
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600, minutes = (total % 3600) / 60, rest = total % 60
+        func unit(_ count: Int, _ noun: String) -> String { MultiplayerPlural.count(count, noun) }
+        if hours > 0 { return minutes > 0 ? "\(unit(hours, "hour")) \(unit(minutes, "minute"))" : unit(hours, "hour") }
+        if minutes > 0 { return rest > 0 && minutes < 10 ? "\(unit(minutes, "minute")) \(unit(rest, "second"))" : unit(minutes, "minute") }
+        return unit(rest, "second")
+    }
+
+    /// A sentence joined to what follows it: nothing when there is no time to say.
+    static func suffix(_ text: String?) -> String { text.map { ", \($0)" } ?? "" }
 }
 
 // MARK: - Deep links

@@ -8,7 +8,8 @@ import SwiftUI
 //
 //   ShellNetwork          the network model's state the shell shows, as values
 //   ShellNetworkActions   the network model's intents the shell can ask for
-//   ShellContext          both, plus how the toolbar is drawn; given to CockpitScreen by the live page
+//   ShellContext          both, plus how the toolbar is drawn and the wall's live work (WallLiveWork);
+//                         given to CockpitScreen by the live page
 //   LiveShell             place IDs, navigation(…) and inbox(…) built from live state
 //   LiveNeedsYouPage      the inbox page, re-read each second while a request counts down
 
@@ -45,8 +46,10 @@ struct ShellNetwork: Equatable {
     /// Reads the tray's model. Every property read here is observed by the view that calls it.
     @MainActor init(model: MultiplayerModel) {
         servers = model.servers
-        approvals = model.share.pendingApprovals
-        access = model.share.pendingAccess
+        // What still waits. An answered row is held by the model for a moment to show its outcome,
+        // and no longer counts.
+        approvals = model.share.waitingApprovals
+        access = model.share.waitingAccess
         // The same rule as the tray's friend groups: a server's requests show only while its
         // session is online and its certificate is the pinned one.
         friendRequests = model.servers.flatMap { server -> [FriendRequest] in
@@ -109,6 +112,10 @@ struct ShellContext {
     /// The page for a network place. `go` takes the window to another place. Nil leaves the
     /// placeholder.
     var networkPage: (@MainActor (_ place: String, _ go: @escaping (String) -> Void) -> AnyView)? = nil
+    /// What the network adds to the coordinator wall: remote workers, who holds control of a
+    /// worker, and suggestions waiting. Empty leaves the wall as it is without a network.
+    var wall = WallLiveWork()
+    var wallActions = WallLiveWorkActions()
 }
 
 enum LiveShell {
@@ -211,8 +218,10 @@ enum LiveShell {
         let selection: String
         if composing {
             selection = newRun
+        } else if isTeamsPlace(place), !known.contains(place) {
+            // A workspace that is gone, or the empty Teams place once workspaces arrive, stays in Teams.
+            selection = teams.first?.id ?? workspaces
         } else if place == wall || !known.contains(place) {
-            // A workspace that is gone leaves the window on the wall.
             selection = openRunPath.map(project).flatMap { known.contains($0) ? $0 : nil } ?? wall
         } else {
             selection = place
@@ -221,6 +230,9 @@ enum LiveShell {
                                    inbox: CommanderInbox(placeID: Self.needsYou, absorbs: [approvals]),
                                    groups: [], modes: modes, footer: [], profile: network.profile, selection: selection)
     }
+
+    /// A place of the Teams mode: a workspace, or the row shown while there is none.
+    static func isTeamsPlace(_ id: String) -> Bool { id == workspaces || id.hasPrefix("team:") }
 
     /// True while the selected row means the coordinator wall, the new-run form or the empty state.
     static func showsWall(_ selection: String) -> Bool {

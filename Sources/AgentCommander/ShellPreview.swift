@@ -198,6 +198,8 @@ final class ShellPreviewState {
     let network: NetworkPreviewState
     /// How long an outcome stays before its row leaves.
     var outcomeDwell: Duration = .milliseconds(2400)
+    /// What the sample network adds to the wall. Take back removes the hold.
+    var wall = WallSample.work()
 
     init(selection: String) {
         self.selection = selection
@@ -342,7 +344,9 @@ struct ShellPreviewCanvas: View {
                              if state.inbox.items.first(where: { $0.id == id })?.kind.isLocal == true { act(.select("attention")) }
                          })
         case "runs", "project.relay":
-            ShellWallPage(run: DesignFixture.content(for: store).selected)
+            ShellWallPage(run: DesignFixture.content(for: store).selected, live: state.wall,
+                          takeBack: { control in state.wall.controls.removeAll { $0.id == control.id } },
+                          go: { place in act(.select(place)) })
         case "all-agents", "project.beacon":
             AllAgentsPage(agents: PreviewSample.agents(tick: store.liveTick),
                           project: navigation.selection == "project.beacon" ? "Beacon" : "All projects",
@@ -418,6 +422,11 @@ struct ShellPlaceholderPage: View {
 /// exactly the cockpit's; nothing can be typed, zoomed or stopped here.
 struct ShellWallPage: View {
     let run: RunContent?
+    /// What the network adds to the wall. Empty leaves the wall as it is.
+    var live = WallLiveWork()
+    var takeBack: (WallLiveWork.Control) -> Void = { _ in }
+    /// Goes to a place of the shell.
+    var go: (String) -> Void = { _ in }
     @State private var fraction = Metric.coordinatorFraction
     @State private var collapsed = Set<String>()
     @State private var showingDetails = false
@@ -428,7 +437,7 @@ struct ShellWallPage: View {
                 RunHeader(run: run, canStop: false, showingDetails: $showingDetails, showRuns: {}, stop: {})
             } leading: {
                 VStack(spacing: 0) {
-                    SectionBar { SectionTitle(symbol: "terminal", title: "Coordinator") } trailing: { EmptyView() }
+                    SectionBar { WallHeading(symbol: "terminal", title: "Coordinator") } trailing: { EmptyView() }
                     if let coordinator = run.coordinator {
                         CoordinatorConsole(coordinator: coordinator, assignment: run.task, startedAt: run.startedAt,
                                            awaiting: run.awaiting) { _ in }
@@ -438,14 +447,25 @@ struct ShellWallPage: View {
                 VStack(spacing: 0) {
                     let count = run.wall.workers.count
                     SectionBar {
-                        SectionTitle(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
+                        WallHeading(symbol: "square.grid.2x2", title: "Worker wall", count: count > 0 ? count : nil)
                     } trailing: { EmptyView() }
                     WorkerWall(layout: run.wall, collapsed: collapsed,
                                toggleGroup: { id in
                                    if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
                                }) { worker in
-                        WorkerTile(worker: worker, variant: .wall)
+                        VStack(spacing: 0) {
+                            WorkerTile(worker: worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                            WallControlDock(controls: live.controls(forWorker: worker.id), suggestions: live.suggestions(forWorker: worker.id),
+                                            now: live.now, isBusy: live.isBusy, takeBack: takeBack,
+                                            openShared: { go(NetworkPlace.shared) }, review: { _ in go(NetworkPlace.approvals) })
+                        }
                     }
+                    // Remote workers aren't zoomed in the preview: a tile goes to Hand-offs.
+                    WallRemoteBand(workers: live.remoteWorkers, work: live.work, now: live.now,
+                                   zoom: { _ in go(NetworkPlace.handoffs) },
+                                   openHandoffs: { go(NetworkPlace.handoffs) },
+                                   openWork: { item in go(WallLiveWork.place(for: item.kind)) })
+                        .padding(.top, live.remoteWorkers.isEmpty && live.work.isEmpty ? 0 : Metric.wallRowGap)
                 }
             } floating: {
                 EmptyView()

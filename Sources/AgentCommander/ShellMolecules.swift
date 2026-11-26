@@ -38,6 +38,8 @@ enum ShellLayout {
     static let floatingInset = Space.m
     /// The same for a docked surface.
     static let dockedInset = Space.s
+    /// A breadcrumb this short is never truncated: every place and mode name fits in it.
+    static let crumbKeptWhole = 28
     /// The count on the corner of a mode cell.
     static let cornerCount: CGFloat = 14
     /// Room the window's close, minimise and zoom buttons take on a drawn toolbar band.
@@ -467,7 +469,13 @@ struct ShellPresenceMenu: View {
 }
 
 /// The toolbar's readouts: server health, then presence when the sidebar doesn't hold it.
+/// A window's toolbar exposes each of its items as one element, so in a window the two are two
+/// items (`part`): a "servers" button and a "Your presence" menu button, side by side. Drawn
+/// without a window they are one strip.
 struct ShellToolbarReadouts: View {
+    enum Part { case both, servers, presence }
+
+    var part = Part.both
     let servers: CommanderServerHealth
     /// Nil where the profile and presence sit in the sidebar footer.
     let profile: CommanderProfile?
@@ -487,8 +495,17 @@ struct ShellToolbarReadouts: View {
         let cell = ShellReadout(id: "servers", label: "servers", value: servers.figure, lamp: lamp,
                                 tone: servers.tone == .working ? .neutral : servers.tone,
                                 spoken: "servers, \(servers.spoken)")
-        ShellReadoutStrip(cells: [cell], open: { _ in openServers() }) {
-            if let profile { ShellPresenceMenu(profile: profile, pick: pickPresence) }
+        switch part {
+        case .both:
+            ShellReadoutStrip(cells: [cell], open: { _ in openServers() }) {
+                if let profile { ShellPresenceMenu(profile: profile, pick: pickPresence) }
+            }
+        case .servers:
+            ShellReadoutStrip(cells: [cell], open: { _ in openServers() })
+        case .presence:
+            if let profile {
+                ShellReadoutStrip(cells: []) { ShellPresenceMenu(profile: profile, pick: pickPresence) }
+            }
         }
     }
 }

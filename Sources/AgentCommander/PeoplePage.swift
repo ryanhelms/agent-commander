@@ -12,7 +12,11 @@ import SwiftUI
 
 struct PeopleRequestTable: View {
     let rows: [NetworkFriendRow]
+    /// The row in the inspector.
+    var selected: String? = nil
     let isBusy: Bool
+    /// Shows a request in the inspector. Nil leaves the rows as text.
+    var select: ((NetworkFriendRow) -> Void)? = nil
     let accept: (NetworkFriendRow) -> Void
     /// Nil while the network model can't decline a friend request.
     let decline: ((NetworkFriendRow) -> Void)?
@@ -25,7 +29,10 @@ struct PeopleRequestTable: View {
     var body: some View {
         ShellTable(columns: [Self.who, Self.server, Self.clock], trailing: Self.verbs, items: rows,
                    empty: "No one is waiting to be your friend.") { row in
-            ShellTableRow(spoken: "\(row.who) sent a friend request on \(row.serverName)", trailing: Self.verbs) {
+            ShellTableRow(isSelected: row.id == selected,
+                          spoken: "\(row.who) sent a friend request on \(row.serverName)"
+                            + NetworkSpoken.suffix(NetworkSpoken.clock(waiting: row.waiting, expiresIn: nil)),
+                          hint: "Shows the request", select: select.map { select in { select(row) } }, trailing: Self.verbs) {
                 HStack(spacing: Space.s) {
                     MultiplayerAvatar(image: nil, name: row.who, size: 22)
                     ShellCellText(title: row.who,
@@ -161,7 +168,7 @@ struct PeoplePage: View {
             if let add = actions.addFriend {
                 if addable.count == 1, let only = addable.first {
                     Button("Add friend…") { add(only.id) }.buttonStyle(ThemeButtonStyle()).disabled(state.isBusy)
-                        .help("Look up a friend on \(only.name) by exact handle, in the network panel")
+                        .help("Look up a friend on \(only.name) by exact handle")
                 } else {
                     Menu("Add friend…") {
                         ForEach(addable) { server in Button("On \(server.name)") { add(server.id) } }
@@ -178,7 +185,8 @@ struct PeoplePage: View {
                 VStack(alignment: .leading, spacing: Space.l) {
                     VStack(alignment: .leading, spacing: Space.s) {
                         ShellBandHeading(title: "Friend requests", count: "\(requests.count)")
-                        PeopleRequestTable(rows: requests, isBusy: state.isBusy,
+                        PeopleRequestTable(rows: requests, selected: pages.selection.friend, isBusy: state.isBusy,
+                                           select: { select(friend: $0.id) },
                                            accept: { actions.acceptFriend($0.request, $0.server) },
                                            decline: actions.declineFriend.map { decline in { decline($0.request, $0.server) } })
                     }
@@ -194,11 +202,26 @@ struct PeoplePage: View {
             } inspector: {
                 if let server = pages.selection.grant {
                     NetworkGrantInspector(server: server, pages: pages)
+                } else if let row = requests.first(where: { $0.id == pages.selection.friend }) {
+                    NetworkRequestInspector(
+                        title: "Friend request", serverID: row.server, serverName: row.serverName,
+                        lines: [("From", row.who), ("Server", row.serverName)]
+                            + (row.waiting.map { [(label: "Waiting", value: NetworkSpoken.duration($0))] } ?? []),
+                        note: "Friends see each other’s presence and can ask for access. Declining refuses this request; \(row.who) can ask again.",
+                        close: { select(friend: nil) })
                 } else {
                     PeopleInspector(pages: pages)
                 }
             }
         }
+    }
+}
+
+private extension PeoplePage {
+    func select(friend id: String?) {
+        var next = pages.selection
+        next.friend = id
+        pages.actions.select(next)
     }
 }
 

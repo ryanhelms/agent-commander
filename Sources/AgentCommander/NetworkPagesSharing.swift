@@ -29,7 +29,7 @@ struct NetworkGrantInspector: View {
             // The network model's own sheet, with its footer: Share reports its result there, and a
             // refusal stays on the sheet.
             NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), close: actions.closeGrant) {
-                host(server).frame(height: NetworkLayout.grantHeight)
+                host(server)
             }
         } else {
             sample
@@ -169,16 +169,20 @@ struct NetworkDirectoryPage: View {
                 }
             } else {
                 NetworkInspector(title: row.entry.name.multiplayerDisplay, serverID: row.server, serverName: row.serverName,
-                                 note: actions.consult == nil ? nil : "Consult and Hand off open their composer in the network panel.") {
+                                 note: nil) {
                     MultiplayerDirectoryPage(entries: [row.entry], isBusy: state.isBusy || state.server(row.server)?.isOnline != true,
                                              isWaiting: { _ in row.isWaiting },
                                              onRequest: { actions.requestAccess($0, row.server) },
                                              onConsult: { actions.consult?($0, row.server) },
                                              onHandOff: { actions.handOff?($0, row.server) })
                 } footer: {
+                    if row.entry.canReview, let review = actions.requestReview {
+                        Button("Request review") { review(row.entry, row.server) }.buttonStyle(MultiplayerTrayButtonStyle())
+                            .help("Ask this worker to review a diff or a pull request")
+                    }
                     if row.entry.canWatch, let watch = actions.watch {
                         Button("Watch") { watch(row.entry, row.server) }.buttonStyle(MultiplayerTrayButtonStyle())
-                            .help("Opens the worker’s live output in the network panel")
+                            .help("Read the worker’s live output and send it a suggestion")
                     }
                 }
             }
@@ -207,7 +211,8 @@ struct NetworkApprovalTable: View {
         ShellTable(columns: [Self.who, Self.wants, Self.clock], trailing: Self.verbs, items: rows,
                    empty: "Nothing is waiting for you", emptyLamp: .on) { row in
             ShellTableRow(isSelected: row.id == selected,
-                          spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)",
+                          spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)"
+                            + NetworkSpoken.suffix(NetworkSpoken.clock(waiting: row.waiting, expiresIn: row.expiresIn)),
                           hint: "Shows the request and the grant it runs under", select: { open(row) }, trailing: Self.verbs) {
                 ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.approval.headline,
@@ -217,7 +222,7 @@ struct NetworkApprovalTable: View {
                     .shellCell(Self.wants)
                 NeedsYouClockLabel(waiting: row.waiting, expiresIn: row.expiresIn).shellCell(Self.clock)
             } verbs: {
-                NetworkRowVerbs(isRunning: row.isRunning, result: row.result, verbs: [
+                NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
                     MultiplayerRowVerb(id: "deny", title: "Deny", isEnabled: !isBusy,
                                        hint: "Deny \(row.who)’s request", action: { decide(row, false) }),
                     MultiplayerRowVerb(id: "approve", title: "Approve", isPrimary: true, isEnabled: !isBusy,
@@ -233,8 +238,12 @@ struct NetworkApprovalTable: View {
 struct NetworkAccessTable: View {
     @Environment(\.theme) private var theme
     let rows: [NetworkAccessRow]
+    /// The row in the inspector.
+    var selected: String? = nil
     let now: Date
     let isBusy: Bool
+    /// Shows a request in the inspector. Nil leaves the rows as text.
+    var select: ((NetworkAccessRow) -> Void)? = nil
     let review: (NetworkAccessRow) -> Void
     /// Declines a request sent to you, or withdraws one you sent.
     let remove: (NetworkAccessRow) -> Void
@@ -249,7 +258,8 @@ struct NetworkAccessTable: View {
         ShellTable(columns: [Self.who, Self.what, Self.way, Self.sent], trailing: Self.verbs, items: rows,
                    empty: "No access request is open. Ask for access from the Directory.") { row in
             let request = row.request
-            ShellTableRow(spoken: spoken(row), trailing: Self.verbs) {
+            ShellTableRow(isSelected: row.id == selected, spoken: spoken(row), hint: "Shows the request",
+                          select: select.map { select in { select(row) } }, trailing: Self.verbs) {
                 ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.resourceName, detail: row.result?.rowText ?? MultiplayerAccessRequestsPage.detail(request),
                               detailTone: row.result?.rowTone ?? .neutral)
@@ -259,14 +269,14 @@ struct NetworkAccessTable: View {
                 ShellCellFigure(text: MultiplayerActivityRow.time(request.createdAt, now: now)).shellCell(Self.sent)
             } verbs: {
                 if row.isIncoming {
-                    NetworkRowVerbs(isRunning: row.isRunning, result: row.result, verbs: [
+                    NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
                         MultiplayerRowVerb(id: "decline", title: "Decline", isEnabled: !isBusy,
                                            hint: "Decline \(row.who)’s request", action: { remove(row) }),
                         MultiplayerRowVerb(id: "review", title: "Review", isPrimary: true, isEnabled: !isBusy,
                                            hint: "Review \(row.who)’s request in the share sheet", action: { review(row) })
                     ])
                 } else if request.isPending {
-                    NetworkRowVerbs(isRunning: row.isRunning, result: row.result, verbs: [
+                    NetworkRowVerbs(isRunning: row.isRunning, result: row.result, answer: row.answer, verbs: [
                         MultiplayerRowVerb(id: "withdraw", title: "Withdraw", isEnabled: !isBusy,
                                            hint: "Withdraw your request for \(row.resourceName)", action: { remove(row) })
                     ])
@@ -281,8 +291,11 @@ struct NetworkAccessTable: View {
     }
 
     private func spoken(_ row: NetworkAccessRow) -> String {
-        row.isIncoming ? "\(row.who) asks for \(row.resourceName) on \(row.serverName). \(MultiplayerAccessRequestsPage.detail(row.request))"
-                       : "You asked \(row.who) for \(row.resourceName) on \(row.serverName). \(row.request.statusTitle)"
+        let when = MultiplayerActivityRow.time(row.request.createdAt, now: now)
+        let sent = when.isEmpty ? "" : " Sent \(when)."
+        return row.isIncoming
+            ? "\(row.who) asks for \(row.resourceName) on \(row.serverName). \(MultiplayerAccessRequestsPage.detail(row.request))\(sent)"
+            : "You asked \(row.who) for \(row.resourceName) on \(row.serverName). \(row.request.statusTitle).\(sent)"
     }
 }
 
@@ -300,21 +313,59 @@ struct NetworkApprovalsPage: View {
                         ShellBandHeading(title: "Waiting on you", count: "\(approvals.count)",
                                          note: approvals.isEmpty ? nil : "A grant set to Ask each time stops here until you answer.")
                         NetworkApprovalTable(rows: approvals, selected: openApproval(in: approvals)?.id, isBusy: state.isBusy,
-                                             open: { actions.openApproval($0.approval.id, $0.server) },
+                                             open: {
+                                                 select(access: nil)
+                                                 actions.openApproval($0.approval.id, $0.server)
+                                             },
                                              decide: { row, approve in actions.decide(row.approval, row.server, approve) })
                     }
                     VStack(alignment: .leading, spacing: Space.s) {
                         ShellBandHeading(title: "Access requests", count: "\(access.count)",
                                          note: "Review opens the share sheet. Granting it answers the request.")
-                        NetworkAccessTable(rows: access, now: state.now, isBusy: state.isBusy,
+                        NetworkAccessTable(rows: access, selected: openApproval(in: approvals) == nil ? pages.selection.access : nil,
+                                           now: state.now, isBusy: state.isBusy,
+                                           select: { row in
+                                               // One thing in the inspector: the open approval gives way.
+                                               actions.close()
+                                               select(access: row.id)
+                                           },
                                            review: { actions.reviewAccess($0.request, $0.server) },
                                            remove: { actions.removeAccess($0.request, $0.server, $0.isIncoming) })
                     }
                 }
             } inspector: {
-                inspector(openApproval(in: approvals))
+                if let server = pages.selection.grant {
+                    NetworkGrantInspector(server: server, pages: pages)
+                } else if openApproval(in: approvals) == nil, let row = access.first(where: { $0.id == pages.selection.access }) {
+                    accessInspector(row)
+                } else {
+                    inspector(openApproval(in: approvals))
+                }
             }
         }
+    }
+
+    private func select(access id: String?) {
+        var next = pages.selection
+        next.access = id
+        pages.actions.select(next)
+    }
+
+    private func accessInspector(_ row: NetworkAccessRow) -> some View {
+        let request = row.request, now = pages.content.now
+        var lines: [(label: String, value: String)] = [
+            (row.isIncoming ? "From" : "To", row.who),
+            ("Resource", row.resourceName),
+            ("Asks to", MultiplayerAccessRequestsPage.detail(request))
+        ]
+        let when = MultiplayerActivityRow.time(request.createdAt, now: now)
+        if !when.isEmpty { lines.append(("Sent", when)) }
+        if !row.isIncoming { lines.append(("State", request.statusTitle)) }
+        return NetworkRequestInspector(title: "Access request", serverID: row.server, serverName: row.serverName, lines: lines,
+                                       note: row.isIncoming
+                                        ? "Review opens the share sheet with what they asked for. Sharing answers the request; Decline refuses it and they can ask again."
+                                        : "\(row.who) decides. Withdraw takes the request back.",
+                                       close: { select(access: nil) })
     }
 
     private func openApproval(in rows: [NetworkApprovalRow]) -> NetworkApprovalRow? {
@@ -441,7 +492,7 @@ struct NetworkSharedInspector: View {
     var body: some View {
         let state = pages.content, actions = pages.actions
         NetworkInspector(title: row.resource.name.multiplayerDisplay, serverID: row.server, serverName: row.serverName,
-                         note: "Revoke a grant from the server’s page in the network panel.") {
+                         note: actions.revoke == nil ? "Revoke a grant from the server’s page in the network panel." : nil) {
             if !row.holders.isEmpty {
                 MultiplayerBand {
                     VStack(alignment: .leading, spacing: Space.s) {
@@ -461,8 +512,31 @@ struct NetworkSharedInspector: View {
                         Text("No one can use this yet.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                     }
                     ForEach(row.grants) { grant in
+                        let key = "\(row.server)/\(grant.id)"
+                        let result = state.results[NetworkActionResult.key(.grant, grant.id, on: row.server)]
+                        let isRunning = state.running.contains(NetworkActionResult.key(.grant, grant.id, on: row.server))
                         MultiplayerRow(symbol: MultiplayerCapability.symbol(grant.capability), tone: .working,
-                                       title: grant.handle, caption: Self.caption(grant, now: state.now))
+                                       title: grant.handle, caption: result?.reason ?? Self.caption(grant, now: state.now)) {
+                            if isRunning {
+                                MultiplayerSpinner()
+                            } else if actions.revoke != nil {
+                                // The first press asks; the confirm under the row ends the grant.
+                                Button("Revoke…") { select(revoking: key) }
+                                    .buttonStyle(MultiplayerTrayButtonStyle())
+                                    .disabled(state.isBusy || pages.selection.revoking == key)
+                                    .accessibilityLabel("Revoke \(MultiplayerCapability.title(grant.capability)) from \(grant.handle.multiplayerDisplay)")
+                            }
+                        }
+                        if pages.selection.revoking == key, let revoke = actions.revoke {
+                            MultiplayerInlineConfirm(
+                                message: "\(grant.handle.multiplayerDisplay) can no longer use \(row.resource.name.multiplayerDisplay) this way. Requests already running finish. You can share it again later.",
+                                keepTitle: "Keep grant", confirmTitle: "Revoke", isBusy: state.isBusy,
+                                onCancel: { select(revoking: nil) },
+                                onConfirm: {
+                                    select(revoking: nil)
+                                    revoke(grant, row.server)
+                                })
+                        }
                     }
                 }
             }
@@ -477,6 +551,12 @@ struct NetworkSharedInspector: View {
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(state.isBusy)
         }
+    }
+
+    private func select(revoking key: String?) {
+        var next = pages.selection
+        next.revoking = key
+        pages.actions.select(next)
     }
 
     /// "Consult, up to 10 uses, until 14:30".
