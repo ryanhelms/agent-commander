@@ -913,7 +913,8 @@ final class NetworkRowResults {
     private(set) var results: [String: NetworkActionResult] = [:]
     private(set) var running: Set<String> = []
     /// How long a success stays before its row may leave.
-    var dwell: Duration = .milliseconds(2400)
+    /// As long as the network holds an answered row, so the window adds no time of its own.
+    var dwell: Duration = MultiplayerShareModel.answeredHold
 
     /// Runs `work` unless the row's action is already running. `finished` is called with the result.
     /// `keeps` leaves a success in place: an artifact's result stays beside it.

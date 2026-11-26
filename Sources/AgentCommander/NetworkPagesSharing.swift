@@ -323,7 +323,7 @@ struct NetworkApprovalsPage: View {
                                              decide: { row, approve in actions.decide(row.approval, row.server, approve) })
                     }
                     VStack(alignment: .leading, spacing: Space.s) {
-                        ShellBandHeading(title: "Access requests", count: "\(access.count)",
+                        ShellBandHeading(title: "Access requests", count: "\(access.filter { $0.answer == nil }.count)",
                                          note: "Review opens the share sheet. Granting it answers the request.")
                         NetworkAccessTable(rows: access, selected: openApproval(in: approvals) == nil ? pages.selection.access : nil,
                                            now: state.now, isBusy: state.isBusy,

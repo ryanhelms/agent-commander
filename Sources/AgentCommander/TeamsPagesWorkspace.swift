@@ -20,7 +20,6 @@ struct TeamsWorkspaceContext {
     let pages: TeamsPages
 
     var handle: String { server.handle }
-    var isOwner: Bool { !handle.isEmpty && workspace.owner == handle }
     var name: String { workspace.name.multiplayerDisplay }
 }
 
@@ -239,12 +238,9 @@ struct TeamsIntegrationBand: View {
         return NetworkSplit {
             VStack(alignment: .leading, spacing: Space.s) {
                 ShellBandHeading(title: "Merge queue", count: "\(entries.count)",
-                                 note: context.isOwner ? "Your Mac tests each branch and merges them in order."
-                                                       : "\(context.workspace.owner.multiplayerDisplay)’s Mac tests each branch and merges them in order.") {
-                    if context.isOwner {
-                        Button("Add branch…") { pages.send(.startQueue(workspace: key)) }.buttonStyle(ThemeButtonStyle(compact: true))
-                            .disabled(merging)
-                    }
+                                 note: "The queue on this Mac. It tests each branch and merges them in order.") {
+                    Button("Add branch…") { pages.send(.startQueue(workspace: key)) }.buttonStyle(ThemeButtonStyle(compact: true))
+                        .disabled(merging)
                 }
                 TeamsRowPanel(items: entries.enumerated().map { QueueItem(position: $0.offset + 1, entry: $0.element) },
                               empty: "No branch is queued.") { item in
@@ -252,10 +248,10 @@ struct TeamsIntegrationBand: View {
                     MultiplayerQueueRow(position: item.position, entry: item.entry, now: state.now,
                                         isBusy: merging || pages.isRunning("queue", TeamsKey.make(item.entry.id, on: key)),
                                         isConfirming: removing,
-                                        onRemove: context.isOwner ? { pages.send(.askRemoveQueued(item.entry, workspace: key)) } : nil,
+                                        onRemove: { pages.send(.askRemoveQueued(item.entry, workspace: key)) },
                                         onCancel: { pages.send(.cancelConfirmation) }, onConfirm: { pages.send(.confirm) })
                 }
-                if context.isOwner {
+                do {
                     HStack(spacing: Space.s) {
                         if merging {
                             MultiplayerSpinner()
@@ -300,9 +296,7 @@ struct TeamsIntegrationBand: View {
                         .disabled(!pages.drafts.wrappedValue.queue.canSend || pages.isRunning("composer", key))
                 }
             } else {
-                NetworkInspectorNote(text: context.isOwner
-                    ? "Add a branch a contributor pushed. Run merge asks first, naming each branch’s test command and the order."
-                    : "Push your branch through the owner’s git.push grant. The owner queues and merges it.")
+                NetworkInspectorNote(text: "Add a branch a contributor pushed to this Mac. Run merge asks first, naming each branch’s test command and the order.")
             }
         }
     }
@@ -457,8 +451,7 @@ struct TeamsWorkspacePage: View {
         let group = context.pages.content.groupName(workspace.group, on: context.server.id) ?? workspace.group
         return [("repository", workspace.repository.multiplayerDisplay), ("base", workspace.base.multiplayerDisplay),
                 ("lands by", MultiplayerIntegration.title(for: workspace.integration).lowercased()),
-                ("group", group.multiplayerDisplay),
-                ("owner", context.isOwner ? "you" : workspace.owner.multiplayerDisplay)]
+                ("group", group.multiplayerDisplay)]
     }
 
     private func cells(_ context: TeamsWorkspaceContext) -> [TeamsBandTabs.Cell] {

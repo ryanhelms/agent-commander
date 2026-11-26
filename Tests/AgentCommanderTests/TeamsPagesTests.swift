@@ -461,3 +461,48 @@ import Testing
         #expect(content.threadRows.map(\.state).sorted() == ["", "2 comments", "3 comments"])
     }
 }
+
+// The live binding (TeamsPagesLive.swift), against the teams fixture. No test reaches a network.
+@MainActor @Suite struct TeamsPagesLiveTests {
+    @Test func theLivePagesReadAndActWithoutMovingTheTray() async throws {
+        let (model, _) = await MultiplayerTeamsFixture.model { call in
+            guard call.verb == .relay else { return nil }
+            switch (call.method, call.path) {
+            case ("POST", "/v1/workspaces/ws-1/claims"):
+                return call.body?["key"] == .string("Sources/Relay") ? "!relay HTTP 409: already claimed by fixture-bo/bo-agent" : #"{"id":"cl-9"}"#
+            default: return nil
+            }
+        }
+        defer { model.close() }
+        // The tray is somewhere else entirely, and stays there.
+        model.go(.hosting)
+        let home = MultiplayerTeamsFixture.home
+        let key = TeamsKey.make("ws-1", on: home), place = TeamsPlace.workspace("ws-1", on: home)
+        let live = TeamsPagesLiveState()
+
+        // Before the window's own read the board says it is being read; after it, it has the cards.
+        #expect(live.content(model).readingCards.contains(key))
+        await live.read(place: place, model: model)
+        let content = live.content(model)
+        #expect(content.cards[key]?.map(\.id) == ["card-1", "card-2", "card-3"] && !content.readingCards.contains(key))
+        #expect(content.workspace(key)?.server.handle.isEmpty == false && content.title(for: place) == content.workspace(key)?.workspace.name)
+        #expect(content.servers.map(\.id).contains(home) && content.groupRows.count == model.share.teams.allGroups.count)
+        #expect(model.share.teams.cards == .loading, "the tray's own board is not read")
+
+        // A refused claim comes back for the form that sent it, with the holder the relay named.
+        let actions = live.actions(model, share: { _, _ in }, requestAccess: { _, _ in })
+        live.pages.send(.startClaim(workspace: key), in: content, through: actions, go: { _ in })
+        live.pages.drafts.claim = MultiplayerClaimDraft(kind: .paths, key: "Sources/Relay", agent: "relay-worker")
+        live.pages.send(.sendClaim, in: content, through: actions, go: { _ in })
+        for _ in 0..<400 where live.pages.refusal == nil { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(live.pages.refusal?.contains("fixture-bo/bo-agent") == true && live.pages.selection.composer == .claim(workspace: key))
+
+        // The model's own hosts are built for every hosted form.
+        let host = live.host(model)
+        for hosted in [TeamsHosted.workspace(server: home), .claim(workspace: key), .card("card-1", workspace: key), .queue(workspace: key),
+                       .knowledge(server: home), .hostRun(resource: TeamsKey.make("dir-h", on: home)), .policy(server: home)] {
+            _ = host(hosted)
+        }
+        #expect(model.route == .hosting, "nothing the window did moved the tray")
+    }
+}

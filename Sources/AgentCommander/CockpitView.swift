@@ -803,10 +803,15 @@ struct CockpitScreen: View {
                 ui.needsYouFailures[id] = result.reason
                 return
             }
+            // The network holds an answered approval or access request itself, with its outcome
+            // (`ShellNetwork.answers`), so the window keeps no copy and adds no time of its own.
+            guard item.kind == .friendRequest else { return }
+            // A friend request leaves the network's list at once. The window shows its outcome
+            // for as long as the network holds an answered row.
             item.decision = decision
             item.failure = nil
             ui.needsYouDecided.append(item)
-            try? await Task.sleep(for: .milliseconds(2400))
+            try? await Task.sleep(for: MultiplayerShareModel.answeredHold)
             ui.needsYouDecided.removeAll { $0.id == id }
         }
     }
