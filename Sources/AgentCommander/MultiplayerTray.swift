@@ -187,13 +187,14 @@ struct MultiplayerNeedsYou: View {
                     MultiplayerBandHeading(title: "Needs you", count: "\(count)")
                     ForEach(approvals) { pending in
                         let approval = pending.item
-                        let name = resourceName(approval.resource, pending.server).multiplayerDisplay
+                        // The worker and its server, so two servers' requests can be told apart.
+                        let name = "\(resourceName(approval.resource, pending.server).multiplayerDisplay) on \(serverName(pending.server))"
                         MultiplayerDecisionRow(color: MultiplayerTheme.swatch(for: pending.server),
                                                title: approval.headline,
                                                detail: approval.isSuggestion
                                                    ? (approval.request.isEmpty ? "For \(name)." : "For \(name): \(approval.request)")
-                                                   : approval.request.isEmpty ? "On \(name). Grant is set to Ask each time."
-                                                                              : "On \(name): \(approval.request)",
+                                                   : approval.request.isEmpty ? "\(name). Grant is set to Ask each time."
+                                                                              : "\(name): \(approval.request)",
                                                isBusy: isBusy,
                                                onOpen: { onOpenApproval(pending) },
                                                onDecline: { onDecide(pending, false) },
@@ -1326,7 +1327,7 @@ struct MultiplayerPanel: View {
             MultiplayerControlPage(resourceName: share.resourceName(resource, on: id).multiplayerDisplay,
                                    holders: live.holders(of: resource, on: id),
                                    candidates: live.candidates(for: resource, on: id),
-                                   draft: $live.handoverDraft, isBusy: model.isBusy,
+                                   draft: $live.handoverDraft, now: now, isBusy: model.isBusy,
                                    onTakeBack: { live.takeBack($0, on: id) })
         case .reviewRequest(let resource):
             MultiplayerReviewComposer(draft: $live.reviewDraft, entry: share.entry(resource, on: id),
@@ -1357,8 +1358,8 @@ struct MultiplayerPanel: View {
                                            return MultiplayerComparePage.Column(child: child, name: entry?.name ?? child.resource,
                                                                                 owner: entry?.owner ?? "", capabilities: entry?.capabilities)
                                        },
-                                       winner: live.winners[request], now: now,
-                                       onChoose: { live.chooseWinner($0.id, of: request) },
+                                       winner: live.winner(of: request, on: id), now: now,
+                                       onChoose: { live.chooseWinner($0.id, of: request, on: id) },
                                        onThread: { child in
                                            let name = share.entry(child.resource, on: id)?.name ?? child.resource
                                            share.open(.thread(request: child.id, title: "\(name.multiplayerDisplay): \(fanout.title)"), on: id)
@@ -1601,7 +1602,7 @@ struct MultiplayerPanel: View {
         MultiplayerControlBand(items: live.activeHandovers,
                                resourceName: { share.resourceName($0.item.resource, on: $0.server) },
                                serverName: { model.server($0)?.displayName ?? "a server" },
-                               isBusy: model.isBusy,
+                               now: model.currentDate(), isBusy: model.isBusy,
                                onOpen: { live.startControl($0.item.resource, on: $0.server) },
                                onTakeBack: { live.takeBack($0.item, on: $0.server) })
         MultiplayerRemoteWorkBand(items: live.remoteWork.map { work in
@@ -1644,6 +1645,17 @@ struct MultiplayerPanel: View {
                               onOpen: { model.openServer($0) },
                               onFavorite: { model.toggleFavorite($0) },
                               onSignIn: { model.signIn($0) })
+        let remote = model.remote
+        MultiplayerRemoteBand(status: remote.status, failure: remote.failure, pairing: remote.livePairing,
+                              pairingExpired: remote.pairingExpired, confirmingRevoke: remote.confirmingRevoke,
+                              now: model.currentDate(), isBusy: model.isBusy,
+                              onSetRunning: { remote.setRunning($0) },
+                              onNewCode: { remote.enable() },
+                              onCopy: { MultiplayerHashChip.copy($0) },
+                              onAskRevoke: { remote.askRevoke($0) },
+                              onCancelRevoke: { remote.cancelRevoke() },
+                              onConfirmRevoke: { remote.confirmRevoke() },
+                              onRetry: { remote.refresh() })
         MultiplayerBand {
             MultiplayerLinkRow(symbol: "server.rack", title: "Hosting on this Mac",
                                caption: "How to run a relay here, with no Docker") { model.go(.hosting) }

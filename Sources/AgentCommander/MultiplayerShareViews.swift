@@ -805,9 +805,9 @@ struct MultiplayerApprovalPage: View {
                     .font(MultiplayerTheme.sub)
                     .foregroundStyle(.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                row("Arrived") { Text(MultiplayerActivityRow.time(approval.arrived, now: now)) }
+                row("Arrived") { Text(MultiplayerActivityRow.time(approval.arrived, now: now)).font(MultiplayerTheme.data.monospacedDigit()) }
                 if let expires = approval.expires {
-                    row("Answer by") { Text(MultiplayerTime.display(expires, now: now)) }
+                    row("Answer by") { Text(MultiplayerTime.display(expires, now: now)).font(MultiplayerTheme.data.monospacedDigit()) }
                 }
                 Text("Every suggestion waits for you, whatever the grant says, unless you hand over control.")
                     .font(MultiplayerTheme.sub)
@@ -849,9 +849,9 @@ struct MultiplayerApprovalPage: View {
                 if let grant {
                     row("Limits") { Text(Self.limits(grant, now: now)) }
                 }
-                row("Arrived") { Text(MultiplayerActivityRow.time(approval.arrived, now: now)) }
+                row("Arrived") { Text(MultiplayerActivityRow.time(approval.arrived, now: now)).font(MultiplayerTheme.data.monospacedDigit()) }
                 if let expires = approval.expires {
-                    row("Answer by") { Text(MultiplayerTime.display(expires, now: now)) }
+                    row("Answer by") { Text(MultiplayerTime.display(expires, now: now)).font(MultiplayerTheme.data.monospacedDigit()) }
                 }
                 Text("It runs on this Mac with your provider account. \(approval.peer.isEmpty ? "Your friend" : approval.peer.multiplayerDisplay) sees the result, not your files. Unanswered requests expire by themselves.")
                     .font(MultiplayerTheme.sub)

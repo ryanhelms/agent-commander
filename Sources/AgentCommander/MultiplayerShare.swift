@@ -1015,8 +1015,9 @@ extension String {
 // MARK: - Helper calls
 
 extension MultiplayerClient {
-    /// `send` may carry 96 KiB of context; the device agent's own bound is 98,304 bytes.
-    static let sendInputLimit = 96 * 1024
+    /// `send` and `fanout` may carry 96 KiB of context or diff. JSON escaping and the other fields
+    /// add to that, so the bound is the device agent's own: 196,608 bytes (192 KiB) per request.
+    static let sendInputLimit = 192 * 1024
 
     func approvals() async throws -> [MultiplayerApproval] {
         try await fetch(.approvals, [:], as: MultiplayerApprovalList.self).approvals

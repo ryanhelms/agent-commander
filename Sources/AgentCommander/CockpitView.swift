@@ -22,6 +22,8 @@ import SwiftUI
 @Observable @MainActor
 final class CockpitPresentationState {
     var zoomedWorkerID: String?
+    /// A remote worker (a hand-off on a friend's Mac) shown in the zoom view, by `server/request`.
+    var zoomedRemoteWorkerID: String?
     var zoomAfterSelection: String?
     var collapsedGroups = Set<String>()
     var drafts: [String: String] = [:]
@@ -145,6 +147,7 @@ final class CockpitPresentationState {
     func reveal(_ request: RequestPresentation, from run: RunContent?, selectRun: (String) -> Void) {
         let target = request.workerIsCoordinator ? nil : request.workerID
         if request.runID == run?.id {
+            zoomedRemoteWorkerID = nil
             zoomedWorkerID = target
             returnFocusWorkerID = request.workerID
         } else {
@@ -586,7 +589,7 @@ struct CockpitScreen: View {
             Button("Focus coordinator") { focusCoordinator() }.keyboardShortcut("1", modifiers: .command)
             Button("Zoom worker") { zoomFocused() }.keyboardShortcut("]", modifiers: .command)
             Button("Return to wall") { returnToWall() }.keyboardShortcut("[", modifiers: .command)
-                .disabled(ui.zoomedWorkerID == nil)
+                .disabled(ui.zoomedWorkerID == nil && ui.zoomedRemoteWorkerID == nil)
             // The live Attention row carries ⇧⌘A. A supplied navigation model has its own rows, so
             // the shortcut is kept here.
             if fixtureNavigation != nil {
@@ -688,7 +691,35 @@ struct CockpitScreen: View {
     }
 
     @ViewBuilder private func workerRegion(_ run: RunContent) -> some View {
-        if let zoomed = zoomed {
+        if let remoteID = ui.zoomedRemoteWorkerID {
+            // A remote worker's output, read-only (network tray, increment 4 Watch).
+            let name = MultiplayerModel.shared.share.remoteWorkers.first { $0.id == remoteID }?.agent ?? "Remote worker"
+            VStack(spacing: 0) {
+                SectionBar {
+                    HStack(spacing: 8) {
+                        Button { returnToWall() } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.inkSecondary)
+                                Text("Worker wall").font(TypeRole.sectionTitle)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Return to worker wall")
+                        Text("/").foregroundStyle(.inkSecondary).opacity(0.6)
+                        Text(name).font(.system(size: 14)).foregroundStyle(.inkSecondary).lineLimit(1)
+                        MultiplayerReadOnlyBadge()
+                    }
+                } trailing: {
+                    HStack(spacing: 12) {
+                        KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
+                        AttentionPresentationMenu(selection: presentationChoice)
+                    }
+                }
+                MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+            }
+        } else if let zoomed = zoomed {
             VStack(spacing: 0) {
                 SectionBar {
                     HStack(spacing: 8) {
@@ -747,7 +778,10 @@ struct CockpitScreen: View {
                     tile(worker, variant: .wall)
                 }
                 // Hand-offs running on friends' Macs, as remote workers (network tray).
-                MultiplayerRemoteWorkerBand(model: .shared)
+                MultiplayerRemoteWorkerBand(model: .shared) { worker in
+                    ui.zoomedWorkerID = nil
+                    ui.zoomedRemoteWorkerID = worker.id
+                }
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
@@ -1088,6 +1122,7 @@ struct CockpitScreen: View {
         if ui.zoomedWorkerID == workerID {
             returnToWall()
         } else {
+            ui.zoomedRemoteWorkerID = nil
             ui.zoomedWorkerID = workerID
             ui.returnFocusWorkerID = workerID
             refocus(workerID)
@@ -1095,6 +1130,7 @@ struct CockpitScreen: View {
     }
 
     private func returnToWall() {
+        if ui.zoomedRemoteWorkerID != nil { ui.zoomedRemoteWorkerID = nil; return }
         guard let workerID = ui.zoomedWorkerID else { return }
         ui.zoomedWorkerID = nil
         ui.returnFocusWorkerID = workerID
@@ -1103,7 +1139,7 @@ struct CockpitScreen: View {
 
     private func zoomFocused() {
         guard let run else { return }
-        if ui.zoomedWorkerID != nil { returnToWall(); return }
+        if ui.zoomedWorkerID != nil || ui.zoomedRemoteWorkerID != nil { returnToWall(); return }
         let candidate = paneFocus ?? ui.returnFocusWorkerID
         guard let candidate, run.wall.workers.contains(where: { $0.id == candidate }) else { return }
         toggleZoom(candidate)
@@ -1133,6 +1169,7 @@ struct CockpitScreen: View {
     // MARK: Reactions to data
 
     private func runChanged() {
+        if ui.zoomAfterSelection != nil { ui.zoomedRemoteWorkerID = nil }
         ui.zoomedWorkerID = ui.zoomAfterSelection
         ui.zoomAfterSelection = nil
         ui.collapsedGroups.removeAll()

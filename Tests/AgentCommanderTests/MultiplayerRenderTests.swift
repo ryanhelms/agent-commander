@@ -53,13 +53,11 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         setenv("COMMANDER_NETWORK_FIXTURE_STATE", state.path, 1)
         _ = NSApplication.shared
 
-        // The fan-out's winner goes to a scratch domain, not to anyone's preferences.
-        let suite = "multiplayer-render"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        // The fan-out's winner goes to a scratch file, not to anyone's preferences or app folder.
+        let winners = MultiplayerWinnerStore.scratch()
         let model = MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: Self.fixture)),
                                      usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
-                                     defaults: defaults)
+                                     winners: winners)
         model.open()
         await model.settle()
         model.refresh()
@@ -100,7 +98,7 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
             }),
             ("fanout-compare", {
                 share.open(.compare(request: "rq-fanout-1"), on: home)
-                live.chooseWinner("c-fan-2", of: "rq-fanout-1")
+                live.chooseWinner("c-fan-2", of: "rq-fanout-1", on: home)
             }),
             ("approval", { share.open(.approval("ap-1"), on: home) }),
             ("directory", { share.open(.directory, on: home) }),
@@ -207,6 +205,6 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         await teams.runQueue("ws-relay", on: home)?.value
         try await Self.write(model, "workspace-queue-merged", to: folder)
         model.close()
-        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: winners.file)
     }
 }

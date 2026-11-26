@@ -39,6 +39,11 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case queueMerge = "queue-merge"
     case knowledgeShare = "knowledge-share"
     case knowledgeInstall = "knowledge-install"
+    /// Remote (increment 6): the web view this Mac serves on the tailnet. These name no server.
+    case remoteEnable = "remote-enable"
+    case remoteDisable = "remote-disable"
+    case remoteDevices = "remote-devices"
+    case remoteRevoke = "remote-revoke"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }

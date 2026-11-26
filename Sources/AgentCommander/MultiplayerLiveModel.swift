@@ -43,6 +43,25 @@ struct MultiplayerWatchState: Equatable {
     var lastAt: Date? = nil
     /// Events ever read, which also numbers the next one.
     var total = 0
+
+    /// Adds what one `watch` call brought to the stream.
+    mutating func take(_ reply: MultiplayerWatchReply, at now: Date) {
+        polls += 1
+        lastAt = now
+        if let refusal = reply.refusal {
+            phase = reply.mayRecover ? .waiting(refusal) : .stopped(refusal)
+            return
+        }
+        phase = .live
+        if !reply.state.isEmpty { state = reply.state }
+        if !reply.cursor.isEmpty { cursor = reply.cursor }
+        for var event in reply.events {
+            total += 1
+            event.id = total
+            events.append(event)
+        }
+        if events.count > Self.eventLimit { events.removeFirst(events.count - Self.eventLimit) }
+    }
 }
 
 /// Something you sent that is still worth following: a hand-off, a review or a fan-out.
@@ -82,6 +101,10 @@ final class MultiplayerLiveModel {
     @ObservationIgnored weak var share: MultiplayerShareModel?
 
     private(set) var watch = MultiplayerWatchState()
+    /// The stream in the cockpit's zoom view. It runs beside the tray's own watch page.
+    private(set) var zoomWatch = MultiplayerWatchState()
+    @ObservationIgnored private(set) var zoomTask: Task<Void, Never>?
+    @ObservationIgnored private var zoomToken = 0
     var suggestDraft = ""
     /// What came back from the suggestion just sent.
     private(set) var suggestReply: MultiplayerSentRequest?
@@ -101,6 +124,7 @@ final class MultiplayerLiveModel {
 
     private(set) var fanouts: [String: [MultiplayerFanout]] = [:]
     var fanoutDraft = MultiplayerFanoutDraft()
+    /// Fan-out winners, keyed by server and request (`MultiplayerWinnerStore.key`).
     private(set) var winners: [String: String]
 
     private let client: MultiplayerClient?
@@ -162,6 +186,7 @@ final class MultiplayerLiveModel {
         quietTask?.cancel()
         quietTask = nil
         endWatch()
+        endZoomWatch()
     }
 
     // MARK: - Watch
@@ -236,24 +261,42 @@ final class MultiplayerLiveModel {
     }
 
     /// Adds what one call brought to the stream.
-    func take(_ reply: MultiplayerWatchReply) {
-        watch.polls += 1
-        watch.lastAt = clock()
-        if let refusal = reply.refusal {
-            watch.phase = reply.mayRecover ? .waiting(refusal) : .stopped(refusal)
-            return
+    func take(_ reply: MultiplayerWatchReply) { watch.take(reply, at: clock()) }
+
+    // MARK: - Cockpit zoom
+
+    /// Starts reading a remote worker's output for the cockpit's zoom view. The view ends it when it
+    /// leaves the screen. Asking again for the stream already running keeps it.
+    func beginZoomWatch(_ resource: String, on server: String) {
+        if zoomWatch.server == server, zoomWatch.resource == resource, zoomWatch.phase.isPolling, zoomTask != nil { return }
+        endZoomWatch()
+        zoomWatch = MultiplayerWatchState(server: server, resource: resource)
+        guard let client, !resource.isEmpty else { return }
+        let token = zoomToken, interval = watchInterval
+        zoomTask = Task {
+            while !Task.isCancelled, token == self.zoomToken {
+                let reply: Result<MultiplayerWatchReply, MultiplayerFailure>
+                do {
+                    reply = .success(try await client.scoped(to: server).watch(resource: resource, after: self.zoomWatch.cursor))
+                } catch {
+                    reply = .failure(.from(error))
+                }
+                guard token == self.zoomToken else { return }
+                switch reply {
+                case .success(let page): self.zoomWatch.take(page, at: self.clock())
+                case .failure(let failure): if failure != .cancelled { self.zoomWatch.phase = .failed(failure.message) }
+                }
+                guard self.zoomWatch.phase.isPolling else { break }
+                do { try await Task.sleep(for: interval) } catch { return }
+            }
+            if token == self.zoomToken { self.zoomTask = nil }
         }
-        watch.phase = .live
-        if !reply.state.isEmpty { watch.state = reply.state }
-        if !reply.cursor.isEmpty { watch.cursor = reply.cursor }
-        for var event in reply.events {
-            watch.total += 1
-            event.id = watch.total
-            watch.events.append(event)
-        }
-        if watch.events.count > MultiplayerWatchState.eventLimit {
-            watch.events.removeFirst(watch.events.count - MultiplayerWatchState.eventLimit)
-        }
+    }
+
+    func endZoomWatch() {
+        zoomToken &+= 1
+        zoomTask?.cancel()
+        zoomTask = nil
     }
 
     // MARK: - Co-pilot
@@ -336,10 +379,11 @@ final class MultiplayerLiveModel {
     @discardableResult
     func takeBack(_ handover: MultiplayerHandover, on server: String) -> Task<Void, Never>? {
         guard let share else { return nil }
-        let who = handover.handle.multiplayerDisplay, what = share.resourceName(handover.resource, on: server).multiplayerDisplay
+        let what = share.resourceName(handover.resource, on: server).multiplayerDisplay
+        let theirs = handover.handle.isEmpty ? "Your friend’s" : "\(handover.who)’s"
         return tray?.act("Taking back control of \(what)…", failing: "Couldn’t take back control.",
-                         confirmation: "You have control of \(what) again. \(who)’s requests wait for your approval.") { client in
-            try await client.scoped(to: server).handback(resource: handover.resource, handle: handover.handle)
+                         confirmation: "You have control of \(what) again. \(theirs) requests wait for your approval.") { client in
+            try await client.scoped(to: server).handback(resource: handover.resource, holder: handover.holderKey)
             self.handovers[server]?.removeAll { $0.id == handover.id }
         }
     }
@@ -352,9 +396,9 @@ final class MultiplayerLiveModel {
         return listed.map { row in
             var row = row
             if let mine = known.first(where: { $0.resource == row.resource && abs($0.until.timeIntervalSince(row.until)) < 2 }) {
-                row.handle = mine.handle
+                if row.handle.isEmpty { row.handle = mine.handle }
                 row.minutes = mine.minutes
-            } else if let friend = friends.first(where: { !row.user.isEmpty && ($0.user == row.user || $0.id == row.user) }) {
+            } else if row.handle.isEmpty, let friend = friends.first(where: { !row.user.isEmpty && ($0.user == row.user || $0.id == row.user) }) {
                 row.handle = friend.handle
             }
             return row
@@ -519,10 +563,15 @@ final class MultiplayerLiveModel {
     }
 
     /// Marks one target's result as the winner, or clears the mark when it is chosen again.
-    func chooseWinner(_ child: String, of request: String) {
-        let next = winners[request] == child ? nil : child
-        store.choose(next, for: request)
+    func chooseWinner(_ child: String, of request: String, on server: String) {
+        let next = winner(of: request, on: server) == child ? nil : child
+        store.choose(next, for: request, on: server)
         winners = store.all
+    }
+
+    /// The child marked as a fan-out's winner on this Mac.
+    func winner(of request: String, on server: String) -> String? {
+        winners[MultiplayerWinnerStore.key(request, on: server)]
     }
 
     // MARK: - Remote work
@@ -551,7 +600,7 @@ final class MultiplayerLiveModel {
                                                    at: row.at))
             }
             for fanout in fanouts[server.id] ?? [] {
-                let picked = winners[fanout.request] != nil
+                let picked = winner(of: fanout.request, on: server.id) != nil
                 items.append(MultiplayerRemoteWork(kind: .fanout, server: server.id, request: fanout.request,
                                                    title: fanout.title.isEmpty ? "Untitled fan-out" : fanout.title.multiplayerDisplay,
                                                    detail: "\(fanout.children.count) workers \(on)",
