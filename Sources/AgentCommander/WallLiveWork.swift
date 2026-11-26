@@ -118,7 +118,7 @@ extension WallLiveWork {
 struct WallLiveWorkActions {
     /// Ends a friend's control of a worker now.
     var takeBack: @MainActor (WallLiveWork.Control) -> Void = { _ in }
-    /// Opens a hand-off, a review or a fan-out in the network model, so its page shows it.
+    /// Opens a hand-off, a review or a fan-out on the window's own page for it.
     var openWork: @MainActor (MultiplayerRemoteWork.Kind, _ request: String, _ server: String) -> Void = { _, _, _ in }
     /// The wall shows, or stops showing. The network reads hand-offs while it does.
     var appeared: @MainActor () -> Void = {}
@@ -129,17 +129,14 @@ struct WallLiveWorkActions {
 }
 
 extension WallLiveWorkActions {
-    /// Every wall intent, sent to the network model's own public methods.
-    @MainActor static func live(_ model: MultiplayerModel) -> WallLiveWorkActions {
+    /// Every wall intent, sent to the network model's own public methods. Opening work changes
+    /// what the window's network pages show; the tray's route is left alone.
+    @MainActor static func live(_ model: MultiplayerModel, pages: NetworkPagesLiveState) -> WallLiveWorkActions {
         let share = model.share, live = model.share.live
         return WallLiveWorkActions(
             takeBack: { control in live.takeBack(control.handover, on: control.server) },
             openWork: { kind, request, server in
-                switch kind {
-                case .handoff: share.open(.handoffDetail(request: request), on: server)
-                case .review: live.openReview(request, on: server)
-                case .fanout: share.open(.compare(request: request), on: server)
-                }
+                LiveNetworkIntents(model: model, state: pages, go: { _ in }).openWork(kind, request: request, on: server)
             },
             appeared: { share.wallAppeared() },
             disappeared: { share.wallDisappeared() },

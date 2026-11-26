@@ -2,28 +2,31 @@ import SwiftUI
 
 // ATOMIC LEVEL: Pages (main-window network pages, live).
 // The one file that binds the network pages to the network model. It reads the model into
-// `NetworkPagesContent` and sends every intent to an existing public method of the model. The
-// pages themselves see only values.
+// `NetworkPagesContent` and sends every intent to a public method of the model that names its
+// target. The pages themselves see only values.
 //
-// The pages are a second view of the model's route: opening a server, an approval, a hand-off, a
-// thread or the audit log here opens it in the model, exactly as the tray does, so the tray shows
-// the same page when it is opened next. The grant sheet is the exception: it is hosted here
-// (MultiplayerGrantHost) and never moves the tray.
+// The window owns what it shows. Which server, approval, hand-off, thread, audit log or fan-out is
+// open, the thread and the audit entries it read, a server's certificate check, and every draft
+// are kept in `NetworkPagesLiveState`. Nothing here reads or moves the tray's route, so the tray
+// stays where the person left it and a form open in the panel keeps what was typed. Composers
+// (Consult, Hand off, Watch, Add friend, Invite, Membership, Add server and the grant sheet) are
+// the network model's own hosts, shown on the page.
 //
-//   NetworkPagesContent.init(model:)   the model's state, as values
-//   NetworkPageActions.live(model)     THE ACTION BOUNDARY: each result-bearing action, sent to
-//                                      the model's per-request calls (MultiplayerActionResult)
-//   NetworkPagesLiveState              the window's own selections and each row's result
-//   LiveNetworkPage                    the page for a place, bound to the model
+//   NetworkPagesContent.init(model:state:)   the model's state and the window's own, as values
+//   NetworkPageActions.live(model)           THE ACTION BOUNDARY: each result-bearing action, sent
+//                                            to the model's per-request calls (MultiplayerActionResult)
+//   NetworkPagesLiveState                    the window's route, reads, drafts and each row's result
+//   LiveNetworkPage                          the page for a place, bound to the model
 
 // MARK: - Reading the model
 
 extension NetworkPagesContent {
-    /// Reads the network model. Every property read here is observed by the view that calls it.
-    @MainActor init(model: MultiplayerModel, results: NetworkRowResults, now: Date? = nil) {
+    /// Reads the network model and the window's own state. Every property read here is observed
+    /// by the view that calls it.
+    @MainActor init(model: MultiplayerModel, state: NetworkPagesLiveState, now: Date? = nil) {
         let share = model.share, live = model.share.live
         self.init(now: now ?? model.currentDate())
-        route = model.route
+        route = state.route
         servers = model.servers.map { summary in
             var server = Server(summary: summary)
             let session = model.session(summary.id)
@@ -54,17 +57,19 @@ extension NetworkPagesContent {
         reports = share.reports
         winners = live.winners
         posted = live.posted
-        confirmingPost = live.confirmingPost
-        if case .share(let server, .review(let request)) = model.route { postProblem = live.postProblem(request, on: server) }
-        thread = share.thread
-        audit = share.audit
-        if case .server(let id) = model.route, let server = model.server(id) {
-            probe = model.presentedProbe(for: server)
-            canTrust = model.canTrust(server)
+        confirmingPost = state.confirmingPost
+        if case .share(let server, .review(let request)) = state.route {
+            postProblem = live.postProblem(request, on: server, link: state.reviewLink)
+        }
+        thread = state.thread
+        audit = state.audit
+        if case .server(let id) = state.route, let server = model.server(id) {
+            probe = state.probe.address == server.url ? state.probe : .idle
+            canTrust = !model.isBusy && state.trustablePin(for: server) != nil
+            canRename = model.renameProblem(id, to: state.nickname) == nil
         }
         confirmingRemoval = model.confirmingRemoval
-        confirmingTrust = model.confirmingTrust
-        canRename = model.canRename
+        confirmingTrust = state.confirmingTrust
         people = model.friendGroups
         friendsAvailable = model.friendsAvailable
         activity = model.filteredActivity
@@ -72,16 +77,22 @@ extension NetworkPagesContent {
         unseen = model.unseen
         activityActors = model.activityActors
         avatars = model.avatars
-        if case .profile(let id) = model.route { profileAvatar = model.profileAvatar(id) }
-        canSaveProfile = model.canSaveProfile
+        if case .profile(let id) = state.route {
+            switch state.profile.avatar {
+            case .replace(let encoded): profileAvatar = encoded.image
+            case .remove: profileAvatar = nil
+            case .keep: profileAvatar = model.avatar(server: id, handle: state.profile.savedHandle)
+            }
+            canSaveProfile = !model.isBusy && state.profile.problem == nil && state.profile.hasChanges
+        }
         grantResource = share.grantResource
         grantCompanions = share.grantCompanions
         grantHint = share.grantHint
         canGrant = share.canGrant
-        canComment = share.canComment
-        canSendFanout = live.canSendFanout
-        self.results = results.results
-        running = results.running
+        canComment = !model.isBusy && MultiplayerShareModel.canPost(comment: state.comment)
+        canSendFanout = !model.isBusy && state.fanout.canSend
+        results = state.results.results
+        running = state.results.running
         working = model.working
         failure = model.failure
         notice = model.notice
@@ -138,19 +149,58 @@ extension NetworkPageActions {
 
 // MARK: - Live state and page
 
-/// The window's own part of the network pages: the selections the model has no route for, and how
-/// each row's last action ended.
+/// The window's own part of the network pages: what is open, what it read, what is being typed,
+/// and how each row's last action ended. It stands where the tray's route used to.
 @Observable @MainActor
 final class NetworkPagesLiveState {
     var selection = NetworkPagesSelection()
     let results = NetworkRowResults()
+    /// What the window has open. The tray's own route is never read or moved.
+    var route = MultiplayerTrayRoute.home
+    var thread: MultiplayerLoad<MultiplayerThread> = .loading
+    var audit: MultiplayerLoad<[MultiplayerAuditEntry]> = .loading
+    /// The certificate check of the open server.
+    var probe = MultiplayerProbeState.idle
+    var confirmingTrust: String?
+    var confirmingPost = false
+    var nickname = ""
+    var access = MultiplayerAccessDraft()
+    var comment = ""
+    var fanout = MultiplayerFanoutDraft()
+    var reviewLink = ""
+    var profile = MultiplayerProfileDraft()
+    /// Counts reads, so an answer that arrives after another was asked for is dropped.
+    private var reads = 0
+
+    /// The key the open server's fresh check shows, when it can be trusted: TLS was reached and
+    /// the key is not the pinned one.
+    func trustablePin(for server: MultiplayerServerSummary) -> String? {
+        guard probe.address == server.url, let pin = probe.probe?.step(.tls)?.pin, !pin.isEmpty, pin != server.pin else { return nil }
+        return pin
+    }
+
+    /// Shows a page of the window. Confirmations of the page left behind are put away.
+    func open(_ next: MultiplayerTrayRoute) {
+        route = next
+        confirmingTrust = nil
+        confirmingPost = false
+        selection.apply = nil
+    }
+
+    /// Starts a read and says whether its answer is still the one wanted when it arrives.
+    func beginRead() -> Int {
+        reads += 1
+        return reads
+    }
+
+    func isCurrent(_ read: Int) -> Bool { read == reads }
 }
 
 /// The page for a network place, bound to the network model.
 struct LiveNetworkPage: View {
     let place: String
-    @Bindable var model: MultiplayerModel
-    let state: NetworkPagesLiveState
+    var model: MultiplayerModel
+    @Bindable var state: NetworkPagesLiveState
     /// Goes to another place of the window.
     let go: (String) -> Void
     /// Shows the network panel in its own window.
@@ -173,14 +223,15 @@ struct LiveNetworkPage: View {
     /// Opens what a place shows first, so its page never starts empty: the server that needs a
     /// look, or the audit log of the first server you're signed in to.
     private func enter() {
+        let live = LiveNetworkIntents(model: model, state: state, go: go)
         switch place {
         case NetworkPlace.servers:
-            if case .server = model.route { return }
+            if case .server = state.route { return }
             let first = model.servers.first { $0.state == .certChanged } ?? model.servers.first
-            if let first { model.openServer(first.id) }
+            if let first { live.openServer(first.id) }
         case NetworkPlace.audit:
-            if case .share(_, .audit) = model.route { return }
-            if let first = model.friendServers.first { model.share.open(.audit(resource: ""), on: first.id) }
+            if case .share(_, .audit) = state.route { return }
+            if let first = model.friendServers.first { live.openAudit("", on: first.id) }
         default:
             break
         }
@@ -188,28 +239,172 @@ struct LiveNetworkPage: View {
 
     private func pages(now: Date?) -> NetworkPages {
         @Bindable var share = model.share
-        @Bindable var live = model.share.live
-        let drafts = NetworkPagesDrafts(nickname: $model.renameDraft, access: $share.accessDraft, grant: $share.grantDraft,
-                                        comment: $share.commentDraft, fanout: $live.fanoutDraft, reviewLink: $live.postDraft,
-                                        profile: $model.profileDraft, activityServer: $model.activityServer,
+        @Bindable var model = model
+        let drafts = NetworkPagesDrafts(nickname: $state.nickname, access: $state.access, grant: $share.grantDraft,
+                                        comment: $state.comment, fanout: $state.fanout, reviewLink: $state.reviewLink,
+                                        profile: $state.profile, activityServer: $model.activityServer,
                                         activityFriend: $model.activityFriend)
-        let model = model, state = state
-        return NetworkPages(content: NetworkPagesContent(model: model, results: state.results, now: now),
-                            selection: state.selection, drafts: drafts, actions: actions,
+        let network = self.model, state = state
+        let intents = LiveNetworkIntents(model: network, state: state, go: go)
+        return NetworkPages(content: NetworkPagesContent(model: network, state: state, now: now),
+                            selection: state.selection, drafts: drafts, actions: intents.actions(openPanel: openPanel),
                             grantHost: { _ in
-                                AnyView(MultiplayerGrantHost(model: model, onCancel: { state.selection.grant = nil },
+                                // The page scrolls, so the sheet takes its full height.
+                                AnyView(MultiplayerGrantHost(model: network, scrolls: false, onCancel: { state.selection.grant = nil },
                                                              // A refusal stays on the sheet; a grant that went through closes it.
                                                              onFinish: { result in if result.isDone { state.selection.grant = nil } }))
-                            })
+                            },
+                            composerHost: { composer in intents.host(composer) })
+    }
+}
+
+/// Every intent of the live pages. Each changes the window's own state or calls a model method
+/// that names its target; none reads or moves the tray's route.
+@MainActor
+struct LiveNetworkIntents {
+    let model: MultiplayerModel
+    let state: NetworkPagesLiveState
+    let go: (String) -> Void
+
+    private var share: MultiplayerShareModel { model.share }
+    private var live: MultiplayerLiveModel { model.share.live }
+
+    // MARK: Opening and reading
+
+    func openServer(_ id: String) {
+        guard let server = model.server(id) else { return }
+        state.open(.server(id))
+        state.nickname = server.name
+        state.probe = .idle
+        // A blocked server's page is its certificate review, so the new key is read at once.
+        if server.state == .certChanged { checkCertificate(server) }
     }
 
-    /// Every intent, sent to the model method the tray calls for the same thing.
-    private var actions: NetworkPagesActions {
-        let model = model, share = model.share, live = model.share.live, state = state
-        /// Starts a flow whose page is still the tray's, then shows the panel on it.
-        func inPanel(_ start: @escaping () -> Void) -> (() -> Void)? {
-            openPanel.map { open in { start(); open() } }
+    func checkCertificate(_ server: MultiplayerServerSummary) {
+        guard !state.probe.isRunning else { return }
+        state.confirmingTrust = nil
+        state.probe = .running(address: server.url)
+        Task {
+            switch await model.checkCertificate(of: server) {
+            case .loaded(let probe): state.probe = .finished(probe, address: server.url)
+            case .failed(let message): state.probe = .failed(address: server.url, message: message)
+            case .loading: state.probe = .idle
+            }
         }
+    }
+
+    func openThread(_ request: String, title: String, on server: String) {
+        state.open(.share(server, .thread(request: request, title: title)))
+        state.comment = ""
+        readThread(request, on: server)
+    }
+
+    private func readThread(_ request: String, on server: String) {
+        let read = state.beginRead()
+        state.thread = .loading
+        Task {
+            let thread = await share.loadThread(request, on: server)
+            if state.isCurrent(read) { state.thread = thread }
+        }
+    }
+
+    func openAudit(_ resource: String, on server: String) {
+        state.open(.share(server, .audit(resource: resource)))
+        let read = state.beginRead()
+        state.audit = .loading
+        Task {
+            let audit = await share.loadAudit(resource, on: server)
+            if state.isCurrent(read) { state.audit = audit }
+        }
+    }
+
+    /// Reads the open thread or audit log again.
+    func reload() {
+        guard case .share(let server, let page) = state.route else { return }
+        switch page {
+        case .thread(let request, _): readThread(request, on: server)
+        case .audit(let resource): openAudit(resource, on: server)
+        default: break
+        }
+    }
+
+    /// Opens a hand-off, a review or a fan-out you sent. It is in the model's lists already.
+    func openWork(_ kind: MultiplayerRemoteWork.Kind, request: String, on server: String) {
+        switch kind {
+        case .handoff:
+            state.open(.share(server, .handoffDetail(request: request)))
+        case .review:
+            state.open(.share(server, .review(request: request)))
+            state.reviewLink = live.reviewLink(request)
+        case .fanout:
+            state.open(.share(server, .compare(request: request)))
+        }
+    }
+
+    // MARK: Hosted composers
+
+    /// The network model's own host for a composer, at its full height because the page scrolls.
+    func host(_ composer: NetworkComposer) -> AnyView {
+        let model = model, state = state
+        let close = { state.selection.composer = nil }
+        /// A composer that sent what it was for closes; a refusal stays on it.
+        let finish: (MultiplayerActionResult) -> Void = { result in if result.isDone { close() } }
+        switch composer {
+        case .consult(let server, let resource):
+            // The reply shows on the composer, so it stays open after it is sent.
+            return AnyView(MultiplayerConsultHost(model: model, server: server, resource: resource, scrolls: false,
+                                                  onCancel: close, onFinish: { _ in },
+                                                  onThread: { sent in
+                                                      close()
+                                                      go(NetworkPlace.threads)
+                                                      openThread(sent.request, title: sent.title, on: server)
+                                                  }))
+        case .handoff(let server, let resource):
+            return AnyView(MultiplayerHandoffHost(model: model, server: server, resource: resource, scrolls: false,
+                                                  onCancel: close, onFinish: { result in
+                                                      guard result.isDone else { return }
+                                                      close()
+                                                      go(NetworkPlace.handoffs)
+                                                      openWork(.handoff, request: result.id, on: server)
+                                                  }))
+        case .reviewRequest(let server, let resource):
+            return AnyView(MultiplayerReviewRequestHost(model: model, server: server, resource: resource, scrolls: false,
+                                                        onCancel: close, onFinish: { result in
+                                                            guard result.isDone else { return }
+                                                            close()
+                                                            go(NetworkPlace.handoffs)
+                                                            openWork(.review, request: result.id, on: server)
+                                                        }))
+        case .watch(let server, let resource):
+            // A watch stays open while it is read; a suggestion's reply shows on it.
+            return AnyView(MultiplayerWatchHost(model: model, server: server, resource: resource, scrolls: false,
+                                                onCancel: close, onFinish: { _ in }))
+        case .addFriend(let server):
+            return AnyView(MultiplayerAddFriendHost(model: model, server: server, scrolls: false, onCancel: close, onFinish: finish))
+        case .invite(let server):
+            // The link shows on the form to be copied, so it stays open.
+            return AnyView(MultiplayerInviteHost(model: model, server: server, scrolls: false, onCancel: close, onFinish: { _ in }))
+        case .membership(let server):
+            return AnyView(MultiplayerMembershipHost(model: model, server: server, scrolls: false, onCancel: close, onFinish: finish))
+        case .addServer:
+            return AnyView(MultiplayerAddServerHost(model: model, scrolls: false, onCancel: close,
+                                                    onFinish: { result in
+                                                        guard result.isDone else { return }
+                                                        close()
+                                                        openServer(result.server)
+                                                    },
+                                                    onOpenExisting: { server in
+                                                        close()
+                                                        openServer(server.id)
+                                                    }))
+        }
+    }
+
+    // MARK: Actions
+
+    func actions(openPanel: (() -> Void)?) -> NetworkPagesActions {
+        let model = model, share = model.share, live = model.share.live, state = state
+        func compose(_ composer: NetworkComposer) { state.selection.composer = composer }
 
         var actions = NetworkPagesActions()
         actions.go = go
@@ -218,9 +413,10 @@ struct LiveNetworkPage: View {
         actions.dismissNotice = { model.dismissNotice() }
         actions.dismissFailure = { model.dismissFailure() }
         actions.refresh = { model.refreshAll() }
-        actions.close = { model.go(.home) }
-        actions.back = { share.back() }
+        actions.close = { state.open(.home) }
+        actions.back = { state.open(.home) }
         actions.closeGrant = { state.selection.grant = nil }
+        actions.closeComposer = { state.selection.composer = nil }
         actions.bind(.live(model), results: state.results,
                      openGrant: { state.selection.grant = $0 },
                      grantServer: { state.selection.grant },
@@ -234,73 +430,159 @@ struct LiveNetworkPage: View {
         actions.toggleGrantAction = { share.toggleGrantAction($0) }
 
         // Servers
-        actions.openServer = { model.openServer($0) }
-        actions.addServer = inPanel { model.startAddServer() }
+        actions.openServer = { openServer($0) }
+        actions.addServer = { compose(.addServer) }
         actions.signIn = { model.signIn($0) }
         actions.signOut = { model.signOut($0) }
-        actions.rename = { model.rename() }
+        actions.rename = {
+            guard case .server(let id) = state.route, let server = model.server(id) else { return }
+            let name = state.nickname
+            Task {
+                let result = await model.rename(server, to: name)
+                if result.isDone, let renamed = model.server(id) { state.nickname = renamed.name }
+            }
+        }
         actions.setAutoConnect = { model.setAutoConnect($0, $1) }
         actions.toggleFavorite = { model.toggleFavorite($0) }
+        // Removing a server is still the tray's own two-step: it has no call that names its
+        // target yet, and the tray returns home once the server is gone.
         actions.askRemove = { model.askRemove($0) }
         actions.cancelRemove = { model.cancelRemove() }
-        actions.confirmRemove = { model.confirmRemove() }
-        actions.checkCertificate = { model.checkCertificate($0) }
-        actions.askTrust = { model.askTrust($0) }
-        actions.cancelTrust = { model.cancelTrust() }
-        actions.confirmTrust = { model.confirmTrust() }
-
-        // Directory. The Consult, Hand off and Watch pages stay the tray's.
-        actions.requestAccess = { entry, server in share.startRequestAccess(entry, on: server) }
-        actions.sendAccessRequest = { share.sendAccessRequest() }
-        if let openPanel {
-            actions.consult = { entry, server in share.startConsult(entry.id, on: server); openPanel() }
-            actions.handOff = { entry, server in share.startHandoff(entry.id, on: server); openPanel() }
-            actions.watch = { entry, server in live.startWatch(entry.id, on: server); openPanel() }
+        actions.confirmRemove = {
+            state.open(.home)
+            model.confirmRemove()
         }
+        actions.checkCertificate = { checkCertificate($0) }
+        actions.askTrust = { server in
+            guard !model.isBusy, state.trustablePin(for: server) != nil else { return }
+            model.cancelRemove()
+            state.confirmingTrust = server.id
+        }
+        actions.cancelTrust = { state.confirmingTrust = nil }
+        actions.confirmTrust = {
+            guard let id = state.confirmingTrust, let server = model.server(id), let pin = state.trustablePin(for: server) else { return }
+            state.confirmingTrust = nil
+            Task {
+                // The model checks the server once more itself and pins only the key confirmed here.
+                if await model.trust(server, confirming: pin).isDone { state.probe = .idle }
+            }
+        }
+
+        // Directory. Each composer is the network model's own host, shown on the page.
+        actions.requestAccess = { entry, server in
+            state.access = MultiplayerAccessDraft(actions: entry.requestable.count == 1 ? Set(entry.requestable) : [])
+            state.open(.share(server, .requestAccess(resource: entry.id)))
+        }
+        actions.sendAccessRequest = {
+            guard case .share(let server, .requestAccess(let resource)) = state.route else { return }
+            let draft = state.access
+            Task {
+                if await model.sendAccessRequest(draft, for: resource, on: server).isDone,
+                   state.route == .share(server, .requestAccess(resource: resource)) { state.open(.home) }
+            }
+        }
+        actions.consult = { entry, server in compose(.consult(server: server, resource: entry.id)) }
+        actions.handOff = { entry, server in compose(.handoff(server: server, resource: entry.id)) }
+        actions.watch = { entry, server in compose(.watch(server: server, resource: entry.id)) }
+        actions.requestReview = { entry, server in compose(.reviewRequest(server: server, resource: entry.id)) }
 
         // Approvals
-        actions.openApproval = { id, server in share.open(.approval(id), on: server) }
+        actions.openApproval = { id, server in state.open(.share(server, .approval(id))) }
 
         // Hand-offs and reviews. Apply is bound above: choose a checkout, confirm, then the result.
-        actions.openHandoff = { request, server in
-            state.selection.apply = nil
-            share.open(.handoffDetail(request: request), on: server)
+        actions.openHandoff = { request, server in openWork(.handoff, request: request, on: server) }
+        actions.check = { row, server, result in Task { _ = await model.checkHandoff(row, on: server, result: result) } }
+        actions.openReview = { request, server in openWork(.review, request: request, on: server) }
+        actions.askPost = { state.confirmingPost = true }
+        actions.cancelPost = { state.confirmingPost = false }
+        actions.confirmPost = {
+            guard case .share(let server, .review(let request)) = state.route else { return }
+            let link = state.reviewLink
+            state.confirmingPost = false
+            Task { _ = await model.postReview(request, on: server, to: link) }
         }
-        actions.check = { row, server, result in share.check(row, on: server, result: result) }
-        actions.openReview = { request, server in live.openReview(request, on: server) }
-        actions.askPost = { live.askPost() }
-        actions.cancelPost = { live.cancelPost() }
-        actions.confirmPost = { live.confirmPost() }
 
         // Threads and audit
-        actions.openThread = { request, title, server in share.open(.thread(request: request, title: title), on: server) }
-        actions.postComment = { share.postComment() }
-        actions.openAudit = { resource, server in share.open(.audit(resource: resource), on: server) }
-        actions.reload = { share.reloadPage() }
+        actions.openThread = { request, title, server in openThread(request, title: title, on: server) }
+        actions.postComment = {
+            guard case .share(let server, .thread(let request, _)) = state.route else { return }
+            let text = state.comment
+            Task {
+                guard await model.postComment(text, to: request, on: server).isDone else { return }
+                // The typed text is cleared only if it is still what was sent.
+                if state.comment == text { state.comment = "" }
+                if case .share(server, .thread(request, _)) = state.route { reload() }
+            }
+        }
+        actions.openAudit = { resource, server in openAudit(resource, on: server) }
+        actions.reload = { reload() }
 
         // Fan-out
-        actions.openFanout = { request, server in share.open(.compare(request: request), on: server) }
+        actions.openFanout = { request, server in openWork(.fanout, request: request, on: server) }
         actions.chooseWinner = { child, request, server in live.chooseWinner(child, of: request, on: server) }
-        actions.startFanout = { live.startFanout(on: $0) }
-        actions.toggleFanoutTarget = { live.toggleFanoutTarget($0) }
-        actions.sendFanout = { live.sendFanout() }
+        actions.startFanout = { server in
+            let targets = live.fanoutTargets(on: server)
+            state.fanout = MultiplayerFanoutDraft(targets: targets.count == 2 ? Set(targets.map(\.id)) : [])
+            state.open(.share(server, .fanout))
+        }
+        actions.toggleFanoutTarget = { resource in
+            if state.fanout.targets.contains(resource) { state.fanout.targets.remove(resource) } else { state.fanout.targets.insert(resource) }
+        }
+        actions.sendFanout = {
+            guard case .share(let server, .fanout) = state.route else { return }
+            let draft = state.fanout
+            Task {
+                let result = await model.sendFanout(draft, on: server)
+                guard result.isDone else { return }
+                state.fanout = MultiplayerFanoutDraft()
+                // The composer is replaced by the fan-out it made.
+                if state.route == .share(server, .fanout) { openWork(.fanout, request: result.id, on: server) }
+            }
+        }
 
         // Shared
         actions.takeBack = { handover, server in live.takeBack(handover, on: server) }
-
-        // People. Adding a friend, inviting and membership stay the tray's pages.
-        if let openPanel {
-            actions.addFriend = { server in model.addFriend(on: server); openPanel() }
-            actions.invite = { server in model.startInvite(server); openPanel() }
-            actions.membership = { server in model.startMembership(server); openPanel() }
+        actions.revoke = { grant, server in
+            state.results.run(NetworkActionResult.key(.grant, grant.id, on: server)) {
+                NetworkActionResult(await model.revoke(grant, on: server))
+            }
         }
-        actions.editProfile = { model.startProfile($0) }
-        actions.choosePicture = { if let picture = MultiplayerPictureFile.choose() { model.pickAvatar(picture) } }
-        actions.dropPicture = { model.pickAvatar($0) }
-        actions.removePicture = { model.removeAvatar() }
-        actions.saveProfile = { model.saveProfile() }
+
+        // People. Adding a friend, inviting and membership are hosted on the page.
+        actions.addFriend = { server in compose(.addFriend(server: server)) }
+        actions.invite = { server in compose(.invite(server: server)) }
+        actions.membership = { server in compose(.membership(server: server)) }
+        actions.editProfile = { server in
+            guard let draft = model.profileDraft(on: server) else { return }
+            state.profile = draft
+            state.open(.profile(server))
+            if let handle = model.session(server)?.status?.handle { model.loadAvatar(server: server, handle: handle) }
+        }
+        actions.choosePicture = { if let picture = MultiplayerPictureFile.choose() { pick(picture) } }
+        actions.dropPicture = { pick($0) }
+        actions.removePicture = {
+            guard case .profile(let id) = state.route else { return }
+            state.profile.avatar = model.avatar(server: id, handle: state.profile.savedHandle) == nil ? .keep : .remove
+        }
+        actions.saveProfile = {
+            guard case .profile(let id) = state.route else { return }
+            let draft = state.profile
+            Task {
+                if await model.saveProfile(draft, on: id).isDone, state.route == .profile(id) { state.open(.home) }
+            }
+        }
         actions.markActivitySeen = { model.markActivitySeen() }
         actions.loadAvatar = { handle, server in model.loadAvatar(server: server, handle: handle) }
         return actions
+    }
+
+    /// Readies a picked image as the new picture, in the window's own draft.
+    private func pick(_ file: Data) {
+        guard let encoded = MultiplayerAvatarEncoder.encode(file) else {
+            model.post(failure: "Commander can’t use that file as a picture. Choose a PNG or JPEG image.")
+            return
+        }
+        model.post(failure: nil)
+        state.profile.avatar = .replace(encoded)
     }
 }

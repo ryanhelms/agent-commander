@@ -561,6 +561,44 @@ struct NetworkPagesSelection: Equatable {
     var grant: String? = nil
     /// The artifact waiting for its confirmation, with the checkout chosen for it.
     var apply: NetworkApplyDraft? = nil
+    /// The composer open on the page. Nil while none is.
+    var composer: NetworkComposer? = nil
+    /// The grant waiting for its second press before it is revoked, as `server/grant`.
+    var revoking: String? = nil
+}
+
+/// A composer the network model hosts for a view outside the tray, with what it is for.
+enum NetworkComposer: Hashable {
+    case consult(server: String, resource: String)
+    case handoff(server: String, resource: String)
+    case reviewRequest(server: String, resource: String)
+    case watch(server: String, resource: String)
+    case addFriend(server: String)
+    case invite(server: String)
+    case membership(server: String)
+    case addServer
+
+    var title: String {
+        switch self {
+        case .consult: "Consult"
+        case .handoff: "Hand off"
+        case .reviewRequest: "Request review"
+        case .watch: "Watch"
+        case .addFriend: "Add friend"
+        case .invite: "Invite someone"
+        case .membership: "Membership"
+        case .addServer: "Add server"
+        }
+    }
+
+    /// The server it is on. Adding a server has none yet.
+    var server: String? {
+        switch self {
+        case .consult(let server, _), .handoff(let server, _), .reviewRequest(let server, _), .watch(let server, _),
+             .addFriend(let server), .invite(let server), .membership(let server): server
+        case .addServer: nil
+        }
+    }
 }
 
 /// One artifact of a hand-off's result and the checkout the person chose for it. Nothing is
@@ -657,10 +695,13 @@ struct NetworkPagesActions {
     // Directory
     var requestAccess: (MultiplayerDirectoryEntry, String) -> Void = { _, _ in }
     var sendAccessRequest: () -> Void = {}
-    /// Consult, Hand off, Watch and Request review open their composer in the network panel.
+    /// Consult, Hand off, Watch and Request review open their composer on the page.
     var consult: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
     var handOff: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
     var watch: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
+    var requestReview: ((MultiplayerDirectoryEntry, String) -> Void)? = nil
+    /// Puts the open composer away.
+    var closeComposer: () -> Void = {}
 
     // Approvals and access
     var openApproval: (String, String) -> Void = { _, _ in }
@@ -704,6 +745,8 @@ struct NetworkPagesActions {
 
     // Shared
     var takeBack: (MultiplayerHandover, String) -> Void = { _, _ in }
+    /// Ends one grant. The page asks for a second press first. Nil where a grant can't be revoked.
+    var revoke: ((MultiplayerGrant, String) -> Void)? = nil
 
     // People
     var acceptFriend: (MultiplayerIncoming, String) -> Void = { _, _ in }
@@ -731,6 +774,8 @@ struct NetworkPages {
     /// The network model's own grant sheet for a server, with its footer. Nil draws the sheet from
     /// the values above (the previews).
     var grantHost: ((_ server: String) -> AnyView)? = nil
+    /// The network model's own host for a composer. Nil where composers aren't offered.
+    var composerHost: ((NetworkComposer) -> AnyView)? = nil
 }
 
 // MARK: - The action boundary

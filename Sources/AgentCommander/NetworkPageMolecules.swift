@@ -29,8 +29,6 @@ enum NetworkLayout {
     static let inspectorMinimum: CGFloat = 400
     /// A narrow collection beside a wide detail (fan-out, threads).
     static let listWidth: CGFloat = 340
-    /// The network model's grant sheet scrolls inside itself, so its inspector gives it a height.
-    static let grantHeight: CGFloat = 560
     /// The least a column without a width of its own is given.
     static let flexibleColumn: CGFloat = 132
     static let stateColumn: CGFloat = 132
@@ -599,11 +597,28 @@ struct NetworkPageScaffold<Actions: View, Content: View>: View {
                     } else if let notice = state.notice {
                         ShellAlertBand(kind: .success, text: notice, dismiss: pages.actions.dismissNotice)
                     }
+                    composer
                     bands
                 }
             }
         }
         .accessibilityIdentifier("network-page-\(place)")
+    }
+
+    /// The composer open on the page, under the telemetry strip and above the bands: the network
+    /// model's own host in an inspector panel, at its full height because the page scrolls.
+    @ViewBuilder private var composer: some View {
+        if let composer = pages.selection.composer, let host = pages.composerHost {
+            NetworkInspector(title: composer.title, serverID: composer.server,
+                             serverName: composer.server.map { pages.content.serverName($0) },
+                             close: pages.actions.closeComposer) {
+                host(composer)
+            }
+            .frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
+            // A composer keeps its own draft: another target is another composer.
+            .id(composer)
+            .accessibilityIdentifier("network-composer")
+        }
     }
 
     /// The page's bands at the page's width. In a window too narrow for the least they can take,

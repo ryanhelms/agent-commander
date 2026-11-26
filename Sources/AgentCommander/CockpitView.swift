@@ -1707,7 +1707,8 @@ struct CockpitView: View {
                                                                       openPanel: networkActions.openNetworkPanel))
                                           },
                                           // The wall's live work, read from the network model as values.
-                                          wall: WallLiveWork(model: network), wallActions: .live(network)))
+                                          wall: WallLiveWork(model: network),
+                                          wallActions: .live(network, pages: ui.networkPages)))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }
@@ -1739,8 +1740,9 @@ struct CockpitView: View {
             setPresence: { choice in _ = network.setPresence(choice) },
             answers: .live(network),
             openNetworkPanel: panel,
+            // The window opens the approval on its own page. The tray stays where it is.
             openLink: { link in
-                if case .approval(let id, let server) = link { network.share.open(.approval(id), on: server) }
+                if case .approval(let id, let server) = link { ui.networkPages.open(.share(server, .approval(id))) }
             },
             reviewAccess: { pending in
                 // Fills the grant sheet from the request; Approvals then hosts it beside the request.

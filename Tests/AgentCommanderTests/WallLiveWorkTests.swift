@@ -81,10 +81,14 @@ import Testing
         if let control = wall.controls.first {
             #expect(control.resourceName == model.share.resourceName(control.handover.resource, on: control.server))
         }
-        let actions = WallLiveWorkActions.live(model)
+        let pages = NetworkPagesLiveState()
+        let actions = WallLiveWorkActions.live(model, pages: pages)
         let first = try #require(wall.remoteWorkers.first)
+        let before = model.route
         actions.openWork(.handoff, first.request, first.server)
-        #expect(model.route == .share(first.server, .handoffDetail(request: first.request)))
+        // The window's own page opens it. The tray stays where it was.
+        #expect(pages.route == .share(first.server, .handoffDetail(request: first.request)))
+        #expect(model.route == before)
         #expect(actions.zoom != nil)
     }
 

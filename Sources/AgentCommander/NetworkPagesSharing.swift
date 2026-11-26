@@ -29,7 +29,7 @@ struct NetworkGrantInspector: View {
             // The network model's own sheet, with its footer: Share reports its result there, and a
             // refusal stays on the sheet.
             NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), close: actions.closeGrant) {
-                host(server).frame(height: NetworkLayout.grantHeight)
+                host(server)
             }
         } else {
             sample
@@ -169,16 +169,20 @@ struct NetworkDirectoryPage: View {
                 }
             } else {
                 NetworkInspector(title: row.entry.name.multiplayerDisplay, serverID: row.server, serverName: row.serverName,
-                                 note: actions.consult == nil ? nil : "Consult and Hand off open their composer in the network panel.") {
+                                 note: nil) {
                     MultiplayerDirectoryPage(entries: [row.entry], isBusy: state.isBusy || state.server(row.server)?.isOnline != true,
                                              isWaiting: { _ in row.isWaiting },
                                              onRequest: { actions.requestAccess($0, row.server) },
                                              onConsult: { actions.consult?($0, row.server) },
                                              onHandOff: { actions.handOff?($0, row.server) })
                 } footer: {
+                    if row.entry.canReview, let review = actions.requestReview {
+                        Button("Request review") { review(row.entry, row.server) }.buttonStyle(MultiplayerTrayButtonStyle())
+                            .help("Ask this worker to review a diff or a pull request")
+                    }
                     if row.entry.canWatch, let watch = actions.watch {
                         Button("Watch") { watch(row.entry, row.server) }.buttonStyle(MultiplayerTrayButtonStyle())
-                            .help("Opens the worker’s live output in the network panel")
+                            .help("Read the worker’s live output and send it a suggestion")
                     }
                 }
             }
@@ -441,7 +445,7 @@ struct NetworkSharedInspector: View {
     var body: some View {
         let state = pages.content, actions = pages.actions
         NetworkInspector(title: row.resource.name.multiplayerDisplay, serverID: row.server, serverName: row.serverName,
-                         note: "Revoke a grant from the server’s page in the network panel.") {
+                         note: actions.revoke == nil ? "Revoke a grant from the server’s page in the network panel." : nil) {
             if !row.holders.isEmpty {
                 MultiplayerBand {
                     VStack(alignment: .leading, spacing: Space.s) {
@@ -461,8 +465,31 @@ struct NetworkSharedInspector: View {
                         Text("No one can use this yet.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                     }
                     ForEach(row.grants) { grant in
+                        let key = "\(row.server)/\(grant.id)"
+                        let result = state.results[NetworkActionResult.key(.grant, grant.id, on: row.server)]
+                        let isRunning = state.running.contains(NetworkActionResult.key(.grant, grant.id, on: row.server))
                         MultiplayerRow(symbol: MultiplayerCapability.symbol(grant.capability), tone: .working,
-                                       title: grant.handle, caption: Self.caption(grant, now: state.now))
+                                       title: grant.handle, caption: result?.reason ?? Self.caption(grant, now: state.now)) {
+                            if isRunning {
+                                MultiplayerSpinner()
+                            } else if actions.revoke != nil {
+                                // The first press asks; the confirm under the row ends the grant.
+                                Button("Revoke…") { select(revoking: key) }
+                                    .buttonStyle(MultiplayerTrayButtonStyle())
+                                    .disabled(state.isBusy || pages.selection.revoking == key)
+                                    .accessibilityLabel("Revoke \(MultiplayerCapability.title(grant.capability)) from \(grant.handle.multiplayerDisplay)")
+                            }
+                        }
+                        if pages.selection.revoking == key, let revoke = actions.revoke {
+                            MultiplayerInlineConfirm(
+                                message: "\(grant.handle.multiplayerDisplay) can no longer use \(row.resource.name.multiplayerDisplay) this way. Requests already running finish. You can share it again later.",
+                                keepTitle: "Keep grant", confirmTitle: "Revoke", isBusy: state.isBusy,
+                                onCancel: { select(revoking: nil) },
+                                onConfirm: {
+                                    select(revoking: nil)
+                                    revoke(grant, row.server)
+                                })
+                        }
                     }
                 }
             }
@@ -477,6 +504,12 @@ struct NetworkSharedInspector: View {
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(state.isBusy)
         }
+    }
+
+    private func select(revoking key: String?) {
+        var next = pages.selection
+        next.revoking = key
+        pages.actions.select(next)
     }
 
     /// "Consult, up to 10 uses, until 14:30".
