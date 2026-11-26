@@ -12,9 +12,12 @@ import (
 )
 
 type Limit struct {
-	Action    string    `json:"action"`
-	ExpiresAt time.Time `json:"expires_at"`
-	MaxUses   int64     `json:"max_uses"`
+	Action       string    `json:"action"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	MaxUses      int64     `json:"max_uses"`
+	Approval     string    `json:"approval"`
+	BudgetTokens int64     `json:"budgetTokens"`
+	Attribution  string    `json:"attribution"`
 }
 
 type LimitUsage struct {
@@ -42,9 +45,25 @@ func (g *grantPolicy) validate(now time.Time) error {
 	g.Actions = nil
 	g.MaxUses = 0
 	g.ExpiresAt = time.Time{}
-	for _, l := range g.Limits {
+	for i := range g.Limits {
+		l := &g.Limits[i]
 		if !valid(l.ExpiresAt, l.MaxUses) {
 			return bad("each limit needs a future expiry and 1–1000000 uses")
+		}
+		if l.Approval == "" {
+			l.Approval = "ask"
+		}
+		if l.Attribution == "" {
+			l.Attribution = "owner"
+		}
+		if l.Approval != "ask" && l.Approval != "auto" {
+			return bad("approval must be ask or auto")
+		}
+		if l.Attribution != "owner" && l.Attribution != "requester" {
+			return bad("attribution must be owner or requester")
+		}
+		if l.BudgetTokens < 0 {
+			return bad("budgetTokens must be nonnegative")
 		}
 		g.Actions = append(g.Actions, l.Action)
 		if l.ExpiresAt.After(g.ExpiresAt) {
@@ -81,7 +100,8 @@ func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any
         CASE WHEN g.per_action THEN COALESCE(l.used,0) ELSE g.used END,l.limits FROM mp_grants g
         JOIN mp_resources r ON r.id=g.resource JOIN mp_profiles p ON p.user_id=g.grantee
         LEFT JOIN LATERAL (SELECT sum(used)::bigint AS used,
-          jsonb_agg(jsonb_build_object('action',action,'expires_at',expires_at,'max_uses',max_uses,'used',used) ORDER BY action) AS limits
+          jsonb_agg(jsonb_build_object('action',action,'expires_at',expires_at,'max_uses',max_uses,'used',used,
+            'approval',approval,'budgetTokens',budget_tokens,'attribution',attribution) ORDER BY action) AS limits
           FROM mp_grant_limits WHERE resource=g.resource AND grantee=g.grantee AND action=ANY(g.actions)) l ON g.per_action
         WHERE g.grantee=$1 OR r.owner_id=$1 ORDER BY g.resource,g.grantee`, p.User)
 	if err != nil {
@@ -150,6 +170,13 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 		if err := in.replace(ctx, tx, res, peer); err != nil {
 			return err
 		}
+		// A replacement retains previous debits. Only actions with remaining uses fulfill a request.
+		if _, err := tx.Exec(ctx, `UPDATE mp_access_requests SET status='granted'
+			WHERE resource=$1 AND requester=$2 AND status='pending' AND actions <@ ARRAY(
+			    SELECT action FROM mp_effective_actions WHERE resource=$1 AND grantee=$2
+			    AND expires_at>statement_timestamp() AND used<max_uses)`, res, peer); err != nil {
+			return err
+		}
 		return recordEvent(ctx, tx, peer, "grant.received", p.User, res)
 	})
 	return nil, err
@@ -200,8 +227,11 @@ func (g grantPolicy) replace(ctx context.Context, tx pgx.Tx, res, peer string) e
 			return err
 		}
 		for _, l := range g.Limits {
-			if _, err = tx.Exec(ctx, `INSERT INTO mp_grant_limits(resource,grantee,action,expires_at,max_uses) VALUES($1,$2,$3,$4,$5)
-                ON CONFLICT(resource,grantee,action) DO UPDATE SET expires_at=EXCLUDED.expires_at,max_uses=EXCLUDED.max_uses`, res, peer, l.Action, l.ExpiresAt, l.MaxUses); err != nil {
+			if _, err = tx.Exec(ctx, `INSERT INTO mp_grant_limits(resource,grantee,action,expires_at,max_uses,approval,budget_tokens,attribution)
+                VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(resource,grantee,action) DO UPDATE SET
+                expires_at=EXCLUDED.expires_at,max_uses=EXCLUDED.max_uses,approval=EXCLUDED.approval,
+                budget_tokens=EXCLUDED.budget_tokens,attribution=EXCLUDED.attribution`,
+				res, peer, l.Action, l.ExpiresAt, l.MaxUses, l.Approval, l.BudgetTokens, l.Attribution); err != nil {
 				return err
 			}
 		}

@@ -125,6 +125,7 @@ func (s *Service) Handler() http.Handler {
 		"PUT /v1/profile": s.setProfile, "GET /v1/profile": s.profile, "GET /v1/users/{handle}": s.profile, "GET /v1/users/{handle}/avatar": s.avatar,
 		"GET /v1/friends": s.friends, "POST /v1/friends/{handle}": s.friendChange, "PUT /v1/friends/{handle}": s.friendChange, "DELETE /v1/friends/{handle}": s.friendChange,
 		"PUT /v1/resources/{id}": s.putResource, "GET /v1/resources": s.resources, "GET /v1/grants": s.grants, "PUT /v1/grants/{resource}/{handle}": s.changeGrant, "DELETE /v1/grants/{resource}/{handle}": s.changeGrant,
+		"POST /v1/access-requests": s.requestAccess, "GET /v1/access-requests": s.accessRequests, "DELETE /v1/access-requests/{id}": s.deleteAccessRequest,
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
 		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
 		"POST /v1/invites":     s.createInvite,

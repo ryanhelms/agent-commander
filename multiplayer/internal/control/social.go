@@ -172,21 +172,37 @@ func (s *Service) friendChange(ctx context.Context, p Principal, r *http.Request
 	return nil, err
 }
 
+type Capabilities struct {
+	Harness      string   `json:"harness,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	Slots        *int     `json:"slots,omitempty"`
+	Tools        []string `json:"tools,omitzero"`
+	Environments []string `json:"environments,omitzero"`
+}
+
 type Resource struct {
-	ID      string   `json:"id"`
-	Owner   string   `json:"owner"`
-	Device  string   `json:"device"`
-	Kind    string   `json:"kind"`
-	Name    string   `json:"name"`
-	Handle  string   `json:"handle"`
-	Actions []string `json:"actions"`
+	ID           string        `json:"id"`
+	Owner        string        `json:"owner"`
+	Device       string        `json:"device"`
+	Kind         string        `json:"kind"`
+	Name         string        `json:"name"`
+	Handle       string        `json:"handle"`
+	Actions      []string      `json:"actions"`
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+}
+
+// In the friends' directory, Actions lists everything the owner offers on the resource.
+type DirectoryResource struct {
+	Resource
+	GrantedActions []string `json:"grantedActions"`
 }
 
 func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	var in struct {
-		Kind    string   `json:"kind"`
-		Name    string   `json:"name"`
-		Actions []string `json:"actions"`
+		Kind         string        `json:"kind"`
+		Name         string        `json:"name"`
+		Actions      []string      `json:"actions"`
+		Capabilities *Capabilities `json:"capabilities"`
 	}
 	if err := body(r, &in); err != nil {
 		return nil, err
@@ -195,14 +211,22 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 	if !identifier.MatchString(id) || !validActions(in.Actions) || (in.Kind != "agent" && in.Kind != "repo") || strings.TrimSpace(in.Name) == "" || len(in.Name) > 128 {
 		return nil, bad("provide resource id, kind, name and unique actions")
 	}
+	if c := in.Capabilities; c != nil {
+		if c.Harness != "" && c.Harness != "claude" && c.Harness != "codex" && c.Harness != "other" {
+			return nil, bad("harness must be claude, codex or other")
+		}
+		if c.Slots != nil && *c.Slots < 0 {
+			return nil, bad("slots must be nonnegative")
+		}
+	}
 	slices.Sort(in.Actions)
 	err := s.write(ctx, func(tx pgx.Tx) error {
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions) VALUES($1,$2,$3,$4,$5,$6)
-		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,actions=EXCLUDED.actions
-		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind`, id, p.User, p.Device, in.Kind, in.Name, in.Actions)
+		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions,capabilities) VALUES($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,actions=EXCLUDED.actions,capabilities=EXCLUDED.capabilities
+		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind`, id, p.User, p.Device, in.Kind, in.Name, in.Actions, in.Capabilities)
 		if err != nil {
 			return err
 		}
@@ -221,15 +245,19 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 		_, err = tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE resource=$1 AND status='pending' AND NOT(action=ANY($2))`, id, in.Actions)
 		return err
 	})
-	return map[string]any{"id": id}, err
+	out := map[string]any{"id": id}
+	if in.Capabilities != nil {
+		out["capabilities"] = in.Capabilities
+	}
+	return out, err
 }
 func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	rows, err := s.pool.Query(ctx, `SELECT r.id,r.owner_id,r.device,r.kind,r.name,coalesce(p.handle,''),
-	CASE WHEN r.owner_id=$1 THEN r.actions ELSE access.actions END FROM mp_resources r
+	r.actions,r.capabilities,coalesce(access.actions,'{}') FROM mp_resources r
     JOIN mp_profiles p ON p.user_id=r.owner_id
     LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_effective_actions
         WHERE resource=r.id AND grantee=$1 AND action=ANY(r.actions) AND expires_at>now() AND used<max_uses) access ON true
-    WHERE r.owner_id=$1 OR (cardinality(access.actions)>0 AND EXISTS
+    WHERE r.owner_id=$1 OR (cardinality(r.actions)>0 AND EXISTS
     (SELECT FROM mp_friends WHERE a=least($1,r.owner_id) AND b=greatest($1,r.owner_id) AND accepted))
     ORDER BY p.handle,r.id`, p.User)
 	if err != nil {
@@ -237,12 +265,21 @@ func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (
 	}
 	defer rows.Close()
 	results := []Resource{}
+	directory := []DirectoryResource{}
 	for rows.Next() {
-		var v Resource
-		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions); err != nil {
+		var v DirectoryResource
+		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions, &v.Capabilities, &v.GrantedActions); err != nil {
 			return nil, err
 		}
-		results = append(results, v)
+		if v.Owner != p.User {
+			directory = append(directory, v)
+			if len(v.GrantedActions) == 0 {
+				continue
+			}
+			// Existing coordinator clients discover only executable actions in resources.
+			v.Actions = v.GrantedActions
+		}
+		results = append(results, v.Resource)
 	}
-	return map[string]any{"resources": results}, rows.Err()
+	return map[string]any{"resources": results, "directory": directory}, rows.Err()
 }

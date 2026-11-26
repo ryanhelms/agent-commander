@@ -247,7 +247,7 @@ func TestDurableControlPilot(t *testing.T) {
 	if _, err = pool.Exec(ctx, "DELETE FROM mp_grant_limits WHERE resource='worker-b'"); err != nil {
 		t.Fatal(err)
 	}
-	check(bob, "PUT", "/v1/grants/worker-b/alice", map[string]any{"limits": []Limit{{"ask.v1", until, 1}}}, 200)
+	check(bob, "PUT", "/v1/grants/worker-b/alice", map[string]any{"limits": []Limit{{Action: "ask.v1", ExpiresAt: until, MaxUses: 1}}}, 200)
 	check(alice, "POST", "/v1/submissions", submit("legacy-debit", newChild("legacy-debit", "b1", "worker-b")), 403)
 	// Each capability spends only its own budget. A policy snapshot can
 	// retire a heavily used action without consuming an unrelated allowance.
@@ -255,7 +255,9 @@ func TestDurableControlPilot(t *testing.T) {
 	setLimits := func(limits ...Limit) {
 		check(bob, "PUT", "/v1/grants/tools/alice", map[string]any{"limits": limits}, 200)
 	}
-	readLimit, patchLimit, draftLimit := Limit{"read", until, 1}, Limit{"patch", until, 1}, Limit{"draft", until, 2}
+	readLimit := Limit{Action: "read", ExpiresAt: until, MaxUses: 1}
+	patchLimit := Limit{Action: "patch", ExpiresAt: until, MaxUses: 1}
+	draftLimit := Limit{Action: "draft", ExpiresAt: until, MaxUses: 2}
 	setLimits(readLimit, patchLimit, draftLimit)
 	addressed := func(id, action string) Addressed { v := newChild(id, "b1", "tools"); v.Action = action; return v }
 	run := func(id, action string) {
