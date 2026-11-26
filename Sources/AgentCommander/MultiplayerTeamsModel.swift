@@ -521,9 +521,11 @@ final class MultiplayerTeamsModel {
 
     /// Claims a card, completes it with the caller's result, or reopens it. The caller asks before
     /// giving up a card the person holds. `then` runs once it is changed, with that server's client.
+    /// `refused` is given who holds the card, when the relay refuses for that and says so.
     @discardableResult
     func updateCard(_ card: MultiplayerCard, in workspace: String, on server: String, to state: MultiplayerCard.State,
                     result: String = "", report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    refused: (@MainActor (MultiplayerClaimRefusal) -> Void)? = nil,
                     then: (@MainActor (MultiplayerClient) async throws -> Void)? = nil) -> Task<Void, Never>? {
         let me = handle(on: server)
         guard !me.isEmpty else { return nil }
@@ -544,7 +546,12 @@ final class MultiplayerTeamsModel {
         }
         return tray?.act(progress, failing: "Couldn’t update the card.", confirmation: done, report: report) { client in
             let scoped = client.scoped(to: server)
-            try await scoped.updateCard(card.id, in: workspace, fields: fields)
+            do {
+                try await scoped.updateCardNamingHolder(card.id, in: workspace, fields: fields)
+            } catch let stopped as MultiplayerClaimRefused {
+                refused?(stopped.refusal)
+                throw stopped.failure
+            }
             try await then?(scoped)
             if let next = try? await scoped.workspaces() { self.workspaces[server] = next }
         }
