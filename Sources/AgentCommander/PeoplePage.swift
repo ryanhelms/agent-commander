@@ -111,6 +111,7 @@ struct PeopleGrid: View {
 /// Beside the friends: the profile editor while it is open, otherwise you on each server and the
 /// activity feed.
 struct PeopleInspector: View {
+    @Environment(\.theme) private var theme
     let pages: NetworkPages
 
     var body: some View {
@@ -136,7 +137,7 @@ struct PeopleInspector: View {
                         ShellServerTag(id: server.id, name: server.name)
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, MultiplayerTheme.sectionInset)
+                    .padding(.horizontal, theme.space.sectionInset)
                     .padding(.top, Space.s)
                     MultiplayerIdentityBand(handle: server.handle, displayName: server.displayName,
                                             statusMessage: server.statusMessage,

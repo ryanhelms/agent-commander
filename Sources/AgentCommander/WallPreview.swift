@@ -13,6 +13,8 @@ enum WallSample {
     static func work(now: Date = NetworkSample.now) -> WallLiveWork {
         var wall = WallLiveWork()
         wall.now = now
+        wall.resources = [heldWorker: WallLiveWork.sampleResourceID(forWorker: heldWorker),
+                          suggestedWorker: WallLiveWork.sampleResourceID(forWorker: suggestedWorker)]
         wall.remoteWorkers = [
             MultiplayerRemoteWorker(server: studio, request: "ho-1", resource: "d-mira", canWatch: true,
                                     task: "Move the retry budget to each request", agent: "relay-builder", friend: "mira",
@@ -34,12 +36,12 @@ enum WallSample {
         wall.controls = [
             WallLiveWork.Control(server: studio, serverName: "studio",
                                  handover: MultiplayerHandover(handle: "mira", user: "u-mira",
-                                                               resource: WallLiveWork.resourceID(forWorker: heldWorker),
+                                                               resource: WallLiveWork.sampleResourceID(forWorker: heldWorker),
                                                                until: now.addingTimeInterval(24 * 60 + 12), server: studio, minutes: 30),
                                  resourceName: "Retry telemetry")
         ]
         wall.suggestions = [
-            WallLiveWork.Suggestion(server: studio, approval: "ap-9", resource: WallLiveWork.resourceID(forWorker: suggestedWorker),
+            WallLiveWork.Suggestion(server: studio, approval: "ap-9", resource: WallLiveWork.sampleResourceID(forWorker: suggestedWorker),
                                     who: "jonah", text: "Check the streaming client too, it builds its own options.")
         ]
         return wall

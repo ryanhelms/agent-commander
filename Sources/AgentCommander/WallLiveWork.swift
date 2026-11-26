@@ -54,22 +54,24 @@ struct WallLiveWork: Equatable {
 
     // MARK: Mapping a local worker to what the network says about it
 
-    /// The network resource a local worker is shared as. Sharing a worker always names it this
-    /// way (`MultiplayerShareTarget.resourceID`), so a hand-over or a suggestion for that
-    /// resource belongs to this worker's tile.
-    static func resourceID(forWorker id: String) -> String {
+    /// The resource each local worker is shared as, by worker ID, as the network names it
+    /// (`share.resource(forWorker:)`). A worker that isn't shared has none, and no dock.
+    var resources: [String: String] = [:]
+
+    /// The resource ID sharing gives a worker, for a sample or a test that has no network to ask.
+    static func sampleResourceID(forWorker id: String) -> String {
         MultiplayerShareTarget.agent(id: id, name: "").resourceID
     }
 
     /// Who holds this worker now, soonest to end first.
     func controls(forWorker id: String) -> [Control] {
-        let resource = Self.resourceID(forWorker: id)
+        guard let resource = resources[id] else { return [] }
         return controls.filter { $0.handover.resource == resource && $0.handover.isLive(now: now) }
             .sorted { $0.handover.until < $1.handover.until }
     }
 
     func suggestions(forWorker id: String) -> [Suggestion] {
-        let resource = Self.resourceID(forWorker: id)
+        guard let resource = resources[id] else { return [] }
         return suggestions.filter { $0.resource == resource }
     }
 
@@ -93,9 +95,13 @@ struct WallLiveWork: Equatable {
 
 extension WallLiveWork {
     /// Reads the network model. Every property read here is observed by the view that calls it.
-    @MainActor init(model: MultiplayerModel, now: Date? = nil) {
+    /// `workers` are the wall's local workers, by ID: the network says which resource each is shared as.
+    @MainActor init(model: MultiplayerModel, workers: [String] = [], now: Date? = nil) {
         let share = model.share, live = model.share.live
         self.now = now ?? model.currentDate()
+        for id in workers {
+            if let resource = share.resource(forWorker: id) { resources[id] = resource.id }
+        }
         remoteWorkers = share.remoteWorkers
         work = Self.rows(live.remoteWork) { item in
             item.kind == .review ? live.posted[item.request] != nil : live.winner(of: item.request, on: item.server) != nil
@@ -140,6 +146,10 @@ extension WallLiveWorkActions {
             },
             appeared: { share.wallAppeared() },
             disappeared: { share.wallDisappeared() },
-            zoom: { id, gone in AnyView(MultiplayerRemoteWorkerZoomHost(model: model, workerID: id, onGone: gone)) })
+            // The window has its own way to the hand-off's page, so the zoom has no footer button
+            // of its own; it takes a suggestion where the owner shared Suggest.
+            zoom: { id, gone in
+                AnyView(MultiplayerRemoteWorkerZoomHost(model: model, workerID: id, footerTitle: nil, allowsSuggestion: true, onGone: gone))
+            })
     }
 }

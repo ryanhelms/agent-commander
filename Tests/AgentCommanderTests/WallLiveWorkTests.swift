@@ -10,34 +10,39 @@ import Testing
 
     static func control(_ worker: String, handle: String, minutes: Double, server: String = "srv-a") -> WallLiveWork.Control {
         WallLiveWork.Control(server: server, serverName: "studio",
-                             handover: MultiplayerHandover(handle: handle, resource: WallLiveWork.resourceID(forWorker: worker),
+                             handover: MultiplayerHandover(handle: handle, resource: WallLiveWork.sampleResourceID(forWorker: worker),
                                                            until: now.addingTimeInterval(minutes * 60)),
                              resourceName: worker)
     }
 
     @Test func aWorkerIsMatchedByTheResourceItIsSharedAs() {
         // Sharing a worker names its resource from the worker's ID alone, whatever it is called.
-        let id = WallLiveWork.resourceID(forWorker: "W-044")
+        let id = WallLiveWork.sampleResourceID(forWorker: "W-044")
         #expect(id == MultiplayerShareTarget.agent(id: "W-044", name: "Retry telemetry").resourceID)
         #expect(id == MultiplayerShareTarget.agent(id: "W-044", name: "renamed").resourceID)
-        #expect(id != WallLiveWork.resourceID(forWorker: "W-045"))
+        #expect(id != WallLiveWork.sampleResourceID(forWorker: "W-045"))
         #expect(id != MultiplayerShareTarget.repo(path: "W-044", name: "x").resourceID)
     }
 
     @Test func aHeldWorkerShowsItsHoldersSoonestFirstAndOnlyWhileTheyHold() {
         var wall = WallLiveWork()
+        wall.resources = Dictionary(uniqueKeysWithValues: ["W-044", "W-045", "W-046"].map { ($0, WallLiveWork.sampleResourceID(forWorker: $0)) })
         wall.now = Self.now
         wall.controls = [Self.control("W-044", handle: "mira", minutes: 24), Self.control("W-044", handle: "jonah", minutes: 5),
                          Self.control("W-044", handle: "late", minutes: -1), Self.control("W-045", handle: "ines", minutes: 9)]
         #expect(wall.controls(forWorker: "W-044").map(\.handover.handle) == ["jonah", "mira"])
         #expect(wall.controls(forWorker: "W-045").map(\.handover.handle) == ["ines"])
         #expect(wall.controls(forWorker: "W-046").isEmpty)
+        // A worker the network doesn't share has no dock, whatever the hand-overs name.
+        wall.resources["W-044"] = nil
+        #expect(wall.controls(forWorker: "W-044").isEmpty)
     }
 
     @Test func aSuggestionShowsAtTheWorkerItIsFor() {
         var wall = WallLiveWork()
+        wall.resources = Dictionary(uniqueKeysWithValues: ["W-044", "W-045", "W-046"].map { ($0, WallLiveWork.sampleResourceID(forWorker: $0)) })
         wall.suggestions = [
-            WallLiveWork.Suggestion(server: "srv-a", approval: "ap-1", resource: WallLiveWork.resourceID(forWorker: "W-045"),
+            WallLiveWork.Suggestion(server: "srv-a", approval: "ap-1", resource: WallLiveWork.sampleResourceID(forWorker: "W-045"),
                                     who: "jonah", text: "Check the streaming client too."),
             WallLiveWork.Suggestion(server: "srv-a", approval: "ap-2", resource: "res-other", who: "A friend", text: "")
         ]

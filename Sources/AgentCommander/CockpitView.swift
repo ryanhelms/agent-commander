@@ -674,6 +674,8 @@ struct CockpitScreen: View {
                 shellCanvas(shell, navigation).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // A countdown drawn by the network's own rows counts from the window's fixed time, when it has one.
+        .environment(\.multiplayerFixedNow, shell.now)
     }
 
     @ViewBuilder private func shellCanvas(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
@@ -1734,7 +1736,7 @@ struct CockpitView: View {
                                                                     }))
                                           },
                                           // The wall's live work, read from the network model as values.
-                                          wall: WallLiveWork(model: network),
+                                          wall: WallLiveWork(model: network, workers: CockpitContent(model: model).selected?.wall.workers.map(\.id) ?? []),
                                           wallActions: .live(network, pages: ui.networkPages)))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
