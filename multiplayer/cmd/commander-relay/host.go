@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +23,7 @@ func hostCommand(ctx context.Context, args []string) error {
 	}
 	flags := flag.NewFlagSet("commander-relay host", flag.ContinueOnError)
 	dir := flags.String("dir", defaultDir, "host state directory")
+	asJSON := flags.Bool("json", false, "for install, uninstall and status: print one JSON result for the tray")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -53,6 +56,14 @@ func hostCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *asJSON {
+		switch action {
+		case "install", "uninstall", "status":
+			return hostJSON(os.Stdout, path, action)
+		default:
+			return fmt.Errorf("--json applies to install, uninstall and status, not %q", action)
+		}
+	}
 	switch action {
 	case "init":
 		return hostmode.InitConfig(path, cfg)
@@ -69,6 +80,43 @@ func hostCommand(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown host subcommand %q", action)
 	}
+}
+
+// hostResult is the tray's envelope: the host's state after the action, or why it failed.
+type hostResult struct {
+	OK    bool             `json:"ok"`
+	Host  *hostmode.Report `json:"host,omitempty"`
+	Error string           `json:"error,omitempty"`
+}
+
+// errReported marks a failure already written to stdout as JSON.
+var errReported = errors.New("host action failed")
+
+func hostJSON(output io.Writer, dir, action string) error {
+	var err error
+	switch action {
+	case "install":
+		err = hostmode.Install(dir)
+	case "uninstall":
+		err = hostmode.Uninstall()
+	}
+	var report hostmode.Report
+	if err == nil {
+		report, err = hostmode.Inspect(dir)
+	}
+	result := hostResult{OK: err == nil}
+	if err != nil {
+		result.Error = err.Error()
+	} else {
+		result.Host = &report
+	}
+	if encodeErr := json.NewEncoder(output).Encode(result); encodeErr != nil {
+		return errors.Join(err, encodeErr)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", errReported, err)
+	}
+	return nil
 }
 
 func serveHost(ctx context.Context, dir string, client *http.Client) (err error) {

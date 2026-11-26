@@ -79,6 +79,7 @@ The relay answers `GET /v1/info` without a client certificate: `{"version": "...
 - **Config:** `<host>/host.json` holds the name, listen address (default `:443`), host names, issuer, client ID, allowed emails and admins. The first admin is the person who creates it.
 - **Paths:** `<host>` defaults to `~/Library/Application Support/Agent Commander/relay`.
 - **launchd:** `commander-relay host install` writes and loads `~/Library/LaunchAgents/local.agentcommander.relay.plist`; `commander-relay host uninstall` removes it.
+- **Tray:** `commander-relay host --json status|install|uninstall` prints one line for the app: `{"ok": true, "host": {"state": "unconfigured|stopped|starting|running", "installed": bool, "name", "url", "pin", "dir", "log"}}`, or `{"ok": false, "error": "..."}` with a non-zero exit. `starting` means the launch agent is installed and the relay doesn't hold its lock yet. The tray's Hosting page and the main window's host menu run it to start, stop and read the relay.
 
 ## Tray (frontend)
 

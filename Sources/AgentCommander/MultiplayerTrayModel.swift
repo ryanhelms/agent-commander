@@ -261,6 +261,8 @@ final class MultiplayerModel {
     let share: MultiplayerShareModel
     /// Remote: this Mac's web view, its pairing code and its paired devices.
     let remote: MultiplayerRemoteModel
+    /// Hosting: this Mac's own relay under launchd (MultiplayerHosting.swift).
+    let host: MultiplayerHostModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -283,8 +285,10 @@ final class MultiplayerModel {
          watchInterval: Duration = .seconds(2),
          answeredHold: Duration = .zero,
          now: @escaping () -> Date = { Date() },
-         holdTimer: MultiplayerHoldTimer = .clock) {
+         holdTimer: MultiplayerHoldTimer = .clock,
+         relay: (any MultiplayerRelayControl)? = nil) {
         self.client = client
+        self.host = MultiplayerHostModel(control: relay)
         self.notifier = notifier
         self.setupFailure = setupFailure
         self.usesFixtureHelper = usesFixtureHelper
@@ -304,14 +308,16 @@ final class MultiplayerModel {
     /// The app's model: the bundled helper, or a COMMANDER_NETWORK_BIN fixture in a debug build's
     /// fixture mode (the review panel, or a run with its own AGENT_COMMANDER_HOME).
     static func live() -> MultiplayerModel {
+        // Hosting needs only the relay helper, so it works even when the network helper is missing.
+        let relay = MultiplayerRelayLocator.resolve().map { MultiplayerRelayProcess(executable: $0) }
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
             MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
                              winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
-                             answeredHold: MultiplayerShareModel.answeredHold)
+                             answeredHold: MultiplayerShareModel.answeredHold, relay: relay)
         case .failure(let failure):
-            MultiplayerModel(client: nil, setupFailure: failure)
+            MultiplayerModel(client: nil, setupFailure: failure, relay: relay)
         }
     }
 
@@ -421,6 +427,8 @@ final class MultiplayerModel {
     /// A panel became visible. The first viewer starts the poll, for the list and every session.
     func open() {
         viewers += 1
+        // Hosting is read for each viewer that opens: it changes outside Commander, from Terminal.
+        host.refresh()
         guard viewers == 1, client != nil else { return }
         sessions.values.forEach { $0.open() }
         pollTask?.cancel()
@@ -810,6 +818,7 @@ final class MultiplayerModel {
         confirmingTrust = nil
         failure = nil
         route = next
+        if next == .hosting { host.refresh() }
         if case .server(let id) = next, let server = server(id) {
             renameDraft = server.name
             if server.state == .certChanged { checkCertificate(server) }

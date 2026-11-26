@@ -46,6 +46,10 @@ struct ShellNetwork: Equatable {
     var failure: String?
     /// The network helper is missing or the server list can't be read.
     var isUnavailable = false
+    /// This Mac's own relay, and whether it is already in the server list. Nil where nothing reads
+    /// the relay (a preview), which leaves the toolbar's host menu out.
+    var host: MultiplayerHostSummary?
+    var hostIsSaved = false
 
     init() {}
 
@@ -86,6 +90,9 @@ struct ShellNetwork: Equatable {
         presenceChoice = model.effectivePresenceChoice
         failure = model.failure
         isUnavailable = model.unavailable != nil
+        // A build without the relay helper has nothing to host with, so the toolbar leaves it out.
+        host = model.host.control == nil ? nil : model.host.summary
+        hostIsSaved = model.hostedServer != nil
     }
 
     /// The requests that still wait: the listed ones without an answer. Every count uses these.
@@ -120,6 +127,8 @@ struct ShellNetworkActions {
     var openLink: @MainActor (NetworkDeepLink) -> Void = { _ in }
     /// Fills the grant sheet from a friend's access request. False when the server can't take it.
     var reviewAccess: @MainActor (MultiplayerPending<MultiplayerAccessRequest>) -> Bool = { _ in false }
+    /// The toolbar's host menu: this Mac's relay, and Add server.
+    var hosting = ShellHostingActions()
 }
 
 /// What the live page hands the cockpit so it draws the redesigned shell.

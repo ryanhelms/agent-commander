@@ -183,37 +183,100 @@ func runningAddress(dir string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-func Status(dir string, output io.Writer) error {
-	cfg, err := ReadConfig(dir)
+// Report is what the tray and `host status` show about this Mac's relay.
+type Report struct {
+	// State is "unconfigured" (no host.json yet), "stopped", "starting" (the launch agent is
+	// installed but the relay doesn't hold its lock yet) or "running".
+	State string `json:"state"`
+	// Installed is true when the launch agent is in ~/Library/LaunchAgents.
+	Installed bool   `json:"installed"`
+	Name      string `json:"name,omitempty"`
+	URL       string `json:"url,omitempty"`
+	// Pin is the CA's SPKI pin, empty until the relay has started once.
+	Pin string `json:"pin,omitempty"`
+	Dir string `json:"dir"`
+	// Log is the relay's error log, where a failed start explains itself.
+	Log string `json:"log"`
+}
+
+func launchAgentInstalled() (bool, error) {
+	plist, err := launchAgentPath()
 	if err != nil {
-		return err
+		return false, err
 	}
+	_, err = os.Stat(plist)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// Inspect reads the host's configuration, lock and certificate. A missing host.json is the
+// "unconfigured" state, not an error.
+func Inspect(dir string) (Report, error) {
+	report := Report{Dir: dir, Log: filepath.Join(dir, "logs", "relay.err.log")}
+	installed, err := launchAgentInstalled()
+	if err != nil {
+		return report, err
+	}
+	report.Installed = installed
+	cfg, err := ReadConfig(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		report.State = "unconfigured"
+		return report, nil
+	}
+	if err != nil {
+		return report, err
+	}
+	report.Name = cfg.Name
 	host, port, err := net.SplitHostPort(cfg.Listen)
 	if err != nil {
-		return err
+		return report, err
 	}
-	state := "stopped"
+	report.State = "stopped"
+	if installed {
+		report.State = "starting"
+	}
 	addr, err := runningAddress(dir)
 	if err != nil {
-		return err
+		return report, err
 	}
 	if addr != "" {
-		state = "running"
+		report.State = "running"
 		_, port, err = net.SplitHostPort(addr)
 		if err != nil {
-			return err
+			return report, err
 		}
 	}
 	if host == "" || net.ParseIP(host).IsUnspecified() {
 		host = cfg.Hostnames[0]
 	}
-	listenURL := url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
+	report.URL = (&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}).String()
 	pin, err := CAPin(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		pin = "unavailable until first start"
-	} else if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+	report.Pin = pin
+	return report, nil
+}
+
+func Status(dir string, output io.Writer) error {
+	if _, err := ReadConfig(dir); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "State: %s\nListen URL: %s\nCA SPKI pin: %s\n", state, listenURL.String(), pin)
+	report, err := Inspect(dir)
+	if err != nil {
+		return err
+	}
+	state := report.State
+	if state == "starting" {
+		// The plain status keeps its two states; launchd may still be bringing the relay up.
+		state = "stopped"
+	}
+	pin := report.Pin
+	if pin == "" {
+		pin = "unavailable until first start"
+	}
+	_, err = fmt.Fprintf(output, "State: %s\nListen URL: %s\nCA SPKI pin: %s\n", state, report.URL, pin)
 	return err
 }

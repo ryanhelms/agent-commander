@@ -523,12 +523,154 @@ struct ShellPresencePullDown: NSViewRepresentable {
     }
 }
 
-/// The toolbar's readouts: server health, then presence when the sidebar doesn't hold it.
-/// A window's toolbar exposes each of its items as one element, so in a window the two are two
-/// items (`part`): a "servers" button and a "Your presence" menu button, side by side. Drawn
-/// without a window they are one strip.
+/// One entry in a toolbar pull-down: a command, or a separator.
+struct ShellMenuCommand: Identifiable {
+    let id: String
+    var title = ""
+    var isEnabled = true
+    var isSeparator = false
+    var run: @MainActor () -> Void = {}
+
+    static func separator(_ id: String) -> ShellMenuCommand { ShellMenuCommand(id: id, isSeparator: true) }
+}
+
+/// A readout that is also a menu of commands: the readout is the picture, and AppKit's own
+/// pull-down button with nothing drawn lies over it, as the presence menu does. One element named
+/// `label` whose value is the readout's figure.
+struct ShellCommandMenu: View {
+    let readout: ShellReadout
+    let label: String
+    let help: String
+    let commands: [ShellMenuCommand]
+
+    var body: some View {
+        ShellReadoutCell(readout: readout, opensMenu: true)
+            .accessibilityHidden(true)
+            .overlay { ShellCommandPullDown(label: label, value: readout.spoken ?? readout.value, identifier: "shell-\(readout.id)",
+                                            commands: commands) }
+            .fixedSize()
+            .help(help)
+    }
+}
+
+/// The pull-down under `ShellCommandMenu`: a transparent `NSPopUpButton` whose items run commands.
+struct ShellCommandPullDown: NSViewRepresentable {
+    let label: String
+    let value: String
+    let identifier: String
+    let commands: [ShellMenuCommand]
+
+    final class Coordinator: NSObject {
+        var commands: [String: @MainActor () -> Void] = [:]
+
+        @MainActor @objc func choose(_ item: NSMenuItem) {
+            guard let id = item.representedObject as? String else { return }
+            commands[id]?()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.isBordered = false
+        button.isTransparent = true
+        (button.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+        button.autoenablesItems = false
+        button.identifier = NSUserInterfaceItemIdentifier(identifier)
+        button.setAccessibilityIdentifier(identifier)
+        button.cell?.setAccessibilityIdentifier(identifier)
+        button.cell?.setAccessibilityLabel(label)
+        button.cell?.setAccessibilityHelp("Opens a list to choose from")
+        fill(button, context.coordinator)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) { fill(button, context.coordinator) }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    private func fill(_ button: NSPopUpButton, _ coordinator: Coordinator) {
+        coordinator.commands = Dictionary(uniqueKeysWithValues: commands.filter { !$0.isSeparator }.map { ($0.id, $0.run) })
+        button.removeAllItems()
+        // A pull-down's first item is its title, and what the button reports as its value.
+        button.addItem(withTitle: value)
+        for command in commands {
+            if command.isSeparator {
+                button.menu?.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: command.title, action: #selector(Coordinator.choose(_:)), keyEquivalent: "")
+            item.target = coordinator
+            item.representedObject = command.id
+            item.isEnabled = command.isEnabled
+            button.menu?.addItem(item)
+        }
+        button.cell?.setAccessibilityValue(value)
+    }
+}
+
+/// The network intents the toolbar's host menu offers: run this Mac's relay, and reach others.
+struct ShellHostingActions {
+    var start: @MainActor () -> Void = {}
+    var stop: @MainActor () -> Void = {}
+    /// Opens Add server with this relay's address filled in.
+    var addHosted: @MainActor () -> Void = {}
+    /// Opens Add server empty: connect to someone else's relay, or paste an invite link.
+    var addServer: @MainActor () -> Void = {}
+    /// Opens the Hosting page.
+    var openHosting: @MainActor () -> Void = {}
+}
+
+/// The toolbar's host menu: whether this Mac is hosting a relay, and the quick ways to start or
+/// stop it, share its address, or connect to another relay.
+struct ShellHostMenu: View {
+    let host: MultiplayerHostSummary
+    /// The relay is already in the server list.
+    let isSaved: Bool
+    let actions: ShellHostingActions
+
+    var body: some View {
+        ShellCommandMenu(readout: ShellReadout(id: "host", label: "host", value: host.figure, lamp: host.lamp,
+                                               tone: host.phase == .unavailable ? .failure : .neutral, spoken: host.spoken),
+                         label: "Hosting", help: "Start or stop the relay on this Mac, or add a server",
+                         commands: commands)
+    }
+
+    private var commands: [ShellMenuCommand] {
+        var list: [ShellMenuCommand] = []
+        if host.canStop || host.phase == .stopping {
+            list.append(ShellMenuCommand(id: "stop", title: "Stop hosting", isEnabled: host.canStop, run: actions.stop))
+        } else {
+            list.append(ShellMenuCommand(id: "start", title: host.phase == .unconfigured ? "Set up hosting…" : "Start hosting",
+                                         isEnabled: host.canStart || host.phase == .unconfigured,
+                                         run: host.phase == .unconfigured ? actions.openHosting : actions.start))
+        }
+        if host.phase == .running, !host.url.isEmpty {
+            let url = host.url
+            list.append(ShellMenuCommand(id: "copy", title: "Copy relay address") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url, forType: .string)
+            })
+            if !isSaved {
+                list.append(ShellMenuCommand(id: "add-hosted", title: "Add this relay as a server…", run: actions.addHosted))
+            }
+        }
+        list.append(.separator("connect"))
+        list.append(ShellMenuCommand(id: "add-server", title: "Connect to a server…", run: actions.addServer))
+        list.append(ShellMenuCommand(id: "hosting", title: "Hosting on this Mac…", run: actions.openHosting))
+        return list
+    }
+}
+
+/// The toolbar's readouts: server health, this Mac's relay, then presence when the sidebar doesn't
+/// hold it. A window's toolbar exposes each of its items as one element, so in a window they are
+/// separate items (`part`): a "servers" button, a "Hosting" menu button and a "Your presence" menu
+/// button, side by side. Drawn without a window they are one strip.
 struct ShellToolbarReadouts: View {
-    enum Part { case both, servers, presence }
+    enum Part { case both, servers, host, presence }
 
     var part = Part.both
     let servers: CommanderServerHealth
@@ -536,6 +678,10 @@ struct ShellToolbarReadouts: View {
     let profile: CommanderProfile?
     let openServers: () -> Void
     let pickPresence: (MultiplayerPresenceChoice) -> Void
+    /// This Mac's relay. Nil leaves the host menu out.
+    var host: MultiplayerHostSummary? = nil
+    var hostIsSaved = false
+    var hosting = ShellHostingActions()
 
     private var lamp: MultiplayerLamp.Kind {
         switch servers.tone {
@@ -553,10 +699,18 @@ struct ShellToolbarReadouts: View {
         switch part {
         case .both:
             ShellReadoutStrip(cells: [cell], open: { _ in openServers() }) {
+                if let host {
+                    ShellHostMenu(host: host, isSaved: hostIsSaved, actions: hosting)
+                    if profile != nil { ThemeRule(vertical: true) }
+                }
                 if let profile { ShellPresenceMenu(profile: profile, pick: pickPresence) }
             }
         case .servers:
             ShellReadoutStrip(cells: [cell], open: { _ in openServers() })
+        case .host:
+            if let host {
+                ShellReadoutStrip(cells: []) { ShellHostMenu(host: host, isSaved: hostIsSaved, actions: hosting) }
+            }
         case .presence:
             if let profile {
                 ShellReadoutStrip(cells: []) { ShellPresenceMenu(profile: profile, pick: pickPresence) }
