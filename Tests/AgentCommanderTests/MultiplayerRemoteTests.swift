@@ -314,7 +314,8 @@ import Testing
         #expect(live.zoomTask == nil)
     }
 
-    /// D10: live-work rows have roles, and each picker is offered once.
+    /// D10: live-work rows have roles, and each picker is offered once. Review is a window page:
+    /// the tray draws its open-in-window row alone.
     @Test func exposesTheLiveWorkPagesToAssistiveApps() async throws {
         let model = try await Self.fixtureModel("ax-live")
         defer { model.close() }
@@ -347,12 +348,14 @@ import Testing
                 let pickers = nodes.filter { $0.label == "Friend" }
                 #expect(pickers.count == 1 && pickers.first?.value.isEmpty == false, "\(dump)")
                 #expect(nodes.contains { $0.label == "Hand over control" }, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Hand over" }, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Runs in Agent Commander" }, "\(dump)")
             case "watch":
                 let lines = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).contains("Message: ") }
                 #expect(!lines.isEmpty, "\(dump)")
             case "review":
-                let findings = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).hasPrefix("Important, ") }
-                #expect(findings.count == 2, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Runs in Agent Commander" }, "\(dump)")
+                #expect(!nodes.contains { ($0.label + $0.value).hasPrefix("Important, ") || $0.label == "Post to PR…" }, "\(dump)")
             case "network":
                 #expect(nodes.contains { $0.label == "Remote" }, "\(dump)")
                 #expect(nodes.contains { $0.label == "Revoke iPad mini" }, "\(dump)")

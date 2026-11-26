@@ -790,6 +790,7 @@ private struct MultiplayerPanelContent: View {
     let closesOnOpen: Bool
     /// The window this panel is in, for the open-in-window row to close.
     @State private var panelWindow = MultiplayerPanelWindow()
+    @Environment(\.multiplayerPanelDismissal) private var dismissal
     @Environment(\.multiplayerWindowOpener) private var opener
 
     @Environment(\.theme) private var theme
@@ -799,9 +800,10 @@ private struct MultiplayerPanelContent: View {
             .environment(\.multiplayerWindowOpener, windowOpener)
     }
 
-    /// How this panel opens a window page: the opener it was given, closing its own window after.
+    /// How this panel opens a window page: the opener it was given, closing its own panel after.
+    /// In the menu bar the close goes through the scene's dismissal, not the window.
     private var windowOpener: MultiplayerWindowOpener {
-        closesOnOpen ? opener.closing { [panelWindow] in panelWindow.close() } : opener
+        closesOnOpen ? opener.closing { [panelWindow, dismissal] in panelWindow.close(through: dismissal) } : opener
     }
 
     /// Shows a page where it lives: in the tray, or in the main window.
@@ -1011,7 +1013,6 @@ private struct MultiplayerPanelContent: View {
     /// The pages the tray still draws. A page that moved is the open-in-window row alone.
     @ViewBuilder private func sharePage(_ page: MultiplayerSharePage, on id: String) -> some View {
         @Bindable var share = model.share
-        let now = model.currentDate()
         if model.session(id)?.isOnline != true {
             MultiplayerBand {
                 Text("\(routedServer?.displayName ?? "This server") is offline. Sharing resumes when it’s back.")
@@ -1039,13 +1040,14 @@ private struct MultiplayerPanelContent: View {
                                            onChoose: { share.attach(MultiplayerFilePanel.chooseFiles()) },
                                            onDrop: { share.attach($0) },
                                            onDetach: { share.detach($0) })
-            case .watch, .control, .reviewRequest, .review:
-                livePage(page, on: id, now: now)
-            case .workspaceCreate, .policy:
+            case .watch, .control, .reviewRequest:
+                livePage(page, on: id)
+            case .workspaceCreate:
                 teamsPage(page, on: id)
             case .directory, .requests, .approval, .handoffs, .handoffDetail, .thread, .audit, .fanout, .compare,
+                 .review,
                  .groups, .group, .workspaces, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
-                 .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search:
+                 .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search, .policy:
                 EmptyView()
             }
         }
@@ -1054,21 +1056,10 @@ private struct MultiplayerPanelContent: View {
     // MARK: Teams
 
     @ViewBuilder private func teamsPage(_ page: MultiplayerSharePage, on id: String) -> some View {
-        let share = model.share
         @Bindable var teams = model.share.teams
         switch page {
         case .workspaceCreate:
             MultiplayerWorkspaceForm(draft: $teams.workspaceDraft, groups: teams.groups[id] ?? [])
-        case .policy:
-            MultiplayerPolicyPage(state: teams.policy, draft: $teams.policyDraft, confirming: teams.confirming,
-                                  isBusy: model.isBusy, onRetry: { share.reloadPage() },
-                                  onAskSuspend: { teams.ask(.suspend(teams.policyDraft.trimmedMember)) },
-                                  onRestore: { teams.setSuspended(false, on: id) },
-                                  onAskRevoke: { teams.ask(.revokeDevice(teams.policyDraft.trimmedDevice)) },
-                                  onCancel: { teams.cancelConfirmation() },
-                                  onConfirm: {
-                                      if case .suspend? = teams.confirming { teams.setSuspended(true, on: id) } else { teams.revokeDevice(on: id) }
-                                  })
         default:
             EmptyView()
         }
@@ -1085,13 +1076,6 @@ private struct MultiplayerPanelContent: View {
                     .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .disabled(!teams.canCreateWorkspace)
             }
-        case .policy:
-            MultiplayerTrayFooter(note: teams.policy.value == nil ? nil
-                                    : teams.policyChanges?.isEmpty == false ? "Applies to everyone on this relay." : "Nothing changed yet.") {
-                Button("Save policy") { teams.savePolicy(on: id) }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .disabled(!teams.canSavePolicy)
-            }
         default:
             EmptyView()
         }
@@ -1099,7 +1083,7 @@ private struct MultiplayerPanelContent: View {
 
     // MARK: Live work
 
-    @ViewBuilder private func livePage(_ page: MultiplayerSharePage, on id: String, now: Date) -> some View {
+    @ViewBuilder private func livePage(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         @Bindable var live = model.share.live
         let serverName = routedServer?.displayName ?? "this server"
@@ -1113,7 +1097,7 @@ private struct MultiplayerPanelContent: View {
             MultiplayerControlPage(resourceName: share.resourceName(resource, on: id).multiplayerDisplay,
                                    holders: live.holders(of: resource, on: id),
                                    candidates: live.candidates(for: resource, on: id),
-                                   draft: $live.handoverDraft, now: now, isBusy: model.isBusy,
+                                   draft: $live.handoverDraft, now: model.currentDate(), isBusy: model.isBusy,
                                    onTakeBack: { live.takeBack($0, on: id) })
         case .reviewRequest(let resource):
             MultiplayerReviewComposer(draft: $live.reviewDraft, entry: share.entry(resource, on: id),
@@ -1121,18 +1105,6 @@ private struct MultiplayerPanelContent: View {
                                       onChoose: { live.attachDiff(MultiplayerFilePanel.chooseFiles()) },
                                       onDrop: { live.attachDiff($0) },
                                       onDetach: { live.detachDiff() })
-        case .review(let request):
-            if let row = live.review(request, on: id) {
-                MultiplayerReviewPage(row: row, target: share.handoffTarget(row, on: id), review: MultiplayerReview(row.value),
-                                      now: now, link: $live.postDraft, posted: live.posted[request],
-                                      confirming: live.confirmingPost, problem: live.postProblem(request, on: id),
-                                      isBusy: model.isBusy,
-                                      onCancel: { live.cancelPost() }, onConfirm: { live.confirmPost() })
-            } else {
-                MultiplayerBand {
-                    Text("Commander can’t find this review any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
-                }
-            }
         default:
             EmptyView()
         }
@@ -1172,26 +1144,6 @@ private struct MultiplayerPanelContent: View {
                     .disabled(!live.canSendReview)
                     .help("Request review (⌘Return)")
             }
-        case .review(let request):
-            MultiplayerTrayFooter {
-                if let row = live.review(request, on: id) {
-                    // The thread is a window page now, so this button leaves the tray.
-                    Button { pages.show(.thread(request: row.request, title: row.title), on: id) } label: {
-                        Label("Thread", systemImage: "arrow.up.right")
-                    }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-                    .help("Open this thread in Agent Commander")
-                    .accessibilityLabel("Open this thread in Agent Commander")
-                    Button("Refresh") { model.refresh() }
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .disabled(!model.canRefresh)
-                    Spacer(minLength: 0)
-                    Button("Post to PR…") { live.askPost() }
-                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                        .disabled(model.isBusy || live.confirmingPost || live.postProblem(request, on: id) != nil)
-                        .help(live.postProblem(request, on: id) ?? "Shows what will be posted, then asks you to confirm")
-                }
-            }
         default:
             EmptyView()
         }
@@ -1200,9 +1152,9 @@ private struct MultiplayerPanelContent: View {
     @ViewBuilder private func shareFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
         let share = model.share
         switch page {
-        case .watch, .control, .reviewRequest, .review:
+        case .watch, .control, .reviewRequest:
             liveFooter(page, on: id)
-        case .workspaceCreate, .policy:
+        case .workspaceCreate:
             teamsFooter(page, on: id)
         case .requestAccess:
             MultiplayerTrayFooter(note: share.accessDraft.actions.isEmpty ? "Choose at least one action." : nil) {
@@ -1236,8 +1188,9 @@ private struct MultiplayerPanelContent: View {
                     .help("Hand off (⌘Return)")
             }
         case .directory, .requests, .approval, .handoffs, .handoffDetail, .thread, .audit, .fanout, .compare,
+             .review,
              .groups, .group, .workspaces, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
-             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search:
+             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search, .policy:
             MultiplayerTrayFooter(note: "This page is in the main window now.") { EmptyView() }
         }
     }
@@ -1453,7 +1406,8 @@ private struct MultiplayerPanelContent: View {
                         }
                         MultiplayerWindowLinkRows(shortcuts: MultiplayerWindowShortcut.sharing(
                             on: server.id, directory: status.directoryEntries.count, waiting: waiting,
-                            handoffs: share.handoffs[server.id]?.count ?? 0))
+                            handoffs: share.handoffs[server.id]?.count ?? 0,
+                            reviews: share.live.reviews[server.id]?.count ?? 0))
                     }
                 }
                 let teams = share.teams
@@ -1464,13 +1418,7 @@ private struct MultiplayerPanelContent: View {
                             on: server.id, groups: teams.groups[server.id]?.count ?? 0,
                             workspaces: teams.workspaces[server.id]?.count ?? 0,
                             hosts: teams.myHosts(on: server.id).count + teams.friendHosts(on: server.id).count,
-                            knowledge: teams.knowledge[server.id]?.count ?? 0))
-                        if model.isAdmin(server.id) {
-                            MultiplayerLinkRow(symbol: "slider.horizontal.3", title: "Relay policy",
-                                               caption: "Sharing limits, retention, members and devices") {
-                                share.open(.policy, on: server.id)
-                            }
-                        }
+                            knowledge: teams.knowledge[server.id]?.count ?? 0, isAdmin: model.isAdmin(server.id)))
                     }
                 }
             }

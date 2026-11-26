@@ -494,7 +494,8 @@ final class MultiplayerLiveModel {
 
     var canSendReview: Bool { tray?.isBusy == false && reviewDraft.canSend }
 
-    /// Sends the request on the tray's own composer, which is then replaced by the review it made.
+    /// Sends the request on the tray's own composer, then returns to where the composer was
+    /// opened. The review itself is a window page; Live remote work on the Agents tab opens it.
     @discardableResult
     func sendReview() -> Task<Void, Never>? {
         guard let tray, case .share(let server, .reviewRequest(let resource)) = tray.route else { return nil }
@@ -503,7 +504,8 @@ final class MultiplayerLiveModel {
             self.reviewDraft = MultiplayerReviewDraft()
             self.postDraft = link
             self.confirmingPost = false
-            self.share?.replace(with: .review(request: row.request), on: server)
+            // The review is a window page: the composer closes, and Live remote work opens it there.
+            if self.tray?.route == .share(server, .reviewRequest(resource: resource)) { self.share?.back() }
         })
     }
 

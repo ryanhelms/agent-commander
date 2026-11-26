@@ -13,23 +13,25 @@ import SwiftUI
 //   MultiplayerWindowOpener       sends the request, then closes the panel; both steps are injected
 //   MultiplayerPageOpener         shows a page where it lives: in the tray, or in the window
 //   MultiplayerPanelWindow        the window the panel is drawn in, so the opener can close it
+//   MultiplayerPanelDismissal     SwiftUI's own way to close the menu bar panel, from its scene
 //   MultiplayerOpenInWindowRow    the row at the top of a page: a native button in the tray's skin
 //   MultiplayerWindowLinkRow      the compact row, where a tab's section used to be
 
 // MARK: - Values
 
 extension MultiplayerSharePage {
-    /// True for a page the tray still draws: a quick action, a composer, Take back control, watch
-    /// and review, and Relay policy. Every other page passed its running-window check and is only
-    /// a link now (DESIGN.md, "The triage tray"). The cases stay because the window's own pages
-    /// and the router name their items by them.
+    /// True for a page the tray still draws: a quick action, a composer, Watch, whose zoom to a
+    /// remote tile has not had its running-window check, and Control, a documented deferral:
+    /// its page is the only hand-over form and none is planned for the window. Every other page passed its check and is only a link now (DESIGN.md, "The triage tray"). The cases stay because the window's own
+    /// pages and the router name their items by them.
     var staysInTray: Bool {
         switch self {
-        case .requestAccess, .grant, .consult, .handoff, .watch, .control, .reviewRequest, .review, .workspaceCreate, .policy:
+        case .requestAccess, .grant, .consult, .handoff, .watch, .control, .reviewRequest, .workspaceCreate:
             true
         case .directory, .requests, .approval, .handoffs, .handoffDetail, .thread, .audit, .fanout, .compare,
+             .review,
              .groups, .group, .workspaces, .workspace, .claim, .card, .queueAdd, .hosts, .hostRun,
-             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search:
+             .knowledge, .knowledgeShare, .knowledgeItem, .reputation, .search, .policy:
             false
         }
     }
@@ -118,19 +120,26 @@ struct MultiplayerWindowShortcut: Identifiable, Equatable, Sendable {
     var count = 0
     /// A count that waits on the person is drawn in `attention`.
     var isHot = false
+    /// What the count counts, when the place's name doesn't say: "sent" on Hand-offs.
+    var noun: String? = nil
     let link: MultiplayerWindowLink
 
     var id: String { title }
 
-    /// What VoiceOver calls the row: "Open Hand-offs in Agent Commander, 3".
-    var label: String { count > 0 ? "\(link.label), \(count)" : link.label }
+    /// The count as the row draws it: "3", or "3 sent". Nil when there is nothing to count.
+    var figure: String? { count > 0 ? [String(count), noun].compactMap { $0 }.joined(separator: " ") : nil }
 
-    init?(_ page: MultiplayerSharePage, on server: String? = nil, symbol: String, title: String? = nil, count: Int = 0, isHot: Bool = false) {
+    /// What VoiceOver calls the row: "Open Hand-offs in Agent Commander, 3 sent".
+    var label: String { figure.map { "\(link.label), \($0)" } ?? link.label }
+
+    init?(_ page: MultiplayerSharePage, on server: String? = nil, symbol: String, title: String? = nil, count: Int = 0, isHot: Bool = false,
+          noun: String? = nil) {
         guard let link = MultiplayerWindowLink(page: page, server: server) else { return nil }
         self.symbol = symbol
         self.title = title ?? link.place
         self.count = count
         self.isHot = isHot
+        self.noun = noun
         self.link = link
     }
 }
@@ -155,21 +164,25 @@ extension MultiplayerWindowShortcut {
     }
 
     /// A server's page, under Share and consult. Approvals and access requests are answered on
-    /// the same window page, so they share a row and a count.
-    static func sharing(on server: String, directory: Int, waiting: Int, handoffs: Int) -> [MultiplayerWindowShortcut] {
+    /// the same window page, so they share a row and a count. The window's Hand-offs page lists
+    /// the hand-offs and the reviews you sent, so its row counts both and says "sent".
+    static func sharing(on server: String, directory: Int, waiting: Int, handoffs: Int, reviews: Int = 0) -> [MultiplayerWindowShortcut] {
         [MultiplayerWindowShortcut(.directory, on: server, symbol: "square.grid.2x2", count: directory),
          MultiplayerWindowShortcut(.requests, on: server, symbol: "hand.raised", count: waiting, isHot: true),
-         MultiplayerWindowShortcut(.handoffs, on: server, symbol: "arrow.up.right", count: handoffs),
+         MultiplayerWindowShortcut(.handoffs, on: server, symbol: "arrow.up.right", count: handoffs + reviews, noun: "sent"),
          MultiplayerWindowShortcut(.audit(resource: ""), on: server, symbol: "list.bullet.rectangle")].compactMap { $0 }
     }
 
-    /// A server's page, under Teams. Relay policy is not here: the tray still has that page.
-    static func serverTeams(on server: String, groups: Int, workspaces: Int, hosts: Int, knowledge: Int) -> [MultiplayerWindowShortcut] {
+    /// A server's page, under Teams. An admin also gets Admin: the relay's policy, its members
+    /// and its devices, on this server.
+    static func serverTeams(on server: String, groups: Int, workspaces: Int, hosts: Int, knowledge: Int,
+                            isAdmin: Bool = false) -> [MultiplayerWindowShortcut] {
         [MultiplayerWindowShortcut(.groups, on: server, symbol: "person.3", count: groups),
          MultiplayerWindowShortcut(.workspaces, on: server, symbol: "square.stack.3d.up", count: workspaces),
          MultiplayerWindowShortcut(.hosts, on: server, symbol: "cpu", count: hosts),
          MultiplayerWindowShortcut(.knowledge, on: server, symbol: "books.vertical", count: knowledge),
-         MultiplayerWindowShortcut(.search, on: server, symbol: "magnifyingglass")].compactMap { $0 }
+         MultiplayerWindowShortcut(.search, on: server, symbol: "magnifyingglass"),
+         isAdmin ? MultiplayerWindowShortcut(.policy, on: server, symbol: "slider.horizontal.3") : nil].compactMap { $0 }
     }
 }
 
@@ -212,10 +225,8 @@ struct MultiplayerWindowOpener: Sendable {
         }
     }
 
-    /// A hand-off or a fan-out opens in the window. A review stays in the tray.
-    func show(_ work: MultiplayerRemoteWork) {
-        if work.page.staysInTray { share.live.open(work) } else { show(work.page, on: work.server) }
-    }
+    /// A hand-off, a review or a fan-out opens in the window.
+    func show(_ work: MultiplayerRemoteWork) { show(work.page, on: work.server) }
 }
 
 extension MultiplayerRemoteWork {
@@ -244,13 +255,64 @@ extension EnvironmentValues {
 
 // MARK: - The panel's window
 
+/// SwiftUI's own way to close the menu bar panel. `MenuBarExtra` keeps whether its panel is open
+/// and this SDK gives no binding to that, so the only way to close the panel and have the scene
+/// know is the scene's `dismiss` action. Closing the `NSWindow` directly left the scene believing
+/// the panel was open: the next click on the menu bar item only "closed" it again.
+struct MultiplayerPanelDismissal: Sendable {
+    var dismiss: @MainActor @Sendable () -> Void
+}
+
+private struct MultiplayerPanelDismissalKey: EnvironmentKey {
+    static let defaultValue: MultiplayerPanelDismissal? = nil
+}
+
+extension EnvironmentValues {
+    /// Set for a panel inside the `MenuBarExtra` only. Nil in any other window.
+    var multiplayerPanelDismissal: MultiplayerPanelDismissal? {
+        get { self[MultiplayerPanelDismissalKey.self] }
+        set { self[MultiplayerPanelDismissalKey.self] = newValue }
+    }
+}
+
+private struct MultiplayerMenuBarPanel: ViewModifier {
+    @Environment(\.dismiss) private var dismiss
+
+    func body(content: Content) -> some View {
+        content.environment(\.multiplayerPanelDismissal, MultiplayerPanelDismissal { [dismiss] in dismiss() })
+    }
+}
+
+extension View {
+    /// Marks the content of the `MenuBarExtra`: a link row there closes the panel through the
+    /// scene's own dismissal, so the menu bar item opens it again with one click.
+    func multiplayerMenuBarPanel() -> some View { modifier(MultiplayerMenuBarPanel()) }
+}
+
 /// The window a panel is drawn in: the menu bar panel, or the window a join link opens. The menu
 /// bar panel can't be reached from SwiftUI, so the panel finds its window through a probe view.
 @MainActor final class MultiplayerPanelWindow {
     weak var window: NSWindow?
+    /// How long the scene has to take the panel down before the window is closed directly.
+    var grace: Duration = .milliseconds(400)
 
-    /// Closes the panel's window. Nothing happens before the panel is in one.
-    func close() { window?.close() }
+    /// Closes the panel. In the menu bar it asks the scene to dismiss it and leaves the window
+    /// alone. Any other window is closed directly; nothing happens before the panel is in one.
+    /// If the scene's dismissal leaves the panel on screen, the window is closed after `grace`,
+    /// so a link row always closes its panel. The returned task is that check.
+    @discardableResult
+    func close(through dismissal: MultiplayerPanelDismissal? = nil) -> Task<Void, Never>? {
+        guard let dismissal else {
+            window?.close()
+            return nil
+        }
+        dismissal.dismiss()
+        let grace = grace
+        return Task { @MainActor [weak self] in
+            try? await Task.sleep(for: grace)
+            if let window = self?.window, window.isVisible { window.close() }
+        }
+    }
 }
 
 /// Tells a `MultiplayerPanelWindow` which window its panel is in. Draws nothing.
@@ -343,8 +405,8 @@ struct MultiplayerWindowLinkRow: View {
                         .truncationMode(.middle)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if shortcut.count > 0 {
-                    Text("\(shortcut.count)")
+                if let figure = shortcut.figure {
+                    Text(figure)
                         .font(MultiplayerTheme.heading.monospacedDigit())
                         .foregroundStyle(shortcut.isHot ? MultiplayerTheme.attention : MultiplayerTheme.foreground)
                         .multiplayerTicking(shortcut.count)

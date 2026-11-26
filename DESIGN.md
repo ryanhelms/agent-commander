@@ -355,7 +355,7 @@ The grant sheet is one form drawn in two places. The tray shows it as a page wit
 
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, agent roster, certificate notice, window link bands (a band heading over window link rows) and Remote band.
 
-The tray's own pages are the watch view, the control page, consult, the hand-off composer, request access, the grant sheet, request review, review, New workspace and Relay policy. The directory, access requests, approval, hand-off detail, thread, audit, fan-out composer and compare views are drawn by the main window only ("What the main window reuses").
+The tray's own pages are the watch view, the control page, consult, the hand-off composer, request access, the grant sheet, request review and New workspace. The directory, access requests, approval, hand-off detail, thread, audit, fan-out composer, compare, review and relay policy views are drawn by the main window only ("What the main window reuses").
 
 The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
 
@@ -368,7 +368,7 @@ What stays in the tray:
 - **Quick actions:** Consult, Share (the grant sheet), Request access, Hand off, Request review and New workspace, each a composer page with no row.
 - **Take back control:** the control band and the control page.
 - **Servers and you:** Add server, hosting, a server's page, profile, invite and membership.
-- **Still to pass, page and row:** Watch, Control, Review and Relay policy. Each keeps its page with the open-in-window row above it, until the wall and the window's Admin page pass their checks. Then they become links as the others did.
+- **Still to pass, page and row:** Watch and Control. Each keeps its page with the open-in-window row above it. Watch stays until the wall's zoom to a remote tile passes a check with the service running. Then it becomes a link as the others did. Control is a documented deferral: its page is the only place to hand control to a friend, and no hand-over composer is planned for the window, so the page stays in the tray.
 
 What is now only a link:
 
@@ -385,16 +385,22 @@ What is now only a link:
 | Hosts, run on host | Teams › Team tools › Hosts | — | Agents tab; a server's page |
 | Knowledge library, share knowledge, a knowledge item | Teams › Team tools › Knowledge | — | Agents tab; a server's page |
 | Reputation, directory search | Teams › Team tools › Directory | — | A server's page |
+| Relay policy | Teams › Team tools › Admin | The server's policy | An admin's server page, last in the Teams band |
+| Review | Network › Hand-offs | The review | A review in Live remote work |
 
-The pages still to pass, with their rows: Watch and Control land on Agents › Runs zoomed to the worker, Review on Agents › Runs with the review open, and Relay policy on Teams › Team tools › Admin with the server's policy.
+Watch's and Control's rows land on Agents › Runs zoomed to the worker. A review's request names Agents › Runs; the window's router shows it on Network › Hand-offs, where its findings and Post to PR are.
 
-- **Where a link sits.** A tab's dense section becomes a band of window link rows in the same place, under the section's heading: "Teams" on the Agents tab (Workspaces, Hosts, Knowledge, with New… as the heading's action), "Groups" on the People tab, and "Share and consult" (Directory, Approvals, Hand-offs, Audit, with Share… as the heading's action) and "Teams" on a server's page. Directory and Fan-out sit under Friends’ agents, below a hairline. A tab's row stands for every server and opens the place alone; a row on a server's page names that server. A row shows the count the section showed. Approvals and access requests are answered on one window page, so they share a row and a count.
+- **Control.** The Control verb on one of your agents and a holder row's text in the control band open the tray's control page: who has control, Take back, and the form that hands control to a friend for a while.
+- **After Request review sends.** The composer returns to where it was opened and the notice says what happened. The review shows in Live remote work, which opens it in the window.
+
+- **Where a link sits.** A tab's dense section becomes a band of window link rows in the same place, under the section's heading: "Teams" on the Agents tab (Workspaces, Hosts, Knowledge, with New… as the heading's action), "Groups" on the People tab, and "Share and consult" (Directory, Approvals, Hand-offs, Audit, with Share… as the heading's action) and "Teams" on a server's page (Groups, Workspaces, Hosts, Knowledge, Directory, and Admin for an admin). Directory and Fan-out sit under Friends’ agents, below a hairline. A tab's row stands for every server and opens the place alone; a row on a server's page names that server. A row shows the count the section showed. The Hand-offs row counts what the window's page lists, that server's hand-offs plus its reviews, and says so: "3 sent". Approvals and access requests are answered on one window page, so they share a row and a count.
 - **A verb or a row that leaves.** Where one thing in a kept row opens the window, it carries the leaves-tray mark and says so in its hint.
 - **After a composer sends.** Hand off and New workspace return to where they were opened and say what was made in the notice. The hand-off shows in Live remote work, which opens it in the window.
 - **A route to a removed page.** The route cases remain, because the window's own pages and the router name items by them. If the tray is put on one, it draws the open-in-window row alone, with "This page is in the main window now." in the footer. `MultiplayerSharePage.staysInTray` says which pages the tray draws, and `MultiplayerPageOpener` sends every entry point to the tray page or the window page accordingly.
 - **No tray page maps to Network › Shared.** The server page's "Access you’ve given" and "Shared with you" lists stay as server rows.
 - **Motion.** Under the pointer the row takes the row tint and the arrow leans out a third of `travel` (2 pt up and right) and turns `focus`, at `fast`. Pressed, the arrow goes the full `travel` and fades, at `fast`. With Reduce Motion the arrow stays where it is and only its ink changes. Nothing delays the press: the request is sent at once.
-- **Seams.** The row reads `multiplayerWindowOpener` from the environment (`MultiplayerWindowOpener`: open, then close). The shared router is the default; `MultiplayerPanel` adds the close of its own window. The review stage draws the panel inside the cockpit window and passes `closesOnOpen: false`.
+- **Seams.** The row reads `multiplayerWindowOpener` from the environment (`MultiplayerWindowOpener`: open, then close). The shared router is the default; `MultiplayerPanel` adds the close of its own panel. The review stage draws the panel inside the cockpit window and passes `closesOnOpen: false`.
+- **Closing the menu bar panel.** `MenuBarExtra` keeps whether its panel is open, and the SDK has no binding to it. The scene's content is marked with `multiplayerMenuBarPanel()`, which hands the panel SwiftUI's `dismiss` as a `MultiplayerPanelDismissal`. A link row closes the panel through it and does not call `NSWindow.close()`, so one click on the menu bar item opens the panel again. If the panel is still on screen after 400 ms, its window is closed directly. A panel in any other window closes that window.
 
 The main window adds the mode rail with a context list (the user's choice of sidebar) and the Needs you row.
 
@@ -410,8 +416,8 @@ Increment 4 (merged at `341215d`) adds:
 - **Live remote work rows:** a leading kind glyph (hand-off ↗, fan-out fork, review list) and a right-aligned state in tone, such as "2 of 2 answered" or "2 important, 1 nit".
 
 Increment 5 (teams) adds:
-- **Teams band** (Agents tab), **Groups band** (People tab) and **Teams band** (server page): window link rows since the triage tray; the server page's band keeps a link row to Relay policy for an admin.
-- **Pages** (drawn by the main window and the hosts since the triage tray; the tray keeps New workspace and Relay policy): groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue or pull requests), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
+- **Teams band** (Agents tab), **Groups band** (People tab) and **Teams band** (server page): window link rows since the triage tray; the server page's band ends with a window link row to Admin for an admin.
+- **Pages** (drawn by the main window and the hosts since the triage tray; the tray keeps New workspace): groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue or pull requests), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (the 16-cell meter with `isGood`, endorsement chips), directory search and relay policy.
 - **Second presses:** deleting a group, removing a member, releasing a claim, releasing a card you hold, removing a branch from the merge queue, suspending a member and revoking a device each use the inline confirm. The first button ends in "…" and is disabled while its confirm is open. Leaving the page ends the confirm.
 - **Run on host:** the Extra arguments field shows only for a command whose owner allows them (`capabilities.commands[].allowArgs`). For a command that takes none, a note says so and typed arguments are not sent. A host that doesn't publish its commands keeps the field. The command's environment is named under the picker.
 - **Pull-request workspace:** a "Pull requests" band in place of the merge queue. Its heading carries the open count and a trailing Repository button that opens the repository's pull-request list. Each open pull request is a pull request row, split by hairlines. The device reads them with the person's own `gh` only as the page opens and when its Refresh is pressed. While reading, the band shows the spinner and "Reading the open pull requests…"; with none open, one `sub` sentence; when the read fails, the reason in `failure` with Try again (a missing or signed-out `gh` says what to check). At the device's limit of 50, a `sub` line points to the repository for the rest.
