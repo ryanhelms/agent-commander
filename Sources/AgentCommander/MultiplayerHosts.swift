@@ -583,6 +583,8 @@ struct MultiplayerAddServerHost: View {
     @State private var draft = MultiplayerServerDraft()
     @State private var probe = MultiplayerProbeState.idle
     @State private var refusal: String?
+    /// The host's own join form, apart from the tray's.
+    @State private var tailnetDraft = MultiplayerTailnetDraft()
 
     private var form: MultiplayerServerForm { MultiplayerServerForm(draft: draft, probe: probe, servers: model.servers) }
 
@@ -598,7 +600,16 @@ struct MultiplayerAddServerHost: View {
                                      canProbe: canProbe, invite: form.activeInvite, inviteProblem: form.invitePinProblem,
                                      existing: form.existing,
                                      onProbe: { check() },
-                                     onOpenExisting: { form.existing.map(onOpenExisting) })
+                                     onOpenExisting: { form.existing.map(onOpenExisting) },
+                                     tailnet: model.tailnet, tailnetDraft: $tailnetDraft,
+                                     canChooseRelay: model.client != nil && !model.isBusy,
+                                     onChooseRelay: { relay in
+                                         guard !relay.added else { return }
+                                         draft.address = relay.url
+                                         // A check in flight is for another address; this one replaces it.
+                                         probe = .idle
+                                         check()
+                                     })
         } actions: {
             if let onCancel {
                 Button("Cancel", action: onCancel)

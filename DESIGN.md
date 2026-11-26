@@ -24,6 +24,7 @@ The app has two themes. **Console** is the default and the language in this docu
 
 The tray's components follow the same rule (see "Tray roles" below). Whatever the main window composes from them (a hosted composer, the dock's holder row, the remote worker zoom and group, an inspector's organism) takes the window's theme. The menu bar tray itself sets the console theme at its root (`MultiplayerPanel(model:theme:)`), so it looks the same whichever theme the window uses.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
+| Tailnet band (Add server) | `MultiplayerTailnet.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
 ## 1. Direction
@@ -281,6 +282,8 @@ The descriptions below are the console form. In another theme the same atom take
 | Markdown block | Text an agent or friend wrote in Markdown, in the tray's type: headings, paragraphs, lists, fenced code on a well, and rules, with bold, italic, inline code and links. Nothing is fetched; an image stays as its source text. |
 | Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. The frame clips the system focus ring, so the copy cell draws an inset focus ring. |
 | Inset focus ring | For a control whose frame clips the system focus ring, such as a cell joined to its neighbours: 2 pt of `focus` inside the control's own edge while it has keyboard focus. The control stays a native button. |
+| Relay row | A relay found on the tailnet (`MultiplayerTailnetRelayRow`): a 28 pt mark (`working` while the relay answers), the name in `name`, its MagicDNS name in `mono` and secondary ink, then a state label, Online or Offline. 34 pt high at least. The whole row is one native button that fills the server address and starts the health check; while the address field holds its URL the row is filled `selection` with the 2 pt `focus` leading marker. A relay already in the server list has its name in secondary ink and an "Added" badge with a tick in place of the state label, and is plain text, not a button. VoiceOver reads "build-relay, build-relay.tail.example, online", or "…, already in your list". |
+| Secret field | A field box for a value that is never drawn, such as an auth key (`MultiplayerSecretField`): the system's secure field in mono, marked privacy-sensitive. |
 | Device row | A paired device: a mark, its name, "paired … , ends …" in mono, then Rename and Revoke (`danger`). Rename opens a well under the row with a "Device name" field box holding the name, then Cancel and a primary Save name; Return saves and Escape cancels. Revoke opens an inline confirm. One of the two is open at a time, and the row's verbs hide while it is. |
 
 ### Main-window molecules and organisms (network pages)
@@ -438,6 +441,17 @@ Increment 6 (the Remote web page) adds:
 - **Stopped watch:** when the Mac refuses a watch, the view stops reading, the footer says Stopped, and the load note has a full-width Try again under it. It keeps retrying only while the Mac can't be reached.
 - **Sentences:** a lead-in and a device's reason are joined as two sentences, each with a capital and a closing mark, as in the tray. The alert band holds one sentence; the time of the last good read is in the header's state label.
 - **Motion:** `arrive` (0.18 s, 6 px travel, ease-out) for new rows and trace lines, `tick` for a changing figure, and a drain line that moves linearly each second. With reduced motion these become fades, and pulses, spinners and the drain stop.
+
+The Add server form (tray page and host) starts with:
+- **Tailnet band** (`MultiplayerTailnetBand`), above the server address. A band heading "Tailnet" with the relay count once they are listed, and a state label as its trailing item. Under it, one of:
+  - *Running*: the state label is `on` with the tailnet's name in `working`. Relay rows split by hairlines, ordered online, offline, then added, and one line: "Choose a relay to fill in its address and check it." Choosing a row is the same check as the Check server button; nothing is pinned or saved by the list.
+  - *No relays*: "No relays on this tailnet yet. A relay shows here once its node is tagged tag:relay." and Check again.
+  - *Not installed*: an `off` lamp and "Not installed", one sentence, then "Get Tailscale" (it opens tailscale.com/download in the browser, so it carries the up-right arrow) and Check again.
+  - *Not joined*: an `off` lamp and "Not joined", one sentence, a "Login server" field, segments for "Sign in with browser" and "Use an auth key", a secret field for the key only under that choice, and "Join tailnet". Join is a standard button: the page's one primary action stays Save server. A refused join shows its reason in `failure` above the fields. The key leaves the form when it is sent.
+  - *Waiting for sign-in*: a `waiting` lamp with the words in `attention`, one sentence, the login page as a copy chip labelled "login", and "Open login page" with the up-right arrow. The band reads the status every 2 s until this Mac is on the tailnet, then lists the relays. The reads stop when the form leaves.
+  - *Not checked*: an `error` lamp, the reason in `failure` as two sentences, "You can still type an address below." and Try again.
+- The band is its own region and never disables the address field, the health check or the footer. A form opened from an invite has no Tailnet band, because the invite names its server.
+- The tailnet model (`MultiplayerTailnetModel`) owns the three verbs and the poll. The band takes its phase and emits choose, join and refresh. A host keeps its own join draft; what this Mac's tailnet is, is shared.
 
 ### What the main window reuses
 

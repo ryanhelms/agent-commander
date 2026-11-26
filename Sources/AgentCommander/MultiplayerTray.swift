@@ -347,6 +347,12 @@ struct MultiplayerAddServerForm: View {
     var existing: MultiplayerServerSummary? = nil
     let onProbe: () -> Void
     var onOpenExisting: () -> Void = {}
+    /// The tailnet this Mac is on, when the form offers its relays. Nil for a form with none.
+    var tailnet: MultiplayerTailnetModel? = nil
+    /// The join form's values: the tray's own, or a host's.
+    var tailnetDraft: Binding<MultiplayerTailnetDraft>? = nil
+    var canChooseRelay = false
+    var onChooseRelay: (MultiplayerTailnetRelay) -> Void = { _ in }
     @FocusState private var addressFocused: Bool
 
     var body: some View {
@@ -373,6 +379,17 @@ struct MultiplayerAddServerForm: View {
                     }
                 }
             }
+        }
+        // An invite names its server, so the tailnet's relays are offered only without one.
+        if invite == nil, let tailnet, let tailnetDraft {
+            MultiplayerTailnetBand(phase: tailnet.phase, draft: tailnetDraft, address: draft.address,
+                                   isJoining: tailnet.isJoining, isReading: tailnet.isReading,
+                                   joinFailure: tailnet.joinFailure, canChoose: canChooseRelay,
+                                   onChoose: onChooseRelay,
+                                   onJoin: { tailnet.join(tailnetDraft.wrappedValue) },
+                                   onRefresh: { tailnet.refresh() })
+                .onAppear { tailnet.formAppeared() }
+                .onDisappear { tailnet.formDisappeared() }
         }
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.xs) {
@@ -975,7 +992,10 @@ private struct MultiplayerPanelContent: View {
                                      invite: model.activeInvite, inviteProblem: model.invitePinProblem,
                                      existing: model.existingServer,
                                      onProbe: { model.runProbe() },
-                                     onOpenExisting: { model.existingServer.map { model.openServer($0.id) } })
+                                     onOpenExisting: { model.existingServer.map { model.openServer($0.id) } },
+                                     tailnet: model.tailnet, tailnetDraft: Bindable(model.tailnet).draft,
+                                     canChooseRelay: model.canChooseRelay,
+                                     onChooseRelay: { model.chooseRelay($0) })
         case .hosting:
             MultiplayerHostingGuide()
         case .server:
