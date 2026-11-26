@@ -199,4 +199,55 @@ import Testing
         #expect(shown == [last, first])
         router.detach(reopened)
     }
+
+    // MARK: Landing crumbs
+
+    /// The breadcrumb each moved page lands on, as the window words it.
+    static let landings: [(page: MultiplayerSharePage, crumbs: [String])] = [
+        (.directory, ["Network", "Directory"]), (.requests, ["Network", "Approvals"]), (.approval("ap-1"), ["Network", "Approvals"]),
+        (.handoffs, ["Network", "Hand-offs"]), (.handoffDetail(request: "rq-1"), ["Network", "Hand-offs"]),
+        (.thread(request: "rq-1", title: "Retries"), ["Network", "Threads"]), (.audit(resource: "res-relay"), ["Network", "Audit"]),
+        (.fanout, ["Network", "Fan-out"]), (.compare(request: "fo-1"), ["Network", "Fan-out"]),
+        (.groups, ["Teams", "Team tools", "Groups"]), (.group("g-1"), ["Teams", "Team tools", "Groups"]),
+        (.workspaces, ["Teams", "Workspaces"]), (.workspace(workspace), ["Teams", "Workspaces"]),
+        (.claim(workspace: workspace), ["Teams", "Workspaces"]), (.card(workspace: workspace, card: "card-1"), ["Teams", "Workspaces"]),
+        (.queueAdd(workspace: workspace), ["Teams", "Workspaces"]),
+        (.hosts, ["Teams", "Team tools", "Hosts"]), (.hostRun(resource: "res-host"), ["Teams", "Team tools", "Hosts"]),
+        (.knowledge, ["Teams", "Team tools", "Knowledge"]), (.knowledgeShare, ["Teams", "Team tools", "Knowledge"]),
+        (.knowledgeItem("k-1"), ["Teams", "Team tools", "Knowledge"]),
+        (.reputation(resource: "res-relay"), ["Teams", "Team tools", "Directory"]), (.search, ["Teams", "Team tools", "Directory"]),
+        (.policy, ["Teams", "Team tools", "Admin"]),
+        (.watch(resource: "res-relay"), ["Agents", "Workspace", "Runs"]), (.control(resource: "res-relay"), ["Agents", "Workspace", "Runs"]),
+        // A review is sent to the wall and lands on Hand-offs, so its words are Hand-offs.
+        (.review(request: "rv-1"), ["Network", "Hand-offs"])
+    ]
+
+    @Test func everyMovedPageNamesTheCrumbsItLandsOn() throws {
+        #expect(Self.landings.map(\.page) == Self.moved, "every moved page has its landing crumbs")
+        for (page, crumbs) in Self.landings {
+            let request = try #require(CommanderOpenRequest(page: page, server: Self.server))
+            #expect(request.landingCrumbs == crumbs, "\(page) lands on \(request.landingCrumbs)")
+        }
+    }
+
+    @Test func landingCrumbsAreTheWindowsOwnBreadcrumbWhereTheRouterLands() throws {
+        for page in Self.moved {
+            let request = try #require(CommanderOpenRequest(page: page, server: Self.server))
+            // Where the router opens the request when its item exists, and what the window calls it.
+            let place = request.destination(in: Self.catalog()).place
+            let shown = LiveShell.navigation(runs: [], openRunPath: nil, composing: false, place: place, needsYou: 0, network: Self.network).crumbs
+            // A workspace adds its own name in the window; a label can't know it, so it ends at Workspaces.
+            // The Workspaces list is the first workspace's page while there is one, so it adds a name too.
+            #expect(shown.starts(with: request.landingCrumbs), "\(page) lands on \(shown), and says \(request.landingCrumbs)")
+            let namesAWorkspace = TeamsPlace.workspaceKey(of: place) != nil || place == TeamsPlace.workspaces
+            if !namesAWorkspace { #expect(shown == request.landingCrumbs, "\(page) lands on \(shown)") }
+        }
+    }
+
+    @Test func landingCrumbsNameThePlaceAloneWithoutAServerOrAnItem() {
+        // No server: the item can't be found, so the request opens its place, and says so.
+        #expect(CommanderOpenRequest(place: LiveShell.wall, item: .review(request: "rv-1")).landingCrumbs == ["Agents", "Workspace", "Runs"])
+        #expect(CommanderOpenRequest(place: NetworkPlace.handoffs).landingCrumbs == ["Network", "Hand-offs"])
+        #expect(CommanderOpenRequest(place: LiveShell.people).landingCrumbs == ["People"])
+    }
 }
