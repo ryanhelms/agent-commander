@@ -9,6 +9,8 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
 - Provide a scoped live ACP source subscription with cursor expiration and recovery.
 - Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
+- Start and stop the relay on this Mac from the network tray's Hosting page, see its address and fingerprint, and add it as a server in one step. A Mac that has never hosted asks only for your email before the first start.
+- Add a host menu to the main window's toolbar to start or stop hosting, copy the relay address, and connect to a server.
 - Run the Commander service headless on a Linux server. `agentctl host install` installs it as a systemd user unit, keeps earlier versions and switches back when a new version does not report healthy. `agentctl host doctor` lists what the server still needs.
 - Publish the headless service for Linux amd64 and arm64 with each release, with `install.sh` for a one-line install on the server: `gh release download TAG -R ryanhelms/agent-commander -p install.sh -O - | sh -s -- TAG`.
 - Deploy, upgrade, check, roll back and remove the headless service from a Mac with `agentctl host releases|deploy|status|rollback|remove DESTINATION`. A deploy verifies the checksum and any build attestation, refuses an incompatible API version and rolls back a version that does not become healthy.

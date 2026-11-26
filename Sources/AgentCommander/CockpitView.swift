@@ -358,6 +358,8 @@ struct WorkspaceToolbar: ToolbarContent {
     /// The redesigned shell's readouts, after the service state. Each is its own toolbar item, so
     /// each is its own element for assistive apps: the servers button, then the presence menu.
     var readouts: AnyView? = nil
+    /// The host menu: this Mac's relay, between the servers and presence.
+    var host: AnyView? = nil
     var presence: AnyView? = nil
 
     /// The shell's items sit flat on the toolbar: no shared glass capsule behind them. The console
@@ -419,6 +421,10 @@ struct WorkspaceToolbar: ToolbarContent {
         .sharedBackgroundVisibility(capsule)
         if let readouts {
             ToolbarItem(placement: .primaryAction) { readouts }
+                .sharedBackgroundVisibility(capsule)
+        }
+        if let host {
+            ToolbarItem(placement: .primaryAction) { host }
                 .sharedBackgroundVisibility(capsule)
         }
         if let presence {
@@ -581,6 +587,8 @@ struct CockpitScreen: View {
                                      title: AnyView(ShellToolbarTitle(crumbs: shellCrumbs(shellNavigation))
                                         .environment(\.theme, theme)),
                                      readouts: AnyView(shellReadouts(shell, part: .servers).environment(\.theme, theme)),
+                                     host: shell.network.host == nil ? nil
+                                         : AnyView(shellReadouts(shell, part: .host).environment(\.theme, theme)),
                                      presence: AnyView(shellReadouts(shell, part: .presence).environment(\.theme, theme)))
                 }
             } else {
@@ -647,7 +655,9 @@ struct CockpitScreen: View {
     private func shellReadouts(_ shell: ShellContext, part: ShellToolbarReadouts.Part = .both) -> some View {
         ShellToolbarReadouts(part: part, servers: shell.network.health, profile: shell.network.profile,
                              openServers: { show(place: LiveShell.servers) },
-                             pickPresence: { shell.actions.setPresence($0) })
+                             pickPresence: { shell.actions.setPresence($0) },
+                             host: shell.network.host, hostIsSaved: shell.network.hostIsSaved,
+                             hosting: shell.actions.hosting)
     }
 
     private func shellFrame(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
@@ -1807,7 +1817,24 @@ struct CockpitView: View {
                                                  resourceID: pending.item.resource, actions: Set(pending.item.actions)) else { return false }
                 ui.networkPages.selection.grant = pending.server
                 return true
-            })
+            },
+            // The host menu acts on the shared model, and opens the network panel's own pages in
+            // its window, so the window and the tray show one hosting state.
+            hosting: ShellHostingActions(
+                start: { network.host.start() },
+                stop: { network.host.stop() },
+                addHosted: {
+                    network.addHostedServer()
+                    MultiplayerLinkWindow.show(network)
+                },
+                addServer: {
+                    network.startAddServer()
+                    MultiplayerLinkWindow.show(network)
+                },
+                openHosting: {
+                    network.go(.hosting)
+                    MultiplayerLinkWindow.show(network)
+                }))
     }
 
     private var actions: CockpitActions {

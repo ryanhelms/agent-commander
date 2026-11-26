@@ -9,3 +9,5 @@ var errNoServiceManager = errors.New("host install supports launchd on macOS and
 func Install(string) error { return errNoServiceManager }
 
 func Uninstall() error { return errNoServiceManager }
+
+func serviceInstalled() (bool, error) { return false, nil }

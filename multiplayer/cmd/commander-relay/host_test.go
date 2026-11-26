@@ -142,3 +142,32 @@ func TestHostModeIntegration(t *testing.T) {
 		}
 	}
 }
+
+func TestHostJSONReportsStateAndFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "relay")
+	var out bytes.Buffer
+	if err := hostJSON(&out, dir, "status", nil); err != nil {
+		t.Fatal(err)
+	}
+	var result hostResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Host == nil || result.Host.State != "unconfigured" {
+		t.Fatalf("status of an unconfigured host: %s", out.String())
+	}
+
+	out.Reset()
+	err := hostJSON(&out, dir, "install", nil)
+	if !errors.Is(err, errReported) {
+		t.Fatalf("install without host.json: %v", err)
+	}
+	result = hostResult{}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || result.Host != nil || result.Error == "" {
+		t.Fatalf("failed install: %s", out.String())
+	}
+}

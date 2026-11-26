@@ -99,3 +99,6 @@ func Install(dir string) error {
 func Uninstall() error {
 	return systemd.Uninstall(UnitName, os.Geteuid() == 0)
 }
+
+// serviceInstalled reports false: status reads the relay lock, which a systemd start takes at once.
+func serviceInstalled() (bool, error) { return false, nil }

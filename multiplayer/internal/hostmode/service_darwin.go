@@ -138,3 +138,16 @@ func Uninstall() error {
 	}
 	return err
 }
+
+// serviceInstalled is true when the launch agent is in ~/Library/LaunchAgents.
+func serviceInstalled() (bool, error) {
+	plist, err := launchAgentPath()
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(plist)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}

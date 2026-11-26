@@ -32,7 +32,16 @@ Apply Brad Frost’s Atomic Design strictly to each implemented view. Start with
 
 When changing a screen, identify its actual Swift components and compare the rendered state with the matching [original screenshot](design/concepts/index.html). Record any visible differences that matter. Use the approved coordinator wall and PiP as the starting point for the local build.
 
-## Design
+### Restart when ready to test
+
+When new or changed functionality is ready for the user to test, rebuild and restart the app without asking. Do it on this Mac, through a Remote Control session when you work from the cloud.
+
+1. Build the branch under test: `make app` in its worktree, with the developer's `CODE_SIGN_IDENTITY`.
+2. Quit the running app: `osascript -e 'quit app id "local.agentcommander.cockpit"'`. Wait until it has exited.
+3. Open the new build: `open "dist/Agent Commander.app"` from that worktree.
+4. If the change touches the relay (`multiplayer/`, `commander-relay`) and the relay runs under launchd, restart it too: `launchctl kickstart -k gui/$(id -u)/local.agentcommander.relay`. Then check `commander-relay host status`.
+5. Tell the user what you restarted and from which branch. If a build, quit or restart fails, say which step failed and include its error output. Leave the previous app running when the build fails.
+
 
 [DESIGN.md](DESIGN.md) is the visual source of truth for every surface: the main window, zoom, PiP and the network tray. Read it before any design or interface task, including new views, restyles, components, tokens, motion, mockups and UI defect fixes.
 

@@ -5,7 +5,8 @@ import SwiftUI
 // (design/mockups/commander-network-tray.html, states a to e; the social organisms are in
 // MultiplayerSocialViews.swift).
 // Organisms take values and emit actions. `MultiplayerPanel` is the page: it reads the one live
-// MultiplayerModel and routes between home, add server, a server's page and the hosting note.
+// MultiplayerModel and routes between home, add server, a server's page and hosting (whose page
+// and actions are in MultiplayerHosting.swift).
 
 // MARK: - Organisms
 
@@ -733,57 +734,6 @@ struct MultiplayerCertificateReview: View {
     }
 }
 
-/// Hosting in increment 1: guidance only. The relay is started from Terminal; the tray has no
-/// hosting controls yet.
-struct MultiplayerHostingGuide: View {
-    static let command = "commander-relay host install"
-
-    var body: some View {
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: Space.s) {
-                Text("Run a relay on this Mac")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(MultiplayerTheme.foreground)
-                    .accessibilityAddTraits(.isHeader)
-                Text("One relay process runs under launchd with its own bundled PostgreSQL and embedded NATS. Nothing else to install, and no Docker.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        MultiplayerBand {
-            VStack(alignment: .leading, spacing: Space.s) {
-                step(1, "Start the relay from Terminal. It keeps running after you log in again.")
-                MultiplayerWell {
-                    Text(Self.command)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(MultiplayerTheme.foreground)
-                        .textSelection(.enabled)
-                }
-                .padding(.leading, 24)
-                step(2, "Add this Mac’s address here with Add server. The relay made its own certificate, so you confirm its fingerprint once.")
-                step(3, "Give friends the same address. They pin the certificate when they add the server.")
-                Text("To stop hosting, run commander-relay host uninstall.")
-                    .font(MultiplayerTheme.sub)
-                    .foregroundStyle(.inkSecondary)
-                    .padding(.leading, 24)
-                    .textSelection(.enabled)
-            }
-        }
-    }
-
-    private func step(_ number: Int, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: Space.s) {
-            MultiplayerStepMark(number: number, passed: nil)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundStyle(MultiplayerTheme.foreground)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
 // MARK: - Page
 
 /// The network tray: the menu bar window, and the cockpit window under AGENT_COMMANDER_NETWORK_PANEL=1.
@@ -997,7 +947,9 @@ private struct MultiplayerPanelContent: View {
                                      canChooseRelay: model.canChooseRelay,
                                      onChooseRelay: { model.chooseRelay($0) })
         case .hosting:
-            MultiplayerHostingGuide()
+            MultiplayerHostingPage(host: model.host.summary, setup: Bindable(model.host).setupDraft,
+                                   savedServer: model.hostedServer?.displayName,
+                                   onDismissFailure: { model.host.dismissFailure() })
         case .server:
             if let server = routedServer { serverPage(server) }
         case .profile(let id):
@@ -1343,7 +1295,8 @@ private struct MultiplayerPanelContent: View {
                               onRetry: { remote.refresh() })
         MultiplayerBand {
             MultiplayerLinkRow(symbol: "server.rack", title: "Hosting on this Mac",
-                               caption: "How to run a relay here, with no Docker") { model.go(.hosting) }
+                               caption: model.host.summary.phase == .running ? "Relay running on this Mac"
+                                   : "Start or stop a relay here, with no Docker") { model.go(.hosting) }
         }
     }
 
@@ -1485,9 +1438,11 @@ private struct MultiplayerPanelContent: View {
                 }
             }
         case .hosting:
-            MultiplayerTrayFooter(note: "Guidance only. The tray has no hosting controls yet.") {
-                Button("Add server") { model.startAddServer() }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+            MultiplayerTrayFooter(note: model.hostingNote) {
+                MultiplayerHostingActions(host: model.host.summary, isSaved: model.hostedServer != nil,
+                                          canSetUp: model.host.canSetUp,
+                                          onStart: { model.host.start() }, onStop: { model.host.stop() },
+                                          onCheck: { model.host.refresh() }, onAddServer: { model.addHostedServer() })
             }
         case .server:
             if let server = routedServer {

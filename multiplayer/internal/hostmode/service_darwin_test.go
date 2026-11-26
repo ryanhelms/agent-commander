@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"encoding/xml"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +80,53 @@ esac
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("expected uninstall to remove %s, stat error %v", path, err)
 		}
+	}
+}
+
+func TestInspectReportsEachState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	empty := filepath.Join(t.TempDir(), "relay")
+	report, err := Inspect(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "unconfigured" || report.Installed || report.URL != "" {
+		t.Fatalf("unconfigured host: %+v", report)
+	}
+
+	dir, cfg := serviceFixture(t)
+	if report, err = Inspect(dir); err != nil || report.State != "stopped" || report.Pin != "" || report.Name != "studio" {
+		t.Fatalf("stopped host: %+v, %v", report, err)
+	}
+	plist := filepath.Join(home, "Library", "LaunchAgents", "local.agentcommander.relay.plist")
+	if err := os.MkdirAll(filepath.Dir(plist), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plist, []byte("<plist/>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if report, err = Inspect(dir); err != nil || report.State != "starting" || !report.Installed {
+		t.Fatalf("installed host before its lock: %+v, %v", report, err)
+	}
+	// The plain status keeps its two states while launchd brings the relay up.
+	var out strings.Builder
+	if err := Status(dir, &out); err != nil || !strings.Contains(out.String(), "State: stopped") {
+		t.Fatalf("plain status while starting: %q, %v", out.String(), err)
+	}
+	if _, err := EnsureTLS(dir, cfg.Hostnames); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := LockHost(dir, &net.TCPAddr{IP: net.IPv6unspecified, Port: 8443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lock.Close() })
+	report, err = Inspect(dir)
+	if err != nil || report.State != "running" || report.URL != "https://studio.test:8443" || !strings.HasPrefix(report.Pin, "sha256/") {
+		t.Fatalf("running host: %+v, %v", report, err)
+	}
+	if report.Log != filepath.Join(dir, "logs", "relay.err.log") {
+		t.Fatalf("log path: %q", report.Log)
 	}
 }
