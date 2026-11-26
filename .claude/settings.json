@@ -2,5 +2,16 @@
   "model": "opus",
   "env": {
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
+  },
+  "extraKnownMarketplaces": {
+    "nscale": {
+      "source": {
+        "source": "github",
+        "repo": "ryanhelms/agentflow"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "agentflow@nscale": true
   }
 }
