@@ -46,7 +46,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, edge string, auth Authenticate
 		return nil, errors.New("control requires a pool, an edge ID and device authentication")
 	}
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, socialSchema+schema)
+		_, err := tx.Exec(ctx, socialSchema+schema+groupsSchema+workspacesSchema+sharingSchema)
 		return err
 	})
 	if err != nil {
@@ -101,6 +101,12 @@ func forbidden() error          { return &fault{403, "access denied"} }
 func missing() error            { return &fault{404, "not found"} }
 func conflict(msg string) error { return &fault{409, msg} }
 func problem(w http.ResponseWriter, err error) {
+	var c *claimConflict
+	if errors.As(err, &c) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": c.Error(), "holder": c.Holder})
+		return
+	}
 	var f *fault
 	var pg *pgconn.PgError
 	switch {
@@ -127,10 +133,13 @@ func (s *Service) Handler() http.Handler {
 		"PUT /v1/resources/{id}": s.putResource, "GET /v1/resources": s.resources, "GET /v1/grants": s.grants, "PUT /v1/grants/{resource}/{handle}": s.changeGrant, "DELETE /v1/grants/{resource}/{handle}": s.changeGrant,
 		"POST /v1/access-requests": s.requestAccess, "GET /v1/access-requests": s.accessRequests, "DELETE /v1/access-requests/{id}": s.deleteAccessRequest,
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
-		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
+		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership, "PUT /v1/admin/policy": s.setPolicy,
 		"POST /v1/invites":     s.createInvite,
 		"POST /v1/submissions": s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
 	}
+	s.groupRoutes(routes)
+	s.workspaceRoutes(routes)
+	s.sharingRoutes(routes)
 	for pattern, op := range routes {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
@@ -221,7 +230,18 @@ func (s *Service) CanLookup(ctx context.Context, viewer, owner string) (bool, er
 	}
 	a, b := ownerPair(viewer, owner)
 	var ok bool
-	err := s.pool.QueryRow(ctx, "SELECT EXISTS(SELECT FROM mp_friends WHERE a=$1 AND b=$2 AND accepted)", a, b).Scan(&ok)
+	// Either party needs the other's public key to use a grant. A final
+	// debit may exhaust it before the requester reads the sealed receipt.
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM mp_friends WHERE a=$1 AND b=$2 AND accepted)
+		OR EXISTS(SELECT FROM mp_selected_grant_actions g JOIN mp_resources r ON r.id=g.resource
+			WHERE ((g.grantee=$1 AND r.owner_id=$2) OR (g.grantee=$2 AND r.owner_id=$1))
+			AND g.source<>'' AND g.action=ANY(r.actions) AND g.expires_at>now() AND g.used<g.max_uses)
+		OR EXISTS(SELECT FROM mp_children c
+			JOIN mp_group_members sender ON sender.group_id=c.grant_source AND sender.user_id=c.sender
+			JOIN mp_group_members owner ON owner.group_id=c.grant_source AND owner.user_id=c.owner_id
+			WHERE ((c.sender=$1 AND c.owner_id=$2) OR (c.sender=$2 AND c.owner_id=$1))
+			AND c.grant_source<>'' AND c.expires_at>now()
+			AND c.status IN ('processing','completed','declined','uncertain'))`, a, b).Scan(&ok)
 	return ok, err
 }
 func (s *Service) WakeDevice(device string) {

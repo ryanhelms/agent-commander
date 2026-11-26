@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/devicekeys"
 	"agentcommander.network/pilot/internal/hostmode"
 	"agentcommander.network/pilot/internal/identity"
@@ -81,7 +81,9 @@ func TestRelayInfo(t *testing.T) {
 			// A 204 means the request reached the existing protected router.
 			server := relayServer(cert, cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
-			}), func(context.Context) (string, error) { return membership.Load().(string), nil })
+			}), func(context.Context) (control.PublicSettings, error) {
+				return control.PublicSettings{Membership: membership.Load().(string), AdminContact: "owner@example.test", Policy: control.Policy{RetentionDays: 30}}, nil
+			})
 			ln := newPipeListener()
 			ts := &httptest.Server{Listener: ln, Config: server, TLS: server.TLSConfig}
 			ts.StartTLS()
@@ -135,12 +137,16 @@ func checkInfo(t *testing.T, client *http.Client, origin, mode, name, issuer, id
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	var info map[string]string
+	var info struct {
+		Version, Mode, Name, Issuer, ClientID string
+		control.PublicSettings
+	}
 	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"version": "1", "mode": mode, "name": name, "issuer": issuer, "clientId": id, "membership": membership}
-	if res.StatusCode != http.StatusOK || !reflect.DeepEqual(info, want) {
-		t.Fatalf("GET /v1/info returned HTTP %d %v, want 200 %v", res.StatusCode, info, want)
+	if res.StatusCode != http.StatusOK || info.Version != "1" || info.Mode != mode || info.Name != name ||
+		info.Issuer != issuer || info.ClientID != id || info.Membership != membership ||
+		info.AdminContact != "owner@example.test" || info.Policy.RetentionDays != 30 {
+		t.Fatalf("GET /v1/info returned HTTP %d %+v", res.StatusCode, info)
 	}
 }

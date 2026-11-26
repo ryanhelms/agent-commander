@@ -156,10 +156,15 @@ func (s *Service) friendChange(ctx context.Context, p Principal, r *http.Request
 			}
 			return recordEvent(ctx, tx, peer, "friend.accepted", p.User, "")
 		default:
-			if _, err := tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE status='pending' AND ((sender=$1 AND owner_id=$2) OR (sender=$2 AND owner_id=$1))`, a, b); err != nil {
+			if err := removeFriendFromGroups(ctx, tx, p.User, peer); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `DELETE FROM mp_grants g USING mp_resources r WHERE g.resource=r.id AND ((g.grantee=$1 AND r.owner_id=$2) OR(g.grantee=$2 AND r.owner_id=$1))`, a, b); err != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM mp_grants g USING mp_resources r WHERE g.resource=r.id AND g.source=''
+				AND ((g.grantee=$1 AND r.owner_id=$2) OR (g.grantee=$2 AND r.owner_id=$1))`, a, b); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE mp_children c SET status='revoked' WHERE status='pending'
+				AND ((sender=$1 AND owner_id=$2) OR (sender=$2 AND owner_id=$1)) AND NOT `+activeChildGrant, a, b); err != nil {
 				return err
 			}
 			tag, err := tx.Exec(ctx, "DELETE FROM mp_friends WHERE a=$1 AND b=$2", a, b)
@@ -189,6 +194,8 @@ type Resource struct {
 	Handle       string        `json:"handle"`
 	Actions      []string      `json:"actions"`
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	Listed       bool          `json:"listed"`
+	Endorsements []Endorsement `json:"endorsements"`
 }
 
 // In the friends' directory, Actions lists everything the owner offers on the resource.
@@ -203,12 +210,13 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 		Name         string        `json:"name"`
 		Actions      []string      `json:"actions"`
 		Capabilities *Capabilities `json:"capabilities"`
+		Listed       *bool         `json:"listed"`
 	}
 	if err := body(r, &in); err != nil {
 		return nil, err
 	}
 	id := r.PathValue("id")
-	if !identifier.MatchString(id) || !validActions(in.Actions) || (in.Kind != "agent" && in.Kind != "repo") || strings.TrimSpace(in.Name) == "" || len(in.Name) > 128 {
+	if !identifier.MatchString(id) || !validActions(in.Actions) || (in.Kind != "agent" && in.Kind != "repo" && in.Kind != "host") || strings.TrimSpace(in.Name) == "" || len(in.Name) > 128 {
 		return nil, bad("provide resource id, kind, name and unique actions")
 	}
 	if c := in.Capabilities; c != nil {
@@ -224,9 +232,9 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions,capabilities) VALUES($1,$2,$3,$4,$5,$6,$7)
-		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,actions=EXCLUDED.actions,capabilities=EXCLUDED.capabilities
-		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind`, id, p.User, p.Device, in.Kind, in.Name, in.Actions, in.Capabilities)
+		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions,capabilities,listed) VALUES($1,$2,$3,$4,$5,$6,$7,coalesce($8,false))
+		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,actions=EXCLUDED.actions,capabilities=EXCLUDED.capabilities,listed=coalesce($8,mp_resources.listed)
+		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind`, id, p.User, p.Device, in.Kind, in.Name, in.Actions, in.Capabilities, in.Listed)
 		if err != nil {
 			return err
 		}
@@ -238,8 +246,11 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 		if err != nil {
 			return err
 		}
+		if _, err = tx.Exec(ctx, `UPDATE mp_group_grants SET actions=ARRAY(SELECT unnest(actions) INTERSECT SELECT unnest($2::text[])) WHERE resource=$1`, id, in.Actions); err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, `DELETE FROM mp_grant_limits l USING mp_grants g
-            WHERE (l.resource,l.grantee)=(g.resource,g.grantee) AND g.per_action AND g.resource=$1 AND NOT(l.action=ANY($2))`, id, in.Actions); err != nil {
+            WHERE (l.resource,l.grantee,l.source)=(g.resource,g.grantee,g.source) AND g.per_action AND g.resource=$1 AND NOT(l.action=ANY($2))`, id, in.Actions); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE resource=$1 AND status='pending' AND NOT(action=ANY($2))`, id, in.Actions)
@@ -253,12 +264,12 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 }
 func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	rows, err := s.pool.Query(ctx, `SELECT r.id,r.owner_id,r.device,r.kind,r.name,coalesce(p.handle,''),
-	r.actions,r.capabilities,coalesce(access.actions,'{}') FROM mp_resources r
+	r.actions,r.capabilities,r.listed,`+resourceEndorsements+`,coalesce(access.actions,'{}'),coalesce(f.accepted,false) FROM mp_resources r
     JOIN mp_profiles p ON p.user_id=r.owner_id
+    LEFT JOIN mp_friends f ON f.a=least($1,r.owner_id) AND f.b=greatest($1,r.owner_id)
     LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_effective_actions
         WHERE resource=r.id AND grantee=$1 AND action=ANY(r.actions) AND expires_at>now() AND used<max_uses) access ON true
-    WHERE r.owner_id=$1 OR (cardinality(r.actions)>0 AND EXISTS
-    (SELECT FROM mp_friends WHERE a=least($1,r.owner_id) AND b=greatest($1,r.owner_id) AND accepted))
+    WHERE r.owner_id=$1 OR (cardinality(r.actions)>0 AND f.accepted) OR cardinality(access.actions)>0
     ORDER BY p.handle,r.id`, p.User)
 	if err != nil {
 		return nil, err
@@ -268,11 +279,14 @@ func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (
 	directory := []DirectoryResource{}
 	for rows.Next() {
 		var v DirectoryResource
-		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions, &v.Capabilities, &v.GrantedActions); err != nil {
+		var friend bool
+		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions, &v.Capabilities, &v.Listed, &v.Endorsements, &v.GrantedActions, &friend); err != nil {
 			return nil, err
 		}
 		if v.Owner != p.User {
-			directory = append(directory, v)
+			if friend {
+				directory = append(directory, v)
+			}
 			if len(v.GrantedActions) == 0 {
 				continue
 			}

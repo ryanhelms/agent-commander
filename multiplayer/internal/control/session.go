@@ -37,6 +37,15 @@ func (s *Service) openLease(ctx context.Context, p Principal, _ *http.Request) (
 		if err != nil {
 			return err
 		}
+		// The device can open many later sessions. Freeze the old generation's
+		// end on its remaining claims while last_seen still identifies it.
+		if v.Generation > 1 {
+			_, err := tx.Exec(ctx, `UPDATE mp_workspace_claims c SET lease_ended_at=l.last_seen
+				FROM mp_leases l WHERE l.device=$1 AND c.device=l.device AND c.generation=l.generation-1`, p.Device)
+			if err != nil {
+				return err
+			}
+		}
 		// An irreversible operation may already have run on the displaced connection.
 		_, err = tx.Exec(ctx, `UPDATE mp_children SET status='uncertain' WHERE device=$1 AND owner_id=$2 AND status='processing'`, p.Device, p.User)
 		return err

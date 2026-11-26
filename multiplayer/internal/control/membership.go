@@ -181,3 +181,21 @@ func (s *Service) createInvite(ctx context.Context, p Principal, r *http.Request
 	})
 	return v, err
 }
+
+// IsAdmin holds the policy revision while identity applies a moderation action.
+func IsAdmin(ctx context.Context, tx pgx.Tx, p Principal) (bool, error) {
+	var admin bool
+	err := tx.QueryRow(ctx, "SELECT $1=ANY(admin_hashes) FROM mp_membership_policy FOR SHARE", p.EmailHash).Scan(&admin)
+	return admin, err
+}
+
+// SuspendMemberWork fences every current device and settles pending deliveries
+// in both directions. Published capabilities can be used again after sign-in.
+func SuspendMemberWork(ctx context.Context, tx pgx.Tx, user string) error {
+	if _, err := tx.Exec(ctx, retireLease+" WHERE owner_id=$1", user); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE mp_children SET status=CASE WHEN status='processing' THEN 'uncertain' ELSE 'revoked' END
+		WHERE (status='pending' AND (sender=$1 OR owner_id=$1)) OR (status='processing' AND owner_id=$1)`, user)
+	return err
+}
