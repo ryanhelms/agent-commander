@@ -92,6 +92,7 @@ type Manager struct {
 	agents      map[string]*Agent
 	problems    map[string]string
 	certChanged map[string]bool
+	rs          *remoteServer
 }
 
 func (m *Manager) listPath() string { return filepath.Join(m.cfg.Dir, "servers.json") }
@@ -625,6 +626,17 @@ func (m *Manager) Handler() http.Handler {
 		}
 		verb := r.PathValue("verb")
 		switch verb {
+		case "remote-enable", "remote-disable", "remote-devices", "remote-revoke":
+			var in remoteInput
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.DisallowUnknownFields()
+			if e = d.Decode(&in); e != nil {
+				reply(w, nil, errors.New("invalid request"))
+				return
+			}
+			res, e := m.remoteVerb(r.Context(), verb, in)
+			reply(w, res, e)
+			return
 		case "contacts", "activity", "activity-seen", "join":
 			var in struct {
 				Cursor string `json:"cursor"`
