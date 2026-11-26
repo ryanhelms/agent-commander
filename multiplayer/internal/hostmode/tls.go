@@ -119,6 +119,25 @@ func CAPin(dir string) (string, error) {
 	return "sha256/" + base64.StdEncoding.EncodeToString(digest[:]), nil
 }
 
+// ServerPin is the SPKI pin of the server certificate. Agent Commander shows
+// this value when a person adds the relay, and the leaf key survives renewal.
+func ServerPin(dir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "tls", "server.pem"))
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("invalid host server certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	return "sha256/" + base64.StdEncoding.EncodeToString(digest[:]), nil
+}
+
 // EnsureTLS preserves the CA and leaf keys across restarts, including SAN changes.
 func EnsureTLS(dir string, names []string) (tls.Certificate, error) {
 	tlsDir := filepath.Join(dir, "tls")

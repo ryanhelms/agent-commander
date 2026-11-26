@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -26,12 +27,24 @@ type Config struct {
 	Admins        []string `json:"admins"`
 }
 
+// DefaultDir is the host state directory: Application Support on macOS,
+// /var/lib for root on Linux and the XDG data directory otherwise.
 func DefaultDir() (string, error) {
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		return "/var/lib/agent-commander/relay", nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "Application Support", "Agent Commander", "relay"), nil
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Agent Commander", "relay"), nil
+	}
+	data := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(data) {
+		data = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(data, "agent-commander", "relay"), nil
 }
 
 var dnsLabel = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
