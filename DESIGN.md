@@ -388,7 +388,7 @@ What is now only a link:
 | Relay policy | Teams › Team tools › Admin | The server's policy | An admin's server page, last in the Teams band |
 | Review | Network › Hand-offs | The review | A review in Live remote work |
 
-Watch's and Control's rows land on Agents › Runs zoomed to the worker. A review's request names Agents › Runs; the window's router shows it on Network › Hand-offs, where its findings and Post to PR are. The tray still writes these words itself, so a review's row reads "Agents › Runs" and the wall's crumb is shortened; both are corrected when the tray reads `CommanderOpenRequest.landingCrumbs` ([request 6](design/demos/main-window-6/TRAY-REQUESTS.md)).
+Watch's and Control's rows land on Agents › Workspace › Runs zoomed to the worker. A review's request names the wall; the window's router shows it on Network › Hand-offs, where its findings and Post to PR are, and the review's row reads "Network › Hand-offs". Every row takes its place words from `CommanderOpenRequest.landingCrumbs` and the tray keeps no table of places ([request 6](design/demos/main-window-6/TRAY-REQUESTS.md)). The tray writes only the item words: "this review", "this worker".
 
 - **Control.** The Control verb on one of your agents and a holder row's text in the control band open the tray's control page: who has control, Take back, and the form that hands control to a friend for a while.
 - **After Request review sends.** The composer returns to where it was opened and the notice says what happened. The review shows in Live remote work, which opens it in the window.

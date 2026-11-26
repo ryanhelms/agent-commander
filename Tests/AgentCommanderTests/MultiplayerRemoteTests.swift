@@ -354,7 +354,7 @@ import Testing
                 let lines = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).contains("Message: ") }
                 #expect(!lines.isEmpty, "\(dump)")
             case "review":
-                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Runs in Agent Commander" }, "\(dump)")
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Hand-offs in Agent Commander" }, "\(dump)")
                 #expect(!nodes.contains { ($0.label + $0.value).hasPrefix("Important, ") || $0.label == "Post to PR…" }, "\(dump)")
             case "network":
                 #expect(nodes.contains { $0.label == "Remote" }, "\(dump)")
