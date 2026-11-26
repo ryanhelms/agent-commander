@@ -84,7 +84,7 @@ func TestServerListLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	json.Unmarshal(data, &b)
-	if a.State != "signedOut" || a.Name != "alpha.example.test" || b.Name != "Beta" || b.URL != "https://beta.example.test:9443" {
+	if a.State != "signedOut" || a.Name != "alpha" || b.Name != "Beta" || b.URL != "https://beta.example.test:9443" {
 		t.Fatalf("unexpected summaries %+v %+v", a, b)
 	}
 	if _, e = call(t, h, "server-add", map[string]any{"url": "https://alpha.example.test"}); e == "" {

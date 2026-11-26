@@ -163,7 +163,12 @@ func hostOf(u string) string {
 	if e != nil {
 		return u
 	}
-	return p.Hostname()
+	h := p.Hostname()
+	if net.ParseIP(h) != nil {
+		return h
+	}
+	first, _, _ := strings.Cut(h, ".")
+	return first
 }
 
 // NormalizeRelay turns "host", "host:port" or an https URL into an https origin.
@@ -309,7 +314,7 @@ type ProbeStep struct {
 	Detail           string `json:"detail"`
 	Pin              string `json:"pin,omitempty"`
 	Fingerprint      string `json:"fingerprint,omitempty"`
-	SystemTrusted    bool   `json:"systemTrusted,omitempty"`
+	SystemTrusted    bool   `json:"systemTrusted"`
 	ClientID         string `json:"clientId,omitempty"`
 	ClientConfigured bool   `json:"clientConfigured,omitempty"`
 }
@@ -318,6 +323,8 @@ type ProbeStep struct {
 type Probe struct {
 	URL   string      `json:"url"`
 	Steps []ProbeStep `json:"steps"`
+	// Existing is the id of a saved server with the same URL.
+	Existing string `json:"existing,omitempty"`
 }
 
 // RelayInfo is the unauthenticated relay description at /v1/info.
@@ -346,6 +353,11 @@ func (m *Manager) ProbeServer(ctx context.Context, raw string) (Probe, error) {
 		return Probe{}, e
 	}
 	p := Probe{URL: u}
+	m.mu.Lock()
+	if i := slices.IndexFunc(m.servers, func(s Server) bool { return s.URL == u }); i >= 0 {
+		p.Existing = m.servers[i].ID
+	}
+	m.mu.Unlock()
 	parsed, _ := url.Parse(u)
 	host, port := parsed.Hostname(), parsed.Port()
 	if port == "" {
@@ -554,7 +566,9 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 }
 
 // agentFor picks the server a request names, or the only server.
-func (m *Manager) agentFor(id string) (*Agent, error) {
+func (m *Manager) agentFor(id string) (*Agent, error) { return m.agentUse(id, true) }
+
+func (m *Manager) agentUse(id string, bump bool) (*Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if id == "" {
@@ -577,7 +591,10 @@ func (m *Manager) agentFor(id string) (*Agent, error) {
 		}
 		return nil, errors.New("this server is not connected; turn on auto-connect")
 	}
-	m.servers[i].LastUsedAt = time.Now().UTC()
+	if bump {
+		m.servers[i].LastUsedAt = time.Now().UTC()
+		_ = m.persist()
+	}
 	return a, nil
 }
 
@@ -594,6 +611,8 @@ func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 	}
 	return nil, errors.New("sign in to a server first")
 }
+
+var readOnlyVerbs = map[string]bool{"status": true, "avatar": true, "approvals": true, "audit": true, "me": true, "membership": true}
 
 // Handler serves the tray and coordinator APIs for every server.
 func (m *Manager) Handler() http.Handler {
@@ -648,7 +667,7 @@ func (m *Manager) Handler() http.Handler {
 			Server string `json:"server"`
 		}
 		_ = json.Unmarshal(raw, &target)
-		a, e := m.agentFor(target.Server)
+		a, e := m.agentUse(target.Server, !readOnlyVerbs[verb])
 		if e != nil {
 			reply(w, nil, e)
 			return

@@ -1,0 +1,1 @@
+{"data":{"url":"https://team-relay.invalid","steps":[{"step":"dns","ok":false,"detail":"team-relay.invalid does not resolve: lookup team-relay.invalid: no such host"}]},"ok":true}

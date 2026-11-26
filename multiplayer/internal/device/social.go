@@ -124,6 +124,7 @@ func (a *Agent) presenceMode() string {
 func (a *Agent) eventsLoop() {
 	for a.ctx.Err() == nil {
 		a.pollEvents(a.ctx)
+		a.refreshSummary(a.ctx)
 		if !wait(a.ctx, 15*time.Second) {
 			return
 		}
@@ -530,4 +531,18 @@ func (m *Manager) presenceLoop() {
 			return
 		}
 	}
+}
+
+// refreshSummary keeps the cached handle and friend counts current for the
+// server list, without waiting for the tray to ask for status.
+func (a *Agent) refreshSummary(ctx context.Context) {
+	a.mu.Lock()
+	signed := a.creds.Session.User != ""
+	a.mu.Unlock()
+	if !signed {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, _ = a.status(ctx)
 }
