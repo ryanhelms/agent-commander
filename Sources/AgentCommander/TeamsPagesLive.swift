@@ -351,7 +351,10 @@ final class TeamsPagesLiveState {
         // Admin. The page draws the policy form and the member and device lists itself, so each
         // change is followed by a read of what it changed.
         actions.setPolicy = { [self] draft, saved, server in
-            let result = NetworkActionResult(await model.savePolicy(draft, from: saved, on: server).result(id: server, server: server))
+            // The page says what was saved, as every Admin change does. The band is Admin's alone.
+            let name = model.server(server)?.displayName ?? server
+            let result = NetworkActionResult(await model.savePolicy(draft, from: saved, on: server)
+                .result(id: server, server: server, message: "Policy set on \(name)."))
             if result.isDone { await readAdmin(server, model, resetsDraft: true) }
             return result
         }

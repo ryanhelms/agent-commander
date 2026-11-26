@@ -785,4 +785,35 @@ import Testing
         #expect(live.pages.shown(live.content(model), place: TeamsPlace.groups).notice == nil)
         #expect(model.route == tray, "nothing the window did moved the tray")
     }
+
+    /// A saved policy is confirmed in one band, on Admin alone.
+    @Test func aSavedPolicyIsConfirmedOnAdminAlone() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-policy")
+        defer { model.close() }
+        let home = MultiplayerRemoteTests.home, tray = model.route
+        let live = TeamsPagesLiveState()
+        let actions = live.actions(model, share: { _, _ in }, requestAccess: { _, _ in })
+        func send(_ intent: TeamsIntent) {
+            live.pages.send(intent, in: live.pages.shown(live.content(model), place: TeamsPlace.admin), through: actions, go: { _ in },
+                            from: TeamsPlace.admin)
+        }
+        await live.read(place: TeamsPlace.admin, model: model)
+        let saved = try #require(live.content(model).server(home)?.policy)
+        let days = saved.retentionDays == 90 ? 60 : 90
+        live.pages.drafts.policy.retentionDays = String(days)
+        send(.askSetPolicy(server: home))
+        #expect(live.pages.selection.confirming == .setPolicy(server: home))
+        send(.confirm)
+        for _ in 0..<400 where live.pages.notice == nil && live.pages.failure == nil || !live.pages.results.running.isEmpty {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let name = try #require(model.server(home)?.displayName)
+        #expect(live.pages.failure == nil && live.content(model).server(home)?.policy?.retentionDays == days)
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice == "Policy set on \(name).")
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.groups).notice == nil)
+        // Leaving Admin takes the band with it.
+        live.pages.left(TeamsPlace.admin)
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice == nil)
+        #expect(model.route == tray, "nothing the window did moved the tray")
+    }
 }
