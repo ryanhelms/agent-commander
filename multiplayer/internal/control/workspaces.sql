@@ -46,3 +46,12 @@ SELECT b.id,b.workspace_id,b.title,b.body,
        coalesce(c.holder,b.assignee) AS assignee,b.result,b.created_at
 FROM mp_workspace_cards b LEFT JOIN mp_live_workspace_claims c
 ON c.workspace_id=b.workspace_id AND c.kind='card' AND c.key=b.id;
+
+-- A member can leave one workspace and stay in its group. Removing the member
+-- from the group clears the departure, so the group owner can add them back.
+CREATE TABLE IF NOT EXISTS mp_workspace_departures (
+    workspace_id text NOT NULL, group_id text NOT NULL, user_id text NOT NULL,
+    PRIMARY KEY (workspace_id,user_id),
+    FOREIGN KEY (workspace_id,group_id) REFERENCES mp_workspaces(id,group_id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id,user_id) REFERENCES mp_group_members(group_id,user_id) ON DELETE CASCADE
+);

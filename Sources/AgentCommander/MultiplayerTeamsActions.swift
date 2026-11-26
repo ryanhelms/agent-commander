@@ -13,8 +13,8 @@ import Foundation
 // - The ID reported is what was made or acted on. A change that brings a value back returns a
 //   `MultiplayerLoad` of it.
 // - Nothing here asks twice. The caller asks the person to confirm before it deletes a group,
-//   removes a member, releases a claim or a held card, removes a queued branch, suspends a member
-//   or revokes a device, as the tray does.
+//   removes a member, releases a claim or a held card, removes a queued branch, leaves a
+//   workspace, suspends a member or revokes a device, as the tray does.
 
 extension MultiplayerKnowledgeDraft {
     /// A draft for a new item, or for a new version of `item`.
@@ -80,6 +80,24 @@ extension MultiplayerTeamsModel {
     func loadPolicy(on server: String) async -> MultiplayerLoad<MultiplayerRelayPolicy> {
         await read(server) { try await $0.relayPolicy() }
     }
+
+    /// Reads a relay's members and devices for the caller. Only the relay's admin can. Act on a
+    /// row with `setSuspended(_:member:on:)` and `revokeDevice(_:on:)`, then read again.
+    func loadRoster(on server: String) async -> MultiplayerLoad<MultiplayerRelayRoster> {
+        await read(server) { try await $0.relayRoster() }
+    }
+
+    /// Reads a workspace's combined view for the caller: each member of its group who hasn't left
+    /// it, with their workers.
+    func loadCombinedView(of workspace: String, on server: String) async -> MultiplayerLoad<MultiplayerCombinedView> {
+        await read(server) { try await $0.combinedView(of: workspace) }
+    }
+
+    /// Reads what a member can know of a relay for the caller: whether they administer it, how
+    /// people join, and how widely its policy lets knowledge travel.
+    func loadMe(on server: String) async -> MultiplayerLoad<MultiplayerMe> {
+        await read(server) { try await $0.me() }
+    }
 }
 
 // MARK: - Changes that name their target
@@ -144,12 +162,48 @@ extension MultiplayerModel {
     /// Claims part of a workspace in the person's own name. The ID is the new claim's, or empty
     /// when the relay doesn't name it; the claim is then in `share.teams.workspace(_:on:)`.
     func claim(_ draft: MultiplayerClaimDraft, in workspace: String, on server: String) async -> MultiplayerActionResult {
+        await claimAnswer(draft, in: workspace, on: server).result
+    }
+
+    /// Claims part of a workspace, as `claim(_:in:on:)` does, and says who stopped it when the
+    /// relay refused for an overlap: `refusal` names the holder and the blocking claim, so the
+    /// caller can mark that row. `refusal` is nil for a claim that was made and for any other
+    /// refusal.
+    func claimAnswer(_ draft: MultiplayerClaimDraft, in workspace: String, on server: String) async -> MultiplayerClaimAnswer {
         let lead = "Couldn’t claim it."
         let problem = teamsOffline(server) ?? draft.keyProblem ?? draft.agentProblem
             ?? (draft.canSend ? nil : draft.trimmedKey.isEmpty ? "Say what to claim." : "Name the agent that does the work.")
-        if let problem { return refused("", server, lead, problem) }
-        return await made(server: server, failing: lead) { report, made in
-            share.teams.sendClaim(draft, in: workspace, on: server, report: report, then: made)
+        if let problem { return MultiplayerClaimAnswer(result: refused("", server, lead, problem)) }
+        var refusal: MultiplayerClaimRefusal?
+        let result = await made(server: server, failing: lead) { report, made in
+            share.teams.sendClaim(draft, in: workspace, on: server, report: report, refused: { refusal = $0 }, then: made)
+        }
+        return MultiplayerClaimAnswer(result: result, refusal: result.isDone ? nil : refusal)
+    }
+
+    /// Saves the owner's edit of a workspace, sending only what differs from the workspace as it
+    /// stands. The ID is the workspace's. The edited workspace is then in
+    /// `share.teams.workspace(_:on:)`.
+    func editWorkspace(_ workspace: String, to edit: MultiplayerWorkspaceEdit, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t save the workspace."
+        if let problem = teamsOffline(server) { return refused(workspace, server, lead, problem) }
+        guard let saved = share.teams.workspace(workspace, on: server) else {
+            return refused(workspace, server, lead, "Commander can’t find this workspace any more.")
+        }
+        let changes = edit.changes(from: saved)
+        if let problem = edit.hint ?? (changes.isEmpty ? "Nothing changed yet." : nil) { return refused(workspace, server, lead, problem) }
+        return await result(id: workspace, server: server, failing: lead) {
+            share.teams.editWorkspace(workspace, fields: changes, on: server, report: $0)
+        }
+    }
+
+    /// Leaves a workspace. The person's live claims in it end; they stay in its group. The owner
+    /// can't leave. The ID is the workspace's.
+    func leaveWorkspace(_ workspace: String, on server: String) async -> MultiplayerActionResult {
+        let lead = "Couldn’t leave the workspace."
+        if let problem = teamsOffline(server) { return refused(workspace, server, lead, problem) }
+        return await result(id: workspace, server: server, failing: lead) {
+            share.teams.leaveWorkspace(workspace, on: server, report: $0)
         }
     }
 

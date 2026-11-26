@@ -114,7 +114,7 @@ func problem(w http.ResponseWriter, err error) {
 	var c *claimConflict
 	if errors.As(err, &c) {
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": c.Error(), "holder": c.Holder})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": c.Error(), "holder": c.Holder, "holderHandle": c.HolderHandle(), "claim": c.Claim})
 		return
 	}
 	var f *fault

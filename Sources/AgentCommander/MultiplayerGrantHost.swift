@@ -33,7 +33,7 @@ struct MultiplayerGrantForm: View {
 struct MultiplayerGrantHost: View {
     let model: MultiplayerModel
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var refusal: String?
 
@@ -42,9 +42,11 @@ struct MultiplayerGrantHost: View {
         MultiplayerHostFrame(scrolls: scrolls, refusal: $refusal, note: model.working ?? share.grantHint) {
             MultiplayerGrantForm(model: model)
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Share") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(.defaultAction)

@@ -99,6 +99,37 @@ func TestAdminModeration(t *testing.T) {
 		return proof
 	}
 	memberLease, siblingLease := open(member), open(sibling)
+	roster := func() AdminRoster {
+		t.Helper()
+		var v AdminRoster
+		request(admin, "GET", "/v1/admin/members", nil, &v, 200)
+		return v
+	}
+	findDevice := func(v AdminRoster, id string) (AdminDevice, bool) {
+		for _, d := range v.Devices {
+			if d.ID == id {
+				return d, true
+			}
+		}
+		return AdminDevice{}, false
+	}
+	for _, nonAdmin := range []*device{unverified, member} {
+		request(nonAdmin, "GET", "/v1/admin/members", nil, nil, 403)
+	}
+	first := roster()
+	if len(first.Members) != 3 || first.Members[0] != (AdminMember{"manager", false, true}) ||
+		first.Members[1] != (AdminMember{"member", false, false}) || first.Members[2] != (AdminMember{"", false, false}) {
+		t.Fatalf("roster members: %+v", first.Members)
+	}
+	if len(first.Devices) != 4 {
+		t.Fatalf("roster devices: %+v", first.Devices)
+	}
+	if d, ok := findDevice(first, member.Device); !ok || d.Owner != "member" || !d.Online || d.LastSeen != nil || d.Name != "" {
+		t.Fatalf("online member device: %+v", d)
+	}
+	if d, ok := findDevice(first, admin.Device); !ok || d.Owner != "manager" || d.Online || d.LastSeen != nil {
+		t.Fatalf("admin device without a session: %+v", d)
+	}
 	request(admin, "POST", "/v1/friends/member", nil, nil, 200)
 	request(member, "PUT", "/v1/friends/manager", nil, nil, 200)
 	request(member, "PUT", "/v1/resources/worker", map[string]any{"kind": "agent", "name": "Worker", "actions": []string{"ask"}}, nil, 200)
@@ -149,6 +180,13 @@ func TestAdminModeration(t *testing.T) {
 	enroll(newDevice(), "dev", "member@example.test", true, 403)
 	status("pending", "revoked")
 	status("running", "uncertain")
+	suspended := roster()
+	if suspended.Members[1] != (AdminMember{"member", true, false}) {
+		t.Fatalf("suspended roster: %+v", suspended.Members)
+	}
+	if d, ok := findDevice(suspended, sibling.Device); !ok || d.Online || d.LastSeen == nil {
+		t.Fatalf("fenced sibling device: %+v", d)
+	}
 	request(admin, "POST", unsuspend, nil, nil, 200)
 	deniedCredentials(member)
 	deniedCredentials(sibling)
@@ -166,6 +204,9 @@ func TestAdminModeration(t *testing.T) {
 	enroll(member, "dev", "member@example.test", true, 403)
 	request(sibling, "PUT", "/v1/session", siblingLease, nil, 200)
 	status("pending-again", "revoked")
+	if _, listed := findDevice(roster(), member.Device); listed {
+		t.Fatal("revoked device is still listed")
+	}
 	var live bool
 	if err := pool.QueryRow(ctx, "SELECT ready OR expires_at>now() FROM mp_leases WHERE device=$1", member.Device).Scan(&live); err != nil || live {
 		t.Fatalf("revoked device lease is live=%t, err=%v", live, err)

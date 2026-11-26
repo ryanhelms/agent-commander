@@ -46,6 +46,12 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case workspacePRs = "workspace-prs"
     case knowledgeShare = "knowledge-share"
     case knowledgeInstall = "knowledge-install"
+    /// A relay's members and devices, for its admin. Read-only.
+    case adminMembers = "admin-members"
+    /// A workspace's members and their workers. Read-only.
+    case workspaceCombined = "workspace-combined"
+    case workspaceEdit = "workspace-edit"
+    case workspaceLeave = "workspace-leave"
     /// Remote (increment 6): the web view this Mac serves on the tailnet. These name no server.
     case remoteEnable = "remote-enable"
     case remoteDisable = "remote-disable"
@@ -169,8 +175,11 @@ struct MultiplayerResource: Decodable, Equatable, Sendable, Identifiable {
     let kind: String
     /// Service-owned list of actions this resource allows. The panel never invents one.
     let actions: [String]
+    /// What this resource publishes about itself. For a host you lend, `commands` are the ones
+    /// enrolled on this Mac. Nil when the device sends none.
+    let capabilities: MultiplayerCapabilities?
 
-    private enum CodingKeys: String, CodingKey { case id, name, kind, actions }
+    private enum CodingKeys: String, CodingKey { case id, name, kind, actions, capabilities }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -178,6 +187,8 @@ struct MultiplayerResource: Decodable, Equatable, Sendable, Identifiable {
         name = try container.decode(String.self, forKey: .name)
         kind = try container.decode(String.self, forKey: .kind)
         actions = MultiplayerUnique.keep(try container.decodeIfPresent([String].self, forKey: .actions) ?? []) { $0 }
+        capabilities = ((try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil)
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 

@@ -459,22 +459,42 @@ enum MultiplayerMembershipMode: String, CaseIterable, Sendable, Identifiable {
     static func title(for mode: String) -> String { Self(rawValue: mode)?.title ?? mode.multiplayerDisplay }
 }
 
-/// A `me` reply: whether this account administers the relay, and how people join it.
+/// A `me` reply: whether this account administers the relay, how people join it, and how widely
+/// its policy lets knowledge travel. Any member can read it.
 struct MultiplayerMe: Decodable, Equatable, Sendable {
     let admin: Bool
     let mode: String
+    /// The scope a new knowledge item gets when none is chosen: `private`, `friend`, `group` or
+    /// `server`. Empty when the relay doesn't say.
+    let knowledgeDefault: String
+    /// The widest scope the relay accepts; a wider share is refused. Empty when the relay doesn't say.
+    let knowledgeWidest: String
 
-    private enum CodingKeys: String, CodingKey { case admin, mode }
+    private enum CodingKeys: String, CodingKey { case admin, mode, knowledgeDefault, knowledgeWidest }
 
-    init(admin: Bool, mode: String = "") {
+    init(admin: Bool, mode: String = "", knowledgeDefault: String = "", knowledgeWidest: String = "") {
         self.admin = admin
         self.mode = mode
+        self.knowledgeDefault = knowledgeDefault
+        self.knowledgeWidest = knowledgeWidest
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         admin = try container.decode(Bool.self, forKey: .admin)
         mode = (try? container.decodeIfPresent(String.self, forKey: .mode)) ?? ""
+        knowledgeDefault = ((try? container.decodeIfPresent(String.self, forKey: .knowledgeDefault)) ?? nil) ?? ""
+        knowledgeWidest = ((try? container.decodeIfPresent(String.self, forKey: .knowledgeWidest)) ?? nil) ?? ""
+    }
+
+    /// The default scope, when the relay names one this build knows.
+    var knowledgeDefaultScope: MultiplayerKnowledgeScope? { MultiplayerKnowledgeScope(rawValue: knowledgeDefault) }
+    /// The widest scope, when the relay names one this build knows.
+    var knowledgeWidestScope: MultiplayerKnowledgeScope? { MultiplayerKnowledgeScope(rawValue: knowledgeWidest) }
+
+    /// Whether the relay accepts a share this wide. Nil when the relay doesn't say; it then decides.
+    func allowsKnowledge(_ scope: MultiplayerKnowledgeScope) -> Bool? {
+        knowledgeWidestScope.map { scope.rank <= $0.rank }
     }
 
     /// Any member can invite while the relay is open; only admins otherwise.

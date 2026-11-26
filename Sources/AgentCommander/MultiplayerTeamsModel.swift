@@ -370,18 +370,54 @@ final class MultiplayerTeamsModel {
     }
 
     /// Claims part of a workspace from the caller's draft, in the person's own name. `then` is
-    /// given the new claim's ID, which is empty when the relay doesn't name it.
+    /// given the new claim's ID, which is empty when the relay doesn't name it. `refused` is given
+    /// who holds what it overlaps, when the relay refuses for that and says so.
     @discardableResult
     func sendClaim(_ draft: MultiplayerClaimDraft, in workspace: String, on server: String, report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                   refused: (@MainActor (MultiplayerClaimRefusal) -> Void)? = nil,
                    then: (@MainActor (String) -> Void)? = nil) -> Task<Void, Never>? {
         let me = handle(on: server)
         guard draft.canSend, !me.isEmpty else { return nil }
         return tray?.act("Claiming \(draft.trimmedKey.multiplayerDisplay)…", failing: "Couldn’t claim it.", report: report) { client in
             let scoped = client.scoped(to: server)
-            let id = try await scoped.claim(draft.body(handle: me), in: workspace)
+            let id: String
+            do {
+                id = try await scoped.claimNamingHolder(draft.body(handle: me), in: workspace)
+            } catch let stopped as MultiplayerClaimRefused {
+                refused?(stopped.refusal)
+                throw stopped.failure
+            }
             self.workspaces[server] = try await scoped.workspaces()
             then?(id)
             self.tray?.post(notice: "Claimed \(draft.trimmedKey.multiplayerDisplay) for \(draft.trimmedAgent.multiplayerDisplay). The claim lasts while this Mac stays connected.")
+        }
+    }
+
+    /// Changes a workspace's own fields, for its owner. `fields` holds only what changes. The
+    /// server's workspaces are read again, so every view of it shows the edit.
+    @discardableResult
+    func editWorkspace(_ workspace: String, fields: [String: String], on server: String,
+                       report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard !fields.isEmpty else { return nil }
+        let name = (fields["name"] ?? self.workspace(workspace, on: server)?.name ?? "the workspace").multiplayerDisplay
+        return tray?.act("Saving \(name)…", failing: "Couldn’t save the workspace.", confirmation: "Saved \(name).", report: report) { client in
+            let scoped = client.scoped(to: server)
+            try await scoped.editWorkspace(workspace, fields: fields)
+            self.workspaces[server] = try await scoped.workspaces()
+        }
+    }
+
+    /// Leaves a workspace. The caller asks first. The person's live claims in it end, and it
+    /// leaves the server's workspaces.
+    @discardableResult
+    func leaveWorkspace(_ workspace: String, on server: String,
+                        report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        let name = (self.workspace(workspace, on: server)?.name ?? "the workspace").multiplayerDisplay
+        return tray?.act("Leaving \(name)…", failing: "Couldn’t leave the workspace.",
+                         confirmation: "Left \(name). Your claims in it ended.", report: report) { client in
+            let scoped = client.scoped(to: server)
+            try await scoped.leaveWorkspace(workspace)
+            self.workspaces[server] = try await scoped.workspaces()
         }
     }
 

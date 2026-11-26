@@ -12,7 +12,8 @@ import SwiftUI
 // styling. Each keeps its draft, what it read, its second press and its refusal in its own state,
 // names its target in every call, and never reads or moves the tray's route. The view that
 // presents a host closes it from `onCancel`, and from `onFinish` when the result is done; a
-// refusal stays on the host so the person can fix it.
+// refusal stays on the host so the person can fix it. A view that is the host's home passes no
+// `onCancel`, and the host then draws no Cancel or Close.
 
 /// The line a teams host shows in place of its composer: its server is offline, or what it was
 /// opened for is gone.
@@ -43,7 +44,7 @@ struct MultiplayerWorkspaceHost: View {
     let model: MultiplayerModel
     let server: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerWorkspaceDraft()
     @State private var refusal: String?
@@ -58,9 +59,11 @@ struct MultiplayerWorkspaceHost: View {
                 MultiplayerTeamsHostLine(text: teamsOffline(place.name))
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Create workspace") { create() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(model.isBusy || !draft.canSend || !place.isOnline)
@@ -92,7 +95,7 @@ struct MultiplayerClaimHost: View {
     let server: String
     let workspace: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerClaimDraft()
     @State private var refusal: String?
@@ -111,9 +114,11 @@ struct MultiplayerClaimHost: View {
                 MultiplayerTeamsHostLine(text: teamsGone("workspace"))
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Claim") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(canSend(place.isOnline, found) ? KeyboardShortcut.defaultAction : nil)
@@ -150,7 +155,7 @@ struct MultiplayerCardHost: View {
     let workspace: String
     let card: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var cards = MultiplayerLoad<[MultiplayerCard]>.loading
     @State private var result = ""
@@ -176,9 +181,11 @@ struct MultiplayerCardHost: View {
                 MultiplayerTeamsHostLine(text: teamsGone("card"))
             }
         } actions: {
-            Button("Close", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Close", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             if let found {
                 switch found.known {
                 case .open:
@@ -240,7 +247,7 @@ struct MultiplayerQueueHost: View {
     let server: String
     let workspace: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerQueueDraft()
     @State private var refusal: String?
@@ -263,9 +270,11 @@ struct MultiplayerQueueHost: View {
                 MultiplayerTeamsHostLine(text: teamsGone("workspace"))
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Queue branch") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(model.isBusy || !draft.canSend || !place.isOnline || found == nil)
@@ -299,7 +308,7 @@ struct MultiplayerKnowledgeHost: View {
     /// The item a new version is for; nil for a new item.
     var editing: MultiplayerKnowledgeItem? = nil
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerKnowledgeDraft()
     @State private var secretRefusal: String?
@@ -316,9 +325,11 @@ struct MultiplayerKnowledgeHost: View {
                 MultiplayerTeamsHostLine(text: teamsOffline(place.name))
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button(draft.editing.isEmpty ? "Share" : "Save new version") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(model.isBusy || !draft.canSend || !place.isOnline)
@@ -353,7 +364,7 @@ struct MultiplayerHostRunHost: View {
     let server: String
     let resource: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerHostRunDraft()
     @State private var reply: MultiplayerSentRequest?
@@ -370,9 +381,11 @@ struct MultiplayerHostRunHost: View {
                 MultiplayerTeamsHostLine(text: teamsOffline(place.name))
             }
         } actions: {
-            Button(reply == nil ? "Cancel" : "Close", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button(reply == nil ? "Cancel" : "Close", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Run command") { run() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(.return, modifiers: .command)
@@ -410,7 +423,7 @@ struct MultiplayerPolicyHost: View {
     let model: MultiplayerModel
     let server: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var state = MultiplayerLoad<MultiplayerRelayPolicy>.loading
     @State private var draft = MultiplayerPolicyDraft()
@@ -434,9 +447,11 @@ struct MultiplayerPolicyHost: View {
                                       if case .suspend? = confirming { setSuspended(true) } else { revoke() }
                                   })
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Save policy") { save() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(model.isBusy || !hasChanges)

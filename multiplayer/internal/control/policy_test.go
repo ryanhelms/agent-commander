@@ -46,6 +46,11 @@ func TestRelayPolicy(t *testing.T) {
 	if err != nil || p != want || info.Policy != want || info.AdminContact != "admin@example.test" || info.Membership != "open" {
 		t.Fatalf("policy or public settings: %+v, %+v, %v", p, info, err)
 	}
+	// Any member can read the knowledge limits, not only the admin.
+	me := shareResponse[memberView](t, socialRequest(t, h, "member", "member-device", "GET", "/v1/me", nil, 200))
+	if me.Admin || me.KnowledgeDefault != "friend" || me.KnowledgeWidest != "group" {
+		t.Fatalf("member view of policy: %+v", me)
+	}
 
 	// An unbounded action (including an old-style aggregate grant) exceeds a finite cap.
 	call := func(user, method, path string, payload any, code int) {
