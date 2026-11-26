@@ -69,46 +69,41 @@ struct MultiplayerWindowLink: Equatable, Sendable {
 }
 
 extension MultiplayerWindowLink {
-    /// The link for a tray page on a server: the router's own request for the page, and the
-    /// words that name where it lands. Nil for a page the router has no window page for. A link
-    /// with no server opens the place alone, for a row that stands for every server.
+    /// The link for a tray page on a server: the router's own request for the page, the router's
+    /// own words for where that request lands (`CommanderOpenRequest.landingCrumbs`), and the
+    /// tray's words for the item. The tray keeps no table of places, so a row can't name another
+    /// place than the one that opens: a review's row reads "Network › Hand-offs". Nil for a page
+    /// the router has no window page for. A link with no server opens the place alone, for a row
+    /// that stands for every server.
     init?(page: MultiplayerSharePage, server: String?) {
-        func link(_ crumbs: [String], _ item: String? = nil) -> MultiplayerWindowLink? {
-            CommanderOpenRequest(page: page, server: server).map { MultiplayerWindowLink(request: $0, crumbs: crumbs, item: item) }
-        }
-        let workspace = ["Teams", "Workspaces"]
-        func tool(_ name: String) -> [String] { ["Teams", "Team tools", name] }
-        let found: MultiplayerWindowLink?
+        guard let request = CommanderOpenRequest(page: page, server: server) else { return nil }
+        self.init(request: request, crumbs: request.landingCrumbs, item: Self.item(of: page))
+    }
+
+    /// What a page opens on its place, in the tray's words: "this hand-off". Nil for a page that
+    /// opens the place alone. These name the item, never the place.
+    private static func item(of page: MultiplayerSharePage) -> String? {
         switch page {
-        case .directory: found = link(["Network", "Directory"])
-        case .requests: found = link(["Network", "Approvals"])
-        case .approval: found = link(["Network", "Approvals"], "this request")
-        case .handoffs: found = link(["Network", "Hand-offs"])
-        case .handoffDetail: found = link(["Network", "Hand-offs"], "this hand-off")
-        case .thread: found = link(["Network", "Threads"], "this thread")
-        case .audit(let resource): found = link(["Network", "Audit"], resource.isEmpty ? nil : "this resource")
-        case .fanout: found = link(["Network", "Fan-out"])
-        case .compare: found = link(["Network", "Fan-out"], "this fan-out")
-        case .watch, .control: found = link(["Agents", "Runs"], "this worker")
-        case .review: found = link(["Agents", "Runs"], "this review")
-        case .groups: found = link(tool("Groups"))
-        case .group: found = link(tool("Groups"), "this group")
-        case .workspaces: found = link(workspace)
-        case .workspace: found = link(workspace, "this workspace")
-        case .claim: found = link(workspace, "this workspace’s claims")
-        case .card: found = link(workspace, "this card")
-        case .queueAdd: found = link(workspace, "this workspace’s integration")
-        case .hosts: found = link(tool("Hosts"))
-        case .hostRun: found = link(tool("Hosts"), "this host")
-        case .knowledge, .knowledgeShare: found = link(tool("Knowledge"))
-        case .knowledgeItem: found = link(tool("Knowledge"), "this item")
-        case .reputation: found = link(tool("Directory"), "this reputation")
-        case .search: found = link(tool("Directory"))
-        case .policy: found = link(tool("Admin"), "this server’s policy")
-        case .requestAccess, .grant, .consult, .handoff, .reviewRequest, .workspaceCreate: found = nil
+        case .approval: "this request"
+        case .handoffDetail: "this hand-off"
+        case .thread: "this thread"
+        case .audit(let resource): resource.isEmpty ? nil : "this resource"
+        case .compare: "this fan-out"
+        case .watch, .control: "this worker"
+        case .review: "this review"
+        case .group: "this group"
+        case .workspace: "this workspace"
+        case .claim: "this workspace’s claims"
+        case .card: "this card"
+        case .queueAdd: "this workspace’s integration"
+        case .hostRun: "this host"
+        case .knowledgeItem: "this item"
+        case .reputation: "this reputation"
+        case .policy: "this server’s policy"
+        case .directory, .requests, .handoffs, .fanout, .groups, .workspaces, .hosts, .knowledge, .knowledgeShare, .search,
+             .requestAccess, .grant, .consult, .handoff, .reviewRequest, .workspaceCreate:
+            nil
         }
-        guard let found else { return nil }
-        self = found
     }
 }
 

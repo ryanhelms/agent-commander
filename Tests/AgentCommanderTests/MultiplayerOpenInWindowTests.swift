@@ -31,9 +31,9 @@ import Testing
         (.audit(resource: "res-relay"), NetworkPlace.audit, .audit(resource: "res-relay"), "Network › Audit › this resource"),
         (.fanout, NetworkPlace.fanout, nil, "Network › Fan-out"),
         (.compare(request: "fo-1"), NetworkPlace.fanout, .fanout(request: "fo-1"), "Network › Fan-out › this fan-out"),
-        (.watch(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Runs › this worker"),
-        (.control(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Runs › this worker"),
-        (.review(request: "rq-2"), LiveShell.wall, .review(request: "rq-2"), "Agents › Runs › this review"),
+        (.watch(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Workspace › Runs › this worker"),
+        (.control(resource: "res-1"), LiveShell.wall, .remoteWorker(resource: "res-1"), "Agents › Workspace › Runs › this worker"),
+        (.review(request: "rq-2"), LiveShell.wall, .review(request: "rq-2"), "Network › Hand-offs › this review"),
         (.groups, TeamsPlace.groups, nil, "Teams › Team tools › Groups"),
         (.group("g-1"), TeamsPlace.groups, .group("g-1"), "Teams › Team tools › Groups › this group"),
         (.workspaces, TeamsPlace.workspaces, nil, "Teams › Workspaces"),
@@ -88,7 +88,9 @@ import Testing
     @Test func aRowNamesItsPlaceAsTheWindowDoes() throws {
         for row in Self.moved {
             let link = try #require(MultiplayerWindowLink(page: row.page, server: Self.server))
-            let place = link.request.place
+            // The place the router lands on: a review is sent to the wall and opens on Hand-offs.
+            var place = link.request.place
+            if case .review = row.page { place = NetworkPlace.handoffs }
             let title = place == LiveShell.wall ? "Runs" : NetworkPlace.hasPage(place) ? NetworkPlace.title(place) : TeamsPlace.title(place)
             #expect(link.place == title, "\(row.page) names \(link.place), the window says \(title)")
             #expect(link.label == "Open \(title) in Agent Commander")
@@ -97,6 +99,24 @@ import Testing
         let detail = try #require(MultiplayerWindowLink(page: .handoffDetail(request: "rq-1"), server: Self.server))
         #expect(detail.hint == "Shows this hand-off there and closes this panel.")
         #expect(MultiplayerWindowLink(page: .handoffs, server: Self.server)?.hint == "Closes this panel.")
+    }
+
+    @Test func everyRowsWordsAreTheRoutersLandingCrumbs() throws {
+        for row in Self.moved {
+            let link = try #require(MultiplayerWindowLink(page: row.page, server: Self.server))
+            #expect(link.crumbs == link.request.landingCrumbs, "\(row.page) says \(link.crumbs)")
+        }
+    }
+
+    @Test func aReviewsRowReadsNetworkHandoffsWhereTheRouterLands() throws {
+        let link = try #require(MultiplayerWindowLink(page: .review(request: "rq-2"), server: Self.server))
+        // The request still names the wall; the router opens it on Hand-offs, and the row says so.
+        #expect(link.request == CommanderOpenRequest(place: LiveShell.wall, server: Self.server, item: .review(request: "rq-2")))
+        #expect(link.crumbs == ["Network", "Hand-offs"])
+        #expect(link.crumb == "Network › Hand-offs › this review")
+        #expect(link.path == "Agent Commander › Network › Hand-offs › this review")
+        #expect(link.place == "Hand-offs" && link.label == "Open Hand-offs in Agent Commander")
+        #expect(link.hint == "Shows this review there and closes this panel.")
     }
 
     @Test func everyRowOpensAPlaceTheNavigationLists() throws {
@@ -276,7 +296,7 @@ import Testing
         // Its row names the worker on the wall, and the hand-over form is under it.
         let link = try #require(MultiplayerWindowLink(page: .control(resource: "res-2"), server: home))
         #expect(link.request == CommanderOpenRequest(place: LiveShell.wall, server: home, item: .remoteWorker(resource: "res-2")))
-        #expect(link.crumb == "Agents › Runs › this worker")
+        #expect(link.crumb == "Agents › Workspace › Runs › this worker")
         await model.settle()
         let nodes = try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model, closesOnOpen: false))
         #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Runs in Agent Commander" })
