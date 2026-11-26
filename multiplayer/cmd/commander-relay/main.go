@@ -345,6 +345,9 @@ func run(ctx context.Context, args []string) error {
 	if len(args) > 0 && args[0] == "host" {
 		return hostCommand(ctx, args[1:])
 	}
+	if len(args) > 0 && args[0] == "deploy" {
+		return deployCommand(ctx, args[1:])
+	}
 	flags := flag.NewFlagSet("commander-relay", flag.ContinueOnError)
 	path := flags.String("config", "", "path to edge JSON configuration")
 	if err := flags.Parse(args); err != nil {
@@ -353,7 +356,7 @@ func run(ctx context.Context, args []string) error {
 	if *path == "" && flags.NArg() == 1 {
 		*path = flags.Arg(0)
 	} else if *path == "" || flags.NArg() != 0 {
-		return errors.New("usage: commander-relay CONFIG.json | commander-relay host [init|install|uninstall|status] [flags]")
+		return errors.New("usage: commander-relay CONFIG.json | commander-relay host [init|install|uninstall|status|provision] [flags] | commander-relay deploy ...")
 	}
 	cfg, err := readConfig(*path)
 	if err != nil {

@@ -33,7 +33,7 @@ func hostCommand(ctx context.Context, args []string) error {
 			return nil
 		})
 	}
-	if action == "init" {
+	if action == "init" || action == "provision" {
 		flags.StringVar(&cfg.Name, "name", "", "display name")
 		flags.StringVar(&cfg.Listen, "listen", ":443", "HTTPS listen address")
 		flags.StringVar(&cfg.Issuer, "issuer", "", "OIDC issuer URL")
@@ -48,7 +48,19 @@ func hostCommand(ctx context.Context, args []string) error {
 		flags.Func("allow-email", "allowed email (repeatable)", add(&cfg.AllowedEmails))
 		flags.Func("admin", "administrator email (repeatable)", add(&cfg.Admins))
 	}
-	if flags.NArg() > 0 {
+	binary := ""
+	if action == "provision" {
+		binary = flags.Arg(1)
+		if binary == "" {
+			return errors.New("usage: commander-relay host provision BINARY [init flags]")
+		}
+		if err := flags.Parse(flags.Args()[2:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return fmt.Errorf("unexpected host argument %q", flags.Arg(0))
+		}
+	} else if flags.NArg() > 0 {
 		if err := flags.Parse(flags.Args()[1:]); err != nil {
 			return err
 		}
@@ -67,6 +79,8 @@ func hostCommand(ctx context.Context, args []string) error {
 		return hostmode.UpdateConfig(path, cfg.Hostnames, cfg.Listen)
 	case "install":
 		return hostmode.Install(path)
+	case "provision":
+		return hostmode.Provision(binary, cfg, func(msg string) { fmt.Fprintln(os.Stderr, "==>", msg) })
 	case "uninstall":
 		return hostmode.Uninstall()
 	case "status":

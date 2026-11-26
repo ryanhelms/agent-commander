@@ -196,3 +196,33 @@ func publishFile(path string, data []byte, replace bool) error {
 	}
 	return os.Link(file.Name(), path)
 }
+
+// Locations of a relay provisioned as a Linux system service.
+const (
+	LinuxServiceAccount = "agent-commander"
+	LinuxServiceBase    = "/var/lib/agent-commander"
+	LinuxServiceDir     = LinuxServiceBase + "/relay"
+	LinuxServiceBinary  = "/usr/local/bin/commander-relay"
+)
+
+// InitFlags returns the `host init` flags that recreate cfg.
+func (c Config) InitFlags() []string {
+	var flags []string
+	if c.Name != "" {
+		flags = append(flags, "--name", c.Name)
+	}
+	if c.Listen != "" {
+		flags = append(flags, "--listen", c.Listen)
+	}
+	flags = append(flags, "--issuer", c.Issuer, "--client-id", c.ClientID)
+	for _, h := range c.Hostnames {
+		flags = append(flags, "--hostname", h)
+	}
+	for _, a := range c.Admins {
+		flags = append(flags, "--admin", a)
+	}
+	for _, e := range c.AllowedEmails {
+		flags = append(flags, "--allow-email", e)
+	}
+	return flags
+}

@@ -17,6 +17,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ### Changed
 
+- `commander-relay deploy` replaces `remote.py` for deploying a relay over SSH, with the same Docker, systemd and tailnet modes. `commander-relay host provision` replaces `systemd-install.sh`, and `go run ./deploy/remote/testhosts` replaces `rehearse.py`. The deploying Mac no longer needs Python or OpenSSL.
 - `/v1/health` also reports the service's version and API version.
 - Publish first structured ACP text promptly, wake workers when owner controls change, and build a single replay index for stopped conversations.
 - Negotiate a windowed persistent SSH connection with compatible endpoints and preserve the legacy connection for older endpoints.

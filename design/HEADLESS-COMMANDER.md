@@ -19,7 +19,7 @@ Deploying is a product feature, written in Go. The Python relay deploy tool (`mu
 | `agentctl-linux-amd64` and `-arm64` | Built by `packaging/relay-release.py` and placed inside the relay archives. They are not published as release assets of their own. |
 | SSH workers | The Mac's service starts Claude on an SSH host, through `internal/sshlink` and a reverse Unix socket. The service itself stays on the Mac. |
 | `hostmode.Install` | The relay's supervisor adapters (launchd, systemd, Docker), in `multiplayer/internal/hostmode`. Go's `internal` rule stops `cmd/agentctl` from importing them, so the systemd adapter moves to a shared package first. |
-| `remote.py` | Python. Deploys `commander-relay host` over SSH as a systemd service or a Docker container, with an optional tailnet sidecar. |
+| `remote.py` | Was Python. Now `commander-relay deploy`, in Go. |
 | GitHub releases | `build.yml` publishes prereleases from `v*-*` tags. None are published yet. |
 
 ## Constraint: the repository is private
@@ -108,7 +108,7 @@ The app shows a headless host as its own entry, next to the local service, with 
 
 ## Port the relay deploy to Go
 
-Move `remote.py deploy|status|remove|connect` into `commander-relay deploy …`. Share one Go package, `internal/hostdeploy`, with `agentctl host`. That package handles SSH transport, release selection, checksum and attestation checks, and step reports. The supervisor adapters move out of `multiplayer/internal/hostmode` to a package that both binaries can import. `connect` reuses the Go probe that the tray already runs, instead of the Python copy. Port `testhosts/rehearse.py` to a Go test that uses the existing Docker test hosts. Remove `remote.py` once the Go version handles systemd, Docker and the tailnet sidecar.
+`remote.py deploy|status|remove|connect` is now `commander-relay deploy MODE DESTINATION`, `deploy status`, `deploy remove` and `deploy connect`, in `multiplayer/internal/relaydeploy`. The shared packages are in the `hostkit` module: `sshx` for SSH transport, `release` for GitHub releases and checksums, and `systemd` for the unit writer. `agentctl host` and `commander-relay deploy` both use them. `systemd-install.sh` is now `commander-relay host provision`, which runs on the server as root. The connection check uses Go's TLS client and the device package's pin function instead of OpenSSL. `testhosts/rehearse.py` is now `go run ./deploy/remote/testhosts`, with the same three modes. `remote.py`, `rehearse.py` and `systemd-install.sh` are removed.
 
 The other Python build scripts (`packaging/*.py`, `multiplayer/deploy/prepare.py`, the rehearsal lab) are build tooling, not product features, and stay out of scope.
 
@@ -118,7 +118,7 @@ The other Python build scripts (`packaging/*.py`, `multiplayer/deploy/prepare.py
 2. **Release assets.** Headless archives, `install.sh`, checksums and attestations in `build.yml`. Publish one prerelease.
 3. **Mac-driven deploy.** `agentctl host releases|deploy|status|rollback|remove`, with the compatibility check and automatic rollback.
 4. **Connect.** The app reaches a headless host through an SSH-forwarded socket and shows it as a host. This includes the frontend design work.
-5. **Relay deploy in Go.** `commander-relay deploy` on `internal/hostdeploy`. Remove `remote.py`.
+5. **Relay deploy in Go.** `commander-relay deploy` on the shared `hostkit` packages. Remove `remote.py`.
 6. **Server one-liner.** `install.sh` through `gh release download` (option B). It needs no further change when the repository becomes public.
 
 ## Decisions
