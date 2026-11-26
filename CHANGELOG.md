@@ -4,6 +4,9 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+## [0.1.0-pilot.4] - 2026-11-26
+
+
 ### Added
 
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.

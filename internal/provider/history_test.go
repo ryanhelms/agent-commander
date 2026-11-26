@@ -17,7 +17,14 @@ import (
 
 func TestCancelledReplayWaitPreservesTheActiveReadersSlot(t *testing.T) {
 	profile := acpProfile{Command: "/bin/echo", History: &acpHistory{Format: acpReplayHistory}}
-	ref := service.NativeSession{HarnessInstance: profile.instance("test"), SessionID: "retained"}
+	// Launch binds the resolved executable. On Linux /bin links to /usr/bin.
+	bound := profile
+	executable, err := profile.executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound.Command = executable
+	ref := service.NativeSession{HarnessInstance: bound.instance("test"), SessionID: "retained"}
 	local := &Local{acpProfiles: map[string]acpProfile{"test": profile}, replaySlot: make(chan struct{}, 1)}
 	local.replaySlot <- struct{}{}
 	for _, preview := range []bool{false, true} {

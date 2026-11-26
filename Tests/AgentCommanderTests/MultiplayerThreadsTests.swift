@@ -156,13 +156,15 @@ import Testing
 /// Request 4: an answered row stays in the lists, marked, until its hold ends.
 @MainActor @Suite struct MultiplayerAnsweredRowTests {
     static let noApprovals = MultiplayerFixture.output(#"{"ok":true,"data":{"approvals":[]}}"#)
-    static func model(_ replies: [MultiplayerVerb: [MultiplayerHelperOutput]], hold: Duration) -> (MultiplayerModel, ScriptedMultiplayerHelper) {
+    /// `holdTimer` is the clock unless the test ends the hold by hand with a `MultiplayerManualHold`.
+    static func model(_ replies: [MultiplayerVerb: [MultiplayerHelperOutput]], hold: Duration,
+                      holdTimer: MultiplayerHoldTimer = .clock) -> (MultiplayerModel, ScriptedMultiplayerHelper) {
         var all = replies
         all[.servers] = [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)]
         all[.status] = [MultiplayerShareFixture.status]
         let helper = ScriptedMultiplayerHelper(all)
         return (MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
-                                 answeredHold: hold), helper)
+                                 answeredHold: hold, holdTimer: holdTimer), helper)
     }
 
     /// Waits for a held row to leave, without tying the test to the clock.

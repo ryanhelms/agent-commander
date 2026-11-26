@@ -472,7 +472,9 @@ import Testing
         func buttons() async throws -> [String] {
             await model.settle()
             return try await MultiplayerAX.nodes(of: MultiplayerPanel(model: model, closesOnOpen: false))
-                .filter { $0.role == "AXButton" }.map(\.label)
+                // A button that opens a menu, as New workspace does with several servers, is a menu
+                // button on macOS 26 and a button on macOS 27.
+                .filter { $0.role == "AXButton" || $0.role == "AXMenuButton" }.map(\.label)
         }
         func opens(_ place: String, in labels: [String]) -> Bool { labels.contains { $0.hasPrefix("Open \(place) in Agent Commander") } }
 

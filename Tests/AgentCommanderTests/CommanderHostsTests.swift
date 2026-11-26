@@ -49,7 +49,8 @@ private final class RecordingSocket: @unchecked Sendable {
 
     init() throws {
         path = NSTemporaryDirectory() + "ach-\(getpid())-\(UInt32.random(in: 0..<999_999)).sock"
-        descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        descriptor = listener
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let capacity = MemoryLayout.size(ofValue: address.sun_path)
@@ -58,13 +59,12 @@ private final class RecordingSocket: @unchecked Sendable {
             buffer.copyBytes(from: path.utf8)
         }
         let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        try #require(bound == 0 && listen(descriptor, 16) == 0)
-        let descriptor = descriptor
+        try #require(bound == 0 && listen(listener, 16) == 0)
         Thread.detachNewThread { [weak self] in
             while true {
-                let client = accept(descriptor, nil, nil)
+                let client = accept(listener, nil, nil)
                 guard client >= 0 else { return }
                 var head = [UInt8]()
                 var byte = [UInt8](repeating: 0, count: 1024)
