@@ -198,11 +198,15 @@ final class MultiplayerShareModel {
     @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
     /// Cockpit walls on screen.
     @ObservationIgnored private(set) var wallViewers = 0
+    /// How often the wall reads while no panel is open. The tray's own poll does it otherwise.
+    private let wallPoll: Duration
+    @ObservationIgnored private var wallTask: Task<Void, Never>?
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
 
     init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, winners: MultiplayerWinnerStore = .scratch(),
-         watchInterval: Duration = .seconds(2), answeredHold: Duration = .zero) {
+         watchInterval: Duration = .seconds(2), answeredHold: Duration = .zero, wallPoll: Duration = .seconds(15)) {
+        self.wallPoll = wallPoll
         self.client = client
         self.clock = now
         self.hold = answeredHold
@@ -282,9 +286,11 @@ final class MultiplayerShareModel {
         guard let client, let tray, tray.viewers > 0 || wallViewers > 0, quietTask == nil else { return }
         let ids = tray.servers.filter { $0.state == .online && $0.signedIn }.map(\.id)
         let live = Set(ids)
-        // With only the cockpit wall showing, hand-offs are all that is read.
+        // With only the cockpit wall showing, the wall's own rows are read: hand-offs here, and who
+        // holds control and the reviews and fan-outs sent in the live model.
         guard tray.viewers > 0 else {
             handoffs = handoffs.filter { live.contains($0.key) }
+            self.live.refresh()
             guard !ids.isEmpty else { return }
             quietTask = Task {
                 for id in ids where !Task.isCancelled {
@@ -315,17 +321,35 @@ final class MultiplayerShareModel {
         }
     }
 
-    /// The cockpit wall shows hand-offs as remote workers, so they are read while it is on screen
-    /// even with every panel closed. The first wall reads the server list once if nothing has.
+    /// The cockpit wall shows hand-offs as remote workers, hand-overs on its dock and sent reviews
+    /// and fan-outs as work rows, so they are read while it is on screen even with every panel
+    /// closed. A view that shows the wall calls this when it appears and `wallDisappeared()` when
+    /// it leaves; the count is the one signal, and `watchesWall` reads it. The first wall reads the
+    /// server list once if nothing has, then again at the wall's pace while no panel is open.
     func wallAppeared() {
         wallViewers += 1
         guard wallViewers == 1, let tray else { return }
         if tray.hasLoaded { refresh() } else { tray.refresh() }
+        wallTask?.cancel()
+        wallTask = Task { [weak self, wallPoll] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: wallPoll) } catch { return }
+                guard let self, self.wallViewers > 0 else { return }
+                // An open panel polls the list itself, and each list read ends in `refresh()`.
+                if let tray = self.tray, tray.viewers == 0 { tray.refresh() }
+            }
+        }
     }
 
     func wallDisappeared() {
         wallViewers = max(0, wallViewers - 1)
+        guard wallViewers == 0 else { return }
+        wallTask?.cancel()
+        wallTask = nil
     }
+
+    /// True while a cockpit wall is on screen: the wall's rows are kept current with no panel open.
+    var watchesWall: Bool { wallViewers > 0 }
 
     func cancel() {
         quietTask?.cancel()
@@ -861,19 +885,38 @@ final class MultiplayerShareModel {
         }
     }
 
+    /// Why an artifact can't be applied, or nil when it can be sent.
+    func applyProblem(artifact index: Int, of row: MultiplayerSentRequest, checkout: String) -> String? {
+        guard let report = reports[row.request], report.isResult else { return "Read the hand-off’s result first." }
+        guard report.artifacts.indices.contains(index) else { return "That artifact is no longer in the result." }
+        return checkout.hasPrefix("/") ? nil : "Choose a local checkout."
+    }
+
     /// Applies or saves one artifact of a hand-off's result into the checkout the person picked.
+    /// The confirmation names the saved file's final name when the device gave it another.
     @discardableResult
-    func apply(artifact index: Int, of row: MultiplayerSentRequest, on server: String, checkout: String) -> Task<Void, Never>? {
-        guard let report = reports[row.request], report.isResult, report.artifacts.indices.contains(index),
-              checkout.hasPrefix("/") else { return nil }
-        let artifact = report.artifacts[index]
+    func apply(artifact index: Int, of row: MultiplayerSentRequest, on server: String, checkout: String,
+               report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard applyProblem(artifact: index, of: row, checkout: checkout) == nil, let result = reports[row.request] else { return nil }
+        let artifact = result.artifacts[index]
+        let name = artifact.name.multiplayerDisplay
         let folder = URL(fileURLWithPath: checkout).lastPathComponent.multiplayerDisplay
-        return tray?.act("Applying \(artifact.name.multiplayerDisplay) to \(folder)…",
-                         failing: "Couldn’t apply \(artifact.name.multiplayerDisplay).",
-                         confirmation: artifact.kind == "patch" ? "Applied \(artifact.name.multiplayerDisplay) to \(folder). The changes are staged, not committed."
-                                                                : "Saved \(artifact.name.multiplayerDisplay) into \(folder).") { client in
-            try await client.scoped(to: server).applyArtifact(request: report.request, artifact: index, checkout: checkout)
+        return tray?.act("Applying \(name) to \(folder)…", failing: "Couldn’t apply \(name).", report: report) { client in
+            let done = try await client.scoped(to: server).appliedArtifact(request: result.request, artifact: index, checkout: checkout)
+            self.tray?.post(notice: done.confirmation(artifact: name, patch: artifact.kind == "patch", folder: folder))
         }
+    }
+
+    /// The resource a local worker is shared as: the one a hand-over, a suggestion or a grant for
+    /// that worker names. Nil when the worker isn't shared on any signed-in server, or on the
+    /// server named.
+    func resource(forWorker id: String, on server: String? = nil) -> MultiplayerResource? {
+        let shared = MultiplayerShareTarget.agent(id: id, name: "").resourceID
+        for saved in tray?.servers ?? [] where server == nil || saved.id == server {
+            guard let session = tray?.session(saved.id), session.isOnline else { continue }
+            if let found = session.status?.resources.first(where: { $0.id == shared }) { return found }
+        }
+        return nil
     }
 
     // MARK: - Threads

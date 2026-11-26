@@ -135,12 +135,13 @@ enum MultiplayerMarkdownParser {
     }
 
     /// Bold, italic, inline code and links inside one line. Text that doesn't parse is shown as written.
-    static func inline(_ text: String) -> AttributedString {
+    /// `code` is the face of inline code: the caller's theme's `data` role.
+    static func inline(_ text: String, code: Font = Theme.console.type.data.font) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
         guard var parsed = try? AttributedString(markdown: text, options: options) else { return AttributedString(text) }
         for run in parsed.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            parsed[run.range].font = MultiplayerTheme.data
+            parsed[run.range].font = code
         }
         return parsed
     }
@@ -169,6 +170,11 @@ enum MultiplayerMarkdownParser {
 /// Markdown drawn with the tray's tokens. Each block is selectable text.
 struct MultiplayerMarkdown: View {
     private let blocks: [MultiplayerMarkdownBlock]
+    @Environment(\.theme) private var theme
+
+    private func inline(_ text: String) -> AttributedString {
+        MultiplayerMarkdownParser.inline(text, code: theme.type.data.font)
+    }
 
     init(text: String) {
         blocks = MultiplayerMarkdownParser.blocks(text)
@@ -180,8 +186,8 @@ struct MultiplayerMarkdown: View {
                 switch block {
                 case .heading(let level, let text):
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(MultiplayerMarkdownParser.inline(text))
-                            .font(level <= 2 ? .system(size: level == 1 ? 14 : 13, weight: .semibold) : MultiplayerTheme.heading)
+                        Text(inline(text))
+                            .font(level <= 2 ? .system(size: level == 1 ? 14 : 13, weight: .semibold) : MultiplayerTheme.heading.font(in: theme))
                             .foregroundStyle(MultiplayerTheme.foreground)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityAddTraits(.isHeader)
@@ -190,7 +196,7 @@ struct MultiplayerMarkdown: View {
                     }
                     .padding(.top, index == 0 ? 0 : 4)
                 case .paragraph(let text):
-                    Text(MultiplayerMarkdownParser.inline(text))
+                    Text(inline(text))
                         .font(.system(size: 12))
                         .foregroundStyle(MultiplayerTheme.foreground)
                         .lineSpacing(2)
@@ -203,7 +209,7 @@ struct MultiplayerMarkdown: View {
                                     .font(MultiplayerTheme.data)
                                     .foregroundStyle(.inkSecondary)
                                     .frame(minWidth: 14, alignment: .trailing)
-                                Text(MultiplayerMarkdownParser.inline(item.text))
+                                Text(inline(item.text))
                                     .font(.system(size: 12))
                                     .foregroundStyle(MultiplayerTheme.foreground)
                                     .lineSpacing(2)
@@ -219,7 +225,7 @@ struct MultiplayerMarkdown: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel("\(ordered ? "Numbered list" : "List"), \(MultiplayerPlural.count(items.count, "item"))")
                 case .code(let text):
-                    let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
+                    let shape = theme.trayChip
                     ScrollView(.horizontal) {
                         Text(text)
                             .font(MultiplayerTheme.data)

@@ -158,9 +158,14 @@ final class MultiplayerLiveModel {
 
     // MARK: - Lifetime
 
-    /// Reads who holds control, and the reviews and fan-outs sent, for every signed-in server.
+    /// True while a cockpit wall is on screen (`share.wallAppeared()`): the reads below run for it
+    /// with every panel closed.
+    var watchesWall: Bool { share?.watchesWall == true }
+
+    /// Reads who holds control, and the reviews and fan-outs sent, for every signed-in server,
+    /// while a panel is open or a wall is on screen.
     func refresh() {
-        guard let client, let tray, tray.viewers > 0, quietTask == nil else { return }
+        guard let client, let tray, tray.viewers > 0 || watchesWall, quietTask == nil else { return }
         let ids = tray.servers.filter { $0.state == .online && $0.signedIn }.map(\.id)
         let online = Set(ids)
         handovers = handovers.filter { online.contains($0.key) }

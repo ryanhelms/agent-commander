@@ -55,8 +55,9 @@ struct MultiplayerStateTally<Option: Hashable>: View {
     let cells: [Cell]
     @Binding var selection: Option
 
+    @Environment(\.theme) private var theme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+        let shape = theme.trayControl
         HStack(spacing: 0) {
             ForEach(Array(cells.enumerated()), id: \.element.option) { index, cell in
                 let isOn = cell.option == selection
