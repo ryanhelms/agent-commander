@@ -312,12 +312,12 @@ final class MultiplayerModel {
         let relay = MultiplayerRelayLocator.resolve().map { MultiplayerRelayProcess(executable: $0) }
         switch MultiplayerHelperLocator.resolve() {
         case .success(let location):
-            MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
+            return MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
                              winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
                              answeredHold: MultiplayerShareModel.answeredHold, relay: relay)
         case .failure(let failure):
-            MultiplayerModel(client: nil, setupFailure: failure, relay: relay)
+            return MultiplayerModel(client: nil, setupFailure: failure, relay: relay)
         }
     }
 
