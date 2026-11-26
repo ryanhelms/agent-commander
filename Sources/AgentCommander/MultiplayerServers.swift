@@ -59,10 +59,12 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
     let presence: MultiplayerPersonPresence?
     /// Feed events on this server the person hasn't seen.
     let unseen: Int
+    /// Whether the device agent is choosing the presence. Nil when the helper doesn't say.
+    var presenceAuto: Bool? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id, url, name, favorite, autoConnect, pin, lastUsedAt, state, signedIn, handle, lastSeen, error
-        case friendsOnline, incoming, presence, unseen
+        case friendsOnline, incoming, presence, unseen, presenceAuto, presenceMode
     }
 
     init(id: String, url: String, name: String, favorite: Bool = false, autoConnect: Bool = true, pin: String = "",
@@ -113,6 +115,8 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
         incoming = count(.incoming)
         presence = MultiplayerPersonPresence(word: text(.presence))
         unseen = count(.unseen)
+        let mode = text(.presenceMode)
+        presenceAuto = ((try? container.decodeIfPresent(Bool.self, forKey: .presenceAuto)) ?? nil) ?? (mode.isEmpty ? nil : mode == "auto")
     }
 
     func encode(to encoder: any Encoder) throws {

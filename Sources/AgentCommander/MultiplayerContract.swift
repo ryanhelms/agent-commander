@@ -26,6 +26,9 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case activitySeen = "activity-seen"
     case membershipSet = "membership-set"
     case inviteCreate = "invite-create"
+    /// Share and consult (increment 3). `relay` reaches the relay's access-request routes.
+    case approvals, approve, deny, audit, send, sent, handoffs, thread, comment, relay
+    case applyArtifact = "apply-artifact"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
@@ -130,8 +133,10 @@ struct MultiplayerShared: Decodable, Equatable, Sendable, Identifiable {
     let kind: String
     let owner: String
     let actions: [String]
+    /// What the owner says the resource can do, when they said (increment 3).
+    let capabilities: MultiplayerCapabilities?
 
-    private enum CodingKeys: String, CodingKey { case id, name, kind, owner, actions }
+    private enum CodingKeys: String, CodingKey { case id, name, kind, owner, actions, capabilities }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -140,6 +145,8 @@ struct MultiplayerShared: Decodable, Equatable, Sendable, Identifiable {
         kind = try container.decode(String.self, forKey: .kind)
         owner = try container.decode(String.self, forKey: .owner)
         actions = MultiplayerUnique.keep(try container.decodeIfPresent([String].self, forKey: .actions) ?? []) { $0 }
+        capabilities = ((try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil)
+            .flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -163,10 +170,12 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
     let displayName: String
     let statusMessage: String
     let hasAvatar: Bool
+    /// Every friend's resource on this server with what it offers, when the relay lists them (increment 3).
+    let directory: [MultiplayerDirectoryEntry]?
 
     private enum CodingKeys: String, CodingKey {
         case online, signedIn, handle, loginPending, error, friends, outgoing, incoming, grants, resources, shared
-        case displayName, statusMessage, hasAvatar
+        case displayName, statusMessage, hasAvatar, directory
     }
 
     init(from decoder: any Decoder) throws {
@@ -189,6 +198,12 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
         statusMessage = ((try? container.decodeIfPresent(String.self, forKey: .statusMessage)) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         hasAvatar = (try? container.decodeIfPresent(Bool.self, forKey: .hasAvatar)) ?? false
+        directory = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerDirectoryEntry>.self, forKey: .directory)) ?? nil)?.items
+    }
+
+    /// Friends' resources: the relay's directory, or the older list of what was shared with you.
+    var directoryEntries: [MultiplayerDirectoryEntry] {
+        MultiplayerDirectoryEntry.entries(directory: directory, shared: shared)
     }
 }
 
@@ -260,6 +275,11 @@ enum MultiplayerCapability {
         case "git.push": "Push the collaboration branch"
         case "agent.ask": "Send prompts to the worker"
         case "agent.message": "Send the coordinator a note"
+        case "agent.handoff": "Hand off tasks to the agent"
+        case "agent.status": "Check a hand-off’s status"
+        case "agent.result": "Read a hand-off’s result"
+        case "thread.read": "Read request threads"
+        case "thread.comment": "Comment on request threads"
         default: capability
         }
     }
@@ -274,6 +294,9 @@ enum MultiplayerCapability {
         case "git.push": "arrow.up.circle"
         case "agent.ask": "questionmark.bubble"
         case "agent.message": "tray.and.arrow.down"
+        case "agent.handoff": "arrow.up.forward.app"
+        case "agent.status", "agent.result": "list.bullet.clipboard"
+        case "thread.read", "thread.comment": "bubble.left.and.bubble.right"
         default: "key"
         }
     }
@@ -291,6 +314,10 @@ enum MultiplayerCapability {
             "Lets them submit prompts to the enrolled worker \(name). The worker acts on each prompt with its existing tools, within the tool permissions you’ve enabled for it, and uses your provider quota."
         case "agent.message":
             "Lets them send a note to the private inbox of the coordinator \(name). The coordinator decides whether to act on it; nothing runs automatically and nothing is typed into its terminal."
+        case "agent.handoff":
+            "Lets them hand a task to \(name). Your Commander starts a new run for it on this Mac, in the worker’s project, and uses your provider quota."
+        case "agent.status", "agent.result": "Lets them follow the hand-offs they started on \(name) and read their results."
+        case "thread.read", "thread.comment": "Lets them read and write the thread of each request they sent to \(name)."
         default: "Lets them use “\(capability)” on \(name), as the network service defines it."
         }
     }
@@ -428,6 +455,8 @@ enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStrin
     case bool(Bool)
     /// A list of plain strings, for the membership lists.
     case strings([String])
+    /// A nested JSON value: a request's payload or a relay call's body (increment 3).
+    case json(MultiplayerJSON)
 
     init(stringLiteral value: String) { self = .string(value) }
     init(integerLiteral value: Int) { self = .number(value) }
@@ -439,6 +468,7 @@ enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStrin
         case .number(let value): try container.encode(value)
         case .bool(let value): try container.encode(value)
         case .strings(let values): try container.encode(values)
+        case .json(let value): try container.encode(value)
         }
     }
 }

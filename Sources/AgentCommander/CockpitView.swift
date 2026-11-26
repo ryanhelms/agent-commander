@@ -514,6 +514,7 @@ struct CockpitScreen: View {
                 id: "project-\(path)", title: summary.project,
                 mark: .letter(String(summary.project.prefix(1)).uppercased()),
                 isActive: run?.path == path && !ui.composingRun,
+                share: MultiplayerShareLauncher.action(.repo(path: path, name: summary.project)),
                 action: {
                     ui.composingRun = false
                     actions.selectRun(latest)
@@ -586,7 +587,10 @@ struct CockpitScreen: View {
                     RunHeader(run: run, canStop: run.canStop && isOnline && !content.isStopping,
                               showingDetails: $ui.showingRunDetails,
                               showRuns: { ui.showingRunChooser = true },
-                              stop: { ui.showingStopConfirmation = true })
+                              stop: { ui.showingStopConfirmation = true },
+                              share: content.runs.first { $0.id == run.id }.flatMap {
+                                  MultiplayerShareLauncher.action(.repo(path: $0.path, name: $0.project))
+                              })
                     if let target = ui.returnTarget, target.runID != run.id {
                         Hairline()
                         ReturnStrip(target: target, goBack: { followReturn(target) },
@@ -803,7 +807,8 @@ struct CockpitScreen: View {
             followUp: followUp,
             takeControl: takeControl,
             interrupt: interrupt,
-            stop: stop)
+            stop: stop,
+            share: MultiplayerShareLauncher.action(.agent(id: worker.id, name: worker.name)))
         let menuPresented: Binding<Bool>? = rich ? Binding(
             get: { ui.actionMenuWorkerID == worker.id },
             set: { open in

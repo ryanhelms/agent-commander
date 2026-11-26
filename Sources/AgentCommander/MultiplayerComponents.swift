@@ -17,7 +17,11 @@ enum MultiplayerLayout {
     static let rowIcon: CGFloat = 28
 
     /// The scrolling body stays on the main display with room for the menu bar, header and footer.
+    /// Set by the headless render, which draws a page at its full height instead of scrolling it.
+    @MainActor static var bodyHeightOverride: CGFloat?
+
     @MainActor static var maxBodyHeight: CGFloat {
+        if let bodyHeightOverride { return bodyHeightOverride }
         let visible = NSScreen.main?.visibleFrame.height ?? 720
         return max(220, min(520, visible - 200))
     }
@@ -39,7 +43,7 @@ struct MultiplayerTextField: View {
             .font(monospaced ? .system(size: 13, design: .monospaced) : MultiplayerTheme.name)
             .foregroundStyle(Palette.foreground)
             .autocorrectionDisabled()
-            .fieldBox(focused: isFocused, height: MultiplayerLayout.fieldHeight)
+            .multiplayerFieldBox(focused: isFocused)
             .accessibilityLabel(label)
     }
 }
@@ -87,7 +91,7 @@ struct MultiplayerRow<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: Space.m) {
-            IconTile(symbol: symbol, tone: tone, size: MultiplayerLayout.rowIcon)
+            MultiplayerMark(symbol: symbol, tone: tone)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title.multiplayerDisplay)
                     .font(monospacedTitle ? .system(size: 12.5, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
@@ -215,7 +219,7 @@ struct MultiplayerBanner: View {
     @ViewBuilder private var icon: some View {
         switch kind {
         case .progress:
-            ProgressView().controlSize(.small).accessibilityLabel("In progress")
+            MultiplayerSpinner()
         case .success:
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.working).accessibilityLabel("Done")
         case .attention:

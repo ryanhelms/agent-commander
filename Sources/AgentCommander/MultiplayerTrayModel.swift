@@ -23,11 +23,13 @@ enum MultiplayerTrayRoute: Equatable {
     case profile(String)
     case invite(String)
     case membership(String)
+    /// One server's share and consult pages (increment 3).
+    case share(String, MultiplayerSharePage)
 
     /// The saved server this page belongs to.
     var serverID: String? {
         switch self {
-        case .server(let id), .profile(let id), .invite(let id), .membership(let id): id
+        case .server(let id), .profile(let id), .invite(let id), .membership(let id), .share(let id, _): id
         case .home, .addServer, .hosting: nil
         }
     }
@@ -99,7 +101,7 @@ struct MultiplayerFriendGroup: Equatable, Identifiable {
 
     var id: String { server.id }
     var onlineCount: Int {
-        people.isEmpty ? friends.filter { $0.online == true }.count : people.filter(\.presence.isConnected).count
+        people.isEmpty ? friends.filter { $0.online == true }.count : people.filter(\.presence.isAvailable).count
     }
 
     var caption: String {
@@ -132,6 +134,8 @@ final class MultiplayerModel {
     private(set) var listFailure: MultiplayerFailure?
     private(set) var isRefreshing = false
     private(set) var route: MultiplayerTrayRoute = .home
+    /// The home page's tab: Agents, Network or People.
+    var tab = MultiplayerTrayTab.agents
     /// Progress text of the server action in flight.
     private(set) var working: String?
     private(set) var failure: String?
@@ -182,6 +186,8 @@ final class MultiplayerModel {
     let setupFailure: MultiplayerFailure?
 
     let client: MultiplayerClient?
+    /// Share and consult (increment 3): approvals, access requests, the grant sheet and requests sent.
+    let share: MultiplayerShareModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -208,6 +214,8 @@ final class MultiplayerModel {
         self.steadyPoll = steadyPoll
         self.fastPoll = fastPoll
         self.clock = now
+        self.share = MultiplayerShareModel(client: client, now: now)
+        self.share.tray = self
     }
 
     /// The one live model: the menu bar panel, the review window and invite links all use it.
@@ -240,8 +248,8 @@ final class MultiplayerModel {
     var tally: MultiplayerTally {
         MultiplayerTally(servers: servers.count,
                          serversOnline: servers.filter { $0.state == .online }.count,
-                         friendsOnline: servers.reduce(0) { $0 + $1.friendsOnline },
-                         needsYou: servers.reduce(0) { $0 + $1.incoming })
+                         friendsOnline: friendsAvailable ?? servers.reduce(0) { $0 + $1.friendsOnline },
+                         needsYou: servers.reduce(0) { $0 + $1.incoming } + share.pendingApprovals.count + share.pendingAccess.count)
     }
 
     /// One group per server, in list order. A server's friends come from its own session, and
@@ -392,6 +400,7 @@ final class MultiplayerModel {
         cancelProbe()
         actionTask?.cancel()
         cancelSocial()
+        share.cancel()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -436,6 +445,7 @@ final class MultiplayerModel {
             listFailure = nil
             apply(next)
             refreshSocial()
+            share.refresh()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -647,17 +657,21 @@ final class MultiplayerModel {
                 saved = (try? await client.updateServer(id: saved.id, autoConnect: false)) ?? saved
             }
             self.merge(saved)
-            self.notice = "Added \(saved.displayName)."
             self.serverDraft = MultiplayerServerDraft()
             self.probe = .idle
             self.go(.home)
+            self.notice = "Added \(saved.displayName)."
         }
     }
 
     // MARK: - Navigation
 
-    func go(_ next: MultiplayerTrayRoute) {
+    /// `keepingShareTrail` is set only by the share model, which keeps its own way back.
+    func go(_ next: MultiplayerTrayRoute, keepingShareTrail: Bool = false) {
         guard route != next else { return }
+        if !keepingShareTrail { share.leftSharePages() }
+        // A confirmation belongs to the page it was earned on.
+        notice = nil
         if case .server(let id) = route, next.serverID != id { sessions[id]?.go(.home) }
         cancelProbe()
         membershipTask?.cancel()
@@ -693,11 +707,10 @@ final class MultiplayerModel {
 
     func accept(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.accept(request) }
 
-    /// Opens the server's page on its share form for one friend.
+    /// Opens the grant sheet on a server for one friend.
     func share(with handle: String, on id: String) {
         guard let session = sessions[id], session.isOnline else { return }
-        openServer(id)
-        session.startGrant(handle: handle)
+        share.startGrant(on: id, handle: handle)
     }
 
     /// Opens the server's page on its add-friend form.
@@ -717,13 +730,14 @@ final class MultiplayerModel {
     /// Waits until no helper call started by this model or its sessions is in flight.
     func settle() async {
         while true {
-            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first {
+            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first
+                ?? share.quietTask ?? share.pageTask {
                 await task.value
                 continue
             }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty { return }
+               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil { return }
         }
     }
 }

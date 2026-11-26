@@ -1288,6 +1288,8 @@ struct NavigationItem: Identifiable {
     var isActive = false
     var isEnabled = true
     var shortcut: KeyboardShortcut? = nil
+    /// Opens the network tray's share sheet for this project's repository. Its context menu shows it.
+    var share: (() -> Void)? = nil
     let action: () -> Void
 }
 
@@ -1343,6 +1345,9 @@ struct NavigationRow: View {
         .buttonStyle(.plain)
         .disabled(!item.isEnabled)
         .keyboardShortcut(item.shortcut)
+        .contextMenu {
+            if let share = item.share { Button("Share…", action: share) }
+        }
         .help(item.title)
         .accessibilityLabel(item.badge > 0 ? "\(item.title), \(item.badge) waiting" : item.title)
         .accessibilityAddTraits(item.isActive ? .isSelected : [])

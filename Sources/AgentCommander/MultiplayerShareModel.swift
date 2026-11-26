@@ -1,0 +1,647 @@
+import Foundation
+import Observation
+
+// FEATURE MODEL: share and consult (design/COMMANDER-NETWORK-INCREMENT-3.md).
+// The tray's MultiplayerModel owns one of these. It reads each server's approvals, access requests
+// and hand-offs, and holds the grant sheet, the request-access form, the Consult and Hand off
+// composers, a request's thread and the audit list. Rules it keeps:
+// - Every mutation goes through the tray's one action at a time, so its progress, refusal and
+//   confirmation show in the tray's banner.
+// - Approvals, access requests and hand-offs are read quietly, and only while a panel is open.
+// - A grant sends only actions the resource lists. A worker or repository shared from the cockpit is
+//   added first, and the device agent's own action list for it then decides what is granted.
+// - Granting Consult or Hand off also grants the thread actions, and Hand off the two tracking
+//   actions, so the friend can follow what they sent.
+// - Nothing a hand-off produced is applied until the person picks a checkout for it.
+
+/// A page under one server in the tray.
+enum MultiplayerSharePage: Equatable {
+    case directory
+    case requestAccess(resource: String)
+    /// Access requests sent to you and by you.
+    case requests
+    case approval(String)
+    case grant
+    case consult(resource: String)
+    case handoff(resource: String)
+    case handoffs
+    case handoffDetail(request: String)
+    case thread(request: String, title: String)
+    /// One resource's audit entries, or every resource's when empty.
+    case audit(resource: String)
+
+    var title: String {
+        switch self {
+        case .directory: "Shared directory"
+        case .requestAccess: "Request access"
+        case .requests: "Access requests"
+        case .approval: "Approve this action?"
+        case .grant: "Share"
+        case .consult: "Consult"
+        case .handoff: "Hand off"
+        case .handoffs: "Hand-offs"
+        case .handoffDetail: "Hand-off"
+        case .thread: "Thread"
+        case .audit: "Audit"
+        }
+    }
+}
+
+/// A list the tray reads when its page opens.
+enum MultiplayerLoad<Value: Equatable>: Equatable {
+    case loading
+    case loaded(Value)
+    case failed(String)
+
+    var value: Value? {
+        if case .loaded(let value) = self { return value }
+        return nil
+    }
+}
+
+/// An approval or an access request with the server it waits on.
+struct MultiplayerPending<Item: Equatable & Identifiable>: Equatable, Identifiable where Item.ID == String {
+    let server: String
+    let item: Item
+
+    var id: String { "\(server)/\(item.id)" }
+}
+
+/// What the grant sheet shows for the chosen resource.
+struct MultiplayerShareResource: Equatable {
+    let id: String
+    let name: String
+    let kind: String
+    /// Every action it offers, or is expected to offer once added.
+    let offered: [String]
+    /// Not on this server yet: sharing adds it first.
+    let isNew: Bool
+
+    /// The actions the owner chooses between.
+    var choices: [String] { offered.filter { !MultiplayerSharePolicy.isCompanion($0) } }
+}
+
+@Observable @MainActor
+final class MultiplayerShareModel {
+    @ObservationIgnored weak var tray: MultiplayerModel?
+
+    private(set) var approvals: [String: [MultiplayerApproval]] = [:]
+    private(set) var accessRequests: [String: [MultiplayerAccessRequest]] = [:]
+    private(set) var handoffs: [String: [MultiplayerSentRequest]] = [:]
+    /// The latest status or result of a hand-off, by the hand-off's request ID.
+    private(set) var reports: [String: MultiplayerHandoffReport] = [:]
+    /// What came back from the Consult just sent.
+    private(set) var consultReply: MultiplayerSentRequest?
+    private(set) var thread: MultiplayerLoad<MultiplayerThread> = .loading
+    private(set) var audit: MultiplayerLoad<[MultiplayerAuditEntry]> = .loading
+
+    var grantDraft = MultiplayerShareDraft()
+    var accessDraft = MultiplayerAccessDraft()
+    var consultDraft = MultiplayerConsultDraft()
+    var handoffDraft = MultiplayerHandoffDraft()
+    var commentDraft = ""
+    /// Why the last file couldn't be attached.
+    private(set) var attachProblem: String?
+
+    private let client: MultiplayerClient?
+    private let clock: () -> Date
+    /// The pages Back returns through.
+    @ObservationIgnored private var trail: [MultiplayerTrayRoute] = []
+    @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
+    @ObservationIgnored private var pageToken = 0
+
+    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }) {
+        self.client = client
+        self.clock = now
+    }
+
+    // MARK: - Navigation
+
+    /// Opens a page under a server, remembering where Back goes.
+    func open(_ page: MultiplayerSharePage, on server: String) {
+        guard let tray, tray.server(server) != nil else { return }
+        let current = tray.route
+        if current != .share(server, page) { trail.append(current) }
+        tray.go(.share(server, page), keepingShareTrail: true)
+        load(page, on: server)
+    }
+
+    /// Returns to the page this one was opened from, or to the server's own page.
+    func back() {
+        guard let tray else { return }
+        let fallback = tray.route.serverID.map(MultiplayerTrayRoute.server) ?? .home
+        let previous = trail.popLast() ?? fallback
+        tray.go(previous, keepingShareTrail: true)
+        if case .share(let server, let page) = previous { load(page, on: server) }
+    }
+
+    /// The name of the page Back returns to.
+    var backTitle: String {
+        guard let tray else { return "Back" }
+        switch trail.last {
+        case .home?: return "Network"
+        case .share(_, let page)?: return page.title
+        case .server(let id)?: return tray.server(id)?.displayName ?? "Back"
+        default: return tray.route.serverID.flatMap { tray.server($0)?.displayName } ?? "Back"
+        }
+    }
+
+    /// The tray left the share pages by another way.
+    func leftSharePages() {
+        trail = []
+        pageTask?.cancel()
+        pageTask = nil
+        pageToken &+= 1
+        attachProblem = nil
+    }
+
+    private func load(_ page: MultiplayerSharePage, on server: String) {
+        switch page {
+        case .thread(let request, _): loadThread(request, on: server)
+        case .audit(let resource): loadAudit(resource, on: server)
+        case .handoffs, .handoffDetail: refresh()
+        default: break
+        }
+    }
+
+    // MARK: - Quiet reads
+
+    /// Reads approvals, access requests and hand-offs for every server the person is signed in to.
+    /// Called after each server list while a panel is open.
+    func refresh() {
+        guard let client, let tray, tray.viewers > 0, quietTask == nil else { return }
+        let ids = tray.servers.filter { $0.state == .online && $0.signedIn }.map(\.id)
+        let live = Set(ids)
+        approvals = approvals.filter { live.contains($0.key) }
+        accessRequests = accessRequests.filter { live.contains($0.key) }
+        handoffs = handoffs.filter { live.contains($0.key) }
+        guard !ids.isEmpty else { return }
+        quietTask = Task {
+            for id in ids where !Task.isCancelled {
+                let scoped = client.scoped(to: id)
+                if let next = try? await scoped.approvals() { self.approvals[id] = next }
+                if let next = try? await scoped.accessRequests() { self.accessRequests[id] = next }
+                if let next = try? await scoped.handoffs() { self.handoffs[id] = next }
+            }
+            self.quietTask = nil
+        }
+    }
+
+    func cancel() {
+        quietTask?.cancel()
+        quietTask = nil
+        pageTask?.cancel()
+        pageTask = nil
+        pageToken &+= 1
+    }
+
+    // MARK: - Derived values
+
+    private func status(_ server: String) -> MultiplayerStatus? {
+        guard let session = tray?.session(server), session.isOnline else { return nil }
+        return session.status
+    }
+
+    func directory(_ server: String) -> [MultiplayerDirectoryEntry] { status(server)?.directoryEntries ?? [] }
+
+    func entry(_ resource: String, on server: String) -> MultiplayerDirectoryEntry? {
+        directory(server).first { $0.id == resource }
+    }
+
+    /// A resource's name on a server, yours or a friend's; its ID when neither list names it.
+    func resourceName(_ id: String, on server: String) -> String {
+        guard let status = status(server) else { return id }
+        return status.resources.first { $0.id == id }?.name ?? status.directoryEntries.first { $0.id == id }?.name ?? id
+    }
+
+    /// Agents you enrolled, on every server you're signed in to.
+    var myAgents: [MultiplayerPending<MultiplayerResource>] {
+        (tray?.servers ?? []).flatMap { server in
+            (status(server.id)?.resources ?? []).filter { $0.kind == MultiplayerResourceKind.agent.rawValue }
+                .map { MultiplayerPending(server: server.id, item: $0) }
+        }
+    }
+
+    /// Friends' agents, on every server you're signed in to: the ones you can use first.
+    var friendAgents: [MultiplayerPending<MultiplayerDirectoryEntry>] {
+        (tray?.servers ?? []).flatMap { server in
+            directory(server.id).filter { $0.kind == MultiplayerResourceKind.agent.rawValue }
+                .map { MultiplayerPending(server: server.id, item: $0) }
+        }
+        .sorted { !$0.item.granted.isEmpty && $1.item.granted.isEmpty }
+    }
+
+    /// How many grants you have given on one of your resources.
+    func grantCount(_ resource: String, on server: String) -> Int {
+        Set((status(server)?.grants ?? []).filter { $0.resource == resource }.map(\.handle)).count
+    }
+
+    /// Every approval waiting on the person, oldest first within each server.
+    var pendingApprovals: [MultiplayerPending<MultiplayerApproval>] {
+        (tray?.servers ?? []).flatMap { server in
+            (approvals[server.id] ?? []).map { MultiplayerPending(server: server.id, item: $0) }
+        }
+    }
+
+    func approval(_ id: String, on server: String) -> MultiplayerApproval? {
+        approvals[server]?.first { $0.id == id }
+    }
+
+    /// Requests friends sent for your resources that still wait on you.
+    func incomingAccess(_ server: String) -> [MultiplayerAccessRequest] {
+        guard let handle = status(server)?.handle, !handle.isEmpty else { return [] }
+        return (accessRequests[server] ?? []).filter { $0.isPending && $0.owner == handle }
+    }
+
+    /// Requests you sent, whatever became of them.
+    func outgoingAccess(_ server: String) -> [MultiplayerAccessRequest] {
+        guard let handle = status(server)?.handle, !handle.isEmpty else { return [] }
+        return (accessRequests[server] ?? []).filter { $0.requester == handle }
+    }
+
+    var pendingAccess: [MultiplayerPending<MultiplayerAccessRequest>] {
+        (tray?.servers ?? []).flatMap { server in
+            incomingAccess(server.id).map { MultiplayerPending(server: server.id, item: $0) }
+        }
+    }
+
+    /// The request you already sent for a resource and that still waits.
+    func waitingRequest(for resource: String, on server: String) -> MultiplayerAccessRequest? {
+        outgoingAccess(server).first { $0.resource == resource && $0.isPending }
+    }
+
+    /// Every hand-off you sent, newest first, with its server.
+    var allHandoffs: [MultiplayerPending<MultiplayerSentRequest>] {
+        (tray?.servers ?? []).flatMap { server in
+            (handoffs[server.id] ?? []).map { MultiplayerPending(server: server.id, item: $0) }
+        }
+    }
+
+    func handoff(_ request: String, on server: String) -> MultiplayerSentRequest? {
+        handoffs[server]?.first { $0.request == request }
+    }
+
+    /// A hand-off's state in words: the run's, once asked; otherwise the request's own.
+    func handoffState(_ row: MultiplayerSentRequest) -> (title: String, tone: Tone) {
+        if let state = reports[row.request]?.state, !state.isEmpty {
+            return (MultiplayerRequestState.title(state), MultiplayerRequestState.tone(state))
+        }
+        if row.succeeded { return ("Started", .working) }
+        return (MultiplayerRequestState.title(row.status), MultiplayerRequestState.tone(row.status))
+    }
+
+    /// Who a hand-off went to: "priya’s agent sam-agent".
+    func handoffTarget(_ row: MultiplayerSentRequest, on server: String) -> String {
+        guard let entry = entry(row.resource, on: server) else { return resourceName(row.resource, on: server).multiplayerDisplay }
+        return "\(entry.owner.multiplayerDisplay)’s \(entry.name.multiplayerDisplay)"
+    }
+
+    // MARK: - Approvals
+
+    @discardableResult
+    func decide(_ approval: MultiplayerApproval, on server: String, approve: Bool) -> Task<Void, Never>? {
+        let who = approval.peer.multiplayerDisplay
+        return tray?.act(approve ? "Approving \(who)’s request…" : "Denying \(who)’s request…",
+                         failing: approve ? "Couldn’t approve the request." : "Couldn’t deny the request.",
+                         confirmation: approve ? "Approved. It runs on this Mac now." : "Denied. \(who) is told.") { client in
+            try await client.scoped(to: server).decide(approval: approval.id, approve: approve)
+            self.approvals[server]?.removeAll { $0.id == approval.id }
+            if self.tray?.route == .share(server, .approval(approval.id)) { self.back() }
+        }
+    }
+
+    // MARK: - Access requests
+
+    func startRequestAccess(_ entry: MultiplayerDirectoryEntry, on server: String) {
+        accessDraft = MultiplayerAccessDraft(actions: entry.requestable.count == 1 ? Set(entry.requestable) : [])
+        open(.requestAccess(resource: entry.id), on: server)
+    }
+
+    @discardableResult
+    func sendAccessRequest() -> Task<Void, Never>? {
+        guard let tray, case .share(let server, .requestAccess(let resource)) = tray.route, accessDraft.canSend,
+              let entry = entry(resource, on: server) else { return nil }
+        let body = accessDraft.body(resource: resource)
+        return tray.act("Asking \(entry.owner.multiplayerDisplay) for access…", failing: "Couldn’t send the request.",
+                        confirmation: "Request sent. \(entry.owner.multiplayerDisplay) decides whether to share \(entry.name.multiplayerDisplay).") { client in
+            try await client.scoped(to: server).requestAccess(body)
+            self.accessDraft = MultiplayerAccessDraft()
+            if let next = try? await client.scoped(to: server).accessRequests() { self.accessRequests[server] = next }
+            self.back()
+        }
+    }
+
+    /// Withdraws a request you sent, or declines one sent to you.
+    @discardableResult
+    func remove(_ request: MultiplayerAccessRequest, on server: String, declining: Bool) -> Task<Void, Never>? {
+        tray?.act(declining ? "Declining the request…" : "Withdrawing your request…",
+                  failing: declining ? "Couldn’t decline the request." : "Couldn’t withdraw the request.",
+                  confirmation: declining ? "Declined \(request.requester.multiplayerDisplay)’s request." : "Request withdrawn.") { client in
+            try await client.scoped(to: server).removeAccessRequest(id: request.id)
+            self.accessRequests[server]?.removeAll { $0.id == request.id }
+        }
+    }
+
+    /// Opens the grant sheet filled in from a friend's request. Granting is the approval.
+    func review(_ request: MultiplayerAccessRequest, on server: String) {
+        startGrant(on: server, handle: request.requester, resourceID: request.resource, actions: Set(request.actions))
+    }
+
+    // MARK: - Grant sheet
+
+    /// Opens the sheet for a friend, a resource, or both, preselecting any single option.
+    func startGrant(on server: String, handle: String? = nil, resourceID: String? = nil, actions: Set<String> = []) {
+        guard let status = status(server) else { return }
+        var draft = MultiplayerShareDraft(server: server)
+        draft.handle = handle ?? (status.friends.count == 1 ? status.friends[0].handle : "")
+        draft.resourceID = resourceID ?? (status.resources.count == 1 ? status.resources[0].id : "")
+        draft.actions = actions
+        grantDraft = draft
+        reconcileGrantActions()
+        open(.grant, on: server)
+    }
+
+    /// Servers a cockpit worker or repository can be shared on now.
+    var shareServers: [MultiplayerServerSummary] { tray?.friendServers ?? [] }
+
+    /// Opens the sheet for something chosen in the cockpit. False when no server can take it yet.
+    @discardableResult
+    func startShare(_ target: MultiplayerShareTarget) -> Bool {
+        guard let tray else { return false }
+        guard let server = shareServers.first(where: { $0.id == tray.route.serverID }) ?? shareServers.first else {
+            tray.go(.home)
+            tray.post(failure: "Sign in to a server before you share \(target.name.multiplayerDisplay).")
+            return false
+        }
+        var draft = MultiplayerShareDraft(server: server.id, resourceID: target.resourceID, target: target)
+        if let friends = status(server.id)?.friends, friends.count == 1 { draft.handle = friends[0].handle }
+        grantDraft = draft
+        reconcileGrantActions()
+        open(.grant, on: server.id)
+        return true
+    }
+
+    /// Moves the open sheet to another server, keeping the policy the owner chose.
+    func setGrantServer(_ server: String) {
+        guard let tray, case .share(let current, .grant) = tray.route, current != server, status(server) != nil else { return }
+        grantDraft.server = server
+        let friends = status(server)?.friends ?? []
+        if !friends.contains(where: { $0.handle == grantDraft.handle }) {
+            grantDraft.handle = friends.count == 1 ? friends[0].handle : ""
+        }
+        if grantDraft.target == nil { grantDraft.resourceID = "" }
+        reconcileGrantActions()
+        tray.go(.share(server, .grant), keepingShareTrail: true)
+    }
+
+    /// The resource the sheet is about, with the actions it offers.
+    var grantResource: MultiplayerShareResource? {
+        let known = status(grantDraft.server)?.resources.first { $0.id == grantDraft.resourceID }
+        if let known {
+            return MultiplayerShareResource(id: known.id, name: known.name, kind: known.kind, offered: known.actions, isNew: false)
+        }
+        guard let target = grantDraft.target, target.resourceID == grantDraft.resourceID else { return nil }
+        return MultiplayerShareResource(id: target.resourceID, name: target.name, kind: target.kind,
+                                        offered: MultiplayerSharePolicy.expected(kind: target.kind), isNew: true)
+    }
+
+    /// Keeps the chosen actions within what the chosen resource offers.
+    func reconcileGrantActions() {
+        let choices = grantResource?.choices ?? []
+        grantDraft.actions = grantDraft.actions.filter(choices.contains)
+        if grantDraft.actions.isEmpty, choices.count == 1 { grantDraft.actions = [choices[0]] }
+    }
+
+    func toggleGrantAction(_ action: String) {
+        if grantDraft.actions.contains(action) { grantDraft.actions.remove(action) } else { grantDraft.actions.insert(action) }
+    }
+
+    /// The actions granted alongside the chosen ones.
+    var grantCompanions: [String] {
+        guard let resource = grantResource else { return [] }
+        let extra = MultiplayerSharePolicy.companions(for: grantDraft.actions)
+        return resource.isNew ? extra : resource.offered.filter(extra.contains)
+    }
+
+    var canGrant: Bool {
+        guard let tray, !tray.isBusy, let status = status(grantDraft.server), grantResource != nil else { return false }
+        return status.friends.contains { $0.handle == grantDraft.handle } && !grantDraft.actions.isEmpty
+            && grantDraft.budgetProblem == nil
+    }
+
+    /// What stands between the sheet and Share, in one line.
+    var grantHint: String {
+        guard let status = status(grantDraft.server) else { return "This server is offline." }
+        if status.friends.isEmpty { return "Add a friend on this server first." }
+        if grantDraft.handle.isEmpty { return "Choose a friend." }
+        guard let resource = grantResource else { return "Choose what to share." }
+        if grantDraft.actions.isEmpty { return "Choose at least one action." }
+        if grantDraft.budgetProblem != nil { return "Fix the token budget." }
+        return resource.isNew ? "Adds \(resource.name.multiplayerDisplay) to this server, then shares it." : "You can revoke it at any time."
+    }
+
+    /// Adds the resource if it's new, then sends one grant per action with the owner's policy.
+    @discardableResult
+    func confirmGrant() -> Task<Void, Never>? {
+        guard canGrant, let tray, let resource = grantResource else { return nil }
+        let draft = grantDraft
+        let now = clock()
+        let who = draft.handle.multiplayerDisplay, what = resource.name.multiplayerDisplay
+        return tray.act("Sharing \(what) with \(who)…", failing: "Couldn’t share \(what).") { client in
+            let scoped = client.scoped(to: draft.server)
+            var offered = resource.offered
+            if resource.isNew, let target = draft.target {
+                try await scoped.perform(.addResource(id: resource.id, name: target.name, kind: target.kind, target: target.target))
+                offered = try await scoped.status().resources.first { $0.id == resource.id }?.actions ?? []
+            }
+            let grants = draft.grants(kind: resource.kind, offered: offered, now: now)
+            guard !grants.isEmpty else {
+                throw MultiplayerFailure.rejected("\(what) was added, but it doesn’t offer the actions you chose. Open it on this server to see what it offers.")
+            }
+            for grant in grants { try await scoped.submit(.grant, grant) }
+            let limits = draft.limits(now: now)
+            self.grantDraft = MultiplayerShareDraft()
+            self.tray?.session(draft.server)?.refresh()
+            self.back()
+            self.tray?.post(notice: "\(who) can use \(what) until \(MultiplayerTime.display(limits.expiresAt)). \(draft.approval == .ask ? "Each use waits for your approval." : "Uses run without asking.")")
+        }
+    }
+
+    // MARK: - Consult and Hand off
+
+    func startConsult(_ resource: String, on server: String) {
+        consultDraft = MultiplayerConsultDraft()
+        consultReply = nil
+        attachProblem = nil
+        open(.consult(resource: resource), on: server)
+    }
+
+    func startHandoff(_ resource: String, on server: String) {
+        handoffDraft = MultiplayerHandoffDraft()
+        attachProblem = nil
+        open(.handoff(resource: resource), on: server)
+    }
+
+    /// Attaches text files to the composer now open.
+    func attach(_ urls: [URL]) {
+        guard let tray, case .share(_, let page) = tray.route else { return }
+        var items: [MultiplayerContextItem] = []
+        attachProblem = nil
+        for url in urls where url.isFileURL {
+            switch MultiplayerContextBundle.read(url) {
+            case .success(let item): items.append(item)
+            case .failure(let failure): attachProblem = failure.message
+            }
+        }
+        switch page {
+        case .consult: consultDraft.context = MultiplayerContextBundle.adding(items, to: consultDraft.context)
+        case .handoff: handoffDraft.context = MultiplayerContextBundle.adding(items, to: handoffDraft.context)
+        default: break
+        }
+    }
+
+    func detach(_ item: MultiplayerContextItem) {
+        consultDraft.context.removeAll { $0.name == item.name }
+        handoffDraft.context.removeAll { $0.name == item.name }
+        attachProblem = nil
+    }
+
+    var canSendConsult: Bool { tray?.isBusy == false && consultDraft.canSend }
+    var canSendHandoff: Bool { tray?.isBusy == false && handoffDraft.canSend }
+
+    @discardableResult
+    func sendConsult() -> Task<Void, Never>? {
+        guard canSendConsult, let tray, case .share(let server, .consult(let resource)) = tray.route else { return nil }
+        let draft = consultDraft
+        let name = resourceName(resource, on: server).multiplayerDisplay
+        return tray.act("Asking \(name)…", failing: "Couldn’t send the prompt.") { client in
+            self.consultReply = try await client.scoped(to: server)
+                .send(resource: resource, action: MultiplayerSharePolicy.ask, payload: draft.payload, name: draft.title)
+            self.consultDraft.prompt = ""
+        }
+    }
+
+    @discardableResult
+    func sendHandoff() -> Task<Void, Never>? {
+        guard canSendHandoff, let tray, case .share(let server, .handoff(let resource)) = tray.route else { return nil }
+        let draft = handoffDraft
+        let name = resourceName(resource, on: server).multiplayerDisplay
+        return tray.act("Handing off to \(name)…", failing: "Couldn’t hand off the task.") { client in
+            let scoped = client.scoped(to: server)
+            let reply = try await scoped.send(resource: resource, action: MultiplayerSharePolicy.handoff,
+                                              payload: draft.payload, name: draft.trimmedTitle)
+            self.handoffDraft = MultiplayerHandoffDraft()
+            let row = MultiplayerSentRequest(request: reply.request, resource: resource, action: MultiplayerSharePolicy.handoff,
+                                             title: draft.trimmedTitle, at: self.clock(), status: reply.status,
+                                             value: reply.value, failure: reply.failure)
+            self.handoffs[server] = [row] + (self.handoffs[server] ?? []).filter { $0.request != row.request }
+            if let next = try? await scoped.handoffs(), next.contains(where: { $0.request == row.request }) {
+                self.handoffs[server] = next
+            }
+            // The composer is replaced by the hand-off it made; Back still returns to where it was opened.
+            self.tray?.go(.share(server, .handoffDetail(request: row.request)), keepingShareTrail: true)
+            self.tray?.post(notice: reply.succeeded ? "Handed off. \(name) started a run for it."
+                                                    : (reply.refusal ?? "The hand-off is waiting for the owner."))
+        }
+    }
+
+    /// Asks the owner's agent how a hand-off's run is going, or for its result and artifacts.
+    @discardableResult
+    func check(_ row: MultiplayerSentRequest, on server: String, result: Bool) -> Task<Void, Never>? {
+        guard let run = row.run else {
+            tray?.post(failure: row.refusal ?? "This hand-off has no run yet.")
+            return nil
+        }
+        let action = result ? MultiplayerSharePolicy.tracking[1] : MultiplayerSharePolicy.tracking[0]
+        return tray?.act(result ? "Reading the result…" : "Checking the run…",
+                         failing: result ? "Couldn’t read the result." : "Couldn’t check the run.") { client in
+            let reply = try await client.scoped(to: server).send(resource: row.resource, action: action,
+                                                                 payload: .object(["run": .string(run)]),
+                                                                 name: "\(result ? "Result" : "Status"): \(row.title)")
+            guard let report = MultiplayerHandoffReport(reply: reply, isResult: result) else {
+                throw MultiplayerFailure.rejected(reply.refusal ?? "The owner’s agent didn’t answer.")
+            }
+            // A status check keeps the artifacts an earlier result brought.
+            if !result, let earlier = self.reports[row.request], earlier.isResult, earlier.state == report.state { return }
+            self.reports[row.request] = report
+        }
+    }
+
+    /// Applies or saves one artifact of a hand-off's result into the checkout the person picked.
+    @discardableResult
+    func apply(artifact index: Int, of row: MultiplayerSentRequest, on server: String, checkout: String) -> Task<Void, Never>? {
+        guard let report = reports[row.request], report.isResult, report.artifacts.indices.contains(index),
+              checkout.hasPrefix("/") else { return nil }
+        let artifact = report.artifacts[index]
+        let folder = URL(fileURLWithPath: checkout).lastPathComponent.multiplayerDisplay
+        return tray?.act("Applying \(artifact.name.multiplayerDisplay) to \(folder)…",
+                         failing: "Couldn’t apply \(artifact.name.multiplayerDisplay).",
+                         confirmation: artifact.kind == "patch" ? "Applied \(artifact.name.multiplayerDisplay) to \(folder). The changes are staged, not committed."
+                                                                : "Saved \(artifact.name.multiplayerDisplay) into \(folder).") { client in
+            try await client.scoped(to: server).applyArtifact(request: report.request, artifact: index, checkout: checkout)
+        }
+    }
+
+    // MARK: - Threads
+
+    private func loadThread(_ request: String, on server: String) {
+        guard let client else { return }
+        pageTask?.cancel()
+        pageToken &+= 1
+        let token = pageToken
+        thread = .loading
+        commentDraft = ""
+        pageTask = Task {
+            let result: Result<MultiplayerThread, MultiplayerFailure>
+            do { result = .success(try await client.scoped(to: server).thread(request: request)) } catch { result = .failure(.from(error)) }
+            guard token == self.pageToken else { return }
+            self.pageTask = nil
+            switch result {
+            case .success(let thread): self.thread = .loaded(thread)
+            case .failure(let failure): self.thread = .failed(failure == .cancelled ? "The read was stopped. Try again." : failure.message)
+            }
+        }
+    }
+
+    func reloadPage() {
+        guard let tray, case .share(let server, let page) = tray.route else { return }
+        load(page, on: server)
+    }
+
+    var canComment: Bool {
+        tray?.isBusy == false && !commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && commentDraft.count <= 4000
+    }
+
+    @discardableResult
+    func postComment() -> Task<Void, Never>? {
+        guard canComment, let tray, case .share(let server, .thread(let request, _)) = tray.route else { return nil }
+        let text = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tray.act("Posting your comment…", failing: "Couldn’t post the comment.") { client in
+            let scoped = client.scoped(to: server)
+            try await scoped.comment(request: request, text: text)
+            self.commentDraft = ""
+            if let next = try? await scoped.thread(request: request) { self.thread = .loaded(next) }
+        }
+    }
+
+    // MARK: - Audit
+
+    private func loadAudit(_ resource: String, on server: String) {
+        guard let client else { return }
+        pageTask?.cancel()
+        pageToken &+= 1
+        let token = pageToken
+        audit = .loading
+        pageTask = Task {
+            let result: Result<[MultiplayerAuditEntry], MultiplayerFailure>
+            do { result = .success(try await client.scoped(to: server).audit(resource: resource)) } catch { result = .failure(.from(error)) }
+            guard token == self.pageToken else { return }
+            self.pageTask = nil
+            switch result {
+            case .success(let entries): self.audit = .loaded(entries)
+            case .failure(let failure): self.audit = .failed(failure == .cancelled ? "The read was stopped. Try again." : failure.message)
+            }
+        }
+    }
+}

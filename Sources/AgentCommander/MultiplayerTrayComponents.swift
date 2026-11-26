@@ -20,19 +20,24 @@ enum MultiplayerTheme {
     static let selection = Palette.selection
     static let onAccent = Palette.onAccent
 
-    static let tileRadius = Radius.tile
-    static let controlRadius: CGFloat = 7
+    // Hard lines: nothing in the tray is rounder than two points.
+    static let tileRadius: CGFloat = 2
+    static let controlRadius: CGFloat = 2
+    static let chipRadius: CGFloat = 1
     static let sectionInset: CGFloat = 14
 
+    // Prose is set in the system face; anything that is data, a state or a count is monospaced.
     static let title = Font.system(size: 14, weight: .semibold)
     static let body = Font.system(size: 13)
     static let name = Font.system(size: 13, weight: .medium)
-    static let heading = Font.system(size: 12, weight: .semibold)
-    static let state = Font.system(size: 11, weight: .semibold)
+    static let heading = Font.system(size: 11.5, weight: .semibold, design: .monospaced)
+    static let state = Font.system(size: 10.5, weight: .semibold, design: .monospaced)
     static let sub = Font.system(size: 11)
     static let mono = Font.system(size: 11, design: .monospaced)
+    static let data = Font.system(size: 11, weight: .medium, design: .monospaced)
+    static let label = Font.system(size: 9.5, weight: .semibold, design: .monospaced)
     static let fingerprint = Font.system(size: 10.5, design: .monospaced)
-    static let figure = Font.system(size: 16, weight: .semibold).monospacedDigit()
+    static let figure = Font.system(size: 14, weight: .semibold, design: .monospaced)
 
     /// tokens.json color.harness.swatch: mint, sky, pink, lime.
     static let swatches = [Color(hex: 0x4ADE80), Color(hex: 0x38BDF8), Color(hex: 0xF472B6), Color(hex: 0xA3E635)]
@@ -54,6 +59,8 @@ struct MultiplayerLamp: View {
 
     let kind: Kind
     var size: CGFloat = 9
+    /// A live lamp beats while it is on. Off by default, so lists of lamps stay still.
+    var pulses = false
 
     var body: some View {
         Group {
@@ -86,6 +93,7 @@ struct MultiplayerLamp: View {
             }
         }
         .frame(width: size, height: size)
+        .modifier(MultiplayerPulse(isLive: pulses && kind == .on, color: MultiplayerTheme.working))
         .accessibilityHidden(true)
     }
 }
@@ -124,16 +132,18 @@ struct MultiplayerSwitchStyle: ToggleStyle {
         Button {
             configuration.isOn.toggle()
         } label: {
-            Capsule()
+            let track = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius)
+            track
                 .fill(configuration.isOn ? MultiplayerTheme.working : Color.clear)
-                .overlay { Capsule().strokeBorder(configuration.isOn ? MultiplayerTheme.working : Palette.secondary, lineWidth: 1.5) }
+                .overlay { track.strokeBorder(configuration.isOn ? MultiplayerTheme.working : Palette.secondary, lineWidth: 1.5) }
                 .overlay(alignment: configuration.isOn ? .trailing : .leading) {
-                    Circle()
+                    Rectangle()
                         .fill(configuration.isOn ? MultiplayerTheme.panel : Palette.secondary)
-                        .padding(3)
+                        .frame(width: 10)
+                        .padding(3.5)
                 }
                 .frame(width: 30, height: 18)
-                .contentShape(Capsule())
+                .contentShape(Rectangle())
                 .animation(.easeOut(duration: 0.12), value: configuration.isOn)
         }
         .buttonStyle(.plain)
@@ -144,7 +154,8 @@ struct MultiplayerSwitchStyle: ToggleStyle {
     }
 }
 
-/// A person's picture in a rounded square, or their initial when they have none.
+/// A person's picture in a circle, or their initial when they have none. People are round; agents
+/// and resources are square (MultiplayerMark).
 struct MultiplayerAvatar: View {
     /// PNG or JPEG bytes.
     let image: Data?
@@ -152,7 +163,7 @@ struct MultiplayerAvatar: View {
     var size: CGFloat = 22
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: size > 30 ? MultiplayerTheme.tileRadius : 5, style: .continuous)
+        let shape = Circle()
         Group {
             if let picture = image.flatMap(NSImage.init(data:)) {
                 Image(nsImage: picture)
@@ -179,9 +190,9 @@ struct MultiplayerSwatch: View {
     let color: Color
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
+        Rectangle()
             .fill(color)
-            .frame(width: 10, height: 10)
+            .frame(width: 4, height: 12)
             .accessibilityHidden(true)
     }
 }
@@ -197,14 +208,16 @@ struct MultiplayerTrayButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.controlRadius, style: .continuous)
         configuration.label
-            .font(.system(size: large ? 13 : 12, weight: role == .primary ? .semibold : .medium))
+            .font(.system(size: large ? 12 : 11, weight: role == .primary ? .semibold : .medium, design: .monospaced))
             .foregroundStyle(ink)
             .lineLimit(1)
             .padding(.horizontal, large ? 14 : 10)
             .frame(minHeight: large ? 28 : 24)
             .background(role == .primary ? MultiplayerTheme.focus : Color.clear, in: shape)
+            .modifier(MultiplayerResponsive(isPressed: configuration.isPressed))
+            .clipShape(shape)
             .overlay { shape.strokeBorder(edge) }
-            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
             .contentShape(shape)
     }
 
@@ -229,17 +242,20 @@ struct MultiplayerTrayButtonStyle: ButtonStyle {
 struct MultiplayerBadge: View {
     let text: String
     var symbol: String? = nil
+    var tone: Tone = .neutral
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
         HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 8.5, weight: .semibold)) }
-            Text(text).font(.system(size: 10.5, weight: .medium))
+            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)) }
+            Text(text).font(MultiplayerTheme.label)
         }
-            .foregroundStyle(.inkSecondary)
+            .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
             .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .overlay { Capsule().strokeBorder(MultiplayerTheme.border) }
+            .padding(.horizontal, 5)
+            .frame(minHeight: 15)
+            .background(tone == .neutral ? Color.clear : tone.color.opacity(0.12), in: shape)
+            .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.border : tone.color.opacity(0.45)) }
     }
 }
 
@@ -298,10 +314,11 @@ struct MultiplayerStateLabel: View {
     let lamp: MultiplayerLamp.Kind
     let text: String
     var tone: Tone = .neutral
+    var pulses = false
 
     var body: some View {
         HStack(spacing: 5) {
-            MultiplayerLamp(kind: lamp)
+            MultiplayerLamp(kind: lamp, pulses: pulses)
             Text(text)
                 .font(MultiplayerTheme.state)
                 .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
@@ -344,6 +361,7 @@ struct MultiplayerBandHeading<Trailing: View>: View {
                 Text(count)
                     .font(MultiplayerTheme.heading.monospacedDigit())
                     .foregroundStyle(MultiplayerTheme.foreground)
+                    .multiplayerTicking(count)
             }
             Spacer(minLength: Space.s)
             trailing
@@ -355,43 +373,6 @@ struct MultiplayerBandHeading<Trailing: View>: View {
 extension MultiplayerBandHeading where Trailing == EmptyView {
     init(title: String, count: String? = nil) {
         self.init(title: title, count: count) { EmptyView() }
-    }
-}
-
-/// The counts at the top of the tray. The frame is the same with zeros, so nothing jumps after
-/// the first server is added.
-struct MultiplayerTallyBand: View {
-    let tally: MultiplayerTally
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
-        HStack(spacing: 1) {
-            cell(tally.servers == 0 ? "0" : "\(tally.serversOnline)/\(tally.servers)",
-                 tally.servers == 0 ? "servers" : tally.servers == 1 ? "server online" : "servers online",
-                 spoken: tally.summary)
-            cell("\(tally.friendsOnline)", tally.friendsOnline == 1 ? "friend online" : "friends online")
-            cell("\(tally.needsYou)", tally.needsYou == 1 ? "needs you" : "need you", hot: tally.needsYou > 0)
-        }
-        .background(MultiplayerTheme.hair)
-        .clipShape(shape)
-        .overlay { shape.strokeBorder(MultiplayerTheme.hair) }
-    }
-
-    private func cell(_ figure: String, _ label: String, hot: Bool = false, spoken: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(figure)
-                .font(MultiplayerTheme.figure)
-                .foregroundStyle(hot ? MultiplayerTheme.attention : MultiplayerTheme.foreground)
-            Text(label)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.inkSecondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MultiplayerTheme.well)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(spoken ?? "\(figure) \(label)")
     }
 }
 
@@ -408,7 +389,8 @@ struct MultiplayerServerRow: View {
     let onSignIn: () -> Void
 
     var body: some View {
-        HStack(spacing: Space.s) {
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: Space.s) {
             Button(action: onFavorite) {
                 Image(systemName: server.favorite ? "star.fill" : "star")
                     .font(.system(size: 11))
@@ -431,6 +413,7 @@ struct MultiplayerServerRow: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         if hostedHere { MultiplayerBadge(text: "Hosted here") }
+                        if server.unseen > 0 { MultiplayerBadge(text: "\(server.unseen) new", symbol: "circle.fill") }
                     }
                     Text(server.host)
                         .font(MultiplayerTheme.mono)
@@ -443,7 +426,8 @@ struct MultiplayerServerRow: View {
             }
             .buttonStyle(.plain)
             .help("Open \(server.displayName)")
-            .accessibilityLabel("\(server.displayName), \(server.host)\(hostedHere ? ", hosted on this Mac" : "")")
+
+            .accessibilityLabel("\(server.displayName), \(server.host)\(hostedHere ? ", hosted on this Mac" : "")\(server.unseen > 0 ? ", \(server.unseen) new in activity" : "")")
             .accessibilityHint("Opens this server’s settings, friends and sharing")
 
             if server.state == .signedOut {
@@ -452,10 +436,26 @@ struct MultiplayerServerRow: View {
                     .disabled(isBusy)
                     .accessibilityLabel("Sign in to \(server.displayName)")
             } else {
-                MultiplayerStateLabel(lamp: server.state.lamp, text: server.stateTitle(now: now), tone: server.state.tone)
+                MultiplayerStateLabel(lamp: server.state.lamp, text: server.stateTitle(now: now), tone: server.state.tone,
+                                      pulses: true)
             }
         }
         .frame(minHeight: 34)
+          // The key this server is known by, as identity: pinned, changed, or left to macOS.
+          HStack(spacing: 6) {
+              MultiplayerHashChip(label: "Pin", hash: MultiplayerFingerprint.text(pin: server.pin) ?? "",
+                                  trust: server.state == .certChanged ? .changed : server.pin.isEmpty ? .system : .pinned,
+                                  onCopy: { MultiplayerHashChip.copy($0) })
+              if !server.handle.isEmpty {
+                  Text("as \(server.handle.multiplayerDisplay)")
+                      .font(MultiplayerTheme.mono)
+                      .foregroundStyle(.inkSecondary)
+                      .lineLimit(1)
+              }
+          }
+          .padding(.leading, 28)
+        }
+        .padding(.bottom, 6)
     }
 }
 

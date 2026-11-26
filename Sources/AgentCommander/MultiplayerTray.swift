@@ -165,16 +165,50 @@ struct MultiplayerServerList: View {
 /// Friend requests waiting on the person, across servers.
 struct MultiplayerNeedsYou: View {
     let groups: [MultiplayerFriendGroup]
+    /// Requests under Ask each time, and friends asking for access (increment 3).
+    var approvals: [MultiplayerPending<MultiplayerApproval>] = []
+    var access: [MultiplayerPending<MultiplayerAccessRequest>] = []
+    var serverName: (String) -> String = { $0 }
+    var resourceName: (_ resource: String, _ server: String) -> String = { resource, _ in resource }
     let isBusy: Bool
     let onAccept: (MultiplayerIncoming, String) -> Void
+    var onOpenApproval: (MultiplayerPending<MultiplayerApproval>) -> Void = { _ in }
+    var onDecide: (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Void = { _, _ in }
+    var onReviewAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
+    var onDeclineAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
 
-    private var count: Int { groups.reduce(0) { $0 + $1.incoming.count } }
+    private var count: Int { groups.reduce(0) { $0 + $1.incoming.count } + approvals.count + access.count }
 
     var body: some View {
         if count > 0 {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
+                  Group {
                     MultiplayerBandHeading(title: "Needs you", count: "\(count)")
+                    ForEach(approvals) { pending in
+                        let approval = pending.item
+                        let name = resourceName(approval.resource, pending.server).multiplayerDisplay
+                        MultiplayerDecisionRow(color: MultiplayerTheme.swatch(for: pending.server),
+                                               title: "\(approval.peer.isEmpty ? "A friend" : approval.peer.multiplayerDisplay) \(approval.wants)",
+                                               detail: approval.request.isEmpty ? "On \(name). Grant is set to Ask each time."
+                                                                                : "On \(name): \(approval.request)",
+                                               isBusy: isBusy,
+                                               onOpen: { onOpenApproval(pending) },
+                                               onDecline: { onDecide(pending, false) },
+                                               onAccept: { onDecide(pending, true) })
+                            .multiplayerArriving()
+                    }
+                    ForEach(access) { pending in
+                        let request = pending.item
+                        MultiplayerDecisionRow(color: MultiplayerTheme.swatch(for: pending.server),
+                                               title: "\(request.requester.multiplayerDisplay) asks for access",
+                                               detail: "\(resourceName(request.resource, pending.server).multiplayerDisplay) on \(serverName(pending.server)). \(MultiplayerAccessRequestsPage.detail(request))",
+                                               declineTitle: "Decline", acceptTitle: "Review", isBusy: isBusy,
+                                               onOpen: { onReviewAccess(pending) },
+                                               onDecline: { onDeclineAccess(pending) },
+                                               onAccept: { onReviewAccess(pending) })
+                            .multiplayerArriving()
+                    }
                     ForEach(groups) { group in
                         ForEach(group.incoming) { request in
                             MultiplayerNeedRow(color: MultiplayerTheme.swatch(for: group.server.id),
@@ -183,9 +217,12 @@ struct MultiplayerNeedsYou: View {
                                                actionTitle: "Accept", isBusy: isBusy) {
                                 onAccept(request, group.server.id)
                             }
+                            .multiplayerArriving()
                         }
                     }
+                  }
                 }
+                .multiplayerStreaming(approvals.map(\.id) + access.map(\.id) + groups.flatMap { $0.incoming.map(\.id) })
             }
         }
     }
@@ -201,13 +238,16 @@ struct MultiplayerFriendGroups: View {
     let avatar: (String, String) -> Data?
     let onAddFriend: (String) -> Void
     let onShare: (String, String) -> Void
+    /// Unique friends online or busy, each counted once across servers. Nil sums the groups.
+    var available: Int? = nil
 
-    private var online: Int { groups.reduce(0) { $0 + $1.onlineCount } }
+    private var online: Int { available ?? groups.reduce(0) { $0 + $1.onlineCount } }
 
     var body: some View {
         MultiplayerBand {
             VStack(alignment: .leading, spacing: 2) {
                 MultiplayerBandHeading(title: "Friends", count: "\(online) online") { addFriend }
+                    .help("Friends who are online or busy. Someone on two servers counts once; away and do not disturb aren’t counted.")
                 ForEach(groups) { group in
                     HStack(spacing: 6) {
                         MultiplayerSwatch(color: MultiplayerTheme.swatch(for: group.server.id))
@@ -381,7 +421,7 @@ struct MultiplayerAddServerForm: View {
             Text("Not run yet").font(MultiplayerTheme.state).foregroundStyle(.inkSecondary)
         case .running:
             HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
+                MultiplayerSpinner()
                 Text("Checking…").font(MultiplayerTheme.state).foregroundStyle(MultiplayerTheme.focus)
             }
             .accessibilityElement(children: .combine)
@@ -609,7 +649,7 @@ struct MultiplayerCertificateReview: View {
         switch presented {
         case .running:
             HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
+                MultiplayerSpinner()
                 Text("Reading the certificate…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
@@ -735,15 +775,10 @@ struct MultiplayerPanel: View {
     @ViewBuilder private var header: some View {
         switch model.route {
         case .home:
+          VStack(spacing: 0) {
             MultiplayerTrayHeader(title: "Commander network", subtitle: homeSubtitle) {
-                if model.hasLoaded, !model.servers.isEmpty {
-                    MultiplayerPresenceMenu(shown: model.shownPresence, title: model.presenceTitle,
-                                            choice: model.presenceChoice, isEnabled: model.canSetPresence,
-                                            onPick: { model.setPresence($0) })
-                }
                 if model.isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
+                    MultiplayerSpinner()
                         .frame(width: 24, height: 24)
                         .accessibilityLabel("Checking status")
                 } else {
@@ -754,6 +789,13 @@ struct MultiplayerPanel: View {
                         .help("Refresh status (⌘R)")
                 }
             }
+            if model.hasLoaded, !model.servers.isEmpty {
+                Rectangle().fill(MultiplayerTheme.hair).frame(height: 1)
+                statusStrip
+                MultiplayerTabBar(tabs: tabs, selection: $model.tab)
+                    .padding(.bottom, -1)    // its lower edge is the header's rule
+            }
+          }
         case .addServer:
             MultiplayerTrayHeader(title: "Add server", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
         case .hosting:
@@ -771,7 +813,41 @@ struct MultiplayerPanel: View {
         case .profile: subpageHeader("Your profile")
         case .invite: subpageHeader("Invite")
         case .membership: subpageHeader("Membership")
+        case .share(_, let page):
+            MultiplayerTrayHeader(title: page.title, color: routedServer.map { MultiplayerTheme.swatch(for: $0.id) },
+                                  back: model.share.backTitle, onBack: { model.share.back() }) { EmptyView() }
         }
+    }
+
+    /// Servers online, approvals waiting, unseen activity and the person's presence: always above the tabs.
+    private var statusStrip: some View {
+        let tally = model.tally
+        let waiting = model.share.pendingApprovals.count
+        return MultiplayerStatusStrip(cells: [
+            MultiplayerReadout(id: "servers", label: "servers", value: "\(tally.serversOnline)/\(tally.servers)",
+                               lamp: tally.serversOnline > 0 ? .on : .off, spoken: tally.summary),
+            MultiplayerReadout(id: "approvals", label: "approvals", value: "\(waiting)", tone: waiting > 0 ? .attention : .neutral,
+                               spoken: waiting == 1 ? "1 approval waiting" : "\(waiting) approvals waiting"),
+            MultiplayerReadout(id: "unseen", label: "unseen", value: "\(model.unseen)", tone: model.unseen > 0 ? .focus : .neutral,
+                               spoken: "\(model.unseen) new in activity"),
+        ]) {
+            Rectangle().fill(MultiplayerTheme.hair).frame(width: 1)
+            MultiplayerPresenceMenu(shown: model.shownPresence, title: model.presenceTitle,
+                                    choice: model.effectivePresenceChoice, isEnabled: model.canSetPresence,
+                                    onPick: { model.setPresence($0) })
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var tabs: [MultiplayerTabBar.Tab] {
+        let share = model.share
+        let requests = model.servers.reduce(0) { $0 + $1.incoming }
+        let trouble = model.servers.filter { $0.state == .certChanged || $0.state == .error }.count
+        return [
+            MultiplayerTabBar.Tab(id: .agents, count: share.pendingApprovals.count + share.pendingAccess.count, isHot: true),
+            MultiplayerTabBar.Tab(id: .network, count: trouble, isHot: true),
+            MultiplayerTabBar.Tab(id: .people, count: requests + model.unseen, isHot: requests > 0),
+        ]
     }
 
     private var homeSubtitle: String {
@@ -835,6 +911,199 @@ struct MultiplayerPanel: View {
         case .membership:
             MultiplayerMembershipPage(state: model.membership, draft: $model.membershipDraft,
                                       onRetry: { model.loadMembership() })
+        case .share(let id, let page):
+            sharePage(page, on: id)
+        }
+    }
+
+    // MARK: Share and consult
+
+    @ViewBuilder private func sharePage(_ page: MultiplayerSharePage, on id: String) -> some View {
+        @Bindable var share = model.share
+        let now = model.currentDate()
+        let color = MultiplayerTheme.swatch(for: id)
+        if model.session(id)?.isOnline != true {
+            MultiplayerBand {
+                Text("\(routedServer?.displayName ?? "This server") is offline. Sharing resumes when it’s back.")
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+            }
+        } else {
+            switch page {
+            case .directory:
+                MultiplayerDirectoryPage(entries: share.directory(id), isBusy: model.isBusy,
+                                         isWaiting: { share.waitingRequest(for: $0, on: id) != nil },
+                                         onRequest: { share.startRequestAccess($0, on: id) },
+                                         onConsult: { share.startConsult($0.id, on: id) },
+                                         onHandOff: { share.startHandoff($0.id, on: id) })
+            case .requestAccess(let resource):
+                if let entry = share.entry(resource, on: id) {
+                    MultiplayerRequestAccessPage(entry: entry, draft: $share.accessDraft)
+                }
+            case .requests:
+                MultiplayerAccessRequestsPage(incoming: share.incomingAccess(id), outgoing: share.outgoingAccess(id),
+                                              resourceName: { share.resourceName($0, on: id) }, color: color, now: now,
+                                              isBusy: model.isBusy,
+                                              onReview: { share.review($0, on: id) },
+                                              onDecline: { share.remove($0, on: id, declining: true) },
+                                              onWithdraw: { share.remove($0, on: id, declining: false) })
+            case .approval(let approvalID):
+                if let approval = share.approval(approvalID, on: id) {
+                    let status = model.session(id)?.status
+                    MultiplayerApprovalPage(approval: approval, serverName: routedServer?.displayName ?? "this server",
+                                            color: color, resourceName: share.resourceName(approval.resource, on: id),
+                                            kind: status?.resources.first { $0.id == approval.resource }?.kind ?? "",
+                                            grant: status?.grants.first {
+                                                $0.resource == approval.resource && $0.capability == approval.action
+                                                    && (approval.peer.isEmpty || $0.handle == approval.peer)
+                                            },
+                                            now: now)
+                } else {
+                    MultiplayerBand {
+                        Text("This request was answered or expired.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                    }
+                }
+            case .grant:
+                let status = model.session(id)?.status
+                MultiplayerGrantSheet(draft: $share.grantDraft, servers: share.shareServers,
+                                      friends: status?.friends ?? [], resources: status?.resources ?? [],
+                                      resource: share.grantResource, companions: share.grantCompanions,
+                                      onServer: { share.setGrantServer($0) },
+                                      onResourceChange: { share.reconcileGrantActions() },
+                                      onToggle: { share.toggleGrantAction($0) })
+            case .consult(let resource):
+                MultiplayerConsultPage(draft: $share.consultDraft, entry: share.entry(resource, on: id),
+                                       reply: share.consultReply, attachProblem: share.attachProblem,
+                                       onChoose: { share.attach(MultiplayerFilePanel.chooseFiles()) },
+                                       onDrop: { share.attach($0) },
+                                       onDetach: { share.detach($0) },
+                                       onThread: { share.open(.thread(request: $0.request, title: $0.title), on: id) })
+            case .handoff(let resource):
+                MultiplayerHandoffComposer(draft: $share.handoffDraft, entry: share.entry(resource, on: id),
+                                           attachProblem: share.attachProblem,
+                                           onChoose: { share.attach(MultiplayerFilePanel.chooseFiles()) },
+                                           onDrop: { share.attach($0) },
+                                           onDetach: { share.detach($0) })
+            case .handoffs:
+                MultiplayerHandoffList(rows: share.handoffs[id] ?? [], state: { share.handoffState($0) },
+                                       target: { share.handoffTarget($0, on: id) }, now: now,
+                                       onOpen: { share.open(.handoffDetail(request: $0.request), on: id) })
+            case .handoffDetail(let request):
+                if let row = share.handoff(request, on: id) {
+                    MultiplayerHandoffDetail(row: row, target: share.handoffTarget(row, on: id),
+                                             state: share.handoffState(row), report: share.reports[request], now: now,
+                                             isBusy: model.isBusy,
+                                             onApply: { index, artifact in
+                                                 if let checkout = MultiplayerFilePanel.chooseCheckout(for: artifact.name.multiplayerDisplay) {
+                                                     share.apply(artifact: index, of: row, on: id, checkout: checkout)
+                                                 }
+                                             })
+                } else {
+                    MultiplayerBand {
+                        Text("Commander can’t find this hand-off any more.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                    }
+                }
+            case .thread(_, let title):
+                MultiplayerThreadPage(title: title, state: share.thread, draft: $share.commentDraft, now: now,
+                                      onRetry: { share.reloadPage() })
+            case .audit:
+                MultiplayerAuditPage(state: share.audit, resourceName: { share.resourceName($0, on: id) }, now: now,
+                                     onRetry: { share.reloadPage() })
+            }
+        }
+    }
+
+    @ViewBuilder private func shareFooter(_ page: MultiplayerSharePage, on id: String) -> some View {
+        let share = model.share
+        switch page {
+        case .directory:
+            MultiplayerTrayFooter(note: "Granted actions work now. Ask the owner for the rest.") {
+                Button("Access requests") { share.open(.requests, on: id) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+            }
+        case .requestAccess:
+            MultiplayerTrayFooter(note: share.accessDraft.actions.isEmpty ? "Choose at least one action." : nil) {
+                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Send request") { share.sendAccessRequest() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .disabled(model.isBusy || !share.accessDraft.canSend)
+            }
+        case .requests:
+            MultiplayerTrayFooter(note: "Review opens the share sheet. Granting it answers the request.") {
+                Button("Shared directory") { share.open(.directory, on: id) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+            }
+        case .approval(let approvalID):
+            MultiplayerTrayFooter {
+                if let approval = share.approval(approvalID, on: id) {
+                    Button("Audit") { share.open(.audit(resource: approval.resource), on: id) }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .help("See earlier uses of this resource")
+                    Spacer(minLength: 0)
+                    Button("Deny") { share.decide(approval, on: id, approve: false) }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .disabled(model.isBusy)
+                    Button("Approve") { share.decide(approval, on: id, approve: true) }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .disabled(model.isBusy)
+                }
+            }
+        case .grant:
+            MultiplayerTrayFooter(note: share.grantHint) {
+                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Share") { share.confirmGrant() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .disabled(!share.canGrant)
+            }
+        case .consult:
+            MultiplayerTrayFooter(note: "Uses one of your granted uses.") {
+                Button("Send prompt") { share.sendConsult() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!share.canSendConsult)
+                    .help("Send (⌘Return)")
+            }
+        case .handoff:
+            MultiplayerTrayFooter(note: "Uses one of your granted uses.") {
+                Button("Cancel") { share.back() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Hand off") { share.sendHandoff() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!share.canSendHandoff)
+                    .help("Hand off (⌘Return)")
+            }
+        case .handoffs:
+            MultiplayerTrayFooter(note: "Open one to check its run or read its result.") {
+                Button("Shared directory") { share.open(.directory, on: id) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+            }
+        case .handoffDetail(let request):
+            MultiplayerTrayFooter {
+                if let row = share.handoff(request, on: id) {
+                    Button("Thread") { share.open(.thread(request: row.request, title: row.title), on: id) }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                    Spacer(minLength: 0)
+                    Button("Check status") { share.check(row, on: id, result: false) }
+                        .buttonStyle(MultiplayerTrayButtonStyle())
+                        .disabled(model.isBusy || row.run == nil)
+                    Button("Get result") { share.check(row, on: id, result: true) }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .disabled(model.isBusy || row.run == nil)
+                        .help("Reads the run’s report and artifacts. Nothing is applied until you choose to.")
+                }
+            }
+        case .thread:
+            MultiplayerTrayFooter {
+                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Post comment") { share.postComment() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!share.canComment)
+            }
+        case .audit:
+            MultiplayerTrayFooter(note: "The latest 200 entries, kept on this Mac.") {
+                Button("Refresh") { share.reloadPage() }.buttonStyle(MultiplayerTrayButtonStyle())
+            }
         }
     }
 
@@ -858,35 +1127,90 @@ struct MultiplayerPanel: View {
                     }
                 } else {
                     HStack(spacing: Space.s) {
-                        ProgressView().controlSize(.small)
+                        MultiplayerSpinner()
                         Text("Asking the network helper…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                     }
                     .accessibilityElement(children: .combine)
                 }
             }
         } else {
-            MultiplayerBand { MultiplayerTallyBand(tally: model.tally) }
             if model.servers.isEmpty {
                 MultiplayerFirstRun(onAddServer: { model.startAddServer() }, onHosting: { model.go(.hosting) })
             } else {
-                let groups = model.friendGroups
-                MultiplayerServerList(servers: model.servers, now: model.currentDate(), isBusy: model.isBusy,
-                                      onAdd: { model.startAddServer() },
-                                      onOpen: { model.openServer($0) },
-                                      onFavorite: { model.toggleFavorite($0) },
-                                      onSignIn: { model.signIn($0) })
-                MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy,
-                                    onAccept: { model.accept($0, on: $1) })
-                MultiplayerFriendGroups(groups: groups, addable: model.friendServers, isBusy: model.isBusy,
-                                        avatar: { model.avatar(server: $0, handle: $1) },
-                                        onAddFriend: { model.addFriend(on: $0) },
-                                        onShare: { model.share(with: $0, on: $1) })
-                MultiplayerActivityBand(events: model.filteredActivity, hasAny: !model.activity.isEmpty,
-                                        unseen: model.unseen, servers: model.servers, actors: model.activityActors,
-                                        server: $model.activityServer, friend: $model.activityFriend,
-                                        now: model.currentDate(), onMarkSeen: { model.markActivitySeen() })
+                Group {
+                    switch model.tab {
+                    case .agents: agentsTab
+                    case .network: networkTab
+                    case .people: peopleTab
+                    }
+                }
+                .id(model.tab)
+                .transition(.opacity)
+                .animation(MultiplayerTheme.Motion.ease(), value: model.tab)
             }
         }
+    }
+
+    /// Agents: what waits on you, live remote work, your agents and your friends' agents.
+    @ViewBuilder private var agentsTab: some View {
+        let share = model.share
+        MultiplayerNeedsYou(groups: [], approvals: share.pendingApprovals, access: share.pendingAccess,
+                            serverName: { model.server($0)?.displayName ?? "a server" },
+                            resourceName: { share.resourceName($0, on: $1) },
+                            isBusy: model.isBusy,
+                            onAccept: { model.accept($0, on: $1) },
+                            onOpenApproval: { share.open(.approval($0.item.id), on: $0.server) },
+                            onDecide: { share.decide($0.item, on: $0.server, approve: $1) },
+                            onReviewAccess: { share.review($0.item, on: $0.server) },
+                            onDeclineAccess: { share.remove($0.item, on: $0.server, declining: true) })
+        MultiplayerRemoteWorkBand(items: share.allHandoffs.map { pending in
+            let state = share.handoffState(pending.item)
+            return MultiplayerRemoteWorkBand.Item(
+                id: pending.id,
+                title: pending.item.title.isEmpty ? "Untitled hand-off" : pending.item.title.multiplayerDisplay,
+                detail: "Handed to \(share.handoffTarget(pending.item, on: pending.server)) on \(model.server(pending.server)?.displayName ?? "a server")",
+                color: MultiplayerTheme.swatch(for: pending.server), state: state.title, tone: state.tone,
+                open: { share.open(.handoffDetail(request: pending.item.request), on: pending.server) })
+        })
+        MultiplayerAgentRoster(mine: share.myAgents, theirs: share.friendAgents,
+                               serverName: { model.server($0)?.displayName ?? "a server" },
+                               grantCount: { share.grantCount($0.item.id, on: $0.server) },
+                               isWaiting: { share.waitingRequest(for: $0.item.id, on: $0.server) != nil },
+                               isBusy: model.isBusy,
+                               onShare: { share.startGrant(on: $0.server, resourceID: $0.item.id) },
+                               onAudit: { share.open(.audit(resource: $0.item.id), on: $0.server) },
+                               onConsult: { share.startConsult($0.item.id, on: $0.server) },
+                               onHandOff: { share.startHandoff($0.item.id, on: $0.server) },
+                               onRequest: { share.startRequestAccess($0.item, on: $0.server) },
+                               onDirectory: { share.open(.directory, on: $0) })
+    }
+
+    /// Network: the servers, their state and the keys they are known by.
+    @ViewBuilder private var networkTab: some View {
+        MultiplayerServerList(servers: model.servers, now: model.currentDate(), isBusy: model.isBusy,
+                              onAdd: { model.startAddServer() },
+                              onOpen: { model.openServer($0) },
+                              onFavorite: { model.toggleFavorite($0) },
+                              onSignIn: { model.signIn($0) })
+        MultiplayerBand {
+            MultiplayerLinkRow(symbol: "server.rack", title: "Hosting on this Mac",
+                               caption: "How to run a relay here, with no Docker") { model.go(.hosting) }
+        }
+    }
+
+    /// People: friend requests, friends by server, and what happened.
+    @ViewBuilder private var peopleTab: some View {
+        let groups = model.friendGroups
+        MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy, onAccept: { model.accept($0, on: $1) })
+        MultiplayerFriendGroups(groups: groups, addable: model.friendServers, isBusy: model.isBusy,
+                                avatar: { model.avatar(server: $0, handle: $1) },
+                                onAddFriend: { model.addFriend(on: $0) },
+                                onShare: { model.share(with: $0, on: $1) },
+                                available: model.friendsAvailable)
+        MultiplayerActivityBand(events: model.filteredActivity, hasAny: !model.activity.isEmpty,
+                                unseen: model.unseen, servers: model.servers, actors: model.activityActors,
+                                server: $model.activityServer, friend: $model.activityFriend,
+                                now: model.currentDate(), onMarkSeen: { model.markActivitySeen() })
     }
 
     @ViewBuilder private func serverPage(_ server: MultiplayerServerSummary) -> some View {
@@ -926,8 +1250,26 @@ struct MultiplayerPanel: View {
                         if status.hasAvatar { model.loadAvatar(server: server.id, handle: status.handle) }
                     }
             }
+            if let session, session.route == .home, session.isOnline, let status = session.status {
+                let share = model.share
+                MultiplayerSharingBand(directoryCount: status.directoryEntries.count,
+                                       requestCount: share.incomingAccess(server.id).count,
+                                       approvalCount: share.approvals[server.id]?.count ?? 0,
+                                       handoffCount: share.handoffs[server.id]?.count ?? 0,
+                                       canShare: !model.isBusy && !status.friends.isEmpty && !status.resources.isEmpty,
+                                       onShare: { share.startGrant(on: server.id) },
+                                       onDirectory: { share.open(.directory, on: server.id) },
+                                       onRequests: { share.open(.requests, on: server.id) },
+                                       onApprovals: {
+                                           if let first = share.approvals[server.id]?.first { share.open(.approval(first.id), on: server.id) }
+                                       },
+                                       onHandoffs: { share.open(.handoffs, on: server.id) },
+                                       onAudit: { share.open(.audit(resource: ""), on: server.id) })
+            }
             if let session {
-                MultiplayerSessionContent(model: session)
+                MultiplayerSessionContent(model: session,
+                                          onShare: { model.share.startGrant(on: server.id, handle: $0, resourceID: $1) },
+                                          onAudit: { model.share.open(.audit(resource: $0), on: server.id) })
             }
         }
     }
@@ -938,9 +1280,6 @@ struct MultiplayerPanel: View {
         switch model.route {
         case .home:
             MultiplayerTrayFooter(note: "Updates while this panel is open", isFixture: model.usesFixtureHelper) {
-                Button("Hosting") { model.go(.hosting) }
-                    .buttonStyle(MultiplayerTrayButtonStyle())
-                    .help("How to run a relay on this Mac")
                 let signedIn = model.servers.filter(\.signedIn)
                 if !signedIn.isEmpty {
                     Menu("Sign out") {
@@ -1021,6 +1360,8 @@ struct MultiplayerPanel: View {
                     .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .disabled(!model.canSaveMembership)
             }
+        case .share(let id, let page):
+            shareFooter(page, on: id)
         }
     }
 }

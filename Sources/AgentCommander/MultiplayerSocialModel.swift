@@ -171,9 +171,30 @@ extension MultiplayerModel {
         servers.first { $0.state == .online && $0.signedIn && $0.presence != nil }?.presence
     }
 
+    /// The choice in force: the one the person made here, or what the device agent reports. The
+    /// device agent starts on Auto, so that is assumed until either says otherwise.
+    var effectivePresenceChoice: MultiplayerPresenceChoice? {
+        if let presenceChoice { return presenceChoice }
+        guard let server = servers.first(where: { $0.state == .online && $0.signedIn }) else { return nil }
+        if server.presenceAuto == false, let shown = server.presence {
+            return MultiplayerPresenceChoice(rawValue: shown.rawValue) ?? .auto
+        }
+        return .auto
+    }
+
     var presenceTitle: String {
-        guard let shown = shownPresence else { return presenceChoice?.title ?? "Presence" }
-        return presenceChoice == .auto ? "\(shown.title), auto" : shown.title
+        guard let shown = shownPresence else { return effectivePresenceChoice?.title ?? "Presence" }
+        return effectivePresenceChoice == .auto ? "Auto: \(shown.title)" : shown.title
+    }
+
+    /// Unique friends who are online or busy on a connected server. A contact linked across servers
+    /// counts once; away and do not disturb are not counted. Nil until contacts have been read.
+    var friendsAvailable: Int? {
+        guard let contacts else { return nil }
+        let live = Set(servers.filter { $0.state == .online }.map(\.id))
+        return contacts.filter { contact in
+            contact.rows.contains { live.contains($0.server) && $0.presence.isAvailable }
+        }.count
     }
 
     var canSetPresence: Bool {
@@ -303,9 +324,9 @@ extension MultiplayerModel {
             let saved = try await client.join(link: link.raw)
             self.merge(saved)
             let request = link.from.isEmpty ? "" : " A friend request goes to \(link.from.multiplayerDisplay) once you’re signed in."
-            self.post(notice: "Added \(saved.displayName). Finish signing in in your browser.\(request)")
             self.serverDraft = MultiplayerServerDraft()
             self.go(.home)
+            self.post(notice: "Added \(saved.displayName). Finish signing in in your browser.\(request)")
         }
     }
 
