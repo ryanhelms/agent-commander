@@ -233,4 +233,20 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
         try await ShellRenderTests.write(page(NetworkPlace.shared, grant), "live-shared-grant", theme: .console, to: folder, size: size)
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("live-directory-consult-console.png").path))
     }
+
+    @Test func theNavigationCountsWhatTheHandOffsPageHeads() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-sent")
+        defer { model.close() }
+        let content = NetworkPagesContent(model: model, state: NetworkPagesLiveState())
+        let sent = content.sent
+        // The fixture sent two hand-offs and one review. The page lists three rows and heads them so.
+        #expect(sent == NetworkSentTally(handoffs: 2, reviews: 1))
+        #expect(sent.total == content.workRows.count && sent.figure == "3: 2 hand-offs, 1 review")
+        // The navigation's place reads the same lists, so it says the same number.
+        let network = ShellNetwork(model: model)
+        #expect(network.sent == sent.total)
+        let navigation = LiveShell.navigation(runs: [], openRunPath: nil, composing: false, place: NetworkPlace.handoffs,
+                                              needsYou: 0, network: network)
+        #expect(navigation.selectedPlace?.spoken == "Hand-offs, 3 sent")
+    }
 }

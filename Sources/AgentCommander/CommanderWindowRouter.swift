@@ -11,6 +11,7 @@ import SwiftUI
 //   CommanderWindowRouter      brings the cockpit forward, reopening it when closed, and hands the
 //                              request to the live window
 //   CommanderOpenRequest.init(page:server:)   the tray's moved pages as requests
+//   CommanderOpenRequest.landingCrumbs        the breadcrumb to where a request lands, for a link's label
 
 /// A page of the main window to open, by the same place IDs the navigation uses.
 struct CommanderOpenRequest: Equatable, Sendable {
@@ -76,17 +77,47 @@ extension CommanderOpenRequest {
     /// review row goes to, so an unknown one opens the wall, and so does an unknown remote worker.
     @MainActor func destination(in catalog: CommanderOpenCatalog) -> CommanderOpenDestination {
         guard let item, let server, catalog.has(item, server) else { return CommanderOpenDestination(place: place) }
+        return destination(of: item, on: server, places: catalog.places)
+    }
+
+    /// The one mapping from an item that exists to its place. `destination(in:)` opens it and
+    /// `landingCrumbs` names it, so the two can't differ.
+    private func destination(of item: Item, on server: String, places: Set<String>) -> CommanderOpenDestination {
         if case .review = item {
             let own = WallLiveWork.place(for: .review)
-            guard catalog.places.contains(own) else { return CommanderOpenDestination(place: place) }
+            guard places.contains(own) else { return CommanderOpenDestination(place: place) }
             return CommanderOpenDestination(place: own, server: server, item: item)
         }
         if case .workspace(let id, _, _) = item {
             let own = TeamsPlace.workspace(id, on: server)
-            guard catalog.places.contains(own) else { return CommanderOpenDestination(place: place) }
+            guard places.contains(own) else { return CommanderOpenDestination(place: place) }
             return CommanderOpenDestination(place: own, server: server, item: item)
         }
         return CommanderOpenDestination(place: place, server: server, item: item)
+    }
+}
+
+// MARK: - Where a request lands, in words
+
+extension CommanderOpenRequest {
+    /// The window's breadcrumb to the place this request opens when its item exists: ["Network",
+    /// "Hand-offs"] for a review, ["Agents", "Workspace", "Runs"] for Watch and Control,
+    /// ["Teams", "Team tools", "Hosts"] for a host. A link outside the window labels itself with
+    /// these, so its words are where the router lands.
+    ///
+    /// The place comes from the mapping `destination(in:)` uses, and the words from the live
+    /// navigation's own crumbs. The navigation is read with every place listed (an admin's) and
+    /// no workspace or run, because a label can't name one: a workspace reads "Teams › Workspaces"
+    /// and the wall reads its Runs place, whichever project is open.
+    var landingCrumbs: [String] {
+        var network = ShellNetwork()
+        network.isAdmin = true
+        func navigation(at place: String) -> CommanderNavigation {
+            LiveShell.navigation(runs: [], openRunPath: nil, composing: false, place: place, needsYou: 0, network: network)
+        }
+        let places = Set(navigation(at: LiveShell.wall).places.map(\.id))
+        let landing = item.flatMap { item in server.map { destination(of: item, on: $0, places: places).place } } ?? place
+        return navigation(at: landing).crumbs
     }
 }
 

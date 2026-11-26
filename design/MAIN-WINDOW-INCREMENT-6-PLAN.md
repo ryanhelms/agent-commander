@@ -11,6 +11,11 @@ The increment contracts give the dense pages to the tray, so the owner had to ag
 3. **The tabs stay** Agents, Network and People, with less in each.
 4. **Policy and moderation stay in the tray for now.** The tray keeps them until the window's Admin page, with the member and device list reads from issue #18, passes a running-window check. The router maps the policy page anyway, so the tray can link to it later.
 
+## Deferred
+
+- **Control stays in the tray.** No plan gives the window a hand-over composer: the table below keeps Take back in the tray, and [the redesign plan](MAIN-WINDOW-REDESIGN-PLAN.md)'s increment 4 covers only control state on the tile (`WallControlDock`). Removing the tray's control page would leave `handOver()` unreachable. A window composer would be a new plan item.
+- **Watch's zoom is not yet checked in a window.** A request from Watch zooms the wall to the worker's remote tile. That needs a live run, so it has been checked in tests only, not in a running window.
+
 ## What stays and what moves
 
 | Tray area | Stays in the tray | Moves to the main window | Window place |

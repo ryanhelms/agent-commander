@@ -23,6 +23,23 @@ import SwiftUI
 //   NetworkPages            all four, as a page receives them
 //   Network…Row             one row of a page's table, built from the content
 
+/// What "sent" counts on Hand-offs: every request the page lists, hand-offs and reviews together.
+/// The navigation's count, the page's heading, its VoiceOver label and its readouts all read this.
+struct NetworkSentTally: Equatable, Sendable {
+    var handoffs = 0
+    var reviews = 0
+
+    /// The count of the place: "3 sent" in the navigation.
+    var total: Int { handoffs + reviews }
+
+    /// The heading's count. It adds the split only where both kinds are listed:
+    /// "3: 2 hand-offs, 1 review", and "2" for hand-offs alone.
+    var figure: String {
+        guard handoffs > 0, reviews > 0 else { return "\(total)" }
+        return "\(total): \(handoffs) \(handoffs == 1 ? "hand-off" : "hand-offs"), \(reviews) \(reviews == 1 ? "review" : "reviews")"
+    }
+}
+
 enum NetworkPlace {
     static let servers = LiveShell.servers
     static let directory = "network.directory"
@@ -249,6 +266,12 @@ struct NetworkPagesContent {
         return rows(\.incomingAccess, incoming: true) + rows(\.outgoingAccess, incoming: false)
     }
 
+    /// How many hand-offs and reviews you sent: the count of Hand-offs, wherever it is shown.
+    var sent: NetworkSentTally {
+        NetworkSentTally(handoffs: servers.reduce(0) { $0 + $1.handoffs.count },
+                         reviews: servers.reduce(0) { $0 + $1.reviews.count })
+    }
+
     /// Hand-offs and reviews you sent, newest first.
     var workRows: [NetworkWorkRow] {
         servers.flatMap { server -> [NetworkWorkRow] in
@@ -410,8 +433,10 @@ struct NetworkPagesContent {
             return cells
         case NetworkPlace.handoffs:
             let rows = workRows
-            return [cell("handoffs", "hand-offs", rows.filter { $0.kind == .handoff }.count),
-                    cell("reviews", "reviews", rows.filter { $0.kind == .review }.count),
+            // The same two figures the heading splits its count into.
+            let sent = sent
+            return [cell("handoffs", "hand-offs", sent.handoffs),
+                    cell("reviews", "reviews", sent.reviews),
                     cell("working", "working", rows.filter { $0.tone == .working && $0.state != "Done" }.count, tone: .working),
                     cell("waiting", "waiting", rows.filter { $0.tone == .attention }.count, tone: .attention),
                     cell("failed", "failed", rows.filter { $0.tone == .failure }.count, tone: .failure)]

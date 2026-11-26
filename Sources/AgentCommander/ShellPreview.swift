@@ -100,7 +100,7 @@ enum ShellSample {
     static func navigation(inbox: NeedsYouInbox, attention: Int, selection: String,
                            collapsed: Set<String> = [], profile: CommanderProfile = profile,
                            servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
-                           handoffs: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
+                           sent: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
                            isAdmin: Bool = true) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
@@ -122,7 +122,7 @@ enum ShellSample {
             place("network.shared", "Shared", "square.and.arrow.up.on.square"),
             place("network.directory", "Directory", "magnifyingglass", detail: true),
             place("network.approvals", "Approvals", "checkmark.shield", count: approvals, hot: true, detail: true),
-            place("network.handoffs", "Hand-offs", "arrow.up.right", count: handoffs, detail: true, noun: "sent"),
+            place("network.handoffs", "Hand-offs", "arrow.up.right", count: sent, detail: true, noun: "sent"),
             place("network.threads", "Threads", "bubble.left.and.bubble.right", detail: true),
             place("network.audit", "Audit", "list.bullet.rectangle", detail: true),
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
@@ -226,7 +226,7 @@ final class ShellPreviewState {
         ShellSample.navigation(inbox: inbox(answered: answered), attention: attention, selection: selection,
                                collapsed: collapsed, profile: profile, servers: network.health,
                                approvals: network.approvalCount, friendRequests: network.friendRequestCount,
-                               handoffs: network.handoffCount, workspaces: teams.workspacePlaces,
+                               sent: network.sentCount, workspaces: teams.workspacePlaces,
                                isAdmin: teams.content.isAdmin)
     }
 

@@ -686,7 +686,8 @@ final class NetworkPreviewState {
     /// The sample network's counts for the shell's navigation.
     var approvalCount: Int { content.servers.reduce(0) { $0 + $1.approvals.count } }
     var friendRequestCount: Int { content.friendRequests.count }
-    var handoffCount: Int { content.servers.reduce(0) { $0 + $1.handoffs.count } }
+    /// Hand-offs and reviews together, as the page's heading counts them.
+    var sentCount: Int { content.sent.total }
     var health: CommanderServerHealth {
         CommanderServerHealth(online: content.servers.filter { $0.summary.state == .online }.count, total: content.servers.count)
     }
