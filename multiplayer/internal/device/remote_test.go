@@ -26,6 +26,9 @@ func TestRemotePairingAndAPI(t *testing.T) {
 	if r, _ := c.Get(en.URL + "/"); r.StatusCode != 200 || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("the page must load before pairing: %d", r.StatusCode)
 	}
+	if data, _ := call(t, h, "remote-devices", map[string]any{}); !strings.Contains(string(data), `"pairing"`) {
+		t.Fatalf("remote-devices should show the code on offer: %s", data)
+	}
 	r, err := c.Get(en.PairURL)
 	if err != nil || r.StatusCode != 200 {
 		t.Fatalf("pair: %v %v", r.StatusCode, err)
@@ -52,7 +55,7 @@ func TestRemotePairingAndAPI(t *testing.T) {
 		t.Fatalf("watchable: %d", r.StatusCode)
 	}
 	data, _ = call(t, h, "remote-devices", map[string]any{})
-	if !strings.Contains(string(data), `"name":"Phone"`) {
+	if !strings.Contains(string(data), `"name":"Phone"`) || strings.Contains(string(data), `"pairing"`) {
 		t.Fatalf("devices: %s", data)
 	}
 }

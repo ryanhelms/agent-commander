@@ -121,7 +121,12 @@ func (m *Manager) remoteVerb(ctx context.Context, verb string, in remoteInput) (
 		for _, d := range rs.devices {
 			out = append(out, map[string]any{"id": d.ID, "name": d.Name, "paired": d.Paired, "expires": d.Expires})
 		}
-		return map[string]any{"devices": out, "url": rs.url, "running": rs.srv != nil}, nil
+		res := map[string]any{"devices": out, "url": rs.url, "running": rs.srv != nil}
+		// The code on show, so a tray that restarts can draw the same QR code.
+		if rs.srv != nil && rs.code != "" && time.Now().Before(rs.codeExp) {
+			res["pairing"] = map[string]any{"code": rs.code, "expiresAt": rs.codeExp, "pairURL": rs.url + "/pair?code=" + rs.code}
+		}
+		return res, nil
 	case "remote-revoke":
 		rs.mu.Lock()
 		defer rs.mu.Unlock()
