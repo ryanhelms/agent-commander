@@ -10,6 +10,8 @@ import Observation
 //   in the tray's banner.
 // - A review is posted to a pull request only after the person names the URL and confirms it.
 // - A fan-out's winner is a note on this Mac. It is sent nowhere.
+// - A read or an action that names its target never reads or moves the tray's route. The tray's own
+//   pages call the same functions with the target their route names.
 
 enum MultiplayerWatchPhase: Equatable {
     case connecting
@@ -301,26 +303,47 @@ final class MultiplayerLiveModel {
 
     // MARK: - Co-pilot
 
-    var canSuggest: Bool {
-        let text = suggestDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tray?.isBusy == false && !text.isEmpty && text.utf8.count <= 4096
+    var canSuggest: Bool { tray?.isBusy == false && Self.canSend(suggestion: suggestDraft) }
+
+    /// A suggestion that can be sent: not blank, and at most 4,096 bytes.
+    nonisolated static func canSend(suggestion draft: String) -> Bool {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && text.utf8.count <= 4096
     }
 
-    /// Sends a suggestion for the watched worker. The owner approves it before the worker sees it.
+    /// Sends the suggestion typed on the tray's own watch page.
     @discardableResult
     func sendSuggestion() -> Task<Void, Never>? {
-        guard canSuggest, let tray, let share, case .share(let server, .watch(let resource)) = tray.route else { return nil }
-        let text = suggestDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let tray, case .share(let server, .watch(let resource)) = tray.route else { return nil }
+        return sendSuggestion(suggestDraft, to: resource, on: server, then: { reply in
+            self.suggestReply = reply
+            self.suggestDraft = ""
+        })
+    }
+
+    /// Sends a suggestion for a friend's worker. The owner approves it before the worker sees it.
+    /// `then` is given the reply, before the confirmation is posted.
+    @discardableResult
+    func sendSuggestion(_ draft: String, to resource: String, on server: String,
+                        report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                        then: @escaping @MainActor (MultiplayerSentRequest) -> Void) -> Task<Void, Never>? {
+        guard Self.canSend(suggestion: draft), let tray, let share else { return nil }
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let owner = share.entry(resource, on: server)?.owner.multiplayerDisplay ?? "the owner"
-        return tray.act("Sending your suggestion…", failing: "Couldn’t send the suggestion.") { client in
+        return tray.act("Sending your suggestion…", failing: "Couldn’t send the suggestion.", report: report) { client in
             let reply = try await client.scoped(to: server)
                 .send(resource: resource, action: MultiplayerSharePolicy.suggest, payload: .object(["text": .string(text)]),
                       name: "Suggestion: \(MultiplayerText.clean(text, limit: 60))")
-            self.suggestReply = reply
-            self.suggestDraft = ""
+            then(reply)
             self.tray?.post(notice: reply.succeeded ? "\(owner) approved it. The worker’s answer is below."
                                                     : "Sent. \(owner) approves each suggestion before the worker sees it.")
         }
+    }
+
+    /// A stream of one worker's output that its caller owns: a watch outside the tray. The caller
+    /// begins it when its view appears and ends it when the view leaves. It never reads the route.
+    func stream(_ resource: String, on server: String) -> MultiplayerWatchStream {
+        MultiplayerWatchStream(client: client, server: server, resource: resource, interval: watchInterval, now: clock)
     }
 
     // MARK: - Control
@@ -444,11 +467,18 @@ final class MultiplayerLiveModel {
 
     /// Attaches the diff to review: one text file.
     func attachDiff(_ urls: [URL]) {
-        reviewProblem = nil
-        guard let url = urls.first(where: \.isFileURL) else { return }
+        let read = Self.diff(from: urls)
+        reviewProblem = read.problem
+        if let diff = read.diff { reviewDraft.diff = diff }
+    }
+
+    /// The first file of a pick or a drop as a diff, or why it couldn't be read. A composer
+    /// outside the tray keeps both in its own state.
+    nonisolated static func diff(from urls: [URL]) -> (diff: MultiplayerContextItem?, problem: String?) {
+        guard let url = urls.first(where: \.isFileURL) else { return (nil, nil) }
         switch MultiplayerContextBundle.read(url) {
-        case .success(let item): reviewDraft.diff = item
-        case .failure(let failure): reviewProblem = failure.message
+        case .success(let item): return (item, nil)
+        case .failure(let failure): return (nil, failure.message)
         }
     }
 
@@ -459,12 +489,28 @@ final class MultiplayerLiveModel {
 
     var canSendReview: Bool { tray?.isBusy == false && reviewDraft.canSend }
 
+    /// Sends the request on the tray's own composer, which is then replaced by the review it made.
     @discardableResult
     func sendReview() -> Task<Void, Never>? {
-        guard canSendReview, let tray, let share, case .share(let server, .reviewRequest(let resource)) = tray.route else { return nil }
-        let draft = reviewDraft
+        guard let tray, case .share(let server, .reviewRequest(let resource)) = tray.route else { return nil }
+        let link = reviewDraft.trimmedPR
+        return sendReview(reviewDraft, to: resource, on: server, then: { row in
+            self.reviewDraft = MultiplayerReviewDraft()
+            self.postDraft = link
+            self.confirmingPost = false
+            self.share?.replace(with: .review(request: row.request), on: server)
+        })
+    }
+
+    /// Asks a friend's worker for a review, with the caller's own draft. `then` is given the new
+    /// review's row, before the confirmation is posted.
+    @discardableResult
+    func sendReview(_ draft: MultiplayerReviewDraft, to resource: String, on server: String,
+                    report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: (@MainActor (MultiplayerSentRequest) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend, let tray, let share else { return nil }
         let name = share.resourceName(resource, on: server).multiplayerDisplay
-        return tray.act("Asking \(name) for a review…", failing: "Couldn’t send the review request.") { client in
+        return tray.act("Asking \(name) for a review…", failing: "Couldn’t send the review request.", report: report) { client in
             let reply = try await client.scoped(to: server)
                 .send(resource: resource, action: MultiplayerSharePolicy.review, payload: draft.payload, name: draft.trimmedTitle)
             let row = MultiplayerSentRequest(request: reply.request, resource: resource, action: MultiplayerSharePolicy.review,
@@ -472,16 +518,16 @@ final class MultiplayerLiveModel {
                                              value: reply.value, failure: reply.failure)
             self.reviews[server] = [row] + (self.reviews[server] ?? []).filter { $0.request != row.request }
             self.reviewLinks[row.request] = draft.trimmedPR
-            self.reviewDraft = MultiplayerReviewDraft()
-            self.postDraft = draft.trimmedPR
-            self.confirmingPost = false
-            self.share?.replace(with: .review(request: row.request), on: server)
+            then?(row)
             self.tray?.post(notice: reply.succeeded ? "\(name) finished the review." : (reply.refusal ?? "The review is waiting for the owner."))
         }
     }
 
+    /// The pull request a review was asked about, or the one its findings were last posted to.
+    func reviewLink(_ request: String) -> String { reviewLinks[request] ?? posted[request] ?? "" }
+
     func openReview(_ request: String, on server: String) {
-        postDraft = reviewLinks[request] ?? posted[request] ?? ""
+        postDraft = reviewLink(request)
         confirmingPost = false
         share?.open(.review(request: request), on: server)
     }
@@ -492,10 +538,15 @@ final class MultiplayerLiveModel {
 
     /// Why the findings can't be posted yet, or nil when they can.
     func postProblem(_ request: String, on server: String) -> String? {
+        postProblem(request, on: server, link: postDraft)
+    }
+
+    /// The same, for a link the caller holds.
+    func postProblem(_ request: String, on server: String, link: String) -> String? {
         guard let row = review(request, on: server), MultiplayerReview(row.value) != nil, row.succeeded else {
             return "There is no review result to post yet."
         }
-        let link = postDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = link.trimmingCharacters(in: .whitespacesAndNewlines)
         if link.isEmpty { return "Name the pull request to post to." }
         return MultiplayerReviewDraft.isPullRequest(link) ? nil : "A pull request URL starts with https://."
     }
@@ -504,14 +555,25 @@ final class MultiplayerLiveModel {
     func askPost() { confirmingPost = true }
     func cancelPost() { confirmingPost = false }
 
+    /// The second click on the tray's own review page.
     @discardableResult
     func confirmPost() -> Task<Void, Never>? {
         guard confirmingPost, let tray, !tray.isBusy, case .share(let server, .review(let request)) = tray.route,
               postProblem(request, on: server) == nil else { return nil }
-        let link = postDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         confirmingPost = false
+        return postReview(request, on: server, to: postDraft)
+    }
+
+    /// Posts a review's findings to a pull request the caller names. The caller has already shown
+    /// what will be posted and where, and the person has confirmed it.
+    @discardableResult
+    func postReview(_ request: String, on server: String, to link: String,
+                    report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
+        guard let tray, postProblem(request, on: server, link: link) == nil else { return nil }
+        let link = link.trimmingCharacters(in: .whitespacesAndNewlines)
         return tray.act("Posting the review to the pull request…", failing: "Couldn’t post the review.",
-                        confirmation: "Posted to the pull request as a review comment from your GitHub login.") { client in
+                        confirmation: "Posted to the pull request as a review comment from your GitHub login.",
+                        report: report) { client in
             try await client.scoped(to: server).postReview(request: request, pr: link)
             self.posted[request] = link
         }
@@ -541,21 +603,44 @@ final class MultiplayerLiveModel {
 
     var canSendFanout: Bool { tray?.isBusy == false && fanoutDraft.canSend }
 
+    /// Sends the fan-out on the tray's own composer, which is then replaced by its results.
     @discardableResult
     func sendFanout() -> Task<Void, Never>? {
-        guard canSendFanout, let tray, case .share(let server, .fanout) = tray.route else { return nil }
-        let draft = fanoutDraft
+        guard let tray, case .share(let server, .fanout) = tray.route else { return nil }
+        return sendFanout(fanoutDraft, on: server, then: { fanout in
+            self.fanoutDraft = MultiplayerFanoutDraft()
+            self.share?.replace(with: .compare(request: fanout.request), on: server)
+        })
+    }
+
+    /// Sends one prompt to several friends' workers, with the caller's own draft. `then` is given
+    /// the new fan-out.
+    @discardableResult
+    func sendFanout(_ draft: MultiplayerFanoutDraft, on server: String,
+                    report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                    then: (@MainActor (MultiplayerFanout) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend, let tray else { return nil }
         // The directory's order, so the columns read the same every time.
         let targets = fanoutTargets(on: server).filter { draft.targets.contains($0.id) }
             .map { (resource: $0.id, action: MultiplayerSharePolicy.ask) }
         guard targets.count >= MultiplayerFanoutDraft.targetRange.lowerBound else { return nil }
-        return tray.act("Sending to \(targets.count) workers…", failing: "Couldn’t send the fan-out.") { client in
+        return tray.act("Sending to \(targets.count) workers…", failing: "Couldn’t send the fan-out.", report: report) { client in
             var fanout = try await client.scoped(to: server).fanout(targets: targets, payload: draft.payload, name: draft.title)
             fanout.at = fanout.at ?? self.clock()
             self.fanouts[server] = [fanout] + (self.fanouts[server] ?? []).filter { $0.request != fanout.request }
-            self.fanoutDraft = MultiplayerFanoutDraft()
-            self.share?.replace(with: .compare(request: fanout.request), on: server)
+            then?(fanout)
         }
+    }
+
+    /// Reads one fan-out you sent, for the caller. It reads the server's sent requests again, so
+    /// the results are the latest; the tray's route and pages are left alone.
+    func loadFanout(_ request: String, on server: String) async -> MultiplayerLoad<MultiplayerFanout> {
+        guard let client else { return .failed(tray?.unavailable?.message ?? "The network helper isn’t available.") }
+        do { take(sent: try await client.scoped(to: server).sentRows(), on: server) } catch {
+            return .failed(MultiplayerShareModel.readFailure(error))
+        }
+        guard let fanout = fanout(request, on: server) else { return .failed("Commander can’t find this fan-out any more.") }
+        return .loaded(fanout)
     }
 
     func fanout(_ request: String, on server: String) -> MultiplayerFanout? {
@@ -617,5 +702,65 @@ final class MultiplayerLiveModel {
         case .review: openReview(work.request, on: work.server)
         case .fanout: share?.open(.compare(request: work.request), on: work.server)
         }
+    }
+}
+
+/// One worker's output, read for a view outside the tray (`MultiplayerLiveModel.stream(_:on:)`).
+/// It reads once on `begin`, then on the watch interval while the owner still answers. It reads
+/// and never writes, and it knows nothing of the tray's route.
+@Observable @MainActor
+final class MultiplayerWatchStream {
+    private(set) var state: MultiplayerWatchState
+
+    private let client: MultiplayerClient?
+    private let interval: Duration
+    private let clock: () -> Date
+    @ObservationIgnored private(set) var task: Task<Void, Never>?
+    @ObservationIgnored private var token = 0
+
+    init(client: MultiplayerClient?, server: String, resource: String, interval: Duration, now: @escaping () -> Date) {
+        self.client = client
+        self.interval = interval
+        self.clock = now
+        self.state = MultiplayerWatchState(server: server, resource: resource)
+    }
+
+    /// Starts reading. Asking again while it runs keeps the stream.
+    func begin() {
+        guard task == nil, let client, !state.resource.isEmpty else { return }
+        if !state.phase.isPolling { state = MultiplayerWatchState(server: state.server, resource: state.resource) }
+        token &+= 1
+        let token = token, interval = interval, server = state.server, resource = state.resource
+        task = Task {
+            while !Task.isCancelled, token == self.token {
+                let reply: Result<MultiplayerWatchReply, MultiplayerFailure>
+                do {
+                    reply = .success(try await client.scoped(to: server).watch(resource: resource, after: self.state.cursor))
+                } catch {
+                    reply = .failure(.from(error))
+                }
+                guard token == self.token else { return }
+                switch reply {
+                case .success(let page): self.state.take(page, at: self.clock())
+                case .failure(let failure): if failure != .cancelled { self.state.phase = .failed(failure.message) }
+                }
+                guard self.state.phase.isPolling else { break }
+                do { try await Task.sleep(for: interval) } catch { break }
+            }
+            if token == self.token { self.task = nil }
+        }
+    }
+
+    func end() {
+        token &+= 1
+        task?.cancel()
+        task = nil
+    }
+
+    /// Reads again after the stream stopped or failed.
+    func retry() {
+        end()
+        state.phase = .stopped("")
+        begin()
     }
 }

@@ -250,6 +250,14 @@ The need row is something waiting on the person: the server's swatch, a title in
 
 The grant sheet is one form drawn in two places. The tray shows it as a page with the tray's footer. A view outside the tray presents the grant host: the same form in a scroll area over a footer with the hint, Cancel and a primary Share. A refused grant shows its reason in a failure banner at the top of the host and leaves the sheet open.
 
+**Hosts.** Every composer a view outside the tray presents is drawn through a host: the tray's own composer in the host frame (`MultiplayerHostFrame` in `MultiplayerHosts.swift`). There is a host for the grant sheet, Consult, Hand off, Request review, Watch, Add friend, Invite, Membership and Add server. A host adds no styling.
+
+- **Frame.** A banner band, the composer, then the tray's footer with the composer's hint, Cancel and the composer's own actions. Cancel reads Close once a host that stays open has something to show (a consult's reply, an invite link, a watch).
+- **Scrolling.** A host scrolls its composer by default. With `scrolls: false` it has no scroll view and takes the composer's full height, for a pane that already scrolls.
+- **Footer.** A button's label is never cut short. Where the hint and the actions don't fit one row, the hint takes a footer row of its own above the actions.
+- **Banner.** A refusal shows in a failure banner at the top and leaves the host open. A confirmation that belongs to the host ("Invite link copied.", "Membership saved.") shows in a success banner in the same place.
+- **State.** A host keeps its draft, its reply and its refusal itself, and names its server and resource. It never reads or moves the tray's page, so the tray can show anything, or be closed, while a host is open.
+
 Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
@@ -340,7 +348,7 @@ The tray keeps its own versions of these:
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
 - **Refused answers.** When a network answer isn't taken or fails, the row returns to its waiting form and the reason shows in an `error` load note above the list.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
-- **One route.** The main window's network pages show what the network model has open: a server, an approval, a hand-off, a thread, the audit log, a fan-out. Opening one in the window opens it in the tray too, and the other way round. The grant sheet is the exception: a view outside the tray hosts it and the tray does not move.
+- **One route.** The main window's network pages show what the network model has open: a server, an approval, a hand-off, a thread, the audit log, a fan-out. Opening one in the window opens it in the tray too, and the other way round. The hosted composers are the exception: a view outside the tray hosts them and the tray does not move. A view that must not share the tray's page reads and acts through the network model's calls that name their target (`loadThread(_:on:)`, `postComment(_:to:on:)` and the like); those never read or move the route.
 - **Answers per row.** An answer given on a row (approve, deny, decline, withdraw, accept) comes back for that row alone and shows there as a row outcome. The page's alert band still carries the model's own sentence.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
 

@@ -13,6 +13,8 @@ import Observation
 // - Granting Consult or Hand off also grants the thread actions, and Hand off the two tracking
 //   actions, so the friend can follow what they sent.
 // - Nothing a hand-off produced is applied until the person picks a checkout for it.
+// - A read or an action that names its target never reads or moves the tray's route. The tray's own
+//   pages call the same functions with the target their route names.
 
 /// A page under one server in the tray.
 enum MultiplayerSharePage: Equatable {
@@ -96,7 +98,8 @@ enum MultiplayerSharePage: Equatable {
     }
 }
 
-/// A list the tray reads when its page opens.
+/// A read's answer. The tray keeps one per page it reads on opening. A read a caller owns
+/// (`loadThread(_:on:)` and the like) returns `.loaded` or `.failed`, never `.loading`.
 enum MultiplayerLoad<Value: Equatable>: Equatable {
     case loading
     case loaded(Value)
@@ -229,8 +232,8 @@ final class MultiplayerShareModel {
 
     private func load(_ page: MultiplayerSharePage, on server: String) {
         switch page {
-        case .thread(let request, _): loadThread(request, on: server)
-        case .audit(let resource): loadAudit(resource, on: server)
+        case .thread(let request, _): showThread(request, on: server)
+        case .audit(let resource): showAudit(resource, on: server)
         case .handoffs, .handoffDetail: refresh()
         case .watch(let resource): live.beginWatch(resource, on: server)
         case .control, .review, .compare: live.refresh()
@@ -428,17 +431,29 @@ final class MultiplayerShareModel {
         open(.requestAccess(resource: entry.id), on: server)
     }
 
+    /// Sends the request on the tray's own page.
     @discardableResult
     func sendAccessRequest() -> Task<Void, Never>? {
-        guard let tray, case .share(let server, .requestAccess(let resource)) = tray.route, accessDraft.canSend,
-              let entry = entry(resource, on: server) else { return nil }
-        let body = accessDraft.body(resource: resource)
-        return tray.act("Asking \(entry.owner.multiplayerDisplay) for access…", failing: "Couldn’t send the request.",
-                        confirmation: "Request sent. \(entry.owner.multiplayerDisplay) decides whether to share \(entry.name.multiplayerDisplay).") { client in
-            try await client.scoped(to: server).requestAccess(body)
+        guard let tray, case .share(let server, .requestAccess(let resource)) = tray.route else { return nil }
+        return sendAccessRequest(accessDraft, for: resource, on: server, then: {
             self.accessDraft = MultiplayerAccessDraft()
-            if let next = try? await client.scoped(to: server).accessRequests() { self.accessRequests[server] = next }
             self.back()
+        })
+    }
+
+    /// Asks a resource's owner for access, with the caller's own draft. `then` runs once it is sent.
+    @discardableResult
+    func sendAccessRequest(_ draft: MultiplayerAccessDraft, for resource: String, on server: String,
+                           report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                           then: (@MainActor () -> Void)? = nil) -> Task<Void, Never>? {
+        guard let tray, draft.canSend, let entry = entry(resource, on: server) else { return nil }
+        let body = draft.body(resource: resource)
+        return tray.act("Asking \(entry.owner.multiplayerDisplay) for access…", failing: "Couldn’t send the request.",
+                        confirmation: "Request sent. \(entry.owner.multiplayerDisplay) decides whether to share \(entry.name.multiplayerDisplay).",
+                        report: report) { client in
+            try await client.scoped(to: server).requestAccess(body)
+            if let next = try? await client.scoped(to: server).accessRequests() { self.accessRequests[server] = next }
+            then?()
         }
     }
 
@@ -622,19 +637,26 @@ final class MultiplayerShareModel {
     /// Attaches text files to the composer now open.
     func attach(_ urls: [URL]) {
         guard let tray, case .share(_, let page) = tray.route else { return }
+        switch page {
+        case .consult: (consultDraft.context, attachProblem) = Self.attaching(urls, to: consultDraft.context)
+        case .handoff: (handoffDraft.context, attachProblem) = Self.attaching(urls, to: handoffDraft.context)
+        default: attachProblem = Self.attaching(urls, to: []).problem
+        }
+    }
+
+    /// Text files added to a composer's context, and why the last unreadable one was left out.
+    /// A composer outside the tray keeps both in its own state.
+    nonisolated static func attaching(_ urls: [URL], to context: [MultiplayerContextItem])
+        -> (context: [MultiplayerContextItem], problem: String?) {
         var items: [MultiplayerContextItem] = []
-        attachProblem = nil
+        var problem: String?
         for url in urls where url.isFileURL {
             switch MultiplayerContextBundle.read(url) {
             case .success(let item): items.append(item)
-            case .failure(let failure): attachProblem = failure.message
+            case .failure(let failure): problem = failure.message
             }
         }
-        switch page {
-        case .consult: consultDraft.context = MultiplayerContextBundle.adding(items, to: consultDraft.context)
-        case .handoff: handoffDraft.context = MultiplayerContextBundle.adding(items, to: handoffDraft.context)
-        default: break
-        }
+        return (MultiplayerContextBundle.adding(items, to: context), problem)
     }
 
     func detach(_ item: MultiplayerContextItem) {
@@ -646,28 +668,52 @@ final class MultiplayerShareModel {
     var canSendConsult: Bool { tray?.isBusy == false && consultDraft.canSend }
     var canSendHandoff: Bool { tray?.isBusy == false && handoffDraft.canSend }
 
+    /// Sends the prompt on the tray's own Consult page.
     @discardableResult
     func sendConsult() -> Task<Void, Never>? {
-        guard canSendConsult, let tray, case .share(let server, .consult(let resource)) = tray.route else { return nil }
-        let draft = consultDraft
-        let name = resourceName(resource, on: server).multiplayerDisplay
-        return tray.act("Asking \(name)…", failing: "Couldn’t send the prompt.") { client in
-            self.consultReply = try await client.scoped(to: server)
-                .send(resource: resource, action: MultiplayerSharePolicy.ask, payload: draft.payload, name: draft.title)
+        guard let tray, case .share(let server, .consult(let resource)) = tray.route else { return nil }
+        return sendConsult(consultDraft, to: resource, on: server, then: { reply in
+            self.consultReply = reply
             self.consultDraft.prompt = ""
+        })
+    }
+
+    /// Sends one prompt to a friend's worker, with the caller's own draft. `then` is given the reply.
+    @discardableResult
+    func sendConsult(_ draft: MultiplayerConsultDraft, to resource: String, on server: String,
+                     report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: @escaping @MainActor (MultiplayerSentRequest) -> Void) -> Task<Void, Never>? {
+        guard draft.canSend, let tray else { return nil }
+        let name = resourceName(resource, on: server).multiplayerDisplay
+        return tray.act("Asking \(name)…", failing: "Couldn’t send the prompt.", report: report) { client in
+            then(try await client.scoped(to: server)
+                .send(resource: resource, action: MultiplayerSharePolicy.ask, payload: draft.payload, name: draft.title))
         }
     }
 
+    /// Hands off the task on the tray's own composer, which is then replaced by the hand-off it made.
     @discardableResult
     func sendHandoff() -> Task<Void, Never>? {
-        guard canSendHandoff, let tray, case .share(let server, .handoff(let resource)) = tray.route else { return nil }
-        let draft = handoffDraft
+        guard let tray, case .share(let server, .handoff(let resource)) = tray.route else { return nil }
+        return sendHandoff(handoffDraft, to: resource, on: server, then: { row in
+            self.handoffDraft = MultiplayerHandoffDraft()
+            // Back still returns to where the composer was opened.
+            self.tray?.go(.share(server, .handoffDetail(request: row.request)), keepingShareTrail: true)
+        })
+    }
+
+    /// Hands a task to a friend's agent, with the caller's own draft. `then` is given the new
+    /// hand-off's row, before the confirmation is posted.
+    @discardableResult
+    func sendHandoff(_ draft: MultiplayerHandoffDraft, to resource: String, on server: String,
+                     report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: (@MainActor (MultiplayerSentRequest) -> Void)? = nil) -> Task<Void, Never>? {
+        guard draft.canSend, let tray else { return nil }
         let name = resourceName(resource, on: server).multiplayerDisplay
-        return tray.act("Handing off to \(name)…", failing: "Couldn’t hand off the task.") { client in
+        return tray.act("Handing off to \(name)…", failing: "Couldn’t hand off the task.", report: report) { client in
             let scoped = client.scoped(to: server)
             let reply = try await scoped.send(resource: resource, action: MultiplayerSharePolicy.handoff,
                                               payload: draft.payload, name: draft.trimmedTitle)
-            self.handoffDraft = MultiplayerHandoffDraft()
             let row = MultiplayerSentRequest(request: reply.request, resource: resource, action: MultiplayerSharePolicy.handoff,
                                              title: draft.trimmedTitle, at: self.clock(), status: reply.status,
                                              value: reply.value, failure: reply.failure)
@@ -675,23 +721,32 @@ final class MultiplayerShareModel {
             if let next = try? await scoped.handoffs(), next.contains(where: { $0.request == row.request }) {
                 self.handoffs[server] = next
             }
-            // The composer is replaced by the hand-off it made; Back still returns to where it was opened.
-            self.tray?.go(.share(server, .handoffDetail(request: row.request)), keepingShareTrail: true)
+            then?(row)
             self.tray?.post(notice: reply.succeeded ? "Handed off. \(name) started a run for it."
                                                     : (reply.refusal ?? "The hand-off is waiting for the owner."))
         }
     }
 
+    /// Reads one hand-off you sent, for the caller. It reads the server's hand-offs again, so the
+    /// row is the latest; the tray's route and pages are left alone.
+    func loadHandoff(_ request: String, on server: String) async -> MultiplayerLoad<MultiplayerSentRequest> {
+        guard let client else { return .failed(unavailableText) }
+        do { handoffs[server] = try await client.scoped(to: server).handoffs() } catch { return .failed(Self.readFailure(error)) }
+        guard let row = handoff(request, on: server) else { return .failed("Commander can’t find this hand-off any more.") }
+        return .loaded(row)
+    }
+
     /// Asks the owner's agent how a hand-off's run is going, or for its result and artifacts.
     @discardableResult
-    func check(_ row: MultiplayerSentRequest, on server: String, result: Bool) -> Task<Void, Never>? {
+    func check(_ row: MultiplayerSentRequest, on server: String, result: Bool,
+               report: (@MainActor (_ failure: String?) -> Void)? = nil) -> Task<Void, Never>? {
         guard let run = row.run else {
             tray?.post(failure: row.refusal ?? "This hand-off has no run yet.")
             return nil
         }
         let action = result ? MultiplayerSharePolicy.tracking[1] : MultiplayerSharePolicy.tracking[0]
         return tray?.act(result ? "Reading the result…" : "Checking the run…",
-                         failing: result ? "Couldn’t read the result." : "Couldn’t check the run.") { client in
+                         failing: result ? "Couldn’t read the result." : "Couldn’t check the run.", report: report) { client in
             let reply = try await client.scoped(to: server).send(resource: row.resource, action: action,
                                                                  payload: .object(["run": .string(run)]),
                                                                  name: "\(result ? "Result" : "Status"): \(row.title)")
@@ -721,22 +776,35 @@ final class MultiplayerShareModel {
 
     // MARK: - Threads
 
-    private func loadThread(_ request: String, on server: String) {
-        guard let client else { return }
+    /// Why a read can't start without the helper.
+    private var unavailableText: String { tray?.unavailable?.message ?? "The network helper isn’t available." }
+
+    /// A failed read, as the sentence its page shows.
+    nonisolated static func readFailure(_ error: any Error) -> String {
+        let failure = MultiplayerFailure.from(error)
+        return failure == .cancelled ? "The read was stopped. Try again." : failure.message
+    }
+
+    /// Reads a request's thread for the caller, who keeps the result. It reads and changes nothing
+    /// of the tray: not its route, and not the thread on its own page.
+    func loadThread(_ request: String, on server: String) async -> MultiplayerLoad<MultiplayerThread> {
+        guard let client else { return .failed(unavailableText) }
+        do { return .loaded(try await client.scoped(to: server).thread(request: request)) } catch { return .failed(Self.readFailure(error)) }
+    }
+
+    /// The tray's thread page: the same read, kept on the model for the page now open.
+    private func showThread(_ request: String, on server: String) {
+        guard client != nil else { return }
         pageTask?.cancel()
         pageToken &+= 1
         let token = pageToken
         thread = .loading
         commentDraft = ""
         pageTask = Task {
-            let result: Result<MultiplayerThread, MultiplayerFailure>
-            do { result = .success(try await client.scoped(to: server).thread(request: request)) } catch { result = .failure(.from(error)) }
+            let result = await self.loadThread(request, on: server)
             guard token == self.pageToken else { return }
             self.pageTask = nil
-            switch result {
-            case .success(let thread): self.thread = .loaded(thread)
-            case .failure(let failure): self.thread = .failed(failure == .cancelled ? "The read was stopped. Try again." : failure.message)
-            }
+            self.thread = result
         }
     }
 
@@ -746,38 +814,59 @@ final class MultiplayerShareModel {
     }
 
     var canComment: Bool {
-        tray?.isBusy == false && !commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && commentDraft.count <= 4000
+        tray?.isBusy == false && Self.canPost(comment: commentDraft)
     }
 
+    /// Posts the comment typed on the tray's own thread page, then reads that thread again.
     @discardableResult
     func postComment() -> Task<Void, Never>? {
-        guard canComment, let tray, case .share(let server, .thread(let request, _)) = tray.route else { return nil }
-        let text = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return tray.act("Posting your comment…", failing: "Couldn’t post the comment.") { client in
-            let scoped = client.scoped(to: server)
-            try await scoped.comment(request: request, text: text)
+        guard let tray, case .share(let server, .thread(let request, _)) = tray.route else { return nil }
+        return postComment(commentDraft, to: request, on: server, then: { scoped in
             self.commentDraft = ""
             if let next = try? await scoped.thread(request: request) { self.thread = .loaded(next) }
+        })
+    }
+
+    /// A comment that can be sent: not blank, and at most 4,000 characters.
+    nonisolated static func canPost(comment text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.count <= 4000
+    }
+
+    /// Posts a comment to a request's thread. `then` runs once it is posted, with that server's client.
+    @discardableResult
+    func postComment(_ text: String, to request: String, on server: String,
+                     report: (@MainActor (_ failure: String?) -> Void)? = nil,
+                     then: (@MainActor (MultiplayerClient) async -> Void)? = nil) -> Task<Void, Never>? {
+        guard Self.canPost(comment: text), let tray else { return nil }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tray.act("Posting your comment…", failing: "Couldn’t post the comment.", report: report) { client in
+            let scoped = client.scoped(to: server)
+            try await scoped.comment(request: request, text: text)
+            await then?(scoped)
         }
     }
 
     // MARK: - Audit
 
-    private func loadAudit(_ resource: String, on server: String) {
-        guard let client else { return }
+    /// Reads one resource's audit entries, or every resource's when `resource` is empty, for the
+    /// caller, who keeps the result. The tray's route and its own audit page are left alone.
+    func loadAudit(_ resource: String = "", on server: String) async -> MultiplayerLoad<[MultiplayerAuditEntry]> {
+        guard let client else { return .failed(unavailableText) }
+        do { return .loaded(try await client.scoped(to: server).audit(resource: resource)) } catch { return .failed(Self.readFailure(error)) }
+    }
+
+    /// The tray's audit page: the same read, kept on the model for the page now open.
+    private func showAudit(_ resource: String, on server: String) {
+        guard client != nil else { return }
         pageTask?.cancel()
         pageToken &+= 1
         let token = pageToken
         audit = .loading
         pageTask = Task {
-            let result: Result<[MultiplayerAuditEntry], MultiplayerFailure>
-            do { result = .success(try await client.scoped(to: server).audit(resource: resource)) } catch { result = .failure(.from(error)) }
+            let result = await self.loadAudit(resource, on: server)
             guard token == self.pageToken else { return }
             self.pageTask = nil
-            switch result {
-            case .success(let entries): self.audit = .loaded(entries)
-            case .failure(let failure): self.audit = .failed(failure == .cancelled ? "The read was stopped. Try again." : failure.message)
-            }
+            self.audit = result
         }
     }
 }
