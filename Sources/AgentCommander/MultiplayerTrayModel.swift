@@ -744,14 +744,16 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
-            if let task = share.live.quietTask ?? share.live.pageTask ?? share.teams.quietTask ?? share.teams.pageTask {
+            if let task = share.live.quietTask ?? share.live.pageTask ?? share.teams.quietTask ?? share.teams.pageTask
+                ?? share.teams.pullRequestTask {
                 await task.value
                 continue
             }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
                sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, share.live.quietTask == nil,
-               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil { return }
+               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
+               share.teams.pullRequestTask == nil { return }
         }
     }
 }

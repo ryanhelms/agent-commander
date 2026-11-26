@@ -47,7 +47,9 @@ endorsements, a directory search and an admin policy. A grant may name `group` i
 "wait" stays pending. Sharing knowledge whose content looks like a secret is refused. A claim that
 overlaps a live one is refused with its holder. `queue-merge` merges each queued branch, except one
 whose name contains "fail" (tests fail) or "conflict". `queue-remove` takes one entry out by its
-workspace and branch. jonas-mac-mini and studio-mac publish `capabilities.commands` (run-ios-ui-tests
+workspace and branch. `workspace-prs` lists three open pull requests for iOS onboarding; set
+COMMANDER_NETWORK_FIXTURE_PRS to "empty" for none or "fail" for the signed-out `gh` refusal, and a
+workspace whose repository is not on GitHub is refused as the device refuses it. jonas-mac-mini and studio-mac publish `capabilities.commands` (run-ios-ui-tests
 allows extra arguments, build-release doesn't); mei-gpu-box publishes only `tools`, as an older
 device does. `knowledge-install` writes nothing. Suspending
 "fixture-nobody" or revoking device "d-unknown" is refused as not found.
@@ -937,6 +939,29 @@ def teams(state, verb, request):
         if not (request.get("destination") or "").startswith("/"):
             raise ValueError("choose where to save this item")
         return {"installed": request["destination"]}
+    if verb == "workspace-prs":
+        found = [row for row in share(state, "workspaces").get(server, []) if row["id"] == request.get("workspace")]
+        if not request.get("workspace"):
+            raise ValueError("name a workspace")
+        if not found:
+            raise ValueError("unknown workspace %s" % request["workspace"])
+        repository = found[0]["repository"]
+        if not repository.startswith("github.com/"):
+            raise ValueError("pull requests can only be listed for GitHub repositories, not %s" % repository)
+        slug = repository[len("github.com/"):]
+        mode = os.environ.get("COMMANDER_NETWORK_FIXTURE_PRS", "")
+        if mode == "fail":
+            raise ValueError("gh could not list pull requests for %s; check that gh is installed and signed in" % slug)
+        rows = [] if mode == "empty" or found[0]["integration"] != "pull_request" else [
+            {"number": 212, "title": "Add the three-screen first-run flow behind a flag", "author": "fixture-jonas",
+             "state": "open", "branch": "onboarding/first-run-flow"},
+            {"number": 209, "title": "Remember which onboarding screen the person left on", "author": "fixture-ryan",
+             "state": "open", "branch": "collab/onboarding-resume"},
+            {"number": 207, "title": "Document the lease states", "author": "fixture-sam", "state": "open",
+             "branch": "docs/lease-states"}]
+        for row in rows:
+            row["url"] = "https://github.com/%s/pull/%d" % (slug, row["number"])
+        return {"workspace": found[0]["id"], "repository": slug, "pullRequests": rows}
     rows = share(state, "queue")
     if verb == "queue-add":
         if not (request.get("checkout") or "").startswith("/") or not request.get("branch") or not request.get("workspace"):
@@ -1146,7 +1171,8 @@ def run(verb, request):
         return sharing(state, verb, request)
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
-    if verb in ("queue", "queue-add", "queue-merge", "queue-remove", "knowledge-share", "knowledge-install"):
+    if verb in ("queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs", "knowledge-share",
+                "knowledge-install"):
         return teams(state, verb, request)
     return {}
 
