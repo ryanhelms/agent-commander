@@ -351,6 +351,17 @@ func (a *Agent) signout(ctx context.Context) error {
 type statusError struct {
 	code    int
 	message string
+	// A refused claim names the live claim that blocks it.
+	holder, claim string
+}
+
+// refusalFields are the structured parts of a refused claim for the tray envelope.
+func (e statusError) refusalFields() map[string]any {
+	if e.code != http.StatusConflict || e.claim == "" {
+		return nil
+	}
+	handle, agent, _ := strings.Cut(e.holder, "/")
+	return map[string]any{"holder": handle, "agent": agent, "claim": e.claim}
 }
 
 func (e statusError) Error() string { return fmt.Sprintf("relay HTTP %d: %s", e.code, e.message) }
@@ -377,7 +388,7 @@ func (a *Agent) remote(ctx context.Context, s identity.Session, method, path str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		var msg struct{ Error, Holder string }
+		var msg struct{ Error, Holder, Claim string }
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&msg)
 		if resp.StatusCode == http.StatusConflict && msg.Holder != "" {
 			held := "held by " + msg.Holder
@@ -385,7 +396,7 @@ func (a *Agent) remote(ctx context.Context, s identity.Session, method, path str
 				msg.Error = strings.TrimSpace(msg.Error + " " + held)
 			}
 		}
-		return statusError{resp.StatusCode, msg.Error}
+		return statusError{code: resp.StatusCode, message: msg.Error, holder: msg.Holder, claim: msg.Claim}
 	}
 	if out == nil {
 		_, e = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))

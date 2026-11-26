@@ -337,6 +337,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/signout", s.signout)
 	mux.HandleFunc("GET /v1/identity/devices/{device}", s.lookup)
 	mux.HandleFunc("DELETE /v1/identity/devices/{device}", s.revoke)
+	mux.HandleFunc("GET /v1/admin/members", s.adminMembers)
 	mux.HandleFunc("DELETE /v1/admin/devices/{device}", s.admin(s.adminRevoke))
 	mux.HandleFunc("POST /v1/admin/members/{handle}/suspend", s.admin(s.setSuspended(true)))
 	mux.HandleFunc("POST /v1/admin/members/{handle}/unsuspend", s.admin(s.setSuspended(false)))

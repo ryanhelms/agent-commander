@@ -14,6 +14,7 @@ import SwiftUI
 // draft, its reply and its refusal in its own state, names its target in every call, and never
 // reads or moves the tray's route. The view that presents a host closes it from `onCancel`, and
 // from `onFinish` when the result is done; a refusal stays on the host so the person can fix it.
+// A view that is the host's home passes no `onCancel`, and the host then draws no Cancel or Close.
 // The grant sheet's host is in MultiplayerGrantHost.swift.
 
 /// A hosted composer's frame: a banner for a refusal or a confirmation, the composer, and the
@@ -120,7 +121,7 @@ struct MultiplayerConsultHost: View {
     let server: String
     let resource: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     /// Opens the thread of the reply shown. The presenting view owns where a thread is read.
     let onThread: (MultiplayerSentRequest) -> Void
@@ -147,9 +148,11 @@ struct MultiplayerConsultHost: View {
                 MultiplayerHostOffline(serverName: place.name)
             }
         } actions: {
-            Button(reply == nil ? "Cancel" : "Close", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button(reply == nil ? "Cancel" : "Close", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Send prompt") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(.return, modifiers: .command)
@@ -186,7 +189,7 @@ struct MultiplayerHandoffHost: View {
     let server: String
     let resource: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerHandoffDraft()
     @State private var attachProblem: String?
@@ -208,9 +211,11 @@ struct MultiplayerHandoffHost: View {
                 MultiplayerHostOffline(serverName: place.name)
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Hand off") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(.return, modifiers: .command)
@@ -244,7 +249,7 @@ struct MultiplayerReviewRequestHost: View {
     let server: String
     let resource: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerReviewDraft()
     @State private var attachProblem: String?
@@ -266,9 +271,11 @@ struct MultiplayerReviewRequestHost: View {
                 MultiplayerHostOffline(serverName: place.name)
             }
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Request review") { send() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .keyboardShortcut(.return, modifiers: .command)
@@ -305,7 +312,7 @@ struct MultiplayerWatchHost: View {
     let server: String
     let resource: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var stream: MultiplayerWatchStream?
     @State private var suggestion = ""
@@ -326,9 +333,11 @@ struct MultiplayerWatchHost: View {
                 MultiplayerHostOffline(serverName: place.name)
             }
         } actions: {
-            Button("Close", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Close", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             if entry?.canSuggest == true {
                 Button("Send suggestion") { send() }
                     .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
@@ -369,7 +378,7 @@ struct MultiplayerAddFriendHost: View {
     let model: MultiplayerModel
     let server: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var handle = ""
     @State private var lookup = MultiplayerLookup.idle
@@ -392,11 +401,13 @@ struct MultiplayerAddFriendHost: View {
                                        isBusy: session?.isBusy ?? true,
                                        onLookUp: { lookUp() },
                                        onSend: { send() },
-                                       onBack: onCancel)
+                                       onBack: onCancel ?? {})
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
         }
     }
 
@@ -444,7 +455,7 @@ struct MultiplayerInviteHost: View {
     let model: MultiplayerModel
     let server: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var draft = MultiplayerInviteDraft()
     @State private var invite: MultiplayerInvite?
@@ -463,9 +474,11 @@ struct MultiplayerInviteHost: View {
                                       confirmation = "Invite link copied."
                                   })
         } actions: {
-            Button(invite == nil ? "Cancel" : "Close", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button(invite == nil ? "Cancel" : "Close", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button(invite == nil ? "Create invite link" : "Create another") { create() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: invite == nil ? .primary : .standard))
                 .disabled(model.isBusy || !model.canInvite(server))
@@ -495,7 +508,7 @@ struct MultiplayerMembershipHost: View {
     let model: MultiplayerModel
     let server: String
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     @State private var state = MultiplayerMembershipState.loading
     @State private var draft = MultiplayerMembershipDraft()
@@ -512,9 +525,11 @@ struct MultiplayerMembershipHost: View {
                              note: model.working ?? (state.membership == nil ? nil : "Changes apply to everyone on this relay.")) {
             MultiplayerMembershipPage(state: state, draft: $draft, onRetry: { Task { await load() } })
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button("Save membership") { save() }
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(!canSave)
@@ -562,7 +577,7 @@ struct MultiplayerAddServerHost: View {
     /// An `agentcommander://join` link to open the form from. The check then starts at once.
     var invite: MultiplayerInviteLink? = nil
     var scrolls = true
-    let onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     let onFinish: (MultiplayerActionResult) -> Void
     let onOpenExisting: (MultiplayerServerSummary) -> Void
     @State private var draft = MultiplayerServerDraft()
@@ -585,9 +600,11 @@ struct MultiplayerAddServerHost: View {
                                      onProbe: { check() },
                                      onOpenExisting: { form.existing.map(onOpenExisting) })
         } actions: {
-            Button("Cancel", action: onCancel)
-                .buttonStyle(MultiplayerTrayButtonStyle())
-                .keyboardShortcut(.cancelAction)
+            if let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
             Button(form.currentProbe == .idle ? "Check server" : "Check again") { check() }
                 .buttonStyle(MultiplayerTrayButtonStyle())
                 .disabled(!canProbe)

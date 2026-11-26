@@ -92,8 +92,20 @@ func readAccess(ctx context.Context, db membershipReader, p Principal) (memberAc
 	return access, err
 }
 
+// memberView is what any member can read about their access and the knowledge
+// limits of this relay's policy.
+type memberView struct {
+	memberAccess
+	KnowledgeDefault string `json:"knowledgeDefault"`
+	KnowledgeWidest  string `json:"knowledgeWidest"`
+}
+
 func (s *Service) me(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	return readAccess(ctx, s.pool, p)
+	var v memberView
+	err := s.pool.QueryRow(ctx, `SELECT $1 = ANY(m.admin_hashes),m.mode,p.knowledge_default,p.knowledge_widest
+		FROM mp_membership_policy m CROSS JOIN mp_policy p`, p.EmailHash).
+		Scan(&v.Admin, &v.Mode, &v.KnowledgeDefault, &v.KnowledgeWidest)
+	return v, err
 }
 
 func (s *Service) membership(ctx context.Context, p Principal, _ *http.Request) (any, error) {

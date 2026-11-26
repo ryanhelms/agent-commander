@@ -139,8 +139,17 @@ struct MultiplayerShareResource: Equatable {
     var choices: [String] { offered.filter { !MultiplayerSharePolicy.isCompanion($0) } }
 }
 
+/// What an answered row's hold waits on. The live app waits on the clock; a test passes its own
+/// and ends the hold by hand.
+struct MultiplayerHoldTimer: Sendable {
+    let wait: @Sendable (Duration) async -> Void
+
+    static let clock = MultiplayerHoldTimer { try? await Task.sleep(for: $0) }
+}
+
 /// How a request the person answered came out. Its row stays in the model's lists for a moment
-/// with this, so a live row can say so before it leaves.
+/// with this, so a live row can say so before it leaves. A row the relay still lists after that
+/// moment keeps it until the relay stops listing the request.
 enum MultiplayerAnswer: String, Equatable, Sendable {
     case approved, denied, declined, withdrawn
 
@@ -164,9 +173,14 @@ final class MultiplayerShareModel {
 
     private(set) var approvals: [String: [MultiplayerApproval]] = [:]
     private(set) var accessRequests: [String: [MultiplayerAccessRequest]] = [:]
-    /// The approvals and access requests just answered, by `answerKey`. Each is still in the lists
-    /// above and leaves them, and this, once the hold ends.
+    /// The approvals and access requests answered and still in the lists above, by `answerKey`.
+    /// Each leaves the lists, and this, once its hold has ended and the relay no longer lists it.
     private(set) var answered: [String: MultiplayerAnswer] = [:]
+    /// Every answer given, until a read shows the relay has stopped listing its request. It
+    /// outlasts the hold, so a request the relay keeps listing never reads as waiting again.
+    @ObservationIgnored private var outcomes: [String: MultiplayerAnswer] = [:]
+    /// Whether the latest read since the answer listed the request. No entry: no read since.
+    @ObservationIgnored private var relayLists: [String: Bool] = [:]
     private(set) var handoffs: [String: [MultiplayerSentRequest]] = [:]
     /// The latest status or result of a hand-off, by the hand-off's request ID.
     private(set) var reports: [String: MultiplayerHandoffReport] = [:]
@@ -192,6 +206,7 @@ final class MultiplayerShareModel {
     private let clock: () -> Date
     /// How long an answered row stays. Zero removes it at once.
     private let hold: Duration
+    private let holdTimer: MultiplayerHoldTimer
     @ObservationIgnored private var holdTasks: [String: Task<Void, Never>] = [:]
     /// The pages Back returns through.
     @ObservationIgnored private var trail: [MultiplayerTrayRoute] = []
@@ -205,8 +220,10 @@ final class MultiplayerShareModel {
     @ObservationIgnored private var pageToken = 0
 
     init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, winners: MultiplayerWinnerStore = .scratch(),
-         watchInterval: Duration = .seconds(2), answeredHold: Duration = .zero, wallPoll: Duration = .seconds(15)) {
+         watchInterval: Duration = .seconds(2), answeredHold: Duration = .zero, wallPoll: Duration = .seconds(15),
+         holdTimer: MultiplayerHoldTimer = .clock) {
         self.wallPoll = wallPoll
+        self.holdTimer = holdTimer
         self.client = client
         self.clock = now
         self.hold = answeredHold
@@ -411,12 +428,14 @@ final class MultiplayerShareModel {
         "\(kind.rawValue)/\(server)/\(id)"
     }
 
-    /// How an approval came out, while its answered row is still listed. Nil while it waits.
+    /// How an approval came out, while its answered row is still listed: through the hold, and
+    /// after it for as long as the relay keeps listing the request. Nil while it waits.
     func answer(for approval: MultiplayerApproval, on server: String) -> MultiplayerAnswer? {
         answered[Self.answerKey(.approval, approval.id, on: server)]
     }
 
-    /// How an access request came out, while its answered row is still listed. Nil while it waits.
+    /// How an access request came out, while its answered row is still listed, as for an approval.
+    /// Nil while it waits.
     func answer(for request: MultiplayerAccessRequest, on server: String) -> MultiplayerAnswer? {
         answered[Self.answerKey(.access, request.id, on: server)]
     }
@@ -440,23 +459,54 @@ final class MultiplayerShareModel {
         requests.filter { answer(for: $0, on: server) == nil }
     }
 
-    /// Marks a row answered and removes it when the hold ends, or at once with no hold.
+    /// Marks a row answered. It stays through the hold, or not at all with no hold. When the hold
+    /// ends the row leaves, unless the relay's latest read still lists it: then it stays answered
+    /// until a read no longer does.
     private func leave(_ answer: MultiplayerAnswer, key: String, remove: @escaping @MainActor () -> Void) {
+        outcomes[key] = answer
+        relayLists[key] = nil
+        holdTasks[key]?.cancel()
+        holdTasks[key] = nil
         guard hold > .zero else { return remove() }
         answered[key] = answer
-        holdTasks[key]?.cancel()
-        holdTasks[key] = Task { [weak self, hold] in
-            try? await Task.sleep(for: hold)
-            guard let self else { return }
+        holdTasks[key] = Task { [weak self, hold, holdTimer] in
+            await holdTimer.wait(hold)
+            guard let self, !Task.isCancelled else { return }
             self.holdTasks[key] = nil
+            switch self.relayLists[key] {
+            case true?: return                       // still listed: the answer stays with the row
+            case false?: self.outcomes[key] = nil    // the relay let it go during the hold
+            case nil: break                          // not read since: the next read decides
+            }
             self.answered[key] = nil
             remove()
         }
     }
 
-    /// A fresh read no longer lists an answered row. It stays, in its place, until its hold ends.
+    /// Testing support: waits until every hold in progress is over.
+    func settleHolds() async {
+        while let task = holdTasks.values.first { await task.value }
+    }
+
+    /// Takes a fresh read. An answered row the read no longer lists stays, in its place, until its
+    /// hold ends. One the read still lists keeps its answer, hold or no hold. An answer whose hold
+    /// is over is dropped once the read stops listing its request.
     private func keepingAnswered<Item: Identifiable>(_ next: [Item], from old: [Item]?, kind: AnswerKind,
                                                      on server: String) -> [Item] where Item.ID == String {
+        let listed = Set(next.map(\.id))
+        let prefix = Self.answerKey(kind, "", on: server)
+        for (key, outcome) in outcomes where key.hasPrefix(prefix) {
+            if listed.contains(String(key.dropFirst(prefix.count))) {
+                relayLists[key] = true
+                answered[key] = outcome
+            } else if holdTasks[key] == nil {
+                outcomes[key] = nil
+                relayLists[key] = nil
+                answered[key] = nil
+            } else {
+                relayLists[key] = false
+            }
+        }
         var rows = next
         for (index, row) in (old ?? []).enumerated()
         where answered[Self.answerKey(kind, row.id, on: server)] != nil && !rows.contains(where: { $0.id == row.id }) {

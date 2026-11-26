@@ -240,7 +240,7 @@ func (a *Agent) avatar(ctx context.Context, s identity.Session, handle string) (
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, statusError{resp.StatusCode, "no avatar"}
+		return nil, statusError{code: resp.StatusCode, message: "no avatar"}
 	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 65<<10))
 	if e != nil {

@@ -80,6 +80,16 @@ allows extra arguments, build-release doesn't); mei-gpu-box publishes only `tool
 device does. `knowledge-install` writes nothing. Suspending
 "fixture-nobody" or revoking device "d-unknown" is refused as not found.
 
+After increment 5 (design/demos/main-window-5/TRAY-API.md): `admin-members` lists ryan-mac's five
+members and six devices for its admin, with what was suspended or revoked here, and is refused on
+studio-relay. `workspace-combined` lists a workspace's members with their published agents and
+claim holders; `branch` is "" and `checks` null, as the device sends them. Workspaces and knowledge
+items carry `ownerHandle`. Each host in `status.resources` carries `capabilities.commands`. `me`
+carries the policy's `knowledgeDefault` and `knowledgeWidest`. `workspace-edit` changes a workspace
+you own (Relay reconnect) and is refused for one you don't; `workspace-leave` takes you out of iOS
+onboarding and is refused for the one you own. A refused claim carries `holder`, `agent` and
+`claim` beside `error`.
+
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
 already trusts. Any other address passes and asks for its fingerprint to be confirmed.
 """
@@ -431,6 +441,15 @@ def pending(state):
     return [{"id": "fixture-priya", "handle": "fixture-priya", "requestedAt": now(-12)}]
 
 
+def hosted(row):
+    """A resource as `status` lists it: a host always carries its enrolled commands, even none."""
+    if row.get("kind") != "host":
+        return row
+    capabilities = dict(row.get("capabilities") or {})
+    capabilities.setdefault("commands", [])
+    return dict(row, capabilities=capabilities)
+
+
 def status(state, server):
     profile = state.get("profiles", {}).get(server["id"], {})
     home = server["id"] == "s-fixture-home"
@@ -442,7 +461,7 @@ def status(state, server):
                     for ident, handle, presence, _ in FRIENDS.get(server["id"], [])],
         "incoming": pending(state) if home else [],
         "outgoing": [], "grants": share(state, "grants").get(server["id"], []),
-        "resources": share(state, "resources").get(server["id"], []),
+        "resources": [hosted(row) for row in share(state, "resources").get(server["id"], [])],
         "shared": [{"id": row["id"], "name": row["name"], "kind": row["kind"], "owner": row["handle"],
                     "actions": row["grantedActions"], "capabilities": row.get("capabilities")}
                    for row in DIRECTORY.get(server["id"], []) if row["grantedActions"]],
@@ -802,6 +821,116 @@ SECRET = __import__("re").compile(
 SECRET_REFUSAL = "this item seems to contain a secret; replace it with a ${NAME} placeholder before sharing"
 
 
+class Refusal(ValueError):
+    """A refusal that carries fields beside its sentence, as a refused claim does."""
+
+    def __init__(self, message, **fields):
+        super().__init__(message)
+        self.fields = fields
+
+
+def owned(row):
+    """A workspace or knowledge row with its owner's handle, as the relay sends it."""
+    return dict(row, ownerHandle="fixture-" + row.get("owner", "")[2:] if row.get("owner", "").startswith("u-") else "")
+
+
+def joined(state, server):
+    """The server's workspaces the person hasn't left."""
+    left = state.get("leftWorkspaces", [])
+    return [row for row in share(state, "workspaces").setdefault(server, []) if row["id"] not in left]
+
+
+DEVICES = [("d-ryan-mac", "fixture-ryan", None), ("d-ryan-studio", "fixture-ryan", -190), ("d-sam", "fixture-sam", None),
+           ("d-jonas", "fixture-jonas", None), ("d-mei", "fixture-mei", -45), ("d-noor", "fixture-noor", None)]
+
+
+def admin_members(state, server):
+    """`admin-members`: every member and every device that isn't revoked. Only ryan-mac's admin."""
+    if server != "s-fixture-home":
+        raise ValueError("only a relay admin can list members and devices")
+    friends = FRIENDS.get(server, [])
+    suspended = share(state, "suspended")
+    members = [{"handle": "fixture-ryan", "suspended": False, "admin": True}] + [
+        {"handle": handle, "suspended": handle in suspended, "admin": False} for _, handle, _, _ in friends]
+    offline = {handle for _, handle, presence, _ in friends if presence == "offline"}
+    revoked = share(state, "revokedDevices")
+    devices = []
+    for ident, owner, seen in DEVICES:
+        if ident in revoked:
+            continue
+        # noor's device never opened a session: offline with no last seen.
+        online = seen is None and owner not in offline
+        devices.append({"id": ident, "name": "", "owner": owner, "online": online,
+                        "lastSeen": None if seen is None else now(seen)})
+    return {"members": sorted(members, key=lambda row: row["handle"]),
+            "devices": sorted(devices, key=lambda row: (row["owner"], row["id"]))}
+
+
+def combined(state, server, ident):
+    """`workspace-combined`: each member of the workspace's group with their workers."""
+    found = [row for row in joined(state, server) if row["id"] == ident]
+    if not found:
+        raise ValueError("no workspace %s in your groups" % ident)
+    workspace = found[0]
+    group = [row for row in share(state, "groups").get(server, []) if row["id"] == workspace["group"]]
+    presence = dict({handle: mood != "offline" for _, handle, mood, _ in FRIENDS.get(server, [])}, **{"fixture-ryan": True})
+    published = {"fixture-ryan": [(row["id"], row["name"], row.get("capabilities") or {}, True)
+                                  for row in share(state, "resources").get(server, []) if row["kind"] == "agent"]}
+    for row in DIRECTORY.get(server, []):
+        if row["kind"] == "agent":
+            published.setdefault(row["handle"], []).append((row["id"], row["name"], row.get("capabilities") or {}, False))
+    members = []
+    for handle in sorted(group[0]["members"] if group else []):
+        claims = [claim for claim in workspace["claims"] if claim["holder"].split("/")[0] == handle]
+        workers = []
+        for resource, name, capabilities, own in published.get(handle, []):
+            # The device links only the caller's own claims to a published agent.
+            mine = [claim for claim in claims if own and claim["holder"].split("/", 1)[-1] == name]
+            claims = [claim for claim in claims if claim not in mine]
+            workers.append({"id": resource, "name": name, "resource": resource, "agent": name if mine else "",
+                            "harness": capabilities.get("harness", ""), "model": capabilities.get("model", ""),
+                            "state": "working" if mine else "online" if presence.get(handle) else "offline",
+                            "branch": "", "checks": None, "claims": mine})
+        for holder in sorted({claim["holder"] for claim in claims}):
+            agent = holder.split("/", 1)[-1]
+            workers.append({"id": holder, "name": agent, "resource": "", "agent": agent, "harness": "", "model": "",
+                            "state": "working", "branch": "", "checks": None,
+                            "claims": [claim for claim in claims if claim["holder"] == holder]})
+        for worker in workers:
+            worker["claims"] = [{"id": claim["id"], "kind": claim["kind"], "key": claim["key"],
+                                 "expiresAt": claim["expiresAt"]} for claim in worker["claims"]]
+        members.append({"handle": handle, "online": presence.get(handle, False), "workers": workers})
+    return {"workspace": ident, "members": members}
+
+
+def workspace_change(state, server, verb, request):
+    """`workspace-edit` for the owner and `workspace-leave` for a member."""
+    ident = request.get("workspace") or request.get("id") or ""
+    found = [row for row in joined(state, server) if row["id"] == ident]
+    if not found:
+        raise ValueError("no workspace %s in your groups" % ident)
+    workspace = found[0]
+    owner = workspace["owner"] == "u-ryan"
+    if verb == "workspace-leave":
+        if owner:
+            raise ValueError("the owner cannot leave workspace %s" % ident)
+        workspace["claims"] = [claim for claim in workspace["claims"] if not claim["holder"].startswith("fixture-ryan/")]
+        state.setdefault("leftWorkspaces", []).append(ident)
+        save(state)
+        return {}
+    if not owner:
+        raise ValueError("only the owner can edit workspace %s" % ident)
+    fields = {field: request[field].strip() for field in ("name", "goal", "repository", "base", "integration")
+              if isinstance(request.get(field), str) and request[field].strip()}
+    if "integration" in fields and fields["integration"] not in ("queue", "pull_request"):
+        raise ValueError("integration must be queue or pull_request")
+    if not any(workspace[field] != value for field, value in fields.items()):
+        raise ValueError("nothing to change")
+    workspace.update(fields)
+    save(state)
+    return owned(workspace)
+
+
 def overlaps(kind, a, b):
     if kind != "paths":
         return a == b
@@ -851,7 +980,7 @@ def teams_relay(state, server, method, path, body):
     if head == "workspaces":
         rows = share(state, "workspaces").setdefault(server, [])
         if len(parts) == 1 and method == "GET":
-            return {"workspaces": rows}
+            return {"workspaces": [owned(row) for row in joined(state, server)]}
         if len(parts) == 1 and method == "POST":
             if not all((body.get(field) or "").strip() for field in ("name", "goal", "repository", "base", "group")):
                 raise ValueError("provide a name, goal, repository, base and group")
@@ -863,7 +992,7 @@ def teams_relay(state, server, method, path, body):
                          "claims": []})
             save(state)
             return {"id": ident}
-        workspace = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
+        workspace = [row for row in joined(state, server) if row["id"] == (parts[1] if len(parts) > 1 else "")]
         if not workspace:
             raise ValueError("not found")
         workspace = workspace[0]
@@ -877,7 +1006,9 @@ def teams_relay(state, server, method, path, body):
                     raise ValueError("holder must be handle/agent")
                 for claim in workspace["claims"]:
                     if claim["kind"] == kind and overlaps(kind, key, claim["key"]):
-                        raise ValueError("relay HTTP 409: overlapping claim held by %s" % claim["holder"])
+                        handle, _, agent = claim["holder"].partition("/")
+                        raise Refusal("relay HTTP 409: overlapping claim held by %s" % claim["holder"],
+                                      holder=handle, agent=agent, claim=claim["id"])
                 claim = {"id": "cl-%s" % hashlib.sha256((key + now()).encode()).hexdigest()[:8], "kind": kind, "key": key,
                          "holder": holder, "expiresAt": now(60)}
                 workspace["claims"].append(claim)
@@ -932,13 +1063,13 @@ def teams_relay(state, server, method, path, body):
         rows = share(state, "knowledge").setdefault(server, [])
         versions = share(state, "knowledgeVersions")
         if len(parts) == 1 and method == "GET":
-            return {"items": rows}
+            return {"items": [owned(row) for row in rows]}
         if len(parts) == 3 and parts[2] == "versions":
             item = [row for row in rows if row["id"] == parts[1]]
             if not item:
                 raise ValueError("not found")
             older = [dict(item[0], **version) for version in versions.get(parts[1], [])]
-            return {"versions": older + [item[0]]}
+            return {"versions": [owned(row) for row in older + [item[0]]]}
         if SECRET.search(body.get("content") or ""):
             raise ValueError(SECRET_REFUSAL)
         widest = ["private", "friend", "group", "server"]
@@ -956,7 +1087,7 @@ def teams_relay(state, server, method, path, body):
                     "visibility": body.get("visibility") or "private", "version": 1, "createdAt": now()}
             rows.insert(0, item)
             save(state)
-            return item
+            return owned(item)
         item = [row for row in rows if row["id"] == (parts[1] if len(parts) > 1 else "")]
         if not item or item[0]["owner"] != "u-ryan":
             raise ValueError("not found")
@@ -965,7 +1096,7 @@ def teams_relay(state, server, method, path, body):
         item.update({key: body[key] for key in ("name", "content", "visibility") if body.get(key)})
         item.update(version=item["version"] + 1, createdAt=now())
         save(state)
-        return item
+        return owned(item)
     if head == "reputation" and method == "GET":
         figures = share(state, "reputation").get(parts[1] if len(parts) > 1 else "")
         if parts[1:2] == ["dir-mei-gpu"]:
@@ -1042,6 +1173,12 @@ def teams_relay(state, server, method, path, body):
 def teams(state, verb, request):
     """Increment 5: the device's own team verbs."""
     server = find(state, request)["id"]
+    if verb == "admin-members":
+        return admin_members(state, server)
+    if verb == "workspace-combined":
+        return combined(state, server, request.get("workspace") or request.get("id") or "")
+    if verb in ("workspace-edit", "workspace-leave"):
+        return workspace_change(state, server, verb, request)
     if verb == "knowledge-share":
         return teams_relay(state, server, "POST", "/v1/knowledge", request.get("item") or {})
     if verb == "knowledge-install":
@@ -1055,7 +1192,7 @@ def teams(state, verb, request):
             raise ValueError("choose where to save this item")
         return {"installed": request["destination"]}
     if verb == "workspace-prs":
-        found = [row for row in share(state, "workspaces").get(server, []) if row["id"] == request.get("workspace")]
+        found = [row for row in joined(state, server) if row["id"] == request.get("workspace")]
         if not request.get("workspace"):
             raise ValueError("name a workspace")
         if not found:
@@ -1259,7 +1396,9 @@ def run(verb, request):
             head, data = source.split(",", 1)
             return {"contentType": head[5:].split(";")[0], "data": data}
         if verb == "me":
-            return {"admin": admin, "mode": state["membership"]["mode"] if admin else "open"}
+            policy = share(state, "policy")
+            return {"admin": admin, "mode": state["membership"]["mode"] if admin else "open",
+                    "knowledgeDefault": policy["knowledgeDefault"], "knowledgeWidest": policy["knowledgeWidest"]}
         if verb in ("membership", "membership-set"):
             if not admin:
                 raise ValueError("Only an admin can see membership settings.")
@@ -1295,7 +1434,7 @@ def run(verb, request):
     if verb in ("watch", "handover", "handback", "handovers", "fanout", "review-post"):
         return live(state, verb, request)
     if verb in ("queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs", "knowledge-share",
-                "knowledge-install"):
+                "knowledge-install", "admin-members", "workspace-combined", "workspace-edit", "workspace-leave"):
         return teams(state, verb, request)
     return {}
 
@@ -1309,7 +1448,7 @@ def main():
         print(json.dumps({"ok": True, "data": run(sys.argv[2], request)}))
         return 0
     except ValueError as problem:
-        print(json.dumps({"ok": False, "error": str(problem)}))
+        print(json.dumps(dict(getattr(problem, "fields", {}), ok=False, error=str(problem))))
         return 0
 
 
