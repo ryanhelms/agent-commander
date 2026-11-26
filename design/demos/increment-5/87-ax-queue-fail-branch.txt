@@ -1,0 +1,61 @@
+0 AXWindow Agent Commander
+1  AXGroup 
+2   AXScrollArea 
+3    AXButton Network | Network (Esc)
+4    AXHeading Relay reconnect
+5    AXScrollArea 
+6     AXGroup 
+7      AXImage Problem
+8      AXStaticText Merged 0 of 1. The others are marked with what stopped them.
+9      AXButton Dismiss | Dismiss
+10     AXStaticText claims, 3
+11     AXStaticText open, 1
+12     AXStaticText claimed, 2
+13     AXStaticText done, 3
+14     AXStaticText Make reconnects survive a lease renewal without dropping queued requests.
+15     AXStaticText Repository, github.com/example/relay
+16     AXStaticText Base, main
+17     AXStaticText Group, relay-team, 2 members
+18     AXStaticText Lands by, Merge queue
+19     AXGroup ID, not pinned, ws-relay
+20      AXImage Number Sign
+21      AXStaticText ID
+22      AXStaticText ws-relay
+23      AXButton Copy the full id | Copy the full id
+24     AXHeading Claims
+25     AXStaticText 3
+26     AXButton Claim work in Relay reconnect | Claim an issue or a set of paths for one of your agents
+27     AXStaticText Paths Sources/Relay/Lease.swift,Tests/Relay, held by fixture-sam for sam-agent
+28     AXStaticText Held
+29     AXStaticText Card Key lease waiters by lease ID, held by fixture-ryan for relay-worker
+30     AXButton Release Key lease waiters by lease ID
+31     AXStaticText Issue #212, held by fixture-mei for mei-agent
+32     AXStaticText Held
+33     AXHeading Board
+34     AXStaticText 6
+35     AXGroup Cards by state
+36      AXButton open, 1 | Selected | [selected]
+37      AXButton claimed, 2
+38      AXButton done, 3
+39     AXButton Add a reconnect soak test to CI, Open | Opens the card
+40     AXButton Claim Add a reconnect soak test to CI
+41     AXTextField New card title
+42     AXButton Add card
+43     AXHeading Merge queue
+44     AXStaticText 0/5
+45     AXButton Queue branch…
+46     AXStaticText 1. collab/repro-flake, Merged
+47     AXStaticText 2. collab/soak-test, Tests failed
+48     AXScrollArea Output
+49      AXStaticText Test Case 'ReconnectSoakTests.testThousandRenewals' started.
+ReconnectSoakTests.swift:61: error: expected 1000 renewals, got 997
+Executed 212 tests, with 1 failure (0 unexpected) in 48.201 seconds
+50     AXStaticText 3. collab/lease-waiters, Merged
+51     AXStaticText 4. collab/replay-queue, Merged
+52     AXStaticText 5. collab/fail-soak, Tests failed
+53     AXScrollArea Output
+54      AXStaticText Executed 212 tests, with 2 failures (0 unexpected) in 47.9 seconds
+55    AXStaticText A claim lapses 10 minutes after its holder’s Mac disconnects.
+56    AXButton Refresh
+57    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+58  AXStaticText Agent Commander

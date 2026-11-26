@@ -1,0 +1,67 @@
+{
+ "network_tools": [
+  "commander_network_board",
+  "commander_network_discover",
+  "commander_network_inbox",
+  "commander_network_online",
+  "commander_network_receipt",
+  "commander_network_submit",
+  "commander_network_thread"
+ ],
+ "commander_network_board": {
+  "description": "List shared workspaces, their claims and task-board cards, and claim, release, complete or comment on cards in workspaces your owner belongs to. Agents cannot accept friends or create or change grants.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "description": "list (default), claim, release, complete or comment"
+    },
+    "workspace": {
+     "type": "string",
+     "description": "workspace ID; omit with op list to list workspaces and claims"
+    },
+    "card": {
+     "type": "string",
+     "description": "card ID for claim, release, complete or comment"
+    },
+    "result": {
+     "type": "string",
+     "description": "result summary when completing a card"
+    },
+    "text": {
+     "type": "string",
+     "description": "comment text"
+    }
+   },
+   "additionalProperties": false
+  }
+ },
+ "call {\"op\": \"list\"}": {
+  "content": [
+   {
+    "type": "text",
+    "text": "Commander API (400 Bad Request): {\"error\":\"coordinator identity denied\",\"ok\":false}"
+   }
+  ],
+  "isError": true
+ },
+ "call {\"op\": \"complete\", \"workspace\": \"ws-x\", \"card\": \"c-1\", \"result\": \"done\"}": {
+  "content": [
+   {
+    "type": "text",
+    "text": "Commander API (400 Bad Request): {\"error\":\"coordinator identity denied\",\"ok\":false}"
+   }
+  ],
+  "isError": true
+ },
+ "call {\"op\": \"create\"}": {
+  "content": [
+   {
+    "type": "text",
+    "text": "Commander API (400 Bad Request): {\"error\":\"coordinator identity denied\",\"ok\":false}"
+   }
+  ],
+  "isError": true
+ }
+}

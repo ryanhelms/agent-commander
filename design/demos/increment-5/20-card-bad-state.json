@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"PUT","path":"/v1/workspaces/689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928/cards/0d488b4abebbfc49fa0e5838f1929f095c804616a85766e1","body":{"state":"archived"}}, "response": {
+ "error": "relay HTTP 400: state must be open, claimed or done",
+ "ok": false
+}}

@@ -1,0 +1,30 @@
+0 AXWindow Agent Commander
+1  AXGroup 
+2   AXScrollArea 
+3    AXButton Hand-offs | Hand-offs (Esc)
+4    AXHeading Hand-off
+5    AXScrollArea 
+6     AXHeading Fix flaky reconnect test
+7     AXStaticText Done
+8     AXStaticText Handed to, fixture-sam’s sam-agent
+9     AXStaticText Sent, 7:37 PM
+10     AXStaticText Run, run-fixture-1
+11     AXStaticText Checked, 9:23 PM
+12     AXHeading Result report
+13     AXHeading sam-agent
+14     AXStaticText The reconnect test raced the lease renewal. It now waits for the renewal event before it drops the link. 40 runs in a row pass.
+15     AXHeading Artifacts
+16     AXStaticText 3
+17     AXGroup 
+18      AXStaticText Result, Report. Saves it into the folder you pick. | Result, Result
+19      AXButton Save Result
+20     AXGroup 
+21      AXStaticText reconnect-wait.patch, Patch. Runs git apply in the checkout you pick. | reconnect-wait.patch, reconnect-wait.patch
+22      AXButton Apply reconnect-wait.patch
+23     AXGroup 
+24      AXStaticText handoff/fix-flaky-reconnect, Branch. Fetch this branch from the owner’s repository. | handoff/fix-flaky-reconnect, handoff/fix-flaky-reconnect
+25    AXButton Thread
+26    AXButton Check status
+27    AXButton Get result | Reads the run’s report and artifacts. Nothing is applied until you choose to.
+28    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+29  AXStaticText Agent Commander

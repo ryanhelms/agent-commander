@@ -1,0 +1,21 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/info"}, "response": {
+ "data": {
+  "adminContact": "<email>",
+  "clientId": "<client-id>",
+  "issuer": "https://accounts.google.com",
+  "membership": "open",
+  "mode": "host",
+  "name": "ryan-mac",
+  "policy": {
+   "directory": true,
+   "knowledgeDefault": "private",
+   "knowledgeWidest": "server",
+   "maxBudgetTokens": 0,
+   "maxGrantDays": 0,
+   "reputationVisibility": "owner",
+   "retentionDays": 30
+  },
+  "version": "1"
+ },
+ "ok": true
+}}

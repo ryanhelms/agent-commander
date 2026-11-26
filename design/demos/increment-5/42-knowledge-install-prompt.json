@@ -1,0 +1,6 @@
+{"verb": "knowledge-install", "request": {"item":{"kind":"prompt","name":"demo5-review-prompt","content":"Review the diff."}}, "response": {
+ "data": {
+  "content": "Review the diff."
+ },
+ "ok": true
+}}

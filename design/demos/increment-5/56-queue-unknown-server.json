@@ -1,0 +1,4 @@
+{"verb": "queue", "request": {"server":"s-nope"}, "response": {
+ "error": "unknown server",
+ "ok": false
+}}

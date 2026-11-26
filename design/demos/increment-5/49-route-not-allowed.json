@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/friends"}, "response": {
+ "error": "that relay route is not available to the tray",
+ "ok": false
+}}

@@ -1,0 +1,6 @@
+{"verb": "groups", "request": {}, "response": {
+ "data": {
+  "groups": []
+ },
+ "ok": true
+}}

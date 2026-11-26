@@ -1,0 +1,39 @@
+{"verb": "queue-merge", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928"}, "response": {
+ "data": {
+  "queue": [
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-ok",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.288467Z",
+    "state": "merged"
+   },
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-broken",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.340447Z",
+    "state": "failed",
+    "output": "tests failed: broken.txt present\n"
+   },
+   {
+    "workspace": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "branch": "feature-conflict",
+    "checkout": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/mq-repo",
+    "test": [
+     "./test.sh"
+    ],
+    "added": "2026-11-26T02:10:07.395559Z",
+    "state": "conflict",
+    "output": "Auto-merging app.txt\nCONFLICT (content): Merge conflict in app.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n"
+   }
+  ]
+ },
+ "ok": true
+}}

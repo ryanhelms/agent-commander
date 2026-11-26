@@ -1,0 +1,9 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/directory?q=ryan"}, "response": {
+ "data": {
+  "handles": [
+   "ryan"
+  ],
+  "resources": []
+ },
+ "ok": true
+}}

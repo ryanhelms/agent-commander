@@ -1,0 +1,55 @@
+{
+ "ws-relay": [
+  {
+   "id": "card-1",
+   "title": "Bound the renewal wait with a deadline",
+   "state": "done",
+   "assignee": "fixture-ryan/relay-worker",
+   "result": "",
+   "body": "`relay.renewed()` has no deadline. Pass a 2 second timeout so a lost renewal fails the test."
+  },
+  {
+   "id": "card-2",
+   "title": "Key lease waiters by lease ID",
+   "state": "claimed",
+   "assignee": "fixture-ryan/relay-worker",
+   "result": "",
+   "body": "## Why\n\n`renewed()` resumes every waiter, including ones for an older lease.\n\n## Done when\n\n- Waiters are keyed by lease ID\n- `LeaseTests` cover two overlapping leases"
+  },
+  {
+   "id": "card-3",
+   "title": "Replay queued requests after reconnect",
+   "state": "claimed",
+   "assignee": "fixture-sam/sam-agent",
+   "result": "",
+   "body": ""
+  },
+  {
+   "id": "card-4",
+   "title": "Add a reconnect soak test to CI",
+   "state": "open",
+   "assignee": "",
+   "result": "",
+   "body": ""
+  },
+  {
+   "id": "card-5",
+   "title": "Reproduce the CI flake locally",
+   "state": "done",
+   "assignee": "fixture-sam/sam-agent",
+   "result": "Reproduced in 1 of 5 runs. The link drops before the renewal lands. Branch `collab/repro-flake`.",
+   "body": ""
+  },
+  {
+   "id": "card-6",
+   "title": "Write down the lease state machine",
+   "state": "done",
+   "assignee": "fixture-mei/mei-agent",
+   "result": "See `docs/lease-states.md` in pull request 207.",
+   "body": ""
+  }
+ ],
+ "ws-ios": [
+  {
+   "id": "card-7",
+   "title": "Welcome screen copy

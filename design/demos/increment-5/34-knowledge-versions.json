@@ -1,0 +1,27 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/knowledge/32f9ec0696512c8460c94b78daea65ca748ce2a089a02fc4/versions"}, "response": {
+ "data": {
+  "versions": [
+   {
+    "content": "Review the diff for missing tests and racy code.",
+    "createdAt": "2026-11-25T21:08:56.029805-05:00",
+    "id": "32f9ec0696512c8460c94b78daea65ca748ce2a089a02fc4",
+    "kind": "prompt",
+    "name": "demo5-review-prompt",
+    "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+    "version": 2,
+    "visibility": "group:bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070"
+   },
+   {
+    "content": "Review the diff for missing tests.",
+    "createdAt": "2026-11-25T21:08:50.2191-05:00",
+    "id": "32f9ec0696512c8460c94b78daea65ca748ce2a089a02fc4",
+    "kind": "prompt",
+    "name": "demo5-review-prompt",
+    "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+    "version": 1,
+    "visibility": "private"
+   }
+  ]
+ },
+ "ok": true
+}}

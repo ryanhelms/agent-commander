@@ -1,0 +1,4 @@
+{"verb": "claim", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928","kind":"card","key":"0d488b4abebbfc49fa0e5838f1929f095c804616a85766e1","holder":"ryan/other-agent"}, "response": {
+ "error": "relay HTTP 409: overlapping claim held by ryan/demo-agent",
+ "ok": false
+}}

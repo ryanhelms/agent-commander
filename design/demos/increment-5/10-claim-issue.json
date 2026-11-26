@@ -1,0 +1,10 @@
+{"verb": "claim", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928","kind":"issue","key":"#42","holder":"ryan/demo-agent"}, "response": {
+ "data": {
+  "expiresAt": "2026-11-25T21:19:03.770073-05:00",
+  "holder": "ryan/demo-agent",
+  "id": "c6e3c3cd6e9ed1c14d7dfb27bd866e5e4d6c7ea67a1399ea",
+  "key": "#42",
+  "kind": "issue"
+ },
+ "ok": true
+}}

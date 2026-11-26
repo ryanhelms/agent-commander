@@ -1,0 +1,34 @@
+{"verb": "workspaces", "request": {}, "response": {
+ "data": {
+  "workspaces": [
+   {
+    "base": "main",
+    "claims": [
+     {
+      "expiresAt": "2026-11-25T21:19:03.770073-05:00",
+      "holder": "ryan/demo-agent",
+      "id": "c6e3c3cd6e9ed1c14d7dfb27bd866e5e4d6c7ea67a1399ea",
+      "key": "#42",
+      "kind": "issue"
+     },
+     {
+      "expiresAt": "2026-11-25T21:19:03.770073-05:00",
+      "holder": "ryan/demo-agent",
+      "id": "89858970283fcf42cff7c3cde188229dbf3250cccd4f8bc0",
+      "key": "multiplayer/internal/device",
+      "kind": "paths"
+     }
+    ],
+    "goal": "Demo increment 5",
+    "group": "bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070",
+    "id": "689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928",
+    "integration": "queue",
+    "name": "demo5-ws",
+    "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+    "ownerHandle": "ryan",
+    "repository": "demo/demo5"
+   }
+  ]
+ },
+ "ok": true
+}}

@@ -1,0 +1,11 @@
+{"verb": "relay", "request": {"method":"PUT","path":"/v1/workspaces/689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928/cards/0d488b4abebbfc49fa0e5838f1929f095c804616a85766e1","body":{"state":"done","result":"Board checked in the demo"}}, "response": {
+ "data": {
+  "assignee": "ryan/demo-agent",
+  "body": "Check the board",
+  "id": "0d488b4abebbfc49fa0e5838f1929f095c804616a85766e1",
+  "result": "Board checked in the demo",
+  "state": "done",
+  "title": "Demo card"
+ },
+ "ok": true
+}}

@@ -1,0 +1,4 @@
+{"verb": "claim", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928","kind":"paths","key":"multiplayer","holder":"ryan/third"}, "response": {
+ "error": "relay HTTP 409: overlapping claim held by ryan/demo-agent",
+ "ok": false
+}}

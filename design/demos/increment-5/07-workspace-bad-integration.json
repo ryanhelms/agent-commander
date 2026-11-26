@@ -1,0 +1,4 @@
+{"verb": "workspace-create", "request": {"name":"demo5-bad","goal":"x","repository":"demo/demo5","base":"main","group":"bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070","integration":"email"}, "response": {
+ "error": "relay HTTP 400: integration must be queue or pull_request",
+ "ok": false
+}}
