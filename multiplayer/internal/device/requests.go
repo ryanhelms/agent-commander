@@ -25,6 +25,32 @@ type SentRequest struct {
 	Title    string    `json:"title"`
 	At       time.Time `json:"at"`
 	Run      string    `json:"run,omitempty"` // target of an agent.status or agent.result follow-up
+	// Children lists every recipient of a fan-out, so each child's result and
+	// thread stay reachable after a restart.
+	Children []SentChild `json:"children,omitempty"`
+}
+
+// SentChild is one recipient of a fan-out.
+type SentChild struct {
+	ID       string `json:"id"`
+	Resource string `json:"resource"`
+}
+
+// allRows returns every child row of a receipt, with result also under value.
+func allRows(res any) []map[string]any {
+	b, _ := json.Marshal(res)
+	var rows []map[string]any
+	if json.Unmarshal(b, &rows) != nil {
+		var obj struct{ Children []map[string]any }
+		_ = json.Unmarshal(b, &obj)
+		rows = obj.Children
+	}
+	for _, row := range rows {
+		if result, ok := row["result"]; ok {
+			row["value"] = result
+		}
+	}
+	return rows
 }
 
 func (a *Agent) sentPath() string { return filepath.Join(a.cfg.Dir, "sent.jsonl") }
@@ -155,6 +181,17 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			if res, e := a.receipt(ctx, s, r.ID); e == nil {
 				fr = firstRow(res)
 				row["status"], row["value"] = fr["status"], fr["value"]
+				if len(r.Children) > 0 {
+					if handles == nil {
+						handles = a.friendHandles(ctx, s)
+					}
+					children := allRows(res)
+					for _, c := range children {
+						peer, _ := c["peer"].(string)
+						c["handle"] = handles[peer]
+					}
+					row["children"] = children
+				}
 			}
 			if verb == "handoffs" {
 				if handles == nil {
@@ -192,8 +229,13 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 		}
 		// A request this device sent: the thread lives on the owner's device.
 		log := a.sentLog(s.User)
-		if i := slices.IndexFunc(log, func(r SentRequest) bool { return r.ID == in.Request || r.Child == in.Request }); i >= 0 {
+		if i := slices.IndexFunc(log, func(r SentRequest) bool {
+			return r.ID == in.Request || r.Child == in.Request || slices.ContainsFunc(r.Children, func(c SentChild) bool { return c.ID == in.Request })
+		}); i >= 0 {
 			r := log[i]
+			if j := slices.IndexFunc(r.Children, func(c SentChild) bool { return c.ID == in.Request }); j >= 0 {
+				r.Child, r.Resource = r.Children[j].ID, r.Children[j].Resource
+			}
 			action, body := "thread.read", map[string]string{"request": r.Child}
 			if verb == "comment" {
 				action, body["text"] = "thread.comment", in.Text

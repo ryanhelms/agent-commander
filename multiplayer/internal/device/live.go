@@ -47,7 +47,6 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		return struct{}{}, nil
 	case "handovers":
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		out := []map[string]any{}
 		for k, until := range a.handovers {
 			if time.Now().After(until) {
@@ -55,7 +54,14 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 				continue
 			}
 			user, resource, _ := strings.Cut(k, "|")
-			out = append(out, map[string]any{"user": user, "resource": resource, "until": until})
+			out = append(out, map[string]any{"user": user, "resource": resource, "until": until, "server": a.cfg.ServerID})
+		}
+		a.mu.Unlock()
+		if len(out) > 0 {
+			handles := a.friendHandles(ctx, s)
+			for _, row := range out {
+				row["handle"] = handles[row["user"].(string)]
+			}
 		}
 		return map[string]any{"handovers": out}, nil
 	case "fanout":
@@ -75,7 +81,15 @@ func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, i
 		if title == "" {
 			title = "Fan-out"
 		}
-		_ = a.logSent(SentRequest{ID: id, Resource: in.Targets[0].Resource, Action: "fanout:" + in.Targets[0].Action, Title: title, At: time.Now().UTC()})
+		record := SentRequest{ID: id, Resource: in.Targets[0].Resource, Action: "fanout:" + in.Targets[0].Action, Title: title, At: time.Now().UTC()}
+		if rec, e := a.receipt(ctx, s, id); e == nil {
+			for _, c := range allRows(rec) {
+				cid, _ := c["id"].(string)
+				resource, _ := c["resource"].(string)
+				record.Children = append(record.Children, SentChild{ID: cid, Resource: resource})
+			}
+		}
+		_ = a.logSent(record)
 		return map[string]any{"request": id, "children": res}, nil
 	case "review-post":
 		if !strings.HasPrefix(in.PR, "https://") {
