@@ -1,0 +1,19 @@
+2   AXScrollArea 
+3    AXButton Workspace | Workspace (Esc)
+4    AXHeading Claim work
+5    AXScrollArea 
+6     AXGroup 
+7      AXStaticText Problem: Couldn’t claim it. Overlapping claim held by fixture-mei/mei-agent.
+8      AXButton Dismiss | Dismiss
+9     AXGroup Claim
+10      AXButton Issue | Selected | [selected]
+11      AXButton Paths
+12     AXStaticText One claim per issue. Claim a card from the board.
+13     AXTextField Issue | #212
+14     AXTextField Agent | relay-worker
+15     AXStaticText The claim is held as fixture-ryan/relay-worker.
+16    AXStaticText Refused if someone already holds an overlapping claim.
+17    AXButton Cancel
+18    AXButton Claim
+19    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+20  AXStaticText Agent Commander

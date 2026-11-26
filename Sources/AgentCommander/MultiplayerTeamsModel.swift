@@ -12,11 +12,20 @@ import Observation
 // - A host runs only what its owner enrolled. The run travels through `send` like any request, so
 //   the owner's grant and approval rules apply.
 // - Knowledge that seems to carry a secret is refused here before it is sent, and by the device.
-// - Deleting a group, suspending a member and revoking a device each ask once more first.
+// - Deleting a group, removing a member, releasing a claim or a card, removing a queued branch,
+//   suspending a member and revoking a device each ask once more first.
+// - A host run carries extra arguments only for a command whose owner allows them.
 
 /// A destructive step waiting for its second press.
 enum MultiplayerTeamsConfirmation: Equatable {
     case deleteGroup(String)
+    case removeMember(group: String, handle: String)
+    /// A claim, by its ID.
+    case releaseClaim(String)
+    /// A card the person holds, by its ID.
+    case releaseCard(String)
+    /// A merge-queue entry, by its ID.
+    case removeQueued(String)
     case suspend(String)
     case revokeDevice(String)
 }
@@ -32,6 +41,8 @@ final class MultiplayerTeamsModel {
     private(set) var queue: [MultiplayerQueueEntry] = []
 
     private(set) var cards: MultiplayerLoad<[MultiplayerCard]> = .loading
+    /// The open pull requests of the workspace page now open, when it lands work by pull request.
+    private(set) var pullRequests: MultiplayerLoad<MultiplayerPullRequestList> = .loading
     private(set) var versions: MultiplayerLoad<[MultiplayerKnowledgeItem]> = .loading
     private(set) var reputation: MultiplayerLoad<MultiplayerReputation> = .loading
     private(set) var search: MultiplayerLoad<MultiplayerDirectorySearch> = .loaded(MultiplayerDirectorySearch())
@@ -61,6 +72,9 @@ final class MultiplayerTeamsModel {
     @ObservationIgnored private(set) var quietTask: Task<Void, Never>?
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
+    /// The workspace page reads its pull requests beside its board, so that read has its own task.
+    @ObservationIgnored private(set) var pullRequestTask: Task<Void, Never>?
+    @ObservationIgnored private var pullRequestToken = 0
 
     init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }) {
         self.client = client
@@ -104,6 +118,9 @@ final class MultiplayerTeamsModel {
         pageTask?.cancel()
         pageTask = nil
         pageToken &+= 1
+        pullRequestTask?.cancel()
+        pullRequestTask = nil
+        pullRequestToken &+= 1
         confirming = nil
         secretRefusal = nil
     }
@@ -119,7 +136,10 @@ final class MultiplayerTeamsModel {
         confirming = nil
         switch page {
         case .groups, .group, .workspaces, .hosts, .knowledge: refresh()
-        case .workspace(let id), .card(let id, _): loadCards(id, on: server)
+        case .workspace(let id):
+            loadCards(id, on: server)
+            loadPullRequests(id, on: server)
+        case .card(let id, _): loadCards(id, on: server)
         case .knowledgeItem(let id): loadVersions(id, on: server)
         case .reputation(let resource): loadReputation(resource, on: server)
         case .policy: loadPolicy(on: server)
@@ -233,8 +253,14 @@ final class MultiplayerTeamsModel {
         }
     }
 
+    /// Adds a friend at once. Removing one takes the group's grants away, so it is sent only from
+    /// its confirmation.
     @discardableResult
     func setMember(_ handle: String, in group: MultiplayerGroup, on server: String, isMember: Bool) -> Task<Void, Never>? {
+        if !isMember {
+            guard confirming == .removeMember(group: group.id, handle: handle) else { return nil }
+            confirming = nil
+        }
         let who = handle.multiplayerDisplay, name = group.name.multiplayerDisplay
         return tray?.act(isMember ? "Adding \(who) to \(name)…" : "Removing \(who) from \(name)…",
                          failing: isMember ? "Couldn’t add \(who)." : "Couldn’t remove \(who).",
@@ -306,9 +332,12 @@ final class MultiplayerTeamsModel {
         }
     }
 
+    /// Sent only from the claim's confirmation.
     @discardableResult
     func release(_ claim: MultiplayerClaim, in workspace: String, on server: String) -> Task<Void, Never>? {
-        tray?.act("Releasing \(claim.key.multiplayerDisplay)…", failing: "Couldn’t release the claim.",
+        guard confirming == .releaseClaim(claim.id) else { return nil }
+        confirming = nil
+        return tray?.act("Releasing \(claim.key.multiplayerDisplay)…", failing: "Couldn’t release the claim.",
                   confirmation: "Released \(claim.key.multiplayerDisplay).") { client in
             let scoped = client.scoped(to: server)
             try await scoped.release(claim: claim.id, in: workspace)
@@ -322,6 +351,32 @@ final class MultiplayerTeamsModel {
     private func loadCards(_ workspace: String, on server: String) {
         refresh()
         read(\.cards, keeping: true) { try await $0.scoped(to: server).cards(in: workspace) }
+    }
+
+    /// Reads a pull-request workspace's open pull requests. Runs beside the board's read, only as the
+    /// workspace page opens or is refreshed; a merge-queue workspace asks for nothing.
+    private func loadPullRequests(_ workspace: String, on server: String) {
+        pullRequestTask?.cancel()
+        pullRequestTask = nil
+        pullRequestToken &+= 1
+        if self.workspace(workspace, on: server)?.usesQueue == true { return }
+        guard let client else { return }
+        let token = pullRequestToken
+        if pullRequests.value?.workspace != workspace { pullRequests = .loading }
+        pullRequestTask = Task {
+            let result: Result<MultiplayerPullRequestList, MultiplayerFailure>
+            do { result = .success(try await client.scoped(to: server).pullRequests(in: workspace)) }
+            catch { result = .failure(.from(error)) }
+            guard token == self.pullRequestToken else { return }
+            self.pullRequestTask = nil
+            switch result {
+            case .success(let list): self.pullRequests = .loaded(list)
+            case .failure(let failure):
+                self.pullRequests = .failed(failure == .cancelled
+                    ? "The read was stopped. Try again."
+                    : MultiplayerPullRequestList.problem(failure.message))
+            }
+        }
     }
 
     var canAddCard: Bool { tray?.isBusy == false && cardDraft.canSend }
@@ -344,10 +399,14 @@ final class MultiplayerTeamsModel {
     }
 
     /// Claims a card for one of the person's agents, completes it with a result, or reopens it.
+    /// Giving up a card the person holds is sent only from its confirmation.
     @discardableResult
     func move(_ card: MultiplayerCard, in workspace: String, on server: String, to state: MultiplayerCard.State) -> Task<Void, Never>? {
         let me = handle(on: server)
         guard !me.isEmpty else { return nil }
+        let releasing = state == .open && card.known == .claimed
+        if releasing { guard confirming == .releaseCard(card.id) else { return nil } }
+        confirming = nil
         var fields: [String: MultiplayerJSON] = ["state": .string(state.rawValue)]
         let title = card.title.multiplayerDisplay
         let progress: String, done: String
@@ -359,7 +418,8 @@ final class MultiplayerTeamsModel {
             fields["result"] = .string(resultDraft.trimmingCharacters(in: .whitespacesAndNewlines))
             (progress, done) = ("Completing \(title)…", "Completed \(title).")
         case .open:
-            (progress, done) = ("Reopening \(title)…", "Reopened \(title).")
+            (progress, done) = releasing ? ("Releasing \(title)…", "Released \(title). Anyone in the group can claim it.")
+                                         : ("Reopening \(title)…", "Reopened \(title).")
         }
         return tray?.act(progress, failing: "Couldn’t update the card.", confirmation: done) { client in
             let scoped = client.scoped(to: server)
@@ -411,10 +471,28 @@ final class MultiplayerTeamsModel {
         }
     }
 
+    /// Takes a branch out of the queue: one that settled, or one still waiting. Sent only from its
+    /// confirmation.
+    @discardableResult
+    func removeQueued(_ entry: MultiplayerQueueEntry, on server: String) -> Task<Void, Never>? {
+        guard confirming == .removeQueued(entry.id) else { return nil }
+        confirming = nil
+        let branch = entry.branch.multiplayerDisplay
+        return tray?.act("Removing \(branch) from the queue…", failing: "Couldn’t remove \(branch) from the queue.",
+                         confirmation: "Removed \(branch) from the queue. The branch itself is untouched.") { client in
+            self.queue = try await client.scoped(to: server).queueRemove(workspace: entry.workspace, branch: entry.branch)
+        }
+    }
+
     // MARK: - Hosts
 
+    /// Whether the chosen command takes extra arguments: nil when the host doesn't say.
+    func hostAllowsArguments(_ resource: String, on server: String) -> Bool? {
+        share?.entry(resource, on: server)?.capabilities?.allowsArguments(hostDraft.command.trimmingCharacters(in: .whitespaces))
+    }
+
     func startHostRun(_ resource: String, on server: String) {
-        let commands = share?.entry(resource, on: server)?.capabilities?.tools ?? []
+        let commands = share?.entry(resource, on: server)?.capabilities?.commandNames ?? []
         hostDraft = MultiplayerHostRunDraft(command: commands.count == 1 ? commands[0] : "")
         hostReply = nil
         share?.open(.hostRun(resource: resource), on: server)
@@ -426,10 +504,12 @@ final class MultiplayerTeamsModel {
     func runOnHost(_ resource: String, on server: String) -> Task<Void, Never>? {
         guard canRunOnHost else { return nil }
         let draft = hostDraft
+        // Arguments typed for another command are never sent to one that takes none.
+        let payload = draft.payload(allowingArguments: hostAllowsArguments(resource, on: server) != false)
         let name = share?.resourceName(resource, on: server).multiplayerDisplay ?? "the host"
         return tray?.act("Running \(draft.command.multiplayerDisplay) on \(name)…", failing: "Couldn’t run the command.") { client in
             self.hostReply = try await client.scoped(to: server).send(resource: resource, action: MultiplayerSharePolicy.hostRun,
-                                                                      payload: draft.payload, name: "Run \(draft.command)")
+                                                                      payload: payload, name: "Run \(draft.command)")
         }
     }
 

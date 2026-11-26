@@ -22,6 +22,8 @@ type User struct {
 	LastSeen      *time.Time `json:"lastSeen,omitempty"`
 	HasAvatar     bool       `json:"hasAvatar"`
 	ContactKey    string     `json:"contactKey,omitempty"`
+	// RequestedAt is when a pending friend request was sent.
+	RequestedAt *time.Time `json:"requestedAt,omitempty"`
 }
 
 func (s *Service) setProfile(ctx context.Context, p Principal, r *http.Request) (any, error) {
@@ -88,7 +90,8 @@ const socialUsers = `SELECT u.user_id,coalesce(u.handle,''),coalesce(u.display_n
 	coalesce(live.online,false),CASE WHEN live.online THEN coalesce(u.presence,'online') ELSE 'offline' END,
 	CASE WHEN NOT coalesce(live.online,false) THEN live.last_seen END,u.has_avatar,
 	CASE WHEN u.user_id=$1 OR f.accepted THEN coalesce(u.contact_key,'') ELSE '' END,
-	CASE WHEN f.accepted THEN 'accepted' WHEN f.requester=$1 THEN 'outgoing' WHEN f.requester IS NOT NULL THEN 'incoming' ELSE '' END
+	CASE WHEN f.accepted THEN 'accepted' WHEN f.requester=$1 THEN 'outgoing' WHEN f.requester IS NOT NULL THEN 'incoming' ELSE '' END,
+	CASE WHEN f.requester IS NOT NULL AND NOT f.accepted THEN f.requested_at END
 	FROM (SELECT user_id,handle,display_name,status_message,presence,avatar IS NOT NULL AS has_avatar,contact_key
 	      FROM mp_members FULL JOIN mp_profiles USING(user_id)) u
 	LEFT JOIN mp_friends f ON f.a=least(u.user_id,$1) AND f.b=greatest(u.user_id,$1)
@@ -100,7 +103,7 @@ const socialUsers = `SELECT u.user_id,coalesce(u.handle,''),coalesce(u.display_n
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.User, &u.Handle, &u.DisplayName, &u.StatusMessage, &u.Online, &u.Presence, &u.LastSeen, &u.HasAvatar, &u.ContactKey, &u.Status)
+	err := row.Scan(&u.User, &u.Handle, &u.DisplayName, &u.StatusMessage, &u.Online, &u.Presence, &u.LastSeen, &u.HasAvatar, &u.ContactKey, &u.Status, &u.RequestedAt)
 	return u, err
 }
 

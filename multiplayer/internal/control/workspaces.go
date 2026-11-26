@@ -71,10 +71,11 @@ func (s *Service) createWorkspace(ctx context.Context, p Principal, r *http.Requ
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
+		err := tx.QueryRow(ctx, `INSERT INTO mp_workspaces(id,owner_id,group_id,name,goal,repository,base,integration)
 			SELECT $1,$2,$3,$4,$5,$6,$7,$8 FROM mp_group_members WHERE group_id=$3 AND user_id=$2
 			RETURNING (SELECT coalesce(handle,'') FROM mp_profiles WHERE user_id=$2)`,
 			w.ID, w.Owner, w.Group, w.Name, w.Goal, w.Repository, w.Base, w.Integration).Scan(&w.OwnerHandle)
+		return missingRow(err, "you do not belong to group "+in.Group)
 	})
 	return w, err
 }
@@ -102,7 +103,7 @@ func (s *Service) writeWorkspace(ctx context.Context, p Principal, id string, op
 		var group string
 		if err := tx.QueryRow(ctx, `SELECT w.group_id FROM mp_workspaces w JOIN mp_group_members m
 			ON m.group_id=w.group_id WHERE w.id=$1 AND m.user_id=$2 FOR UPDATE OF w FOR SHARE OF m`, id, p.User).Scan(&group); err != nil {
-			return err
+			return missingRow(err, "no workspace "+id+" in your groups")
 		}
 		return op(tx, group)
 	})
@@ -204,12 +205,12 @@ func acquireWorkspaceClaim(ctx context.Context, tx pgx.Tx, p Principal, id, grou
 		return c, err
 	}
 	if handle != ownHandle {
-		return c, forbidden()
+		return c, &fault{http.StatusForbidden, "you can only claim work under your own handle"}
 	}
 	if in.Kind == "card" {
 		var done bool
 		if err := tx.QueryRow(ctx, `SELECT done FROM mp_workspace_cards WHERE workspace_id=$1 AND id=$2`, id, in.Key).Scan(&done); err != nil {
-			return c, err
+			return c, missingRow(err, "no card "+in.Key+" in workspace "+id)
 		}
 		if done {
 			return c, conflict("reopen the completed card before claiming it")
@@ -257,7 +258,7 @@ func (s *Service) releaseWorkspaceClaim(ctx context.Context, p Principal, r *htt
 	err := s.writeWorkspace(ctx, p, id, func(tx pgx.Tx, _ string) error {
 		tag, err := tx.Exec(ctx, `DELETE FROM mp_workspace_claims WHERE workspace_id=$1 AND id=$2 AND holder_id=$3 AND device=$4`, id, r.PathValue("claim"), p.User, p.Device)
 		if err == nil && tag.RowsAffected() == 0 {
-			return missing()
+			return &fault{http.StatusNotFound, "no claim " + r.PathValue("claim") + " held by this device in workspace " + id}
 		}
 		return err
 	})

@@ -145,6 +145,11 @@ enum MultiplayerMarkdownParser {
         return parsed
     }
 
+    /// One list item as VoiceOver reads it: "1. Read the failing test", or the words alone for a bullet.
+    static func spoken(_ item: MultiplayerMarkdownItem) -> String {
+        (item.marker.isEmpty ? "" : "\(item.marker) ") + String(inline(item.text).characters)
+    }
+
     /// The text as VoiceOver reads it: no marks, one block per sentence break.
     static func spoken(_ blocks: [MultiplayerMarkdownBlock]) -> String {
         func plain(_ text: String) -> String { String(inline(text).characters) }
@@ -190,7 +195,7 @@ struct MultiplayerMarkdown: View {
                         .foregroundStyle(MultiplayerTheme.foreground)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
-                case .list(_, let items):
+                case .list(let ordered, let items):
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -198,7 +203,6 @@ struct MultiplayerMarkdown: View {
                                     .font(MultiplayerTheme.data)
                                     .foregroundStyle(.inkSecondary)
                                     .frame(minWidth: 14, alignment: .trailing)
-                                    .accessibilityHidden(item.marker.isEmpty)
                                 Text(MultiplayerMarkdownParser.inline(item.text))
                                     .font(.system(size: 12))
                                     .foregroundStyle(MultiplayerTheme.foreground)
@@ -206,9 +210,14 @@ struct MultiplayerMarkdown: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(.leading, CGFloat(item.depth) * 14)
-                            .accessibilityElement(children: .combine)
+                            // One static text per item: its number, then its words.
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityAddTraits(.isStaticText)
+                            .accessibilityLabel(MultiplayerMarkdownParser.spoken(item))
                         }
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("\(ordered ? "Numbered list" : "List"), \(MultiplayerPlural.count(items.count, "item"))")
                 case .code(let text):
                     let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
                     ScrollView(.horizontal) {

@@ -1,0 +1,28 @@
+25     AXStaticText as ryan
+26     AXHeading Remote
+27     AXCheckBox Remote web view | Stop serving the web view. Paired devices stay paired.
+28     AXStaticText Serving
+29     AXStaticText Approve requests and watch workers from a paired phone, on your tailnet only.
+30     AXGroup address, http://100.64.0.1:8780
+31      AXStaticText address
+32      AXStaticText http://100.64.0.1:8780
+33      AXButton Copy the address | Copy the address
+34     AXImage QR code of the pairing link
+35     AXStaticText Scan with a phone on your tailnet
+36     AXGroup code, X X X X X X X X
+37      AXStaticText code
+38      AXStaticText XXXX XXXX
+39      AXButton Copy the code | Copy the code
+40     AXStaticText The code pairs one device, then ends.
+41     AXStaticText 10 minutes left
+42     AXGroup link, http://100.64.0.1:8780/pair?code=REDACTED
+43      AXStaticText link
+44      AXStaticText http://100.64.0.1:8780/pair?code=REDACTED
+45      AXButton Copy the link | Copy the link
+46     AXButton New code | Replace this code with a new one
+47     AXStaticText No device is paired yet.
+48     AXButton Hosting on this Mac. How to run a relay here, with no Docker
+49    AXStaticText Fixture helper | Debug review mode: everything here comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.
+50    AXMenuButton Sign out: choose a server
+51    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+52  AXStaticText Agent Commander

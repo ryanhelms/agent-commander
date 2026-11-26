@@ -137,6 +137,20 @@ func (m *Manager) remoteVerb(ctx context.Context, verb string, in remoteInput) (
 			}
 		}
 		return nil, errors.New("unknown device")
+	case "remote-rename":
+		name := strings.TrimSpace(in.Name)
+		if name == "" || len(name) > 64 {
+			return nil, errors.New("give the device a name of 1–64 characters")
+		}
+		rs.mu.Lock()
+		defer rs.mu.Unlock()
+		for i := range rs.devices {
+			if rs.devices[i].ID == in.Device {
+				rs.devices[i].Name = name
+				return struct{}{}, rs.persist()
+			}
+		}
+		return nil, errors.New("unknown device")
 	}
 	return nil, errors.New("unknown operation")
 }
@@ -144,6 +158,7 @@ func (m *Manager) remoteVerb(ctx context.Context, verb string, in remoteInput) (
 type remoteInput struct {
 	Listen string `json:"listen"`
 	Device string `json:"device"`
+	Name   string `json:"name"`
 }
 
 func hashToken(t string) []byte { h := key(t); return []byte(h) }
@@ -180,8 +195,8 @@ func (m *Manager) remoteHandler() http.Handler {
 			return
 		}
 		token := randomToken(32)
-		name := r.URL.Query().Get("name")
-		if name == "" {
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" || len(name) > 64 {
 			name = "Phone"
 		}
 		d := remoteDevice{ID: randomToken(5)[:8], Name: name, Hash: hashToken(token), Paired: time.Now().UTC(), Expires: time.Now().Add(30 * 24 * time.Hour)}

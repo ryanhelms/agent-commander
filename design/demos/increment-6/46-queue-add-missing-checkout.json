@@ -1,0 +1,4 @@
+{"verb": "queue-add", "request": {"workspace":"431e6af25440ab160e0abda4ff2acbe81cdb3bb731e3268b","branch":"feature-ok","checkout":"/nonexistent/checkout"}, "response": {
+ "error": "checkout /nonexistent/checkout is not a Git work tree: git: chdir /nonexistent/checkout: no such file or directory",
+ "ok": false
+}}

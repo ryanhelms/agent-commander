@@ -1,0 +1,4 @@
+{"verb": "grant", "request": {"resource":"no-such-resource","group":"no-such-group","actions":["agent.ask"]}, "response": {
+ "error": "no resource no-such-resource",
+ "ok": false
+}}

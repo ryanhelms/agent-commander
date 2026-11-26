@@ -620,7 +620,7 @@ func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 	return nil, errors.New("sign in to a server first")
 }
 
-var readOnlyVerbs = map[string]bool{
+var readOnlyVerbs = map[string]bool{"workspace-prs": true,
 	"status": true, "avatar": true, "approvals": true, "audit": true, "me": true, "membership": true,
 	"groups": true, "workspaces": true, "knowledge": true, "queue": true,
 }
@@ -636,7 +636,7 @@ func (m *Manager) Handler() http.Handler {
 		}
 		verb := r.PathValue("verb")
 		switch verb {
-		case "remote-enable", "remote-disable", "remote-devices", "remote-revoke":
+		case "remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename":
 			var in remoteInput
 			d := json.NewDecoder(bytes.NewReader(raw))
 			d.DisallowUnknownFields()

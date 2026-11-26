@@ -1,0 +1,11 @@
+5    AXScrollArea 
+6     AXStaticText jonas-mac-mini, fixture-jonas, ios-simulator, xcode-16
+7     AXGroup Command
+8      AXButton run-ios-ui-tests
+9      AXButton build-release | Selected | [selected]
+10     AXStaticText Runs in xcode-16. Only the commands the owner enrolled.
+11     AXStaticText build-release runs exactly as its owner enrolled it. It takes no extra arguments.
+12    AXStaticText Runs on the owner’s Mac, under their grant and approval rules.
+13    AXButton Run command | Run (⌘Return)
+14    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+15  AXStaticText Agent Commander

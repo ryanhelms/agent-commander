@@ -1,0 +1,15 @@
+{"verb": "workspace-create", "request": {"name":"demo6-pr","goal":"Demo increment 6 retest","repository":"demo/demo6","base":"main","group":"d29c44d73c7c0e9b3aaf854e29b56c482769cac793f909eb","integration":"pull_request"}, "response": {
+ "data": {
+  "base": "main",
+  "claims": [],
+  "goal": "Demo increment 6 retest",
+  "group": "d29c44d73c7c0e9b3aaf854e29b56c482769cac793f909eb",
+  "id": "1ef01375c2222276ae51bca4121286d8655e10968359d6e7",
+  "integration": "pull_request",
+  "name": "demo6-pr",
+  "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+  "ownerHandle": "ryan",
+  "repository": "demo/demo6"
+ },
+ "ok": true
+}}

@@ -250,7 +250,8 @@ struct MultiplayerBadge: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.chipRadius)
         HStack(spacing: 3) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)) }
+            // The word carries the meaning. A tick symbol would otherwise be spoken as "Selected".
+            if let symbol { Image(systemName: symbol).font(.system(size: 7.5, weight: .semibold)).accessibilityHidden(true) }
             Text(text).font(MultiplayerTheme.label)
         }
             .foregroundStyle(tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(tone.color))
@@ -259,6 +260,19 @@ struct MultiplayerBadge: View {
             .frame(minHeight: 15)
             .background(tone == .neutral ? Color.clear : tone.color.opacity(0.12), in: shape)
             .overlay { shape.strokeBorder(tone == .neutral ? MultiplayerTheme.border : tone.color.opacity(0.45)) }
+    }
+}
+
+extension Tone {
+    /// The tone lamp (DESIGN.md): the lamp for a state the view knows only by its tone.
+    var lamp: MultiplayerLamp.Kind {
+        switch self {
+        case .working: .on
+        case .attention: .busy
+        case .failure: .error
+        case .focus: .unknown
+        case .neutral: .off
+        }
     }
 }
 
@@ -593,11 +607,15 @@ struct MultiplayerTextArea: View {
     }
 }
 
-/// Something waiting on the person: who, what, and the one answer.
+/// Something waiting on the person: who, what, and the answer. A request that can be refused has
+/// the refusal first and the answer after it as the primary button.
 struct MultiplayerNeedRow: View {
     let color: Color
     let title: String
     let detail: String
+    /// The refusing answer, such as Decline. Nil leaves the one answer.
+    var declineTitle: String? = nil
+    var onDecline: (() -> Void)? = nil
     let actionTitle: String
     let isBusy: Bool
     let action: () -> Void
@@ -619,8 +637,14 @@ struct MultiplayerNeedRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
+            if let declineTitle, let onDecline {
+                Button(declineTitle, action: onDecline)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(isBusy)
+                    .accessibilityLabel("\(declineTitle): \(title)")
+            }
             Button(actionTitle, action: action)
-                .buttonStyle(MultiplayerTrayButtonStyle())
+                .buttonStyle(MultiplayerTrayButtonStyle(role: onDecline == nil ? .standard : .primary))
                 .disabled(isBusy)
                 .accessibilityLabel("\(actionTitle): \(title)")
         }

@@ -172,6 +172,10 @@ struct MultiplayerNeedsYou: View {
     var resourceName: (_ resource: String, _ server: String) -> String = { resource, _ in resource }
     let isBusy: Bool
     let onAccept: (MultiplayerIncoming, String) -> Void
+    /// Refuses a friend request. Nil leaves Accept as the one answer.
+    var onDecline: ((MultiplayerIncoming, String) -> Void)? = nil
+    /// The moment arrival times are measured from.
+    var now = Date()
     var onOpenApproval: (MultiplayerPending<MultiplayerApproval>) -> Void = { _ in }
     var onDecide: (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Void = { _, _ in }
     var onReviewAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
@@ -216,7 +220,9 @@ struct MultiplayerNeedsYou: View {
                         ForEach(group.incoming) { request in
                             MultiplayerNeedRow(color: MultiplayerTheme.swatch(for: group.server.id),
                                                title: "\(request.handle.multiplayerDisplay) sent a friend request",
-                                               detail: "On \(group.server.displayName)",
+                                               detail: Self.friendDetail(request, server: group.server.displayName, now: now),
+                                               declineTitle: onDecline == nil ? nil : "Decline",
+                                               onDecline: onDecline.map { decline in { decline(request, group.server.id) } },
                                                actionTitle: "Accept", isBusy: isBusy) {
                                 onAccept(request, group.server.id)
                             }
@@ -228,6 +234,14 @@ struct MultiplayerNeedsYou: View {
                 .multiplayerStreaming(approvals.map(\.id) + access.map(\.id) + groups.flatMap { $0.incoming.map(\.id) })
             }
         }
+    }
+}
+
+extension MultiplayerNeedsYou {
+    /// Where a friend request waits and, when the relay says, how long ago it came: "On home, 5m ago".
+    static func friendDetail(_ request: MultiplayerIncoming, server: String, now: Date) -> String {
+        guard let arrival = request.arrival(now: now) else { return "On \(server)" }
+        return "On \(server), \(arrival)"
     }
 }
 
@@ -802,9 +816,9 @@ struct MultiplayerPanel: View {
             }
           }
         case .addServer:
-            MultiplayerTrayHeader(title: "Add server", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
+            MultiplayerTrayHeader(title: "Add server", back: model.tab.title, onBack: { model.go(.home) }) { EmptyView() }
         case .hosting:
-            MultiplayerTrayHeader(title: "Hosting on this Mac", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
+            MultiplayerTrayHeader(title: "Hosting on this Mac", back: model.tab.title, onBack: { model.go(.home) }) { EmptyView() }
         case .server:
             if let server = routedServer {
                 // Inside one of the server's editors, Back returns to the server's own page.
@@ -812,7 +826,7 @@ struct MultiplayerPanel: View {
                 let inEditor = server.state != .certChanged && session.map { $0.route != .home } == true
                 MultiplayerTrayHeader(title: server.displayName, color: MultiplayerTheme.swatch(for: server.id),
                                       state: (server.state.lamp, server.stateTitle(now: model.currentDate()), server.state.tone),
-                                      back: inEditor ? "Back" : "Servers",
+                                      back: inEditor ? server.displayName : model.tab.title,
                                       onBack: { if inEditor { session?.go(.home) } else { model.go(.home) } }) { EmptyView() }
             }
         case .profile: subpageHeader("Your profile")
@@ -890,7 +904,7 @@ struct MultiplayerPanel: View {
                     MultiplayerBanner(kind: .success, message: notice, onDismiss: { model.dismissNotice() })
                 }
                 if model.hasLoaded, let unavailable = model.unavailable {
-                    MultiplayerBanner(kind: .failure, message: "Couldn’t update the server list. \(unavailable.message)",
+                    MultiplayerBanner(kind: .failure, message: MultiplayerSentence.join("Couldn’t update the server list.", unavailable.message),
                                       actionTitle: unavailable.canRetry ? "Try again" : nil,
                                       action: { model.refresh() })
                 }
@@ -987,14 +1001,7 @@ struct MultiplayerPanel: View {
                     }
                 }
             case .grant:
-                let status = model.session(id)?.status
-                MultiplayerGrantSheet(draft: $share.grantDraft, servers: share.shareServers,
-                                      friends: status?.friends ?? [], groups: share.teams.ownedGroups(on: id),
-                                      resources: status?.resources ?? [],
-                                      resource: share.grantResource, companions: share.grantCompanions,
-                                      onServer: { share.setGrantServer($0) },
-                                      onResourceChange: { share.reconcileGrantActions() },
-                                      onToggle: { share.toggleGrantAction($0) })
+                MultiplayerGrantForm(model: model)
             case .consult(let resource):
                 MultiplayerConsultPage(draft: $share.consultDraft, entry: share.entry(resource, on: id),
                                        reply: share.consultReply, attachProblem: share.attachProblem,
@@ -1064,8 +1071,10 @@ struct MultiplayerPanel: View {
             if let group = teams.group(groupID, on: id) {
                 MultiplayerGroupPage(group: group, handle: me, addable: teams.addable(to: group, on: id), isBusy: model.isBusy,
                                      confirmingDelete: teams.confirming == .deleteGroup(groupID),
+                                     confirmingRemoval: { if case .removeMember(groupID, let handle)? = teams.confirming { handle } else { nil } }(),
                                      onAdd: { teams.setMember($0, in: group, on: id, isMember: true) },
-                                     onRemove: { teams.setMember($0, in: group, on: id, isMember: false) },
+                                     onRemove: { teams.ask(.removeMember(group: groupID, handle: $0)) },
+                                     onConfirmRemove: { teams.setMember($0, in: group, on: id, isMember: false) },
                                      onCancelDelete: { teams.cancelConfirmation() },
                                      onConfirmDelete: { teams.deleteGroup(group, on: id) })
             } else { gone("group") }
@@ -1078,24 +1087,34 @@ struct MultiplayerPanel: View {
         case .workspace(let workspaceID):
             if let workspace = teams.workspace(workspaceID, on: id) {
                 MultiplayerWorkspacePage(workspace: workspace, group: teams.group(workspace.group, on: id), handle: me,
-                                         cards: teams.cards, queue: teams.queue(for: workspaceID), cardDraft: $teams.cardDraft,
+                                         cards: teams.cards, queue: teams.queue(for: workspaceID), pullRequests: teams.pullRequests,
+                                         cardDraft: $teams.cardDraft,
                                          canAddCard: teams.canAddCard, now: now, isBusy: model.isBusy,
+                                         confirming: teams.confirming,
                                          onClaim: { teams.startClaim(in: workspaceID, on: id) },
-                                         onRelease: { teams.release($0, in: workspaceID, on: id) },
+                                         onRelease: { teams.ask(.releaseClaim($0.id)) },
+                                         onConfirmRelease: { teams.release($0, in: workspaceID, on: id) },
+                                         onRemoveQueued: { teams.ask(.removeQueued($0.id)) },
+                                         onConfirmRemoveQueued: { teams.removeQueued($0, on: id) },
+                                         onCancelConfirmation: { teams.cancelConfirmation() },
                                          onAddCard: { teams.addCard(to: workspaceID, on: id) },
                                          onOpenCard: { teams.openCard($0, in: workspaceID, on: id) },
                                          onClaimCard: { teams.move($0, in: workspaceID, on: id, to: .claimed) },
                                          onQueueAdd: { teams.startQueueAdd(for: workspaceID, on: id) },
                                          onRunQueue: { teams.runQueue(workspaceID, on: id) },
-                                         onRetryCards: { share.reloadPage() })
+                                         onRetryCards: { share.reloadPage() },
+                                         onRetryPullRequests: { share.reloadPage() })
             } else { gone("workspace") }
         case .claim(let workspaceID):
             if let workspace = teams.workspace(workspaceID, on: id) {
                 MultiplayerClaimForm(draft: $teams.claimDraft, workspace: workspace, handle: me)
             } else { gone("workspace") }
-        case .card(_, let cardID):
+        case .card(let workspaceID, let cardID):
             if let card = teams.card(cardID) {
-                MultiplayerCardPage(card: card, handle: me, result: $teams.resultDraft)
+                MultiplayerCardPage(card: card, handle: me, result: $teams.resultDraft,
+                                    confirmingRelease: teams.confirming == .releaseCard(cardID), isBusy: model.isBusy,
+                                    onCancelRelease: { teams.cancelConfirmation() },
+                                    onConfirmRelease: { teams.move(card, in: workspaceID, on: id, to: .open) })
             } else if teams.cards.value == nil {
                 MultiplayerBand {
                     MultiplayerLoadNote(loading: "Reading the card…",
@@ -1218,9 +1237,9 @@ struct MultiplayerPanel: View {
                             .disabled(model.isBusy)
                     case .claimed:
                         if card.isAssigned(to: me) {
-                            Button("Release") { teams.move(card, in: workspaceID, on: id, to: .open) }
+                            Button("Release…") { teams.ask(.releaseCard(cardID)) }
                                 .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(model.isBusy)
+                                .disabled(model.isBusy || teams.confirming == .releaseCard(cardID))
                             Button("Complete card") { teams.move(card, in: workspaceID, on: id, to: .done) }
                                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                                 .keyboardShortcut(.return, modifiers: .command)
@@ -1648,6 +1667,7 @@ struct MultiplayerPanel: View {
         let remote = model.remote
         MultiplayerRemoteBand(status: remote.status, failure: remote.failure, pairing: remote.livePairing,
                               pairingExpired: remote.pairingExpired, confirmingRevoke: remote.confirmingRevoke,
+                              renaming: remote.renaming,
                               now: model.currentDate(), isBusy: model.isBusy,
                               onSetRunning: { remote.setRunning($0) },
                               onNewCode: { remote.enable() },
@@ -1655,6 +1675,9 @@ struct MultiplayerPanel: View {
                               onAskRevoke: { remote.askRevoke($0) },
                               onCancelRevoke: { remote.cancelRevoke() },
                               onConfirmRevoke: { remote.confirmRevoke() },
+                              onStartRename: { remote.startRename($0) },
+                              onCancelRename: { remote.cancelRename() },
+                              onRename: { remote.rename(to: $0) },
                               onRetry: { remote.refresh() })
         MultiplayerBand {
             MultiplayerLinkRow(symbol: "server.rack", title: "Hosting on this Mac",
@@ -1665,7 +1688,8 @@ struct MultiplayerPanel: View {
     /// People: friend requests, friends by server, and what happened.
     @ViewBuilder private var peopleTab: some View {
         let groups = model.friendGroups
-        MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy, onAccept: { model.accept($0, on: $1) })
+        MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy, onAccept: { model.accept($0, on: $1) },
+                            onDecline: { model.decline($0, on: $1) }, now: model.currentDate())
         MultiplayerFriendGroups(groups: groups, addable: model.friendServers, isBusy: model.isBusy,
                                 avatar: { model.avatar(server: $0, handle: $1) },
                                 onAddFriend: { model.addFriend(on: $0) },

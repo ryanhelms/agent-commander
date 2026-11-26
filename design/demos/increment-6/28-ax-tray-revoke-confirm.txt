@@ -1,0 +1,13 @@
+39     AXStaticText Make a code to pair a phone or tablet.
+40     AXButton Pair a device | Make a pairing code and show its QR code
+41     AXStaticText Phone, paired Nov 25, ends Dec 25
+42     AXStaticText Revoke Phone? It is signed out at once and has to pair again.
+43     AXButton Keep
+44     AXButton Revoke
+45     AXStaticText curl-demo, paired Nov 25, ends Dec 25
+46     AXButton Revoke curl-demo | Sign this device out of the web view
+47     AXButton Hosting on this Mac. How to run a relay here, with no Docker
+48    AXStaticText Fixture helper | Debug review mode: everything here comes from the COMMANDER_NETWORK_BIN fixture, not the bundled helper.
+49    AXMenuButton Sign out: choose a server
+50    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+51  AXStaticText Agent Commander

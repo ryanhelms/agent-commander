@@ -75,10 +75,10 @@ func (s *Service) createGroup(ctx context.Context, p Principal, r *http.Request)
 func lockOwnedGroup(ctx context.Context, tx pgx.Tx, id, user string) error {
 	var owner string
 	if err := tx.QueryRow(ctx, "SELECT owner_id FROM mp_groups WHERE id=$1 FOR UPDATE", id).Scan(&owner); err != nil {
-		return err
+		return missingRow(err, "no group "+id)
 	}
 	if owner != user {
-		return forbidden()
+		return &fault{http.StatusForbidden, "only the owner can change group " + id}
 	}
 	return nil
 }
@@ -94,7 +94,10 @@ func (s *Service) changeGroupMember(ctx context.Context, p Principal, r *http.Re
 		}
 		var peer string
 		if err := tx.QueryRow(ctx, "SELECT user_id FROM mp_profiles WHERE handle=$1", handle).Scan(&peer); err != nil {
-			return err
+			if r.Method == "DELETE" {
+				return missingRow(err, handle+" is not a member of group "+id)
+			}
+			return missingRow(err, handle+" is not your friend")
 		}
 		if peer == p.User {
 			return bad("the group owner is a permanent member")
@@ -102,7 +105,7 @@ func (s *Service) changeGroupMember(ctx context.Context, p Principal, r *http.Re
 		if r.Method == "DELETE" {
 			return removeGroupMember(ctx, tx, id, peer, p.User)
 		}
-		if err := requireFriend(ctx, tx, p.User, peer); err != nil {
+		if err := requireFriend(ctx, tx, p.User, peer, handle); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO mp_group_members(group_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, peer)
@@ -235,7 +238,7 @@ func changeGroupGrant(ctx context.Context, tx pgx.Tx, res, owner, group string, 
 	var member string
 	if err := tx.QueryRow(ctx, `SELECT m.user_id FROM mp_groups g JOIN mp_group_members m ON m.group_id=g.id
 		WHERE g.id=$1 AND m.user_id=$2 FOR UPDATE OF g FOR SHARE OF m`, group, owner).Scan(&member); err != nil {
-		return err
+		return missingRow(err, "you do not belong to group "+group)
 	}
 	if policy == nil {
 		if _, err := tx.Exec(ctx, `DELETE FROM mp_group_grants WHERE group_id=$1 AND resource=$2`, group, res); err != nil {

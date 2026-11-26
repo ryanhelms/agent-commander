@@ -355,7 +355,7 @@ enum MultiplayerShareFixture {
         #expect(model.tally.needsYou == 2)    // the friend request and the approval
 
         model.share.open(.approval("ap-1"), on: "s-home")
-        #expect(model.route == .share("s-home", .approval("ap-1")) && model.share.backTitle == "Network")
+        #expect(model.route == .share("s-home", .approval("ap-1")) && model.share.backTitle == "Agents")
         await model.share.decide(pending.item, on: "s-home", approve: true)?.value
         #expect(helper.lastInput(.approve) == ["id": "ap-1", "server": "s-home"])
         #expect(model.route == .home && model.notice == "Approved. It runs on this Mac now.")
@@ -369,7 +369,7 @@ enum MultiplayerShareFixture {
         await model.settle()
         let pending = try #require(model.share.pendingApprovals.first)
         await model.share.decide(pending.item, on: "s-home", approve: false)?.value
-        #expect(model.failure == "Couldn’t deny the request. no such request")
+        #expect(model.failure == "Couldn’t deny the request. No such request.")
         #expect(model.share.approvals["s-home"]?.count == 1)
         model.close()
     }

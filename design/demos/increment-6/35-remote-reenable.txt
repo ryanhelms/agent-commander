@@ -1,0 +1,10 @@
+== tray switch on
+0 Remote web view | Serve the web view on this Mac’s tailnet address
+30     AXStaticText Approve requests and watch workers from a paired phone, on your tailnet only.
+31     AXGroup address, http://100.64.0.1:8780
+32      AXStaticText address
+33      AXStaticText http://100.64.0.1:8780
+34      AXButton Copy the address | Copy the address
+35     AXImage QR code of the pairing link
+== curl device kept across disable/enable
+[200]
