@@ -4,6 +4,10 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Removed
+
+- Releases no longer request build attestations for the headless archives. GitHub refuses them for this private repository; `SHA256SUMS` still protects the downloads.
+
 ## [0.1.0-pilot.5] - 2026-11-26
 
 
