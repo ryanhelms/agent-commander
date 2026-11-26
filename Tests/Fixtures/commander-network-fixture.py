@@ -88,7 +88,7 @@ items carry `ownerHandle`. Each host in `status.resources` carries `capabilities
 carries the policy's `knowledgeDefault` and `knowledgeWidest`. `workspace-edit` changes a workspace
 you own (Relay reconnect) and is refused for one you don't; `workspace-leave` takes you out of iOS
 onboarding and is refused for the one you own. A refused claim carries `holder`, `agent` and
-`claim` beside `error`.
+`claim` beside `error`, and so does a claim or edit of a card someone else holds (card-3).
 
 Probe an address containing "fail" to see a failed step, or "trusted" for a certificate the system
 already trusts. Any other address passes and asks for its fingerprint to be confirmed.
@@ -164,7 +164,8 @@ def seed():
                  {"id": "cl-1", "kind": "paths", "key": "Sources/Relay/Lease.swift,Tests/Relay", "holder": "fixture-sam/sam-agent",
                   "expiresAt": now(42)},
                  {"id": "cl-2", "kind": "card", "key": "card-2", "holder": "fixture-ryan/relay-worker", "expiresAt": now(55)},
-                 {"id": "cl-3", "kind": "issue", "key": "#212", "holder": "fixture-mei/mei-agent", "expiresAt": now(18)}]},
+                 {"id": "cl-3", "kind": "issue", "key": "#212", "holder": "fixture-mei/mei-agent", "expiresAt": now(18)},
+                 {"id": "cl-5", "kind": "card", "key": "card-3", "holder": "fixture-sam/sam-agent", "expiresAt": now(37)}]},
             {"id": "ws-ios", "owner": "u-jonas", "group": "grp-ios", "name": "iOS onboarding",
              "goal": "Ship the three-screen first-run flow behind a flag.",
              "repository": "github.com/example/commander-ios", "base": "develop", "integration": "pull_request",
@@ -1043,7 +1044,10 @@ def teams_relay(state, server, method, path, body):
             if body.get("state") not in (None, "open", "claimed", "done"):
                 raise ValueError("state must be open, claimed or done")
             if card["state"] == "claimed" and not card["assignee"].startswith("fixture-ryan/"):
-                raise ValueError("relay HTTP 409: overlapping claim held by %s" % card["assignee"])
+                handle, _, agent = card["assignee"].partition("/")
+                held = [claim["id"] for claim in workspace["claims"] if claim["kind"] == "card" and claim["key"] == card["id"]]
+                raise Refusal("relay HTTP 409: overlapping claim held by %s" % card["assignee"],
+                              holder=handle, agent=agent, claim=held[0] if held else "")
             was = card["state"]
             card["state"] = body.get("state", was)
             if "result" in body:

@@ -314,18 +314,19 @@ struct MultiplayerClaimRefusal: Equatable, Sendable {
     }
 }
 
-/// A claim the relay refused and said who holds what it overlaps.
+/// A claim, or a card claim or edit, the relay refused and said who holds the work.
 struct MultiplayerClaimRefused: Error, Equatable, Sendable {
     /// The refusal as any other caller reads it.
     let failure: MultiplayerFailure
     let refusal: MultiplayerClaimRefusal
 }
 
-/// A claim's result with who stopped it, when someone did.
+/// The result of a claim, or of a card claim or edit, with who stopped it, when someone did.
 struct MultiplayerClaimAnswer: Equatable, Sendable {
-    /// As `claim(_:in:on:)` returns it: the new claim's ID, or why it wasn't made.
+    /// As `claim(_:in:on:)` or `updateCard(_:in:on:to:result:)` returns it: the new claim's ID or
+    /// the card's, or why it wasn't done.
     let result: MultiplayerActionResult
-    /// The holder and the blocking claim, when the relay refused for an overlap.
+    /// The holder and the blocking claim, when the relay refused because someone else holds it.
     let refusal: MultiplayerClaimRefusal?
 
     init(result: MultiplayerActionResult, refusal: MultiplayerClaimRefusal? = nil) {
@@ -378,10 +379,22 @@ extension MultiplayerClient {
     @discardableResult
     func claimNamingHolder(_ body: MultiplayerJSON, in workspace: String) async throws -> String {
         let path = "/v1/workspaces/\(try Self.segment(workspace))/claims"
+        return try await relayNamingHolder("POST", path, body: body)?.firstText("id") ?? ""
+    }
+
+    /// Claims, completes or reopens a card. A refusal that names who holds the card is thrown as
+    /// `MultiplayerClaimRefused`; every other failure as a `MultiplayerFailure`.
+    func updateCardNamingHolder(_ card: String, in workspace: String, fields: [String: MultiplayerJSON]) async throws {
+        let path = "/v1/workspaces/\(try Self.segment(workspace))/cards/\(try Self.segment(card))"
+        _ = try await relayNamingHolder("PUT", path, body: .object(fields))
+    }
+
+    /// A relay request whose refusal can name a holder. The reply, when there is one.
+    private func relayNamingHolder(_ method: String, _ path: String, body: MultiplayerJSON) async throws -> MultiplayerJSON? {
         do {
-            let output = try await call(.relay, payload: ["method": .string("POST"), "path": .string(path), "body": .json(body)])
+            let output = try await call(.relay, payload: ["method": .string(method), "path": .string(path), "body": .json(body)])
             do {
-                return try MultiplayerEnvelope.decode(MultiplayerJSON.self, from: output)?.firstText("id") ?? ""
+                return try MultiplayerEnvelope.decode(MultiplayerJSON.self, from: output)
             } catch {
                 guard let refusal = MultiplayerEnvelope.refusal(from: output).flatMap(MultiplayerClaimRefusal.init) else { throw error }
                 throw MultiplayerClaimRefused(failure: .from(error), refusal: refusal)
