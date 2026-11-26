@@ -45,6 +45,8 @@ enum ShellChrome: Sendable {
     case native
     /// A band drawn above the navigation and canvas, for a view shown without a window.
     case drawn
+    /// The page that hosts the shell fills the window's toolbar itself. The shell draws none.
+    case hosted
 }
 
 /// Window-level frame for the redesigned main window.
@@ -70,6 +72,8 @@ struct ShellTemplate<Navigation: View, Leading: View, Trailing: View, Canvas: Vi
                 }
                 .toolbar(removing: .title)
                 .toolbarBackground(.hidden, for: .windowToolbar)
+        case .hosted:
+            frame
         case .drawn:
             VStack(spacing: 0) {
                 HStack(spacing: Space.m) {

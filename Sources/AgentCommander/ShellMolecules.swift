@@ -209,6 +209,8 @@ struct ShellPlaceRow: View {
     @Environment(\.theme) private var theme
     let item: CommanderNavigation.Item
     let select: (String) -> Void
+    /// Offered in the row's context menu when the place can be shared.
+    var share: ((String) -> Void)? = nil
 
     var body: some View {
         Button { select(item.place.id) } label: {
@@ -233,17 +235,29 @@ struct ShellPlaceRow: View {
         .accessibilityValue(item.isSelected ? "Selected" : "")
         .accessibilityAddTraits(item.isSelected ? .isSelected : [])
         .accessibilityIdentifier("shell-place-\(item.place.id)")
+        .contextMenu {
+            if item.place.canShare, let share { Button("Share…") { share(item.place.id) } }
+        }
     }
 }
 
 extension View {
-    /// ⌘ and the number, when the place or mode has one.
-    @ViewBuilder func shellShortcut(_ number: Int?) -> some View {
+    /// ⌘ and the number, when the place or mode has one. A window that keeps ⌘-numbers for
+    /// something else passes other modifiers.
+    @ViewBuilder func shellShortcut(_ number: Int?, modifiers: EventModifiers = .command) -> some View {
         if let number, let key = "\(number)".first {
-            keyboardShortcut(KeyEquivalent(key), modifiers: .command)
+            keyboardShortcut(KeyEquivalent(key), modifiers: modifiers)
         } else {
             self
         }
+    }
+}
+
+extension EventModifiers {
+    /// The modifiers as a key cap reads them, in the system's order: "⌥⌘".
+    var shellKeyCap: String {
+        (contains(.control) ? "⌃" : "") + (contains(.option) ? "⌥" : "")
+            + (contains(.shift) ? "⇧" : "") + (contains(.command) ? "⌘" : "")
     }
 }
 
@@ -292,6 +306,8 @@ struct ShellGroupHeading: View {
 struct ShellModeCell: View {
     @Environment(\.theme) private var theme
     let item: CommanderNavigation.ModeItem
+    /// The keys held with the mode's number.
+    var modifiers: EventModifiers = .command
     let select: (String) -> Void
 
     var body: some View {
@@ -310,8 +326,8 @@ struct ShellModeCell: View {
                     .allowsHitTesting(false)
             }
         }
-        .shellShortcut(item.shortcut)
-        .help(item.shortcut.map { "\(item.mode.title) (⌘\($0))" } ?? item.mode.title)
+        .shellShortcut(item.shortcut, modifiers: modifiers)
+        .help(item.shortcut.map { "\(item.mode.title) (\(modifiers.shellKeyCap)\($0))" } ?? item.mode.title)
         .accessibilityLabel(item.hotCount > 0 ? "\(item.mode.title), \(item.hotCount) waiting" : item.mode.title)
         .accessibilityValue(item.isSelected ? "Selected" : "")
         .accessibilityAddTraits(item.isSelected ? .isSelected : [])

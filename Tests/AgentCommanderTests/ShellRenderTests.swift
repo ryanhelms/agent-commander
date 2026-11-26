@@ -69,6 +69,30 @@ let shellRenderDirectory = ProcessInfo.processInfo.environment["SHELL_RENDER_DIR
         }
     }
 
+    /// The live window: the cockpit's own page in the redesigned shell, from the cockpit fixture's
+    /// content (two pending requests) and a fixture network state. No model is read.
+    static func live(place: String, network: ShellNetwork = ShellLiveTests.network) -> some View {
+        let store = PreviewStore(scenario: .coordinatorWall)
+        store.ui.shellPlace = place
+        return CockpitScreen(content: DesignFixture.content(for: store), ui: store.ui,
+                             actions: DesignFixture.actions(for: store),
+                             shell: ShellContext(network: network, actions: ShellNetworkActions(openNetworkPanel: {}),
+                                                 chrome: .drawn, now: ShellLiveTests.now))
+    }
+
+    @Test(.enabled(if: shellRenderDirectory != nil)) func drawsTheLiveShell() async throws {
+        let folder = URL(fileURLWithPath: try #require(shellRenderDirectory), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        _ = NSApplication.shared
+        let console = Theme.console
+        try await Self.write(Self.live(place: LiveShell.wall), "live-wall", theme: console, to: folder)
+        try await Self.write(Self.live(place: LiveShell.needsYou), "live-needs-you", theme: console, to: folder)
+        try await Self.write(Self.live(place: LiveShell.servers), "live-network-servers", theme: console, to: folder)
+        try await Self.write(Self.live(place: LiveShell.settings), "live-settings", theme: console, to: folder)
+        try await Self.write(Self.live(place: LiveShell.needsYou), "live-needs-you", theme: .blackGlass, to: folder)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(Self.fileName("live-wall", console)).path))
+    }
+
     /// The coordinator wall inside the shell lays out without a window. Kept out of the demo set.
     @Test(.enabled(if: shellRenderDirectory != nil && ProcessInfo.processInfo.environment["SHELL_RENDER_WALL"] != nil))
     func drawsTheWallInsideTheShell() async throws {

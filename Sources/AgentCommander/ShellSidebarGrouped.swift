@@ -41,7 +41,7 @@ struct ShellPlaceList: View {
                 if !section.isCollapsed {
                     VStack(spacing: 2) {
                         ForEach(section.items) { item in
-                            ShellPlaceRow(item: item) { act(.select($0)) }
+                            ShellPlaceRow(item: item, select: { act(.select($0)) }, share: { act(.share($0)) })
                         }
                     }
                 }

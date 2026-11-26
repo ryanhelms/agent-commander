@@ -8,6 +8,11 @@ import SwiftUI
 struct ShellModeRail: View {
     @Environment(\.theme) private var theme
     let navigation: CommanderNavigation
+    /// The keys held with a mode's number. The live window keeps ⌘1 for the coordinator, so its
+    /// modes take ⌥⌘1 to ⌥⌘5.
+    var modeModifiers: EventModifiers = .command
+    /// The context list can be put away to give the canvas its width. The rail stays.
+    var showsContext = true
     let act: (CommanderNavigationAction) -> Void
 
     var body: some View {
@@ -15,8 +20,10 @@ struct ShellModeRail: View {
         let selected = modes.first(where: \.isSelected)
         HStack(spacing: 0) {
             rail(modes)
-            ThemeRule(vertical: true)
-            context(selected)
+            if showsContext {
+                ThemeRule(vertical: true)
+                context(selected)
+            }
         }
         .frame(maxHeight: .infinity)
         .shellSidebarSurface()
@@ -27,11 +34,11 @@ struct ShellModeRail: View {
     private func rail(_ modes: [CommanderNavigation.ModeItem]) -> some View {
         VStack(spacing: Space.s - 2) {
             ForEach(modes.filter { !$0.mode.isTrailing }) { item in
-                ShellModeCell(item: item) { act(.selectMode($0)) }
+                ShellModeCell(item: item, modifiers: modeModifiers) { act(.selectMode($0)) }
             }
             Spacer(minLength: Space.s)
             ForEach(modes.filter(\.mode.isTrailing)) { item in
-                ShellModeCell(item: item) { act(.selectMode($0)) }
+                ShellModeCell(item: item, modifiers: modeModifiers) { act(.selectMode($0)) }
             }
         }
         .padding(.top, theme.space.bandTop + Space.xs)

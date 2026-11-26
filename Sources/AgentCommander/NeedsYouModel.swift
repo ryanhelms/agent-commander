@@ -52,22 +52,26 @@ struct NeedsYouItem: Identifiable, Equatable, Sendable {
     var origin: Origin
     var title: String
     var detail: String
-    /// Seconds the request has waited.
-    var waiting: TimeInterval
+    /// Seconds the request has waited. Nil when the source doesn't say when it arrived.
+    var waiting: TimeInterval?
     /// Seconds until the request lapses. Nil when it has no end.
     var expiresIn: TimeInterval? = nil
     /// Nil while the request waits.
     var decision: NeedsYouDecision? = nil
+    /// The answers this request can take here, when they are fewer than its kind's. A live
+    /// worker request offers Reply alone; a friend request offers Accept alone.
+    var answers: [NeedsYouVerb]? = nil
 
     var isPending: Bool { decision == nil }
 
     /// What the row offers, the one primary answer last.
     var verbs: [NeedsYouVerb] {
+        if let answers { return answers }
         switch kind {
-        case .workerQuestion: [.reply]
-        case .workerApproval, .networkApproval: [.deny, .approve]
-        case .accessRequest: [.decline, .review]
-        case .friendRequest: [.decline, .accept]
+        case .workerQuestion: return [.reply]
+        case .workerApproval, .networkApproval: return [.deny, .approve]
+        case .accessRequest: return [.decline, .review]
+        case .friendRequest: return [.decline, .accept]
         }
     }
 }
@@ -189,7 +193,8 @@ struct NeedsYouInbox: Equatable, Sendable {
             if rankA != rankB { return rankA < rankB }
             let (endA, endB) = (a.expiresIn ?? .infinity, b.expiresIn ?? .infinity)
             if endA != endB { return endA < endB }
-            if a.waiting != b.waiting { return a.waiting > b.waiting }
+            let (waitA, waitB) = (a.waiting ?? 0, b.waiting ?? 0)
+            if waitA != waitB { return waitA > waitB }
             return left.offset < right.offset
         }
         .map(\.element)

@@ -34,6 +34,8 @@ struct CommanderPlace: Identifiable, Equatable, Sendable {
     var isDetail = false
     /// The count's noun, for VoiceOver: "3 waiting".
     var countNoun = "waiting"
+    /// The place can be shared with a friend (a project's repository). Its row offers Share….
+    var canShare = false
 
     /// What sits at the row's trailing edge, if anything.
     var badge: String? { figure ?? (count > 0 ? "\(count)" : nil) }
@@ -120,6 +122,8 @@ enum CommanderNavigationAction: Equatable, Sendable {
     case selectMode(String)
     case toggleGroup(String)
     case setPresence(MultiplayerPresenceChoice)
+    /// Share the place with a friend. The navigation itself doesn't change.
+    case share(String)
 }
 
 struct CommanderNavigation: Equatable, Sendable {
@@ -179,12 +183,13 @@ struct CommanderNavigation: Equatable, Sendable {
         (modes.first { $0.placeIDs.contains(selection) } ?? modes.first)?.id
     }
 
-    /// Where the selected place sits, for a breadcrumb: its group's title, then its own.
+    /// Where the selected place sits, for a breadcrumb: its group's title, then its own. A place
+    /// named like its group (People in People) is said once.
     var crumbs: [String] {
         guard let place = selectedPlace else { return [] }
         let group = groups.first { $0.placeIDs.contains(selection) }
             ?? modes.flatMap(\.sections).first { $0.placeIDs.contains(selection) }
-        return (group.map { [$0.title] } ?? []) + [place.title]
+        return (group.flatMap { $0.title == place.title ? nil : [$0.title] } ?? []) + [place.title]
     }
 
     // MARK: Arrangements
@@ -269,6 +274,8 @@ struct CommanderNavigation: Equatable, Sendable {
         case .toggleGroup(let id):
             guard groups.contains(where: { $0.id == id && $0.isCollapsible }) else { return }
             if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
+        case .share:
+            break
         case .setPresence(let choice):
             guard profile != nil else { return }
             profile?.choice = choice

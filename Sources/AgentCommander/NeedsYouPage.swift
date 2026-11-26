@@ -93,7 +93,8 @@ struct NeedsYouKindTag: View {
 /// How long the request has left, in tone, or how long it has waited.
 struct NeedsYouClockLabel: View {
     @Environment(\.theme) private var theme
-    let waiting: TimeInterval
+    /// Nil when the request doesn't say when it arrived: the cell then stays empty.
+    let waiting: TimeInterval?
     let expiresIn: TimeInterval?
 
     var body: some View {
@@ -103,7 +104,7 @@ struct NeedsYouClockLabel: View {
                     .themeType(theme.type.data).monospacedDigit()
                     .foregroundStyle(.theme(expiresIn < NeedsYouInbox.closing ? \.color.attention : \.color.working))
                 Text("left").themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary))
-            } else {
+            } else if let waiting {
                 Text(NeedsYouClock.age(waiting))
                     .themeType(theme.type.data).monospacedDigit()
                     .foregroundStyle(.theme(\.color.foreground))
@@ -113,7 +114,9 @@ struct NeedsYouClockLabel: View {
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isStaticText)
-        .accessibilityLabel(expiresIn.map { "\(NeedsYouClock.left($0)) left" } ?? "Waiting \(NeedsYouClock.age(waiting))")
+        .accessibilityLabel(expiresIn.map { "\(NeedsYouClock.left($0)) left" }
+                            ?? waiting.map { "Waiting \(NeedsYouClock.age($0))" } ?? "Waiting")
+        .accessibilityHidden(expiresIn == nil && waiting == nil)
     }
 }
 
@@ -283,6 +286,9 @@ struct NeedsYouList: View {
     let items: [NeedsYouItem]
     let decide: (String, NeedsYouDecision) -> Void
     let open: (String) -> Void
+    /// Where Reply goes when the answer is written somewhere else (the live Attention surfaces).
+    /// Nil opens the reply field under the row.
+    var reply: ((String) -> Void)? = nil
     /// The question being answered, and its text so far. Presentation state of this list.
     @State private var replyingID: String?
     @State private var draft = ""
@@ -320,6 +326,8 @@ struct NeedsYouList: View {
     private func choose(_ verb: NeedsYouVerb, for item: NeedsYouItem) {
         if let decision = verb.decision {
             decide(item.id, decision)
+        } else if let reply {
+            reply(item.id)
         } else {
             draft = ""
             replyingID = item.id
@@ -335,6 +343,9 @@ struct NeedsYouPage: View {
     let inbox: NeedsYouInbox
     let decide: (String, NeedsYouDecision) -> Void
     let open: (String) -> Void
+    var reply: ((String) -> Void)? = nil
+    /// Why the network's requests can't be read or the last answer didn't go through.
+    var notice: String? = nil
 
     private var readouts: [ShellReadout] {
         var cells = [
@@ -373,7 +384,10 @@ struct NeedsYouPage: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityLabel("Waiting, \(inbox.pendingCount)")
-                    NeedsYouList(items: inbox.ordered, decide: decide, open: open)
+                    if let notice {
+                        ShellLoadNote(text: notice, lamp: .error).accessibilityIdentifier("needs-you-notice")
+                    }
+                    NeedsYouList(items: inbox.ordered, decide: decide, open: open, reply: reply)
                 }
             }
         }

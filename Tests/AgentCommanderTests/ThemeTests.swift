@@ -139,6 +139,7 @@ import Testing
     @Test func tokensFileNamesTheDefaultAndTheStorageKey() throws {
         let themes = try Self.themesJSON()
         #expect(themes["default"] as? String == ThemeChoice.fallback.rawValue)
+        #expect(themes["default"] as? String == "console")
         #expect(themes["storageKey"] as? String == ThemeChoice.key)
         #expect(Set(ThemeID.allCases.map(\.rawValue)).isSubset(of: Set(themes.keys)))
     }
@@ -209,17 +210,23 @@ import Testing
         }
     }
 
-    @Test func themeChoicePersistsAndFallsBackToBlackGlass() throws {
+    @Test func themeChoiceDefaultsToConsoleAndPersists() throws {
         let suite = "theme-tests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         #expect(ThemeChoice.key == "appearance.theme")
+        // Console is the default until the person chooses.
+        #expect(ThemeChoice.fallback == .console)
+        #expect(ThemeChoice.stored(in: defaults) == .console)
+        // Black glass stays selectable and the choice is kept.
+        ThemeChoice.select(.blackGlass, in: defaults)
+        #expect(defaults.string(forKey: "appearance.theme") == "blackGlass")
         #expect(ThemeChoice.stored(in: defaults) == .blackGlass)
         ThemeChoice.select(.console, in: defaults)
-        #expect(defaults.string(forKey: "appearance.theme") == "console")
         #expect(ThemeChoice.stored(in: defaults) == .console)
         defaults.set("no-such-theme", forKey: ThemeChoice.key)
-        #expect(ThemeChoice.stored(in: defaults) == .blackGlass)
+        #expect(ThemeChoice.stored(in: defaults) == .console)
+        // A view outside the app's theme root still reads black glass.
         #expect(EnvironmentValues().theme == .blackGlass)
     }
 

@@ -381,10 +381,18 @@ struct ShellPlaceholderPage: View {
     let crumbs: [String]
     let title: String
     let note: String
+    /// The one way to reach this place's content today, when there is one.
+    var actionTitle: String? = nil
+    var action: () -> Void = {}
 
     var body: some View {
         WorkspacePage {
-            PageHeader(kicker: crumbs.map { $0.uppercased() }.joined(separator: " / "), title: title) { EmptyView() }
+            PageHeader(kicker: crumbs.map { $0.uppercased() }.joined(separator: " / "), title: title) {
+                if let actionTitle {
+                    Button(actionTitle, action: action).buttonStyle(ThemeButtonStyle())
+                        .accessibilityIdentifier("shell-placeholder-action")
+                }
+            }
         } content: {
             ShellLoadNote(text: note)
         }
