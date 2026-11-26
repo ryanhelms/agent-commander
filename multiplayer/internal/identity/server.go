@@ -200,7 +200,8 @@ func emailHash(email string) string { return hex.EncodeToString(digest(strings.T
 // Every credential path observes the same settings as enrollment, including
 // changes made by an administrator on another edge.
 const memberAccess = `EXISTS (SELECT FROM mp_membership_policy m
-	WHERE m.mode='open' OR mp_auth_devices.email_hash=ANY(m.allowed_hashes))`
+	WHERE (m.mode='open' OR mp_auth_devices.email_hash=ANY(m.allowed_hashes))
+	AND EXISTS (SELECT FROM mp_members WHERE user_id=mp_auth_devices.user_id AND NOT suspended))`
 
 func verifiedHash(email string, verified bool) string {
 	if !verified || email == "" {
@@ -212,8 +213,17 @@ func verifiedHash(email string, verified bool) string {
 // Lock the settings through enrollment so policy changes and competing uses of
 // an invite see one committed admission. A failed device binding rolls it back.
 func admitMember(ctx context.Context, tx pgx.Tx, user, email, hash, invite string) error {
+	// An existing account stays suspended even with a fresh device or invite.
+	var suspended bool
+	err := tx.QueryRow(ctx, "SELECT suspended FROM mp_members WHERE user_id=$1 FOR SHARE", user).Scan(&suspended)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if suspended {
+		return denied
+	}
 	var allowed bool
-	err := tx.QueryRow(ctx, `SELECT mode='open' OR $1=ANY(admin_hashes) OR
+	err = tx.QueryRow(ctx, `SELECT mode='open' OR $1=ANY(admin_hashes) OR
 		($1=ANY(allowed_hashes) AND (mode='allowlist' OR EXISTS (SELECT FROM mp_members WHERE user_id=$2)))
 		FROM mp_membership_policy FOR UPDATE`, hash, user).Scan(&allowed)
 	if err != nil {
@@ -327,6 +337,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/signout", s.signout)
 	mux.HandleFunc("GET /v1/identity/devices/{device}", s.lookup)
 	mux.HandleFunc("DELETE /v1/identity/devices/{device}", s.revoke)
+	mux.HandleFunc("DELETE /v1/admin/devices/{device}", s.admin(s.adminRevoke))
+	mux.HandleFunc("POST /v1/admin/members/{handle}/suspend", s.admin(s.setSuspended(true)))
+	mux.HandleFunc("POST /v1/admin/members/{handle}/unsuspend", s.admin(s.setSuspended(false)))
 }
 func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -557,7 +570,7 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 	}
 	var raw []byte
 	var owner string
-	err = s.pool.QueryRow(r.Context(), "SELECT user_id,descriptor FROM mp_auth_devices WHERE device=$1 AND NOT revoked", r.PathValue("device")).Scan(&owner, &raw)
+	err = s.pool.QueryRow(r.Context(), "SELECT user_id,descriptor FROM mp_auth_devices WHERE device=$1 AND NOT revoked AND "+memberAccess, r.PathValue("device")).Scan(&owner, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		failure(w, 404)
 		return
@@ -630,17 +643,8 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	device := r.PathValue("device")
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE mp_auth_devices SET revoked=true,access_hash=NULL,refresh_hash=NULL WHERE device=$1 AND user_id=$2`, device, p.User)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() != 1 {
-			return pgx.ErrNoRows
-		}
-		if s.revokeWork != nil {
-			return s.revokeWork(ctx, tx, device)
-		}
-		return nil
+		_, _, err := s.revokeEnrollment(ctx, tx, device, p.User)
+		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		failure(w, 404)

@@ -121,7 +121,7 @@ func TestEventPageLimitsAndRetention(t *testing.T) {
 		socialRequest(t, handler, "recipient", "device", "GET", "/v1/events"+invalid, nil, 400)
 	}
 	socialRequest(t, handler, "", "", "GET", "/v1/events", nil, 401)
-	if err := service.PruneEvents(ctx); err != nil {
+	if err := service.PruneHistory(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var remaining int

@@ -62,8 +62,8 @@ func (s *Service) events(ctx context.Context, p Principal, r *http.Request) (any
 		limit = min(value, 200)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT e.seq,e.at,e.kind,COALESCE(p.handle,e.actor),e.resource,e.detail
-		FROM mp_events e LEFT JOIN mp_profiles p ON p.user_id=e.actor
-		WHERE e.recipient=$1 AND e.seq>$2 AND e.at>now()-interval '30 days'
+		FROM mp_events e CROSS JOIN mp_policy policy LEFT JOIN mp_profiles p ON p.user_id=e.actor
+		WHERE e.recipient=$1 AND e.seq>$2 AND now()-e.at < make_interval(days=>policy.retention_days)
 		ORDER BY e.seq LIMIT $3`, p.User, after, limit)
 	if err != nil {
 		return nil, err
@@ -72,7 +72,27 @@ func (s *Service) events(ctx context.Context, p Principal, r *http.Request) (any
 	return map[string]any{"events": events}, err
 }
 
-func (s *Service) PruneEvents(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, "DELETE FROM mp_events WHERE at<=now()-interval '30 days'")
-	return err
+// PruneHistory removes expired feed entries and sealed payloads. Keep the
+// addressed child and its status for retry reconciliation and reputation.
+func (s *Service) PruneHistory(ctx context.Context) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM mp_events e USING mp_policy p
+			WHERE now()-e.at >= make_interval(days=>p.retention_days)`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE mp_children c SET envelope='null'::jsonb,
+			status=CASE WHEN status='pending' THEN 'expired' ELSE status END FROM mp_policy p
+			WHERE c.envelope <> 'null'::jsonb AND now()-coalesce(c.submitted_at,c.expires_at) >= make_interval(days=>p.retention_days)`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE mp_children c SET result=NULL,receipt_digest=sha256(convert_to(c.result::text,'UTF8'))
+			FROM mp_policy p WHERE c.result IS NOT NULL
+			AND now()-coalesce(c.completed_at,c.expires_at) >= make_interval(days=>p.retention_days)`)
+		return err
+	})
+}
+
+// RecordModeration publishes the change only if the credential transaction commits.
+func RecordModeration(ctx context.Context, tx pgx.Tx, member, kind, admin, device string) error {
+	return recordEvent(ctx, tx, member, kind, admin, device)
 }

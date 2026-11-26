@@ -142,8 +142,7 @@ func (s *Service) submit(ctx context.Context, p Principal, r *http.Request) (any
 				return bad("child expiry must be within seven days")
 			}
 			err = tx.QueryRow(ctx, `SELECT r.owner_id FROM mp_resources r JOIN mp_effective_actions g ON g.resource=r.id AND g.grantee=$1
-			JOIN mp_friends f ON f.a=least($1,r.owner_id) AND f.b=greatest($1,r.owner_id) AND f.accepted
-			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) AND g.expires_at>now() AND g.used<g.max_uses FOR SHARE OF r,f`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
+			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) AND g.expires_at>now() AND g.used<g.max_uses FOR SHARE OF r`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return forbidden()
 			}
@@ -212,7 +211,7 @@ func (s *Service) claim(ctx context.Context, p Principal, r *http.Request) (any,
 		if child.Status != "pending" {
 			return nil
 		}
-		allowed, err := consume(ctx, tx, child)
+		source, allowed, err := consume(ctx, tx, child)
 		if err != nil {
 			return err
 		}
@@ -220,7 +219,7 @@ func (s *Service) claim(ctx context.Context, p Principal, r *http.Request) (any,
 			return tx.QueryRow(ctx, `UPDATE mp_children SET status=CASE WHEN expires_at<=clock_timestamp()
 				THEN 'expired' ELSE 'denied' END WHERE id=$1 RETURNING status`, child.ID).Scan(&child.Status)
 		}
-		_, err = tx.Exec(ctx, "UPDATE mp_children SET status='processing' WHERE id=$1", child.ID)
+		_, err = tx.Exec(ctx, "UPDATE mp_children SET status='processing',grant_source=$2 WHERE id=$1", child.ID, source)
 		if err != nil {
 			return err
 		}
@@ -257,10 +256,25 @@ func (s *Service) receipt(ctx context.Context, p Principal, r *http.Request) (an
 		if child.Status == in.Status && bytes.Equal(child.Result, in.Result) {
 			return nil
 		}
+		// A purged receipt can still identify an exact retry. In particular,
+		// an uncertain receipt stays distinct from a lease lost before receipt.
+		if len(child.Result) == 0 && (child.Status == in.Status || child.Status == "uncertain") {
+			var matches bool
+			err := tx.QueryRow(ctx, `SELECT status=$2 AND receipt_digest=sha256(convert_to($3::jsonb::text,'UTF8'))
+				FROM mp_children WHERE id=$1 AND receipt_digest IS NOT NULL`, child.ID, in.Status, string(in.Result)).Scan(&matches)
+			switch {
+			case err == nil && matches:
+				return nil
+			case err == nil:
+				return conflict("operation already has a different outcome")
+			case !errors.Is(err, pgx.ErrNoRows):
+				return err
+			}
+		}
 		if child.Status != "processing" && !(child.Status == "uncertain" && len(child.Result) == 0) {
 			return conflict("operation already has a different outcome or has not been claimed")
 		}
-		_, err = tx.Exec(ctx, "UPDATE mp_children SET result=$2::jsonb,status=$3 WHERE id=$1", child.ID, string(in.Result), in.Status)
+		_, err = tx.Exec(ctx, "UPDATE mp_children SET result=$2::jsonb,status=$3,completed_at=clock_timestamp() WHERE id=$1", child.ID, string(in.Result), in.Status)
 		child.Result = in.Result
 		child.Status = in.Status
 		return err

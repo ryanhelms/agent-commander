@@ -23,8 +23,15 @@ ALTER TABLE mp_leases ADD COLUMN IF NOT EXISTS last_seen timestamptz;
 CREATE INDEX IF NOT EXISTS mp_leases_owner ON mp_leases(owner_id);
 CREATE TABLE IF NOT EXISTS mp_resources (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES mp_profiles, device text NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('agent','repo')), name text NOT NULL, actions text[] NOT NULL
+    kind text NOT NULL CONSTRAINT mp_resources_team_kind CHECK (kind IN ('agent','repo','host')), name text NOT NULL, actions text[] NOT NULL
 );
+-- Existing relays used PostgreSQL's default name for the two-kind constraint.
+DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_constraint WHERE conrelid='mp_resources'::regclass AND conname='mp_resources_kind_check') THEN
+        ALTER TABLE mp_resources DROP CONSTRAINT mp_resources_kind_check;
+        ALTER TABLE mp_resources ADD CONSTRAINT mp_resources_team_kind CHECK (kind IN ('agent','repo','host'));
+    END IF;
+END $$;
 ALTER TABLE mp_resources ADD COLUMN IF NOT EXISTS capabilities jsonb;
 CREATE TABLE IF NOT EXISTS mp_access_requests (
     id text PRIMARY KEY, resource text NOT NULL REFERENCES mp_resources,
@@ -70,6 +77,8 @@ CREATE TABLE IF NOT EXISTS mp_children (
     result jsonb, FOREIGN KEY (sender,parent) REFERENCES mp_submissions(sender,parent),
     UNIQUE (sender,parent,resource,action)
 );
+-- Keep a receipt fingerprint after its sealed contents reach the retention limit.
+ALTER TABLE mp_children ADD COLUMN IF NOT EXISTS receipt_digest bytea;
 CREATE TABLE IF NOT EXISTS mp_outbox (
     id text PRIMARY KEY REFERENCES mp_children, published boolean NOT NULL DEFAULT false
 );

@@ -32,3 +32,17 @@ CREATE TABLE IF NOT EXISTS mp_events (
 );
 CREATE INDEX IF NOT EXISTS mp_events_feed ON mp_events(recipient,seq);
 CREATE INDEX IF NOT EXISTS mp_events_retention ON mp_events(at);
+
+ALTER TABLE mp_members ADD COLUMN IF NOT EXISTS suspended boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS mp_policy (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    knowledge_default text NOT NULL DEFAULT 'private' CHECK (knowledge_default IN ('private','friend','group','server')),
+    knowledge_widest text NOT NULL DEFAULT 'server' CHECK (knowledge_widest IN ('private','friend','group','server')),
+    reputation_visibility text NOT NULL DEFAULT 'owner' CHECK (reputation_visibility IN ('owner','users','friends','server')),
+    directory boolean NOT NULL DEFAULT true,
+    max_grant_days integer NOT NULL DEFAULT 0 CHECK (max_grant_days >= 0),
+    max_budget_tokens bigint NOT NULL DEFAULT 0 CHECK (max_budget_tokens >= 0),
+    retention_days integer NOT NULL DEFAULT 30 CHECK (retention_days > 0)
+);
+INSERT INTO mp_policy DEFAULT VALUES ON CONFLICT (singleton) DO NOTHING;

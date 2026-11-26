@@ -251,9 +251,7 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 		}
 		w.WriteHeader(204)
 	})
-	srv := relayServer(cert, cfg, mux, func(ctx context.Context) (string, error) {
-		return control.MembershipMode(ctx, pool)
-	})
+	srv := relayServer(cert, cfg, mux, store.PublicSettings)
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 2)
@@ -263,8 +261,8 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 		tick := time.NewTicker(time.Hour)
 		defer tick.Stop()
 		for runCtx.Err() == nil {
-			if err := store.PruneEvents(runCtx); err != nil && runCtx.Err() == nil {
-				log.Printf("prune social events: %v", err)
+			if err := store.PruneHistory(runCtx); err != nil && runCtx.Err() == nil {
+				log.Printf("prune relay history: %v", err)
 			}
 			select {
 			case <-runCtx.Done():
@@ -301,18 +299,19 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 	}
 	return first
 }
-func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler, membershipMode func(context.Context) (string, error)) *http.Server {
+func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler, publicSettings func(context.Context) (control.PublicSettings, error)) *http.Server {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/info" {
-			mode, err := membershipMode(r.Context())
+			settings, err := publicSettings(r.Context())
 			if err != nil {
 				http.Error(w, "membership unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"version": "1", "mode": cfg.mode, "name": cfg.name, "membership": mode,
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "mode": cfg.mode, "name": cfg.name, "membership": settings.Membership,
+				"adminContact": settings.AdminContact, "policy": settings.Policy,
 				"issuer": cfg.identity.Issuer, "clientId": cfg.identity.ClientID,
 			})
 			return
