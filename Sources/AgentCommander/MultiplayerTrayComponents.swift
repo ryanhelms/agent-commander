@@ -607,11 +607,15 @@ struct MultiplayerTextArea: View {
     }
 }
 
-/// Something waiting on the person: who, what, and the one answer.
+/// Something waiting on the person: who, what, and the answer. A request that can be refused has
+/// the refusal first and the answer after it as the primary button.
 struct MultiplayerNeedRow: View {
     let color: Color
     let title: String
     let detail: String
+    /// The refusing answer, such as Decline. Nil leaves the one answer.
+    var declineTitle: String? = nil
+    var onDecline: (() -> Void)? = nil
     let actionTitle: String
     let isBusy: Bool
     let action: () -> Void
@@ -633,8 +637,14 @@ struct MultiplayerNeedRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
+            if let declineTitle, let onDecline {
+                Button(declineTitle, action: onDecline)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .disabled(isBusy)
+                    .accessibilityLabel("\(declineTitle): \(title)")
+            }
             Button(actionTitle, action: action)
-                .buttonStyle(MultiplayerTrayButtonStyle())
+                .buttonStyle(MultiplayerTrayButtonStyle(role: onDecline == nil ? .standard : .primary))
                 .disabled(isBusy)
                 .accessibilityLabel("\(actionTitle): \(title)")
         }

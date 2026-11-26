@@ -170,6 +170,10 @@ struct MultiplayerHomeLists: View {
     let isBusy: Bool
     let resourceName: (String) -> String
     let onAccept: (MultiplayerIncoming) -> Void
+    /// Refuses a friend request. Nil leaves Accept as the one answer.
+    var onDecline: ((MultiplayerIncoming) -> Void)? = nil
+    /// The moment arrival times are measured from.
+    var now = Date()
     let onAddFriend: () -> Void
     let onAddResource: () -> Void
     let onShare: (_ handle: String?, _ resourceID: String?) -> Void
@@ -184,7 +188,15 @@ struct MultiplayerHomeLists: View {
                 MultiplayerSection(title: "Friend requests", count: status.incoming.count) {
                     MultiplayerRows(items: status.incoming, empty: "") { request in
                         MultiplayerRow(symbol: "person.badge.plus", tone: .attention, title: request.handle,
-                                       monospacedTitle: true, caption: "Wants to be your friend") {
+                                       monospacedTitle: true,
+                                       caption: request.arrival(now: now).map { "Wants to be your friend, asked \($0)" }
+                                           ?? "Wants to be your friend") {
+                            if let onDecline {
+                                Button("Decline") { onDecline(request) }
+                                    .buttonStyle(MultiplayerTrayButtonStyle())
+                                    .disabled(isBusy)
+                                    .accessibilityLabel("Decline friend request from \(request.handle.multiplayerDisplay)")
+                            }
                             Button("Accept") { onAccept(request) }
                                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                                 .disabled(isBusy)
@@ -880,6 +892,7 @@ struct MultiplayerSessionContent: View {
                 MultiplayerHomeLists(status: status, isBusy: model.isBusy,
                                      resourceName: { model.resourceName(for: $0) },
                                      onAccept: { model.accept($0) },
+                                     onDecline: { model.decline($0) },
                                      onAddFriend: { model.startAddFriend() },
                                      onAddResource: { model.startAddResource() },
                                      onShare: { handle, resource in

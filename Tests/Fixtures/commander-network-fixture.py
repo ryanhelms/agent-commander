@@ -16,6 +16,10 @@ with the pin the probe of lab.example shows; `join` then adds that server. Chang
 and remove can be exercised; delete that file, or set COMMANDER_NETWORK_FIXTURE_STATE to a new
 path, to start again. Every name, host and fingerprint here is made up. Nothing touches a network.
 
+The friend request on ryan-mac is from fixture-priya and carries `requestedAt`, twelve minutes ago.
+`accept` and `decline` take `{"server", "handle"}` (or the row's `id`, which is the handle) and
+answer it; it then leaves `status` and the server's `incoming` count. Answering it twice is refused.
+
 Increment 3: ryan-mac starts with two approvals waiting (one Consult, one Hand off), an access request
 from fixture-jonas, a shared directory where sam-agent is granted and jonas-ios and mei-docs are only
 offered, two hand-offs you sent (one done with a report, a patch and a branch; one waiting on its
@@ -381,6 +385,14 @@ def save(state):
         json.dump(state, handle)
 
 
+def pending(state):
+    """The home server's friend request, until it is accepted or declined. The id is the handle, as
+    the device agent sends it, and requestedAt is when it came."""
+    if "fixture-priya" in state.get("answered", []):
+        return []
+    return [{"id": "fixture-priya", "handle": "fixture-priya", "requestedAt": now(-12)}]
+
+
 def status(state, server):
     profile = state.get("profiles", {}).get(server["id"], {})
     home = server["id"] == "s-fixture-home"
@@ -390,7 +402,7 @@ def status(state, server):
         "hasAvatar": bool(profile.get("avatar")),
         "friends": [{"id": ident, "user": "u-" + handle.split("-", 1)[-1], "handle": handle, "online": presence != "offline"}
                     for ident, handle, presence, _ in FRIENDS.get(server["id"], [])],
-        "incoming": [{"id": "in-1", "handle": "fixture-priya"}] if home else [],
+        "incoming": pending(state) if home else [],
         "outgoing": [], "grants": share(state, "grants").get(server["id"], []),
         "resources": share(state, "resources").get(server["id"], []),
         "shared": [{"id": row["id"], "name": row["name"], "kind": row["kind"], "owner": row["handle"],
@@ -995,7 +1007,7 @@ def summary(server, state=None):
     if state is not None and live:
         unseen = sum(1 for event in events()[:max(len(events()) - state.get("seen", 0), 0)] if event["server"] == server["id"])
     extra = {"presence": effective(state)} if state is not None and live else {}
-    return dict(server, friendsOnline=friends, incoming=1 if home else 0, unseen=unseen, **extra)
+    return dict(server, friendsOnline=friends, incoming=len(pending(state or {})) if home else 0, unseen=unseen, **extra)
 
 
 def find(state, request):
@@ -1166,6 +1178,14 @@ def run(verb, request):
                 "maxUses": request.get("maxUses", 5), "uses": 0}
     if verb == "search":
         return {"handle": request.get("handle", "")}
+    if verb in ("accept", "decline"):
+        find(state, request)
+        handle = request.get("handle") or request.get("id") or ""
+        if handle not in [row["handle"] for row in pending(state)]:
+            raise ValueError("no pending friend request from " + handle)
+        state.setdefault("answered", []).append(handle)
+        save(state)
+        return {}
     if verb in ("approvals", "approve", "deny", "audit", "resource-add", "grant", "revoke", "send", "sent", "handoffs",
                 "thread", "comment", "apply-artifact", "relay"):
         return sharing(state, verb, request)

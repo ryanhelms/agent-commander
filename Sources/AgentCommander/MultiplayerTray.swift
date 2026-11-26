@@ -172,6 +172,10 @@ struct MultiplayerNeedsYou: View {
     var resourceName: (_ resource: String, _ server: String) -> String = { resource, _ in resource }
     let isBusy: Bool
     let onAccept: (MultiplayerIncoming, String) -> Void
+    /// Refuses a friend request. Nil leaves Accept as the one answer.
+    var onDecline: ((MultiplayerIncoming, String) -> Void)? = nil
+    /// The moment arrival times are measured from.
+    var now = Date()
     var onOpenApproval: (MultiplayerPending<MultiplayerApproval>) -> Void = { _ in }
     var onDecide: (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Void = { _, _ in }
     var onReviewAccess: (MultiplayerPending<MultiplayerAccessRequest>) -> Void = { _ in }
@@ -216,7 +220,9 @@ struct MultiplayerNeedsYou: View {
                         ForEach(group.incoming) { request in
                             MultiplayerNeedRow(color: MultiplayerTheme.swatch(for: group.server.id),
                                                title: "\(request.handle.multiplayerDisplay) sent a friend request",
-                                               detail: "On \(group.server.displayName)",
+                                               detail: Self.friendDetail(request, server: group.server.displayName, now: now),
+                                               declineTitle: onDecline == nil ? nil : "Decline",
+                                               onDecline: onDecline.map { decline in { decline(request, group.server.id) } },
                                                actionTitle: "Accept", isBusy: isBusy) {
                                 onAccept(request, group.server.id)
                             }
@@ -228,6 +234,14 @@ struct MultiplayerNeedsYou: View {
                 .multiplayerStreaming(approvals.map(\.id) + access.map(\.id) + groups.flatMap { $0.incoming.map(\.id) })
             }
         }
+    }
+}
+
+extension MultiplayerNeedsYou {
+    /// Where a friend request waits and, when the relay says, how long ago it came: "On home, 5m ago".
+    static func friendDetail(_ request: MultiplayerIncoming, server: String, now: Date) -> String {
+        guard let arrival = request.arrival(now: now) else { return "On \(server)" }
+        return "On \(server), \(arrival)"
     }
 }
 
@@ -987,14 +1001,7 @@ struct MultiplayerPanel: View {
                     }
                 }
             case .grant:
-                let status = model.session(id)?.status
-                MultiplayerGrantSheet(draft: $share.grantDraft, servers: share.shareServers,
-                                      friends: status?.friends ?? [], groups: share.teams.ownedGroups(on: id),
-                                      resources: status?.resources ?? [],
-                                      resource: share.grantResource, companions: share.grantCompanions,
-                                      onServer: { share.setGrantServer($0) },
-                                      onResourceChange: { share.reconcileGrantActions() },
-                                      onToggle: { share.toggleGrantAction($0) })
+                MultiplayerGrantForm(model: model)
             case .consult(let resource):
                 MultiplayerConsultPage(draft: $share.consultDraft, entry: share.entry(resource, on: id),
                                        reply: share.consultReply, attachProblem: share.attachProblem,
@@ -1677,7 +1684,8 @@ struct MultiplayerPanel: View {
     /// People: friend requests, friends by server, and what happened.
     @ViewBuilder private var peopleTab: some View {
         let groups = model.friendGroups
-        MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy, onAccept: { model.accept($0, on: $1) })
+        MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy, onAccept: { model.accept($0, on: $1) },
+                            onDecline: { model.decline($0, on: $1) }, now: model.currentDate())
         MultiplayerFriendGroups(groups: groups, addable: model.friendServers, isBusy: model.isBusy,
                                 avatar: { model.avatar(server: $0, handle: $1) },
                                 onAddFriend: { model.addFriend(on: $0) },

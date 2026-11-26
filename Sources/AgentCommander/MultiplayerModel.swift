@@ -500,7 +500,7 @@ final class MultiplayerSessionModel {
             friendDraft = ""
             lookup = .idle
             go(.home)
-        case .accept:
+        case .accept, .decline:
             break
         case .grant:
             grantDraft = MultiplayerGrantDraft()
@@ -659,8 +659,15 @@ final class MultiplayerSessionModel {
         perform(.sendRequest(handle: handle))
     }
 
-    func accept(_ request: MultiplayerIncoming) {
+    @discardableResult
+    func accept(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
         perform(.accept(requestID: request.id, handle: request.handle))
+    }
+
+    /// Refuses a friend request. One press: the sender can ask again, so nothing is lost.
+    @discardableResult
+    func decline(_ request: MultiplayerIncoming) -> Task<Void, Never>? {
+        perform(.decline(handle: request.handle))
     }
 
     func startAddResource(kind: MultiplayerResourceKind? = nil) {

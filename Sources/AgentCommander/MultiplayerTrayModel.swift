@@ -502,7 +502,8 @@ final class MultiplayerModel {
 
     @discardableResult
     func act(_ progress: String, failing title: String, confirmation: String? = nil,
-                     _ work: @escaping @MainActor (MultiplayerClient) async throws -> Void) -> Task<Void, Never>? {
+             report: (@MainActor (_ failure: String?) -> Void)? = nil,
+             _ work: @escaping @MainActor (MultiplayerClient) async throws -> Void) -> Task<Void, Never>? {
         guard let client, !isBusy else { return nil }
         cancelRefresh()
         working = progress
@@ -512,11 +513,14 @@ final class MultiplayerModel {
             do {
                 try await work(client)
                 if let confirmation { self.notice = confirmation }
+                report?(nil)
             } catch {
                 let reason = MultiplayerFailure.from(error)
-                self.failure = reason.outcomeUnknown
+                let text = reason.outcomeUnknown
                     ? MultiplayerSentence.join(reason.message, "Check the server list before trying again.")
                     : MultiplayerSentence.join(title, reason.message)
+                self.failure = text
+                report?(text)
             }
             self.working = nil
             self.actionTask = nil
@@ -715,6 +719,7 @@ final class MultiplayerModel {
     func signOut(_ id: String) { sessions[id]?.signOut() }
 
     func accept(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.accept(request) }
+    func decline(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.decline(request) }
 
     /// Opens the grant sheet on a server for one friend.
     func share(with handle: String, on id: String) {
