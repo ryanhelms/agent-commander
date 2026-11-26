@@ -31,7 +31,7 @@ An operations console for an agent network.
 
 ### Colour
 
-Dark only. Use roles, never raw hex, in components.
+Dark by default. The web surface (the Remote page) also has a light theme through `prefers-color-scheme`, using the same roles. Use roles, never raw hex, in components.
 
 | Role | Hex | Use |
 |---|---|---|
@@ -50,6 +50,8 @@ Dark only. Use roles, never raw hex, in components.
 | `onAccent` | `#101825` | Ink on a `focus` or `attention` fill |
 
 Tinted states use the tone colour at 12% opacity for a fill and 45% opacity for an edge.
+
+Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `well` `#ECEDF1`, `hair` `#D8DAE1`, `border` `#B3B7C2`, `foreground` `#101116`, `secondary` `#4B4E5A`, `focus` `#1D5BB8`, `working` `#1A7548`, `attention` `#8A5800`, `failure` `#B2362A`, `selection` `#DBE6F7`, `onAccent` `#FFFFFF`. Light swatches are `#16A34A`, `#0284C7`, `#DB2777` and `#65A30D`.
 
 **Swatches** identify a server or harness. They are mint `#4ADE80`, sky `#38BDF8`, pink `#F472B6` and lime `#A3E635`. A server's swatch is chosen by a stable FNV hash of its ID. Show it as a 4 × 12 pt bar beside the name, or as a 2 pt left edge on a row's metadata line.
 
@@ -158,6 +160,9 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
+| Alert band | Full-width band under the status strip: `failure` at 12% fill with a 45% lower edge, an error lamp and one sentence, such as "Can't reach your Mac". |
+| Load note | A lamp and one sentence in a hairline-topped row. The lamp is `waiting` while reading, `error` when the read failed, `off` when empty, and `on` for "Nothing is waiting for you". |
+| Outcome well | A well holding a state label ("Approved", "Denied") that replaces a verb strip once its action is done, then fades out. |
 
 ### Organisms (in the tray today)
 
@@ -171,6 +176,12 @@ Increment 4 (merged at `341215d`) adds:
 - **Review:** a summary, then finding rows with important or nit severity. "Post to PR" has an inline confirmation. A review-request composer.
 - **Fan-out:** a composer, and compare columns. "Choose winner" is a standard button; the chosen one shows "Winner" as primary. A footer note says the choice is local only.
 - **Live remote work rows:** a leading kind glyph (hand-off ↗, fan-out fork, review list) and a right-aligned state in tone, such as "2 of 2 answered" or "2 important, 1 nit".
+
+Increment 6 (the Remote web page) adds:
+- **Touch scale:** controls are 44 px high, type about 15% larger (body 15, name 15, sub 13.5, heading 13, state 12, figure 17, trace 12.5), and the header icon action is a 52 px full-height cell split off by a hairline.
+- **Decision row, phone form:** lamp, title, a countdown on the right, summary, the metadata line with the swatch edge, a 2 px drain line, then Deny (danger) and Approve (primary) as two joined 44 px cells. Under one minute the countdown and line turn `failure`.
+- **Pairing steps:** numbered hairline rows on the not-paired screen.
+- **Motion:** `arrive` (0.18 s, 6 px travel, ease-out) for new rows and trace lines, `tick` for a changing figure, and a drain line that moves linearly each second. With reduced motion these become fades, and pulses, spinners and the drain stop.
 
 ### What the main window reuses
 
