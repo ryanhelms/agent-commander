@@ -72,6 +72,7 @@ type Agent struct {
 	lastOnline   time.Time
 	social       socialState
 	pending      map[string]pendingApproval
+	handovers    map[string]time.Time
 	ctx          context.Context
 	stop         context.CancelFunc
 	loginStop    context.CancelFunc

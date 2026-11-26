@@ -48,6 +48,10 @@ type input struct {
 	Text          string          `json:"text"`
 	Checkout      string          `json:"checkout"`
 	Artifact      int             `json:"artifact"`
+	Minutes       int             `json:"minutes"`
+	After         string          `json:"after"`
+	PR            string          `json:"pr"`
+	Targets       []Target        `json:"targets"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -308,6 +312,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
+	case "watch", "handover", "handback", "handovers", "review-post", "fanout":
+		return a.liveVerb(ctx, s, verb, in)
 	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
 		return a.requesterVerb(ctx, s, verb, in)
 	case "approvals":
@@ -504,6 +510,23 @@ func (a *Agent) Handler() http.Handler {
 					}
 					res = map[string]any{"resources": rs, "actionContracts": contracts}
 				}
+			}
+		case "online":
+			var empty struct{}
+			if e = body(r, &empty); e == nil {
+				res, e = a.online(r.Context(), s)
+			}
+		case "thread":
+			var in struct {
+				Request string `json:"request"`
+				Text    string `json:"text"`
+			}
+			if e = body(r, &in); e == nil {
+				verb := "thread"
+				if in.Text != "" {
+					verb = "comment"
+				}
+				res, e = a.requesterVerb(r.Context(), s, verb, input{Request: in.Request, Text: in.Text})
 			}
 		case "submit":
 			var in Submit

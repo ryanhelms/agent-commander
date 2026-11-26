@@ -51,6 +51,12 @@ type AuditEntry struct {
 func (a *Agent) needsApproval(c control.Child) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if until, ok := a.handovers[c.Sender+"|"+c.Resource]; ok && time.Now().Before(until) && (c.Action == "agent.suggest" || c.Action == "agent.ask") {
+		return false
+	}
+	if c.Action == "agent.suggest" {
+		return true
+	}
 	for _, g := range a.policy.Grants {
 		if g.Peer == c.Sender && g.Resource == c.Resource && g.Action == c.Action {
 			return g.Approval == "ask"

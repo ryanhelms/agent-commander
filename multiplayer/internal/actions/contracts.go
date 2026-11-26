@@ -66,6 +66,21 @@ var registry = register(
 		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
 	},
 	descriptor{
+		kind: "agent", name: "agent.watch", recoverable: true, run: watchHandler,
+		description:   "Read the shared worker's live transcript after a cursor. Returns one history page and the worker's state.",
+		payloadSchema: closedObject + `,"properties":{"after":{"type":"string","maxLength":4096}}}`,
+	},
+	descriptor{
+		kind: "agent", name: "agent.suggest", recoverable: true, run: agentHandler,
+		description:   "Suggest a message to the owner's worker. The owner approves each suggestion before the worker sees it; the result is the worker's answer. Limited to 4 KiB.",
+		payloadSchema: closedObject + `,"required":["text"],"properties":{"text":{"type":"string","minLength":1,"maxLength":4096}}}`,
+	},
+	descriptor{
+		kind: "agent", name: "review.request", recoverable: true, run: reviewHandler,
+		description:   "Ask the owner's worker to review a diff (up to 96 KiB) or a pull request URL. Returns a summary and findings.",
+		payloadSchema: closedObject + `,"required":["title"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"diff":{"type":"string","maxLength":98304},"pr":{"type":"string","maxLength":2048},"instructions":{"type":"string","maxLength":4096}}}`,
+	},
+	descriptor{
 		kind: "agent", name: "thread.read", recoverable: true, run: threadHandler,
 		description:   "Read the comment thread of a request you sent to this agent.",
 		payloadSchema: closedObject + `,"required":["request"],"properties":{"request":{"type":"string","minLength":1,"maxLength":128}}}`,

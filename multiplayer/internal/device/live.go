@@ -1,0 +1,158 @@
+package device
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os/exec"
+	"strings"
+	"time"
+
+	"agentcommander.network/pilot/internal/identity"
+)
+
+func (a *Agent) liveVerb(ctx context.Context, s identity.Session, verb string, in input) (any, error) {
+	switch verb {
+	case "watch":
+		payload, _ := json.Marshal(map[string]string{"after": in.After})
+		_, row, e := a.sendOne(ctx, s, in.Resource, "agent.watch", payload, 8*time.Second)
+		if e != nil {
+			return nil, e
+		}
+		return row, nil
+	case "handover":
+		if in.Handle == "" || in.Resource == "" || in.Minutes < 1 || in.Minutes > 240 {
+			return nil, errors.New("handover needs a friend, a resource and 1–240 minutes")
+		}
+		peer, e := a.userID(ctx, s, in.Handle)
+		if e != nil {
+			return nil, e
+		}
+		until := time.Now().Add(time.Duration(in.Minutes) * time.Minute)
+		a.mu.Lock()
+		if a.handovers == nil {
+			a.handovers = map[string]time.Time{}
+		}
+		a.handovers[peer+"|"+in.Resource] = until
+		a.mu.Unlock()
+		return map[string]any{"handle": in.Handle, "resource": in.Resource, "until": until}, nil
+	case "handback":
+		peer, e := a.userID(ctx, s, in.Handle)
+		if e != nil {
+			return nil, e
+		}
+		a.mu.Lock()
+		delete(a.handovers, peer+"|"+in.Resource)
+		a.mu.Unlock()
+		return struct{}{}, nil
+	case "handovers":
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		out := []map[string]any{}
+		for k, until := range a.handovers {
+			if time.Now().After(until) {
+				delete(a.handovers, k)
+				continue
+			}
+			user, resource, _ := strings.Cut(k, "|")
+			out = append(out, map[string]any{"user": user, "resource": resource, "until": until})
+		}
+		return map[string]any{"handovers": out}, nil
+	case "fanout":
+		if len(in.Targets) < 2 || len(in.Targets) > 32 || len(in.Payload) == 0 || !json.Valid(in.Payload) {
+			return nil, errors.New("fan-out needs 2–32 targets and a JSON payload")
+		}
+		id := newID()
+		targets := make([]Target, len(in.Targets))
+		for i, t := range in.Targets {
+			targets[i] = Target{Resource: t.Resource, Action: t.Action, Payload: in.Payload}
+		}
+		res, e := a.submit(ctx, s, Submit{ID: id, Targets: targets})
+		if e != nil {
+			return nil, e
+		}
+		title := in.Name
+		if title == "" {
+			title = "Fan-out"
+		}
+		_ = a.logSent(SentRequest{ID: id, Resource: in.Targets[0].Resource, Action: "fanout:" + in.Targets[0].Action, Title: title, At: time.Now().UTC()})
+		return map[string]any{"request": id, "children": res}, nil
+	case "review-post":
+		if !strings.HasPrefix(in.PR, "https://") {
+			return nil, errors.New("name the pull request URL")
+		}
+		res, e := a.receipt(ctx, s, in.Request)
+		if e != nil {
+			return nil, e
+		}
+		b, _ := json.Marshal(firstRow(res)["value"])
+		var review struct {
+			Summary  string
+			Findings []struct {
+				File, Severity, Text string
+				Line                 int
+			}
+		}
+		if json.Unmarshal(b, &review) != nil || review.Summary == "" {
+			return nil, errors.New("that request has no review result yet")
+		}
+		var body strings.Builder
+		body.WriteString(review.Summary + "\n")
+		for _, f := range review.Findings {
+			loc := f.File
+			if f.Line > 0 {
+				loc += ":" + itoa(f.Line)
+			}
+			body.WriteString("\n- **" + f.Severity + "** `" + loc + "`: " + f.Text)
+		}
+		out, e := exec.CommandContext(ctx, "gh", "pr", "review", in.PR, "--comment", "--body", body.String()).CombinedOutput()
+		if e != nil {
+			return nil, errors.New("gh pr review failed: " + strings.TrimSpace(string(out)))
+		}
+		return map[string]string{"posted": in.PR}, nil
+	}
+	return nil, errors.New("unknown operation")
+}
+
+func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
+
+func (a *Agent) userID(ctx context.Context, s identity.Session, handle string) (string, error) {
+	part, e := segment(handle)
+	if e != nil {
+		return "", e
+	}
+	var u struct{ User string }
+	if e = a.remote(ctx, s, "GET", "/v1/users/"+part, nil, &u); e != nil {
+		return "", e
+	}
+	if u.User == "" {
+		return "", errors.New("unknown friend")
+	}
+	return u.User, nil
+}
+
+// online lists accepted friends with presence and the resources they share.
+func (a *Agent) online(ctx context.Context, s identity.Session) (any, error) {
+	var social struct{ Friends []Friend }
+	if e := a.remote(ctx, s, "GET", "/v1/friends", nil, &social); e != nil {
+		return nil, e
+	}
+	rs, e := a.resources(ctx, s)
+	if e != nil {
+		return nil, e
+	}
+	out := []map[string]any{}
+	for _, f := range social.Friends {
+		if f.Status != "accepted" {
+			continue
+		}
+		shared := []map[string]any{}
+		for _, r := range rs {
+			if r.Owner == f.User {
+				shared = append(shared, map[string]any{"id": r.ID, "name": r.Name, "kind": r.Kind, "actions": r.Actions})
+			}
+		}
+		out = append(out, map[string]any{"handle": f.Handle, "displayName": f.DisplayName, "online": f.Online, "presence": f.Presence, "statusMessage": f.StatusMessage, "resources": shared})
+	}
+	return map[string]any{"friends": out}, nil
+}
