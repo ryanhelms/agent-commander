@@ -58,12 +58,14 @@ struct MultiplayerMeter: View {
     let used: Int
     let limit: Int
     var cells = 16
+    /// The bar counts something wanted, such as accepted results: it stays `working` when full.
+    var isGood = false
 
     private var fraction: Double { limit > 0 ? min(Double(used) / Double(limit), 1) : 0 }
 
     var body: some View {
         let lit = Int((fraction * Double(cells)).rounded(.up))
-        let color = fraction >= 1 ? MultiplayerTheme.failure : fraction >= 0.8 ? MultiplayerTheme.attention : MultiplayerTheme.working
+        let color = isGood ? MultiplayerTheme.working : fraction >= 1 ? MultiplayerTheme.failure : fraction >= 0.8 ? MultiplayerTheme.attention : MultiplayerTheme.working
         HStack(spacing: 2) {
             ForEach(0..<cells, id: \.self) { index in
                 Rectangle()
@@ -74,7 +76,7 @@ struct MultiplayerMeter: View {
         .animation(MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.slow), value: lit)
         .accessibilityElement()
         .accessibilityAddTraits(.isStaticText)
-        .accessibilityLabel("\(Int((fraction * 100).rounded())) percent used")
+        .accessibilityLabel("\(Int((fraction * 100).rounded())) percent\(isGood ? "" : " used")")
     }
 }
 

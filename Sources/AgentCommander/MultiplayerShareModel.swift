@@ -38,6 +38,24 @@ enum MultiplayerSharePage: Equatable {
     case fanout
     /// A fan-out's results, side by side.
     case compare(request: String)
+    /// Teams (increment 5).
+    case groups
+    case group(String)
+    case workspaces
+    case workspaceCreate
+    /// One workspace, combined: its goal, who has claimed what, the board and how work lands.
+    case workspace(String)
+    case claim(workspace: String)
+    case card(workspace: String, card: String)
+    case queueAdd(workspace: String)
+    case hosts
+    case hostRun(resource: String)
+    case knowledge
+    case knowledgeShare
+    case knowledgeItem(String)
+    case reputation(resource: String)
+    case search
+    case policy
 
     var title: String {
         switch self {
@@ -58,6 +76,22 @@ enum MultiplayerSharePage: Equatable {
         case .review: "Review"
         case .fanout: "Fan out"
         case .compare: "Compare"
+        case .groups: "Groups"
+        case .group: "Group"
+        case .workspaces: "Workspaces"
+        case .workspaceCreate: "New workspace"
+        case .workspace: "Workspace"
+        case .claim: "Claim work"
+        case .card: "Card"
+        case .queueAdd: "Queue a branch"
+        case .hosts: "Hosts"
+        case .hostRun: "Run on host"
+        case .knowledgeShare: "Share knowledge"
+        case .knowledge: "Knowledge library"
+        case .knowledgeItem: "Knowledge item"
+        case .reputation: "Reputation"
+        case .search: "Directory search"
+        case .policy: "Relay policy"
         }
     }
 }
@@ -70,6 +104,12 @@ enum MultiplayerLoad<Value: Equatable>: Equatable {
 
     var value: Value? {
         if case .loaded(let value) = self { return value }
+        return nil
+    }
+
+    /// Why the read failed, when it did.
+    var failure: String? {
+        if case .failed(let message) = self { return message }
         return nil
     }
 }
@@ -120,6 +160,8 @@ final class MultiplayerShareModel {
 
     /// Live work (increment 4): watch, control, reviews and fan-outs.
     let live: MultiplayerLiveModel
+    /// Teams (increment 5): groups, workspaces, hosts, knowledge, reputation and relay policy.
+    let teams: MultiplayerTeamsModel
 
     private let client: MultiplayerClient?
     private let clock: () -> Date
@@ -137,7 +179,9 @@ final class MultiplayerShareModel {
         self.clock = now
         self.live = MultiplayerLiveModel(client: client, now: now, winners: MultiplayerWinnerStore(defaults: defaults),
                                          watchInterval: watchInterval)
+        self.teams = MultiplayerTeamsModel(client: client, now: now)
         self.live.share = self
+        self.teams.share = self
     }
 
     // MARK: - Navigation
@@ -179,6 +223,7 @@ final class MultiplayerShareModel {
         pageToken &+= 1
         attachProblem = nil
         live.left()
+        teams.left()
     }
 
     private func load(_ page: MultiplayerSharePage, on server: String) {
@@ -188,7 +233,7 @@ final class MultiplayerShareModel {
         case .handoffs, .handoffDetail: refresh()
         case .watch(let resource): live.beginWatch(resource, on: server)
         case .control, .review, .compare: live.refresh()
-        default: break
+        default: teams.load(page, on: server)
         }
         if case .watch = page {} else { live.endWatch() }
     }
@@ -223,6 +268,7 @@ final class MultiplayerShareModel {
         accessRequests = accessRequests.filter { live.contains($0.key) }
         handoffs = handoffs.filter { live.contains($0.key) }
         self.live.refresh()
+        self.teams.refresh()
         guard !ids.isEmpty else { return }
         quietTask = Task {
             for id in ids where !Task.isCancelled {
@@ -254,6 +300,7 @@ final class MultiplayerShareModel {
         pageTask = nil
         pageToken &+= 1
         live.cancel()
+        teams.cancel()
     }
 
     // MARK: - Derived values
@@ -411,10 +458,12 @@ final class MultiplayerShareModel {
     // MARK: - Grant sheet
 
     /// Opens the sheet for a friend, a resource, or both, preselecting any single option.
-    func startGrant(on server: String, handle: String? = nil, resourceID: String? = nil, actions: Set<String> = []) {
+    func startGrant(on server: String, handle: String? = nil, group: String? = nil, resourceID: String? = nil,
+                    actions: Set<String> = []) {
         guard let status = status(server) else { return }
         var draft = MultiplayerShareDraft(server: server)
-        draft.handle = handle ?? (status.friends.count == 1 ? status.friends[0].handle : "")
+        draft.handle = handle ?? (status.friends.count == 1 && group == nil ? status.friends[0].handle : "")
+        draft.group = group ?? ""
         draft.resourceID = resourceID ?? (status.resources.count == 1 ? status.resources[0].id : "")
         draft.actions = actions
         grantDraft = draft
@@ -450,6 +499,7 @@ final class MultiplayerShareModel {
         if !friends.contains(where: { $0.handle == grantDraft.handle }) {
             grantDraft.handle = friends.count == 1 ? friends[0].handle : ""
         }
+        grantDraft.group = ""
         if grantDraft.target == nil { grantDraft.resourceID = "" }
         reconcileGrantActions()
         tray.go(.share(server, .grant), keepingShareTrail: true)
@@ -486,15 +536,17 @@ final class MultiplayerShareModel {
 
     var canGrant: Bool {
         guard let tray, !tray.isBusy, let status = status(grantDraft.server), grantResource != nil else { return false }
-        return status.friends.contains { $0.handle == grantDraft.handle } && !grantDraft.actions.isEmpty
-            && grantDraft.budgetProblem == nil
+        let hasAudience = grantDraft.group.isEmpty
+            ? status.friends.contains { $0.handle == grantDraft.handle }
+            : teams.ownedGroups(on: grantDraft.server).contains { $0.id == grantDraft.group }
+        return hasAudience && !grantDraft.actions.isEmpty && grantDraft.budgetProblem == nil
     }
 
     /// What stands between the sheet and Share, in one line.
     var grantHint: String {
         guard let status = status(grantDraft.server) else { return "This server is offline." }
         if status.friends.isEmpty { return "Add a friend on this server first." }
-        if grantDraft.handle.isEmpty { return "Choose a friend." }
+        if grantDraft.handle.isEmpty, grantDraft.group.isEmpty { return "Choose a friend or a group." }
         guard let resource = grantResource else { return "Choose what to share." }
         if grantDraft.actions.isEmpty { return "Choose at least one action." }
         if grantDraft.budgetProblem != nil { return "Fix the token budget." }
@@ -507,7 +559,9 @@ final class MultiplayerShareModel {
         guard canGrant, let tray, let resource = grantResource else { return nil }
         let draft = grantDraft
         let now = clock()
-        let who = draft.handle.multiplayerDisplay, what = resource.name.multiplayerDisplay
+        let who = draft.group.isEmpty ? draft.handle.multiplayerDisplay
+                                      : "everyone in \(teams.groupName(draft.group, on: draft.server).multiplayerDisplay)"
+        let what = resource.name.multiplayerDisplay
         return tray.act("Sharing \(what) with \(who)…", failing: "Couldn’t share \(what).") { client in
             let scoped = client.scoped(to: draft.server)
             var offered = resource.offered
