@@ -66,6 +66,16 @@ var registry = register(
 		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
 	},
 	descriptor{
+		kind: "agent", name: "thread.read", recoverable: true, run: threadHandler,
+		description:   "Read the comment thread of a request you sent to this agent.",
+		payloadSchema: closedObject + `,"required":["request"],"properties":{"request":{"type":"string","minLength":1,"maxLength":128}}}`,
+	},
+	descriptor{
+		kind: "agent", name: "thread.comment", run: threadHandler,
+		description:   "Add a comment to the thread of a request you sent to this agent. The text is limited to 4 KiB.",
+		payloadSchema: closedObject + `,"required":["request","text"],"properties":{"request":{"type":"string","minLength":1,"maxLength":128},"text":{"type":"string","minLength":1,"maxLength":4096}}}`,
+	},
+	descriptor{
 		kind: "agent", name: "agent.status", recoverable: true, run: handoffHandler,
 		description:   "Read the state and latest summary of a run you handed off.",
 		payloadSchema: closedObject + `,"required":["run"],"properties":{"run":{"type":"string","minLength":1,"maxLength":128}}}`,

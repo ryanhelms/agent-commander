@@ -19,30 +19,35 @@ import (
 )
 
 type input struct {
-	ID            string    `json:"id"`
-	Handle        string    `json:"handle"`
-	Resource      string    `json:"resource"`
-	Capability    string    `json:"capability"`
-	Name          string    `json:"name"`
-	Kind          string    `json:"kind"`
-	Target        string    `json:"target"`
-	MaxUses       int       `json:"maxUses"`
-	ExpiresAt     time.Time `json:"expiresAt"`
-	Token         string    `json:"token"`
-	Server        string    `json:"server"`
-	DisplayName   *string   `json:"displayName"`
-	StatusMessage *string   `json:"statusMessage"`
-	Avatar        *string   `json:"avatar"`
-	Presence      string    `json:"presence"`
-	Mode          string    `json:"mode"`
-	AllowedEmails []string  `json:"allowedEmails"`
-	Admins        []string  `json:"admins"`
-	TTLHours      int       `json:"ttlHours"`
-	Invite        string    `json:"invite"`
-	Approval      string    `json:"approval"`
-	BudgetTokens  int       `json:"budgetTokens"`
-	Attribution   string    `json:"attribution"`
-	Reason        string    `json:"reason"`
+	ID            string          `json:"id"`
+	Handle        string          `json:"handle"`
+	Resource      string          `json:"resource"`
+	Capability    string          `json:"capability"`
+	Name          string          `json:"name"`
+	Kind          string          `json:"kind"`
+	Target        string          `json:"target"`
+	MaxUses       int             `json:"maxUses"`
+	ExpiresAt     time.Time       `json:"expiresAt"`
+	Token         string          `json:"token"`
+	Server        string          `json:"server"`
+	DisplayName   *string         `json:"displayName"`
+	StatusMessage *string         `json:"statusMessage"`
+	Avatar        *string         `json:"avatar"`
+	Presence      string          `json:"presence"`
+	Mode          string          `json:"mode"`
+	AllowedEmails []string        `json:"allowedEmails"`
+	Admins        []string        `json:"admins"`
+	TTLHours      int             `json:"ttlHours"`
+	Invite        string          `json:"invite"`
+	Approval      string          `json:"approval"`
+	BudgetTokens  int             `json:"budgetTokens"`
+	Attribution   string          `json:"attribution"`
+	Reason        string          `json:"reason"`
+	Payload       json.RawMessage `json:"payload"`
+	Request       string          `json:"request"`
+	Text          string          `json:"text"`
+	Checkout      string          `json:"checkout"`
+	Artifact      int             `json:"artifact"`
 }
 type trayGrant struct {
 	ID         string    `json:"id"`
@@ -303,6 +308,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
+	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
+		return a.requesterVerb(ctx, s, verb, in)
 	case "approvals":
 		return a.approvals(), nil
 	case "approve", "deny":
