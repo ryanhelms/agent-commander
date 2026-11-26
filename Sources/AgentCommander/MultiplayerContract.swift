@@ -23,6 +23,10 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case serverUpdate = "server-update"
     case serverRemove = "server-remove"
     case serverTrust = "server-trust"
+    /// The tailnet this Mac is on, joining one, and the relays tagged on it. These name no server.
+    case tailnetStatus = "tailnet-status"
+    case tailnetJoin = "tailnet-join"
+    case tailnetRelays = "tailnet-relays"
     /// Social (increment 2). `contacts`, `activity`, `activity-seen` and `join` name no server.
     case presence, contacts, activity, avatar, membership, join, me
     case activitySeen = "activity-seen"

@@ -64,6 +64,25 @@ tailnet-shaped address with a new eight-character code that lasts ten minutes. `
 `remote-devices` returns `pairing` while the code is unused and under ten minutes old. These verbs name no
 server and refuse any field they don't know, as the device agent does.
 
+Tailnet (design/COMMANDER-NETWORK-TAILNET.md): `tailnet-status`, `tailnet-relays` and `tailnet-join`
+answer for a made-up tailnet, fixture-lab (MagicDNS suffix tail.example). No `tailscale` CLI runs.
+COMMANDER_NETWORK_FIXTURE_TAILNET picks where this Mac starts:
+
+    running   (the default) on fixture-lab with three tagged relays: studio-relay is online and
+              already in the list (`added`, as the tailnet name of the saved studio-relay server),
+              build-relay is online and attic-relay is offline. A relay you add turns `added` too.
+    empty     on fixture-lab with no tagged relay.
+    missing   the CLI isn't installed: `installed` is false and a join is refused.
+    off       installed, not on a tailnet. `tailnet-join` with an `authKey` joins at once (a key
+              containing "bad" is refused); without one it answers the browser join's short reply,
+              `{"state": "needsLogin", "authURL": …}`, and the login is then pending.
+    pending   a browser login is already open: `loginPending` with an `authURL`.
+    error     every tailnet verb is refused, as when the CLI's output can't be read.
+
+A pending login turns into `running` on the third `tailnet-status` read after it began. A join while
+running is refused, as the device agent refuses it. The state is kept in the scratch file and starts
+again when the variable changes. These verbs name no server and refuse any field they don't know.
+
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
 (Relay reconnect on a merge queue with claims, a board and three queued branches; iOS onboarding on
 pull requests), a host you lend (studio-mac) and two that friends lend (jonas-mac-mini is granted,
@@ -645,6 +664,84 @@ def remote(state, verb, request):
         listed["pairing"] = {"code": held["code"], "expiresAt": held["expiresAt"],
                              "pairURL": "%s/pair?code=%s" % (held["url"], held["code"])}
     return listed
+
+
+TAILNET_NAME = "fixture-lab"
+TAILNET_SUFFIX = "tail.example"
+TAILNET_LOGIN = "https://login.tail.example/a/f1x7ur3c0de"
+TAILNET_MODES = ("running", "empty", "missing", "off", "pending", "error")
+# (name, online, the saved server this relay is the tailnet name of)
+TAILNET_RELAYS = [("studio-relay", True, "s-fixture-studio"), ("build-relay", True, ""), ("attic-relay", False, "")]
+TAILNET_PENDING_READS = 3
+
+
+def tailnet(state, verb, request):
+    """The tailnet this Mac is on, a join, and the tagged relays. No CLI runs."""
+    allowed = {"tailnet-join": {"loginServer", "authKey", "hostname"}, "tailnet-relays": {"tag"}}.get(verb, set())
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    start = os.environ.get("COMMANDER_NETWORK_FIXTURE_TAILNET", "running")
+    if start not in TAILNET_MODES:
+        start = "running"
+    held = state.get("tailnet")
+    if not held or held.get("start") != start:
+        held = state["tailnet"] = {"start": start, "mode": start, "reads": 0, "relays": start != "empty"}
+        save(state)
+    mode = held["mode"]
+    if mode == "error":
+        raise ValueError("tailscale status: unreadable output: unexpected end of JSON input")
+
+    def answer():
+        if held["mode"] == "missing":
+            return {"installed": False, "backendState": "", "running": False, "tailnet": "", "magicDNSSuffix": "",
+                    "self": None, "authURL": "", "loginPending": False}
+        on = held["mode"] in ("running", "empty")
+        waiting = held["mode"] == "pending"
+        return {"installed": True, "backendState": "Running" if on else "NeedsLogin", "running": on,
+                "tailnet": TAILNET_NAME if on else "", "magicDNSSuffix": TAILNET_SUFFIX if on else "",
+                "self": {"hostName": "fixture-mac", "dnsName": "fixture-mac." + TAILNET_SUFFIX,
+                         "addresses": ["100.64.0.7"], "online": True, "tags": []} if on else None,
+                "authURL": TAILNET_LOGIN if waiting else "", "loginPending": waiting}
+
+    if verb == "tailnet-status":
+        if mode == "pending":
+            held["reads"] += 1
+            if held["reads"] >= TAILNET_PENDING_READS:
+                held.update(mode="running", reads=0)
+            save(state)
+        return answer()
+    if verb == "tailnet-join":
+        server = str(request.get("loginServer", "")).strip()
+        if not server.startswith("https://") or len(server) <= len("https://"):
+            raise ValueError("the login server must be an https:// URL")
+        if mode == "missing":
+            raise ValueError("the Tailscale CLI is not installed")
+        if mode == "pending":
+            raise ValueError("a tailnet login is already in progress")
+        if mode in ("running", "empty"):
+            raise ValueError("this Mac is already on tailnet %s; leave it in Tailscale first" % TAILNET_NAME)
+        secret = str(request.get("authKey", "")).strip()
+        if secret:
+            if "bad" in secret:
+                raise ValueError("tailscale login: invalid key: API key does not exist")
+            held.update(mode="running", reads=0)
+            save(state)
+            return answer()
+        held.update(mode="pending", reads=0)
+        save(state)
+        return {"state": "needsLogin", "authURL": TAILNET_LOGIN}
+    tag = str(request.get("tag", "") or "tag:relay").strip()
+    if not tag.startswith("tag:") or len(tag) == len("tag:"):
+        raise ValueError('a relay tag starts with "tag:"')
+    if mode not in ("running", "empty"):
+        raise ValueError("this Mac is not on a tailnet")
+    saved = {server["id"] for server in state["servers"]} | {server["url"] for server in state["servers"]}
+    relays = []
+    for index, (name, online, known) in enumerate(TAILNET_RELAYS if held.get("relays") and tag == "tag:relay" else []):
+        dns = "%s.%s" % (name, TAILNET_SUFFIX)
+        relays.append({"name": name, "dnsName": dns, "url": "https://" + dns, "addresses": ["100.64.0.%d" % (21 + index)],
+                       "online": online, "os": "linux", "added": known in saved or "https://" + dns in saved})
+    return {"relays": relays}
 
 
 # Comments on a request a friend sent you. An older scratch file gains them on first read.
@@ -1299,6 +1396,8 @@ def run(verb, request):
     state = load()
     if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename"):
         return remote(state, verb, request)
+    if verb in ("tailnet-status", "tailnet-join", "tailnet-relays"):
+        return tailnet(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
         favorites = sorted([s for s in ordered if s["favorite"]], key=lambda s: s.get("lastUsedAt") or "", reverse=True)

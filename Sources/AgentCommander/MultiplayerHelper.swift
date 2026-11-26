@@ -190,6 +190,26 @@ struct MultiplayerClient: Sendable {
         return try await fetch(.serverAdd, payload, as: MultiplayerServerSummary.self)
     }
 
+    // MARK: Tailnet
+
+    /// Whether the Tailscale CLI exists and whether this Mac is on a tailnet.
+    func tailnetStatus() async throws -> MultiplayerTailnetStatus {
+        try await fetch(.tailnetStatus, [:], as: MultiplayerTailnetStatus.self)
+    }
+
+    /// The tailnet's peers tagged as relays, each with the URL to check and add.
+    func tailnetRelays() async throws -> [MultiplayerTailnetRelay] {
+        try await fetch(.tailnetRelays, [:], as: MultiplayerTailnetRelayList.self).relays
+    }
+
+    /// Logs this Mac in to a tailnet. Without a key the device agent opens the login page in the
+    /// browser and answers with its address. The key is sent once and never kept here.
+    func joinTailnet(loginServer: String, authKey: String? = nil) async throws -> MultiplayerTailnetStatus {
+        var payload: [String: MultiplayerPayloadValue] = ["loginServer": .string(loginServer)]
+        if let authKey, !authKey.isEmpty { payload["authKey"] = .string(authKey) }
+        return try await fetch(.tailnetJoin, payload, as: MultiplayerTailnetStatus.self)
+    }
+
     /// Sends only the settings that are given.
     func updateServer(id: String, name: String? = nil, favorite: Bool? = nil,
                       autoConnect: Bool? = nil) async throws -> MultiplayerServerSummary {
@@ -332,7 +352,8 @@ struct MultiplayerProcessHelper: MultiplayerHelper {
         let stop = MultiplayerStopSignal()
         let executable = executable
         let arguments = verb.arguments
-        let timeout = timeout
+        // A key login may take the device agent 30 s; its tray server writes within 40 s.
+        let timeout = verb == .tailnetJoin ? max(timeout, .seconds(40)) : timeout
         let limit = outputLimit
         let inputLimit = MultiplayerClient.inputLimit(for: verb)
         return try await withTaskCancellationHandler {

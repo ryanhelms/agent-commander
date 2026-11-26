@@ -261,6 +261,8 @@ final class MultiplayerModel {
     let share: MultiplayerShareModel
     /// Remote: this Mac's web view, its pairing code and its paired devices.
     let remote: MultiplayerRemoteModel
+    /// The tailnet this Mac is on and its relays, for the Add server form.
+    let tailnet: MultiplayerTailnetModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -283,7 +285,8 @@ final class MultiplayerModel {
          watchInterval: Duration = .seconds(2),
          answeredHold: Duration = .zero,
          now: @escaping () -> Date = { Date() },
-         holdTimer: MultiplayerHoldTimer = .clock) {
+         holdTimer: MultiplayerHoldTimer = .clock,
+         tailnetPoll: Duration = .seconds(2)) {
         self.client = client
         self.notifier = notifier
         self.setupFailure = setupFailure
@@ -294,6 +297,7 @@ final class MultiplayerModel {
         self.share = MultiplayerShareModel(client: client, now: now, winners: winners, watchInterval: watchInterval,
                                            answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
+        self.tailnet = MultiplayerTailnetModel(client: client, pollInterval: tailnetPoll)
         self.share.tray = self
         self.remote.tray = self
     }
@@ -701,6 +705,20 @@ final class MultiplayerModel {
         return startProbe(serverDraft.trimmedAddress)
     }
 
+    /// Whether a relay listed on the tailnet can be checked now.
+    var canChooseRelay: Bool { client != nil && !isBusy && route == .addServer }
+
+    /// A relay chosen from the tailnet list: its address goes in the field and the same check runs
+    /// as for a typed one. Nothing is pinned or saved here.
+    @discardableResult
+    func chooseRelay(_ relay: MultiplayerTailnetRelay) -> Task<Void, Never>? {
+        guard canChooseRelay, !relay.added,
+              MultiplayerServerAddress.problem(relay.url.trimmingCharacters(in: .whitespacesAndNewlines)) == nil else { return nil }
+        serverDraft.address = relay.url
+        serverDraft.pinConfirmed = false
+        return startProbe(serverDraft.trimmedAddress)
+    }
+
     /// Checks a blocked server again, to read the certificate it presents now.
     @discardableResult
     func checkCertificate(_ server: MultiplayerServerSummary) -> Task<Void, Never>? {
@@ -868,9 +886,14 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = tailnet.joinTask ?? tailnet.readTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
             if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, share.live.quietTask == nil,
+               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, tailnet.joinTask == nil, tailnet.readTask == nil,
+               share.live.quietTask == nil,
                share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
                share.teams.pullRequestTask == nil { return }
         }
