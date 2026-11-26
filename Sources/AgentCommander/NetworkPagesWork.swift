@@ -34,7 +34,7 @@ struct NetworkWorkTable: View {
         ShellTable(columns: compact ? [Self.title, Self.narrowState] : [Self.title, Self.server, Self.sent, Self.state],
                    items: rows, empty: empty) { row in
             ShellTableRow(isSelected: row.id == selected,
-                          spoken: "\(row.kind.title): \(row.title), \(row.target) on \(row.serverName), \(row.state)",
+                          spoken: "\(row.kind.title): \(row.title), \(row.target) on \(row.serverName)" + (row.state.isEmpty ? "" : ", \(row.state)"),
                           select: { open(row) }) {
                 HStack(spacing: Space.s) {
                     MultiplayerMark(symbol: row.kind.symbol, tone: row.tone == .failure ? .failure : .neutral, size: 20)

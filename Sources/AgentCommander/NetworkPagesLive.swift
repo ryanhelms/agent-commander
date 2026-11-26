@@ -68,7 +68,7 @@ extension NetworkPagesContent {
             canTrust = !model.isBusy && state.trustablePin(for: server) != nil
             canRename = model.renameProblem(id, to: state.nickname) == nil
         }
-        confirmingRemoval = model.confirmingRemoval
+        confirmingRemoval = state.confirmingRemoval
         confirmingTrust = state.confirmingTrust
         people = model.friendGroups
         friendsAvailable = model.friendsAvailable
@@ -155,15 +155,9 @@ extension NetworkPageActions {
             chooseCheckout: { artifact in MultiplayerFilePanel.chooseCheckout(for: artifact) },
             // `apply` is the share model's own call. It reports through the model's banner, so the
             // result for this artifact is read from the banner once the call has ended.
+            // The model answers for this one artifact, and names a saved file's final name.
             applyArtifact: { draft, row in
-                guard let task = model.share.apply(artifact: draft.index, of: row, on: draft.server, checkout: draft.checkout) else {
-                    return .failed(id: draft.request, server: draft.server,
-                                   reason: model.isBusy ? "Another network action is still running. Try again when it ends."
-                                                        : "Read the result again with Get result, then apply.")
-                }
-                await task.value
-                if let failure = model.failure { return .failed(id: draft.request, server: draft.server, reason: failure) }
-                return .done(id: draft.request, server: draft.server, message: model.notice)
+                NetworkActionResult(await model.apply(artifact: draft.index, of: row, on: draft.server, checkout: draft.checkout))
             })
     }
 }
@@ -185,6 +179,8 @@ final class NetworkPagesLiveState {
     /// The certificate check of the open server.
     var probe = MultiplayerProbeState.idle
     var confirmingTrust: String?
+    /// The server whose Remove waits for its second press. The window's own, not the tray's.
+    var confirmingRemoval: String?
     var confirmingPost = false
     var nickname = ""
     var access = MultiplayerAccessDraft()
@@ -493,18 +489,24 @@ struct LiveNetworkIntents {
         }
         actions.setAutoConnect = { model.setAutoConnect($0, $1) }
         actions.toggleFavorite = { model.toggleFavorite($0) }
-        // Removing a server is still the tray's own two-step: it has no call that names its
-        // target yet, and the tray returns home once the server is gone.
-        actions.askRemove = { model.askRemove($0) }
-        actions.cancelRemove = { model.cancelRemove() }
+        // The second press is the window's own, and the removal names its server: a tray on any
+        // other page stays there.
+        actions.askRemove = { server in
+            state.confirmingTrust = nil
+            state.confirmingRemoval = server.id
+        }
+        actions.cancelRemove = { state.confirmingRemoval = nil }
         actions.confirmRemove = {
-            state.open(.home)
-            model.confirmRemove()
+            guard let id = state.confirmingRemoval, let server = model.server(id) else { return }
+            state.confirmingRemoval = nil
+            Task {
+                if await model.remove(server).isDone, state.route == .server(id) { state.open(.home) }
+            }
         }
         actions.checkCertificate = { checkCertificate($0) }
         actions.askTrust = { server in
             guard !model.isBusy, state.trustablePin(for: server) != nil else { return }
-            model.cancelRemove()
+            state.confirmingRemoval = nil
             state.confirmingTrust = server.id
         }
         actions.cancelTrust = { state.confirmingTrust = nil }

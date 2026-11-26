@@ -106,4 +106,48 @@ import Testing
         #expect(navigation(place: "team:srv-studio/gone", network: empty).selection == LiveShell.workspaces)
         #expect(navigation(place: "nowhere", network: ShellLiveTests.network).selection == LiveShell.wall)
     }
+
+    /// Each mode key reaches its own mode, from every mode. ⌥⌘3 once did nothing in a window
+    /// while the other four worked, so every pair is checked, on the command a key press gives.
+    @Test func eachModeKeyDispatchesToItsMode() {
+        let ids = ["agents", "network", "people", "teams", LiveShell.settings]
+        let starts = [LiveShell.wall, LiveShell.servers, LiveShell.people, LiveShell.team(ShellLiveTests.network.workspaces[0]), LiveShell.settings]
+        // The key codes of 1 to 5 on the digit row, and the digit each gives without its modifiers.
+        let keys: [(code: UInt16, digit: String)] = [(18, "1"), (19, "2"), (20, "3"), (21, "4"), (23, "5")]
+        for (index, key) in keys.enumerated() {
+            let command = CockpitShortcuts.modeCommand(characters: key.digit, keyCode: key.code, modifiers: [.command, .option])
+            #expect(command == .mode(index), "⌥⌘\(key.digit) asks for mode \(index)")
+            #expect(CockpitShortcuts.modes[index].command == command && CockpitShortcuts.modes[index].title == CockpitShortcuts.modeTitles[index])
+            guard case .mode(let asked)? = command else { continue }
+            for start in starts {
+                var current = navigation(place: start, network: ShellLiveTests.network)
+                // What the page does with the command: the mode at that place on the rail.
+                current.apply(.selectMode(current.modeItems[asked].mode.id))
+                #expect(current.selectedModeID == ids[index], "⌥⌘\(key.digit) from \(start) is in \(current.selectedModeID ?? "nothing")")
+            }
+        }
+        // ⌥⌘3 is People, and it opens the People page.
+        var fromWall = navigation(place: LiveShell.wall, network: ShellLiveTests.network)
+        fromWall.apply(.selectMode(fromWall.modeItems[2].mode.id))
+        #expect(fromWall.selection == LiveShell.people)
+    }
+
+    /// The window's own listener takes a mode key by its digit, or by its key on a layout whose
+    /// digit row needs Shift, and nothing else.
+    @Test func theWindowHearsOnlyTheModeKeys() {
+        // With ⌥ held a layout may give another character: the key itself still names the mode.
+        #expect(CockpitShortcuts.modeCommand(characters: "£", keyCode: 20, modifiers: [.command, .option]) == .mode(2))
+        #expect(CockpitShortcuts.modeCommand(characters: "\"", keyCode: 20, modifiers: [.command, .option]) == .mode(2))
+        #expect(CockpitShortcuts.modeCommand(characters: nil, keyCode: 23, modifiers: [.command, .option, .capsLock]) == .mode(4))
+        // ⌘3, ⇧⌥⌘3, ⌃⌥⌘3 and ⌥⌘6 are not mode keys.
+        #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command]) == nil)
+        #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command, .option, .shift]) == nil)
+        #expect(CockpitShortcuts.modeCommand(characters: "3", keyCode: 20, modifiers: [.command, .option, .control]) == nil)
+        #expect(CockpitShortcuts.modeCommand(characters: "6", keyCode: 22, modifiers: [.command, .option]) == nil)
+        #expect(CockpitShortcuts.modeCommand(characters: "a", keyCode: 0, modifiers: [.command, .option]) == nil)
+    }
+
+    private func navigation(place: String, network: ShellNetwork) -> CommanderNavigation {
+        LiveShell.navigation(runs: [], openRunPath: nil, composing: false, place: place, needsYou: 0, network: network)
+    }
 }

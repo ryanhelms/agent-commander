@@ -88,7 +88,16 @@ import Testing
         #expect(Self.navigation(place: LiveShell.people).contextSections.flatMap(\.items).map(\.place.spoken)
                 == ["People, 3 friends online"])
         #expect(Self.navigation(place: "team:srv-studio/ws-1").contextSections.flatMap(\.items).map(\.place.title)
-                == ["Relay launch"])
+                == ["Relay launch", "Groups", "Hosts", "Knowledge", "Directory"])
+        // Admin is listed only for an admin of at least one server.
+        var admin = Self.network
+        admin.isAdmin = true
+        let teams = Self.navigation(place: TeamsPlace.admin, network: admin)
+        #expect(teams.contextSections.map(\.group.title) == ["Workspaces", "Team tools"])
+        #expect(teams.contextSections.last?.items.map(\.place.id) == TeamsPlace.tools && teams.selection == TeamsPlace.admin)
+        // Without it, Admin is no place: the window stays in Teams, on the first workspace.
+        #expect(Self.navigation(place: TeamsPlace.admin).selection == "team:srv-studio/ws-1")
+        #expect(Self.navigation(place: TeamsPlace.hosts).selectedModeID == "teams")
     }
 
     @Test func railCountsWhatNeedsThePerson() {
@@ -125,7 +134,7 @@ import Testing
         navigation.apply(.selectMode("agents"))
         #expect(navigation.selection == LiveShell.needsYou)
         navigation.apply(.selectMode("teams"))
-        #expect(navigation.crumbs == ["Teams", "Relay launch"])
+        #expect(navigation.crumbs == ["Workspaces", "Relay launch"])
         // A place named like its mode is said once.
         navigation.apply(.selectMode("people"))
         #expect(navigation.crumbs == ["People"])

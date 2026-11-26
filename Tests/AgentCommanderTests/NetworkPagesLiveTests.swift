@@ -104,7 +104,7 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
         let state = NetworkPagesLiveState()
         let waiting = model.share.waitingApprovals.count
         let pending = try #require(model.share.waitingApprovals.first)
-        #expect(ShellNetwork(model: model).approvals.count == waiting)
+        #expect(ShellNetwork(model: model).waitingApprovals.count == waiting)
         _ = await model.decide(pending.item, on: pending.server, approve: false)
         let content = NetworkPagesContent(model: model, state: state)
         let key = NetworkActionResult.key(.approval, pending.item.id, on: pending.server)
@@ -112,7 +112,7 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
             // Held: the row says how it came out.
             #expect(row.answer == .denied && content.answered[key] == .denied)
         }
-        #expect(ShellNetwork(model: model).approvals.count == waiting - 1)
+        #expect(ShellNetwork(model: model).waitingApprovals.count == waiting - 1)
         #expect(content.readouts(for: NetworkPlace.approvals).first { $0.id == "approvals" }?.value == "\(waiting - 1)")
     }
 

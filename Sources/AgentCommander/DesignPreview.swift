@@ -83,6 +83,14 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case networkFanout = "network-fanout"
     case networkShared = "network-shared"
     case people = "people"
+    // The full-size Teams pages, in sidebar B (TeamsPagesPreview.swift).
+    case teamsWorkspace = "teams-workspace"
+    case teamsBoard = "teams-board"
+    case teamsGroups = "teams-groups"
+    case teamsHosts = "teams-hosts"
+    case teamsKnowledge = "teams-knowledge"
+    case teamsDirectory = "teams-directory"
+    case teamsAdmin = "teams-admin"
 
     struct Info {
         let title: String
@@ -111,7 +119,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     }
 
     /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
-    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil }
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -244,6 +252,27 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         case .people:
             Info(title: "People", group: "Main window redesign", crumbs: ["People"], active: "People",
                  summary: "Friend requests, friends by server, your profile and the activity feed.")
+        case .teamsWorkspace:
+            Info(title: "Teams · Workspace", group: "Main window redesign", crumbs: ["Workspaces", "Relay launch"], active: "Relay launch",
+                 summary: "A workspace’s goal and its combined view: every member’s workers, claims, branches and checks.")
+        case .teamsBoard:
+            Info(title: "Teams · Board", group: "Main window redesign", crumbs: ["Workspaces", "Relay launch"], active: "Relay launch",
+                 summary: "Open, claimed and done columns, with the open card beside them.")
+        case .teamsGroups:
+            Info(title: "Teams · Groups", group: "Main window redesign", crumbs: ["Team tools", "Groups"], active: "Groups",
+                 summary: "The groups you are in, with the open one’s members.")
+        case .teamsHosts:
+            Info(title: "Teams · Hosts", group: "Main window redesign", crumbs: ["Team tools", "Hosts"], active: "Hosts",
+                 summary: "Hardware you lend and hardware friends lend, with a run and its output.")
+        case .teamsKnowledge:
+            Info(title: "Teams · Knowledge", group: "Main window redesign", crumbs: ["Team tools", "Knowledge"], active: "Knowledge",
+                 summary: "The library, an item’s versions, sharing and installing.")
+        case .teamsDirectory:
+            Info(title: "Teams · Directory", group: "Main window redesign", crumbs: ["Team tools", "Directory"], active: "Directory",
+                 summary: "Search a server, then a resource’s reputation and endorsements.")
+        case .teamsAdmin:
+            Info(title: "Teams · Admin", group: "Main window redesign", crumbs: ["Team tools", "Admin"], active: "Admin",
+                 summary: "A relay’s policy, and its members and devices.")
         }
     }
 
@@ -626,7 +655,8 @@ struct PreviewCanvas: View {
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
              .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
              .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
-             .networkThreads, .networkAudit, .networkFanout, .networkShared, .people:
+             .networkThreads, .networkAudit, .networkFanout, .networkShared, .people,
+             .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin:
             // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }

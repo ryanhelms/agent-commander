@@ -51,6 +51,8 @@ final class CockpitPresentationState {
     var needsYouRunning = Set<String>()
     /// The network pages' own selections and each row's last result.
     let networkPages = NetworkPagesLiveState()
+    /// The window's own place, reads and drafts on the Teams pages.
+    let teamsPages = TeamsPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
     /// The last key command pressed and how many there have been. The page runs each one from
@@ -672,6 +674,8 @@ struct CockpitScreen: View {
                 shellCanvas(shell, navigation).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // A countdown drawn by the network's own rows counts from the window's fixed time, when it has one.
+        .environment(\.multiplayerFixedNow, shell.now)
     }
 
     @ViewBuilder private func shellCanvas(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
@@ -692,6 +696,8 @@ struct CockpitScreen: View {
                             presentations: AttentionPresentationMenu.options, showsRecording: false,
                             openAppSettings: { openSettings() })
         } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
+            page(selection) { place in show(place: place) }
+        } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
             page(selection) { place in show(place: place) }
         } else {
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
@@ -799,10 +805,15 @@ struct CockpitScreen: View {
                 ui.needsYouFailures[id] = result.reason
                 return
             }
+            // The network holds an answered approval or access request itself, with its outcome
+            // (`ShellNetwork.answers`), so the window keeps no copy and adds no time of its own.
+            guard item.kind == .friendRequest else { return }
+            // A friend request leaves the network's list at once. The window shows its outcome
+            // for as long as the network holds an answered row.
             item.decision = decision
             item.failure = nil
             ui.needsYouDecided.append(item)
-            try? await Task.sleep(for: .milliseconds(2400))
+            try? await Task.sleep(for: MultiplayerShareModel.answeredHold)
             ui.needsYouDecided.removeAll { $0.id == id }
         }
     }
@@ -876,6 +887,8 @@ struct CockpitScreen: View {
                 ForEach(CockpitShortcuts.modes) { key in
                     Button(key.title) { ui.press(key.command) }.keyboardShortcut(key.shortcut)
                 }
+                // The window hears the mode keys itself too, before anything else can take one.
+                CockpitModeKeys { ui.press($0) }
             }
             Button(CockpitShortcuts.focusCoordinator.title) { ui.press(.focusCoordinator) }
                 .keyboardShortcut(CockpitShortcuts.focusCoordinator.shortcut)
@@ -1713,8 +1726,17 @@ struct CockpitView: View {
                                               AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
                                                                       openPanel: networkActions.openNetworkPanel))
                                           },
+                                          teamsPage: { place, go in
+                                              AnyView(LiveTeamsPage(place: place, model: network, state: ui.teamsPages, go: go,
+                                                                    share: { resource, server in
+                                                                        // The grant sheet is the network pages' own, on Shared.
+                                                                        guard networkActions.answers.prepareGrant(server, nil, resource, []) else { return }
+                                                                        ui.networkPages.selection.grant = server
+                                                                        go(NetworkPlace.shared)
+                                                                    }))
+                                          },
                                           // The wall's live work, read from the network model as values.
-                                          wall: WallLiveWork(model: network),
+                                          wall: WallLiveWork(model: network, workers: CockpitContent(model: model).selected?.wall.workers.map(\.id) ?? []),
                                           wallActions: .live(network, pages: ui.networkPages)))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.

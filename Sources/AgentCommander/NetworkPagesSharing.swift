@@ -31,8 +31,10 @@ struct NetworkGrantInspector: View {
             NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), close: actions.closeGrant) {
                 host(server)
             }
+            // A sheet opened by Review or Share may be under the table in a narrow window.
+            .shellRevealed("grant-sheet", anchor: .top)
         } else {
-            sample
+            sample.shellRevealed("grant-sheet", anchor: .top)
         }
     }
 
@@ -212,7 +214,7 @@ struct NetworkApprovalTable: View {
                    empty: "Nothing is waiting for you", emptyLamp: .on) { row in
             ShellTableRow(isSelected: row.id == selected,
                           spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)"
-                            + NetworkSpoken.suffix(NetworkSpoken.clock(waiting: row.waiting, expiresIn: row.expiresIn)),
+                            + NetworkSpoken.suffix(row.answer?.title ?? NetworkSpoken.clock(waiting: row.waiting, expiresIn: row.expiresIn)),
                           hint: "Shows the request and the grant it runs under", select: { open(row) }, trailing: Self.verbs) {
                 ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.approval.headline,
@@ -310,7 +312,8 @@ struct NetworkApprovalsPage: View {
             NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.l) {
                     VStack(alignment: .leading, spacing: Space.s) {
-                        ShellBandHeading(title: "Waiting on you", count: "\(approvals.count)",
+                        // An answered row still shows its outcome, but it no longer waits and isn't counted.
+                        ShellBandHeading(title: "Waiting on you", count: "\(approvals.filter { $0.answer == nil }.count)",
                                          note: approvals.isEmpty ? nil : "A grant set to Ask each time stops here until you answer.")
                         NetworkApprovalTable(rows: approvals, selected: openApproval(in: approvals)?.id, isBusy: state.isBusy,
                                              open: {
@@ -320,7 +323,7 @@ struct NetworkApprovalsPage: View {
                                              decide: { row, approve in actions.decide(row.approval, row.server, approve) })
                     }
                     VStack(alignment: .leading, spacing: Space.s) {
-                        ShellBandHeading(title: "Access requests", count: "\(access.count)",
+                        ShellBandHeading(title: "Access requests", count: "\(access.filter { $0.answer == nil }.count)",
                                          note: "Review opens the share sheet. Granting it answers the request.")
                         NetworkAccessTable(rows: access, selected: openApproval(in: approvals) == nil ? pages.selection.access : nil,
                                            now: state.now, isBusy: state.isBusy,
@@ -529,13 +532,14 @@ struct NetworkSharedInspector: View {
                         }
                         if pages.selection.revoking == key, let revoke = actions.revoke {
                             MultiplayerInlineConfirm(
-                                message: "\(grant.handle.multiplayerDisplay) can no longer use \(row.resource.name.multiplayerDisplay) this way. Requests already running finish. You can share it again later.",
+                                message: "Revoke \(MultiplayerCapability.title(grant.capability)) from \(grant.handle.multiplayerDisplay)? \(grant.handle.multiplayerDisplay) can no longer use \(row.resource.name.multiplayerDisplay) this way. Requests already running finish. You can share it again later.",
                                 keepTitle: "Keep grant", confirmTitle: "Revoke", isBusy: state.isBusy,
                                 onCancel: { select(revoking: nil) },
                                 onConfirm: {
                                     select(revoking: nil)
                                     revoke(grant, row.server)
                                 })
+                                .shellRevealed("revoke-\(key)")
                         }
                     }
                 }

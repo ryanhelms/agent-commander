@@ -19,6 +19,7 @@ import SwiftUI
 //   NetworkInspector     the panel beside a collection: title, an embedded tray organism, footer (organism)
 //   NetworkSplit         a collection beside its inspector, or over it when both don't fit (template)
 //   NetworkFitWidth      a page's bands at the window's width, or their own least width (template)
+//   ShellPageBands       a page's bands, scrolling sideways only when the window is too narrow (template)
 //   NetworkPageScaffold  header, telemetry strip, alert band, then the page's bands (template)
 
 enum NetworkLayout {
@@ -608,9 +609,6 @@ struct NetworkPageScaffold<Actions: View, Content: View>: View {
     let pages: NetworkPages
     @ViewBuilder var actions: Actions
     @ViewBuilder var content: Content
-    @Environment(\.networkPageScrollsSideways) private var scrollsSideways
-    /// The width the page's bands have. Zero until the first layout.
-    @State private var width: CGFloat = 0
 
     var body: some View {
         let state = pages.content
@@ -661,9 +659,19 @@ struct NetworkPageScaffold<Actions: View, Content: View>: View {
         }
     }
 
-    /// The page's bands at the page's width. In a window too narrow for the least they can take,
-    /// they scroll sideways instead of pushing the navigation off the window.
-    @ViewBuilder private var bands: some View {
+    private var bands: some View { ShellPageBands { content } }
+}
+
+/// A page's bands at the page's width. In a window too narrow for the least they can take, they
+/// scroll sideways instead of pushing the navigation off the window.
+struct ShellPageBands<Content: View>: View {
+    @Environment(\.theme) private var theme
+    @Environment(\.networkPageScrollsSideways) private var scrollsSideways
+    @ViewBuilder var content: Content
+    /// The width the bands have. Zero until the first layout.
+    @State private var width: CGFloat = 0
+
+    var body: some View {
         let stack = VStack(alignment: .leading, spacing: theme.space.sectionGap) { content }
         if scrollsSideways {
             ScrollView(.horizontal) {

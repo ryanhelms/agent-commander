@@ -192,8 +192,8 @@ struct WallSuggestionRow: View {
 
 // MARK: - Organisms
 
-/// Hand-offs running on friends' Macs, as remote worker tiles in the wall's own group frame, then
-/// the reviews and fan-outs that still need a look. Draws nothing when there is neither.
+/// Hand-offs running on friends' Macs, as the network's own remote worker group, then the reviews
+/// and fan-outs that still need a look in a group frame of their own. Draws nothing when there is neither.
 struct WallRemoteBand: View {
     /// A row never grows past the wall's own three columns.
     static let tileLimit = RemoteWorkerGroup.limit
@@ -211,52 +211,41 @@ struct WallRemoteBand: View {
 
     var body: some View {
         if !workers.isEmpty || !work.isEmpty {
-            let shown = Array(workers.prefix(Self.tileLimit))
             let rows = Array(work.prefix(WallLiveWork.rowLimit))
-            VStack(spacing: 0) {
-                heading(hidden: workers.count - shown.count + work.count - rows.count)
-                if !shown.isEmpty {
-                    HStack(spacing: Metric.tileGap) {
-                        ForEach(shown) { worker in
-                            RemoteWorkerTile(worker: worker, now: now, onOpen: { zoom(worker) })
-                                .frame(maxWidth: .infinity)
-                        }
-                        // Keeps a lone tile at a column's width instead of stretching across the wall.
-                        ForEach(0..<max(0, Self.tileLimit - shown.count), id: \.self) { _ in
-                            Color.clear.frame(maxWidth: .infinity).accessibilityHidden(true)
-                        }
-                    }
-                    .frame(height: RemoteWorkerGroup.tileHeight)
+            VStack(spacing: Metric.wallRowGap) {
+                // The network's own worker group: its heading, its tiles and its frame follow the theme.
+                if !workers.isEmpty {
+                    RemoteWorkerGroup(workers: workers, now: now, onOpen: zoom, onOpenAll: openHandoffs)
                 }
                 if !rows.isEmpty {
                     VStack(spacing: 0) {
+                        heading(hidden: work.count - rows.count)
                         ForEach(rows) { item in
-                            if item.id != rows.first?.id || !shown.isEmpty { ThemeRule() }
+                            ThemeRule()
                             WallWorkRow(work: item) { openWork(item) }
                         }
                     }
-                    .padding(.top, shown.isEmpty ? 0 : WallFrameLayout.groupInset - 2)
+                    .wallGroupFrame(bottom: 2)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Reviews and fan-outs")
                 }
             }
-            .wallGroupFrame(bottom: rows.isEmpty ? WallFrameLayout.groupInset : 2)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Remote workers")
         }
     }
 
+    /// Over the reviews and fan-outs that still need a look, with the way to all of them.
     private func heading(hidden: Int) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 11))
+            Image(systemName: "list.bullet.rectangle").font(.system(size: 11))
                 .foregroundStyle(.theme(\.color.secondary))
                 .accessibilityHidden(true)
-            Text("Remote workers").themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.wall.headingInk))
+            Text("Reviews and fan-outs").themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.wall.headingInk))
                 .accessibilityAddTraits(.isHeader)
-            Text("\(workers.count)").themeType(theme.wall.groupTitleType).monospacedDigit()
+            Text("\(work.count)").themeType(theme.wall.groupTitleType).monospacedDigit()
                 .foregroundStyle(.theme(\.color.foreground))
                 .contentTransition(.numericText())
-                .animation(theme.motion.animation(theme.motion.standard), value: workers.count)
-                .accessibilityLabel(workers.count == 1 ? "1 hand-off" : "\(workers.count) hand-offs")
-            Text(workers.count == 1 ? "hand-off on a friend’s Mac" : "hand-offs on friends’ Macs")
+                .animation(theme.motion.animation(theme.motion.standard), value: work.count)
+            Text("you sent, still waiting on you")
                 .themeType(theme.wall.groupNoteType)
                 .foregroundStyle(.theme(\.color.secondary))
                 .lineLimit(1)
