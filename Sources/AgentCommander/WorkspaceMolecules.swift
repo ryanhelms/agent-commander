@@ -3,6 +3,8 @@ import SwiftUI
 // ATOMIC LEVEL: Molecules (workspace, delegation and setup views).
 // Small combinations used by more than one page outside the coordinator split. They take values
 // and emit targeted actions like the cockpit molecules, and reuse the same atoms and tokens.
+// The molecules that read `\.theme` take every colour, radius, type and size from the current
+// Theme (ThemeTokens.swift); ConsolePreview is a console surface and never does.
 
 // MARK: - Headings
 
@@ -12,19 +14,20 @@ struct PageHeader<Actions: View>: View {
     let title: String
     var subtitle: String? = nil
     @ViewBuilder let actions: Actions
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(kicker).font(.system(size: 12, weight: .semibold)).foregroundStyle(Color(hex: 0xD5D9E5))
-                Text(title).font(TypeRole.pageTitle).tracking(-1.1).foregroundStyle(Palette.foreground)
+        HStack(alignment: .bottom, spacing: Space.l) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                Text(kicker).themeType(theme.type.label).foregroundStyle(.theme(\.surface.softInk))
+                Text(title).themeType(theme.pageType.pageTitle).foregroundStyle(.theme(\.color.foreground))
                     .lineLimit(1).accessibilityAddTraits(.isHeader)
                 if let subtitle {
-                    Text(subtitle).font(TypeRole.body).foregroundStyle(.inkSecondary)
+                    Text(subtitle).themeType(theme.type.body).foregroundStyle(.theme(\.color.secondary))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.m)
             HStack(spacing: 10) { actions }
         }
     }
@@ -34,10 +37,11 @@ struct PageHeader<Actions: View>: View {
 struct SectionHeading<Trailing: View>: View {
     let title: String
     @ViewBuilder let trailing: Trailing
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title).font(TypeRole.section).tracking(-0.4).foregroundStyle(Palette.foreground)
+        HStack(alignment: .center, spacing: Space.m) {
+            Text(title).themeType(theme.pageType.groupTitle).foregroundStyle(.theme(\.color.foreground))
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             trailing
@@ -49,11 +53,12 @@ struct SectionHeading<Trailing: View>: View {
 struct MetaText: View {
     let text: String
     var monospaced = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         Text(text)
-            .font(monospaced ? .system(size: 12, design: .monospaced) : .system(size: 12))
-            .foregroundStyle(.inkSecondary)
+            .themeType(monospaced ? theme.type.mono : theme.pageType.meta)
+            .foregroundStyle(.theme(\.color.secondary))
     }
 }
 
@@ -63,16 +68,19 @@ struct MetaText: View {
 struct IconTile: View {
     let symbol: String
     var tone: Tone = .neutral
+    /// The tile's side in black glass. Other themes scale it by their row-icon size.
     var size: CGFloat = 37
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.avatar, style: .continuous)
+        let side = (size * theme.space.rowIcon / Theme.blackGlass.space.rowIcon).rounded()
+        let shape = RoundedRectangle(cornerRadius: min(Radius.avatar, theme.radius.control), style: .continuous)
         Image(systemName: symbol)
-            .font(.system(size: size * 0.42))
-            .foregroundStyle(tone.color)
-            .frame(width: size, height: size)
-            .background(Palette.chrome, in: shape)
-            .overlay { shape.strokeBorder(.inkHairline) }
+            .font(.system(size: side * 0.42))
+            .foregroundStyle(.theme(tone.role))
+            .frame(width: side, height: side)
+            .background(theme.surface.markFill.color, in: shape)
+            .overlay { shape.strokeBorder(.theme(\.surface.markEdge)) }
             .accessibilityHidden(true)
     }
 }
@@ -81,16 +89,20 @@ struct IconTile: View {
 struct ValueTag: View {
     var symbol: String? = "arrow.triangle.branch"
     let text: String
+    @Environment(\.theme) private var theme
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: theme.radius.chip)
         HStack(spacing: 6) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(.inkSecondary) }
-            Text(text).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Color(hex: 0xDCE0EA)).lineLimit(1)
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: theme.type.fingerprint.size)).foregroundStyle(.theme(\.color.secondary))
+            }
+            Text(text).themeType(theme.type.mono).foregroundStyle(.theme(\.surface.softInk)).lineLimit(1)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 24)
-        .background(Color(hex: 0x16171E), in: RoundedRectangle(cornerRadius: 5))
-        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(Color(hex: 0x3C404E)) }
+        .padding(.horizontal, Space.s)
+        .frame(height: theme.space.chipHeightMax)
+        .background(theme.surface.tagFill.color, in: shape)
+        .overlay { shape.strokeBorder(.theme(\.surface.tagEdge)) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
     }
@@ -115,35 +127,64 @@ struct FilterChip: View {
         } label: {
             Label(selection, systemImage: symbol)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .font(.system(size: 12.5))
-        .foregroundStyle(Color(hex: 0xE3E5EE))
-        .padding(.horizontal, 11)
-        .frame(height: 31)
-        .background(Color(hex: 0x1A1B22), in: Capsule())
-        .overlay { Capsule().strokeBorder(Palette.controlEdge).allowsHitTesting(false) }
+        .filterChipFrame()
         .accessibilityLabel("\(name): \(selection)")
     }
+}
+
+/// The frame of a filter clause: the menu label in the theme's filter shape.
+struct FilterChipFrame: ViewModifier {
+    @Environment(\.theme) private var theme
+
+    func body(content: Content) -> some View {
+        let shape = theme.controlShape
+        content
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .themeType(theme.type.sub)
+            .foregroundStyle(.theme(\.surface.softInk))
+            .padding(.horizontal, Space.m - 1)
+            .frame(height: theme.space.controlHeight)
+            .background(theme.surface.chipFill.color, in: shape)
+            .overlay { shape.strokeBorder(.theme(\.surface.controlEdge)).allowsHitTesting(false) }
+    }
+}
+
+extension View {
+    func filterChipFrame() -> some View { modifier(FilterChipFrame()) }
 }
 
 /// Selected-state surface for a row or card that can be chosen from a set.
 struct SelectionCard: ViewModifier {
     let isSelected: Bool
+    /// The most the card may round. The theme's tile radius caps it.
     var radius: CGFloat = Radius.field
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: min(radius, theme.radius.tile), style: .continuous)
         content
             .background {
                 if isSelected {
-                    shape.fill(LinearGradient(colors: [Color(hex: 0x293344), Color(hex: 0x19212C)],
-                                              startPoint: .topLeading, endPoint: .bottomTrailing))
+                    shape.fill(theme.surface.selectedFill.style)
                 } else {
-                    shape.fill(Palette.field.opacity(0.55))
+                    shape.fill(theme.surface.unselectedFill.color)
                 }
             }
-            .overlay { shape.strokeBorder(isSelected ? Color(hex: 0x8BA3C4) : Palette.hairline) }
+            .overlay(alignment: .leading) {
+                // The selection marker the tab bar uses, on the leading edge.
+                if isSelected, theme.line.selectedMarker > 0 {
+                    Rectangle().fill(.theme(\.color.focus)).frame(width: theme.line.selectedMarker)
+                }
+            }
+            .clipShape(shape)
+            .overlay {
+                if isSelected {
+                    shape.strokeBorder(.theme(\.surface.selectedEdge))
+                } else {
+                    shape.strokeBorder(.theme(\.surface.unselectedEdge))
+                }
+            }
             .contentShape(shape)
     }
 }
@@ -183,20 +224,22 @@ struct SearchField: View {
     let prompt: String
     @Binding var text: String
     @FocusState private var isFocused: Bool
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass").font(.system(size: 14)).foregroundStyle(.inkSecondary)
+            Image(systemName: "magnifyingglass").font(.system(size: theme.type.body.size)).foregroundStyle(.theme(\.color.secondary))
             TextField(prompt, text: $text)
-                .textFieldStyle(.plain).font(.system(size: 14, weight: .semibold))
+                .textFieldStyle(.plain).themeType(theme.type.data)
+                .foregroundStyle(.theme(\.color.foreground))
                 .focused($isFocused)
                 .accessibilityLabel(prompt)
             if !text.isEmpty {
                 SymbolButton(symbol: "xmark", label: "Clear search", size: 10) { text = "" }
-                    .foregroundStyle(.inkSecondary)
+                    .foregroundStyle(.theme(\.color.secondary))
             }
         }
-        .fieldBox(focused: isFocused, height: 42)
+        .themeField(focused: isFocused)
     }
 }
 
@@ -208,23 +251,30 @@ struct Callout: View {
     let title: String
     let detail: String
     var tone: Tone = .working
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.field, style: .continuous)
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 14, weight: .medium))
-                .foregroundStyle(tone.color).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.foreground)
-                Text(detail).font(.system(size: 12.5)).lineSpacing(3).foregroundStyle(.inkSecondary)
+        let shape = RoundedRectangle(cornerRadius: theme.radius.control, style: .continuous)
+        HStack(alignment: .top, spacing: Space.m) {
+            Image(systemName: symbol).font(.system(size: theme.type.title.size, weight: .medium))
+                .foregroundStyle(.theme(tone.role)).padding(.top, 1)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text(title).themeType(theme.type.title).foregroundStyle(.theme(\.color.foreground))
+                Text(detail).themeType(theme.type.sub).lineSpacing(3).foregroundStyle(.theme(\.color.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 15).padding(.vertical, 14)
+        .padding(.horizontal, Space.l - 1).padding(.vertical, Space.m + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tone == .attention ? Palette.attentionFill : Palette.well, in: shape)
-        .overlay { shape.strokeBorder(tone == .attention ? Palette.attentionSoftEdge : Palette.hairline) }
+        .background((tone == .attention ? theme.surface.attentionFill : theme.color.well).color, in: shape)
+        .overlay {
+            if tone == .attention {
+                shape.strokeBorder(.theme(\.surface.attentionEdge))
+            } else {
+                shape.strokeBorder(.theme(\.color.hair))
+            }
+        }
         .accessibilityElement(children: .combine)
     }
 }
@@ -258,17 +308,19 @@ struct SettingRow<Control: View>: View {
     let title: String
     let detail: String
     @ViewBuilder let control: Control
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: Space.l) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.foreground)
-                Text(detail).font(.system(size: 12.5)).foregroundStyle(.inkSecondary)
+                Text(title).themeType(theme.type.name).foregroundStyle(.theme(\.color.foreground))
+                Text(detail).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Space.m)
             control
         }
-        .padding(.horizontal, 25).padding(.vertical, 22)
+        .padding(.horizontal, theme.space.sectionInset)
+        .padding(.top, theme.space.bandTop).padding(.bottom, theme.space.bandBottom)
     }
 }
 
@@ -277,13 +329,14 @@ struct FactColumn: View {
     let label: String
     let value: String
     var monospaced = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Kicker(text: label)
+        VStack(alignment: .leading, spacing: Space.s) {
+            ThemeHeading(text: label)
             Text(value)
-                .font(monospaced ? .system(size: 13, design: .monospaced) : .system(size: 14, weight: .semibold))
-                .foregroundStyle(Palette.foreground).lineLimit(1).truncationMode(.middle)
+                .themeType(monospaced ? theme.type.mono : theme.type.data)
+                .foregroundStyle(.theme(\.color.foreground)).lineLimit(1).truncationMode(.middle)
                 .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -296,13 +349,15 @@ struct PanelTitle: View {
     let symbol: String
     let kicker: String
     let title: String
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 14) {
             IconTile(symbol: symbol)
             VStack(alignment: .leading, spacing: 5) {
-                Kicker(text: kicker)
-                Text(title).font(TypeRole.section).tracking(-0.4).foregroundStyle(Palette.foreground).lineLimit(2)
+                ThemeHeading(text: kicker)
+                Text(title).themeType(theme.pageType.groupTitle)
+                    .foregroundStyle(.theme(\.color.foreground)).lineLimit(2)
             }
         }
         .accessibilityElement(children: .combine)
@@ -363,10 +418,13 @@ struct MenuField: View {
     var symbol: String? = nil
     let options: [String]
     @Binding var selection: String
+    @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 10) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.inkSecondary) }
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: theme.type.body.size - 1)).foregroundStyle(.theme(\.color.secondary))
+            }
             Menu {
                 ForEach(options, id: \.self) { option in
                     Button { selection = option } label: {
@@ -377,11 +435,11 @@ struct MenuField: View {
                 Text(selection)
             }
             .menuStyle(.borderlessButton)
-            .font(TypeRole.body)
-            .foregroundStyle(Palette.foreground)
+            .themeType(theme.type.body)
+            .foregroundStyle(.theme(\.color.foreground))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .fieldBox()
+        .themeField()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(name): \(selection)")
     }
@@ -419,11 +477,13 @@ struct SheetFooter<Actions: View>: View {
 
 /// Inspector card surface for the aside of a task sheet.
 struct InspectorCard: ViewModifier {
+    @Environment(\.theme) private var theme
+
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 25).padding(.vertical, 26)
+            .padding(.horizontal, theme.space.sectionInset).padding(.vertical, theme.space.sectionInset + 1)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .panelSurface()
+            .themePanel()
     }
 }
 
@@ -474,11 +534,12 @@ struct HighlightedText: View {
     let text: String
     let term: String
     var monospaced = false
+    @Environment(\.theme) private var theme
 
     var body: some View {
         Text(attributed)
-            .font(monospaced ? .system(size: 12.5, design: .monospaced) : .system(size: 13))
-            .foregroundStyle(Color(hex: 0xE1E4EE))
+            .themeType(monospaced ? theme.type.mono : theme.type.sub)
+            .foregroundStyle(.theme(\.surface.softInk))
     }
 
     private var attributed: AttributedString {
@@ -488,8 +549,8 @@ struct HighlightedText: View {
         var searchStart = result.startIndex
         while searchStart < result.endIndex,
               let range = result[searchStart...].range(of: needle, options: .caseInsensitive) {
-            result[range].swiftUI.backgroundColor = Color(hex: 0x4A4630)
-            result[range].swiftUI.foregroundColor = Color(hex: 0xF4E7B2)
+            result[range].swiftUI.backgroundColor = theme.surface.highlightFill.color
+            result[range].swiftUI.foregroundColor = theme.surface.highlightInk.color
             searchStart = range.upperBound
         }
         return result

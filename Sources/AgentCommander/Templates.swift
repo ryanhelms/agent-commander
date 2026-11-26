@@ -16,6 +16,9 @@ import SwiftUI
 /// a rounded top-leading corner. Terminal wells and cards inside the canvas stay opaque.
 struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
     @Environment(\.usesOpaqueSurfaces) private var reduceTransparency
+    @Environment(\.theme) private var theme
+    /// The theme's window material, with Reduce Transparency forcing the opaque form.
+    private var isOpaque: Bool { reduceTransparency || theme.material.window == .opaque }
     @ViewBuilder let navigation: Navigation
     @ViewBuilder let banners: Banners
     @ViewBuilder let canvas: Canvas
@@ -28,11 +31,10 @@ struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
                 canvas.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background {
-                if reduceTransparency {
-                    Palette.window
+                if isOpaque {
+                    theme.material.opaqueCanvasFill.color
                 } else {
-                    LinearGradient(colors: [Palette.canvasTop, Palette.canvasMid, Palette.canvasBottom],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    Rectangle().fill(theme.material.canvasFill.style)
                 }
             }
             .clipShape(UnevenRoundedRectangle(topLeadingRadius: Radius.canvas, style: .continuous))
@@ -48,7 +50,7 @@ struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
         .background {
             // Black-violet depth over the window material, extended under the toolbar band, with an
             // illuminated hairline along the window's top edge.
-            if !reduceTransparency {
+            if !isOpaque {
                 LinearGradient(colors: [Palette.depthTop, Palette.depthMid, Palette.depthBottom],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                     .overlay(alignment: .top) {
@@ -68,10 +70,11 @@ struct CockpitShell<Navigation: View, Banners: View, Canvas: View>: View {
 /// Reduce Transparency replaces it with the opaque chrome role.
 struct WindowGlass: ViewModifier {
     @Environment(\.usesOpaqueSurfaces) private var reduceTransparency
+    @Environment(\.theme) private var theme
 
     func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.containerBackground(Palette.opaqueChrome, for: .window)
+        if reduceTransparency || theme.material.window == .opaque {
+            content.containerBackground(theme.material.windowFill.color, for: .window)
         } else {
             content.containerBackground(.ultraThinMaterial, for: .window)
         }
@@ -176,16 +179,17 @@ struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: V
 struct WorkspacePage<Header: View, Content: View>: View {
     @ViewBuilder let header: Header
     @ViewBuilder let content: Content
+    @Environment(\.theme) private var theme
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: theme.space.sectionGap) {
                 header
                 content
             }
-            .padding(.top, 30)
-            .padding(.horizontal, Metric.sheetInset)
-            .padding(.bottom, 28)
+            .padding(.top, theme.space.pageInset - 6)
+            .padding(.horizontal, theme.space.pageInset)
+            .padding(.bottom, theme.space.pageInset - 8)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
@@ -268,13 +272,14 @@ struct TaskSheet<Header: View, FormContent: View, Aside: View, Footer: View>: Vi
     @ViewBuilder let form: FormContent
     @ViewBuilder let aside: Aside
     @ViewBuilder let footer: Footer
+    @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                let wide = geo.size.width >= 2 * Metric.sheetInset + Metric.sheetAsideWidth + 30 + 420
+                let wide = geo.size.width >= 2 * theme.space.pageInset + Metric.sheetAsideWidth + 30 + 420
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 27) {
+                    VStack(alignment: .leading, spacing: theme.space.sectionGap + 3) {
                         header
                         if wide, let formWidth {
                             HStack(alignment: .top, spacing: 30) {
@@ -293,15 +298,15 @@ struct TaskSheet<Header: View, FormContent: View, Aside: View, Footer: View>: Vi
                             }
                         }
                     }
-                    .padding(.top, 30)
-                    .padding(.horizontal, Metric.sheetInset)
-                    .padding(.bottom, 28)
+                    .padding(.top, theme.space.pageInset - 6)
+                    .padding(.horizontal, theme.space.pageInset)
+                    .padding(.bottom, theme.space.pageInset - 8)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
-            Hairline()
+            ThemeRule()
             footer
-                .padding(.horizontal, Metric.sheetInset)
+                .padding(.horizontal, theme.space.pageInset)
                 .frame(maxWidth: .infinity, minHeight: Metric.sheetFooterHeight, maxHeight: Metric.sheetFooterHeight)
         }
     }
