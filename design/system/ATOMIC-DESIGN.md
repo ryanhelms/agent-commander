@@ -66,6 +66,17 @@ The network composers are drawn in the main window through hosts. `MultiplayerHo
 
 The tray's atoms take the theme of the view they are drawn in. `MultiplayerTheme` is no longer a set of console values: a colour token (`MultiplayerTheme.focus`) is a `Color` that resolves its role from `@Environment(\.theme)`, a fill token (`panelFill`, `controlFill`, `primaryFill`) is a shape style, and a type token (`MultiplayerTheme.sub`) is a `MultiplayerType` that `.font(_:)` resolves with its tracking and case. An atom that needs a shape or a size reads `@Environment(\.theme)` and asks for `trayTile`, `trayControl`, `trayChip`, `controlShape` or `theme.space`. So a host, the holder row, `RemoteWorkerZoom` and `RemoteWorkerGroup` are restyled by the window's theme with no change at the call site, and no component asks which theme is active. The menu bar tray sets console at its root (`MultiplayerPanel(model:theme:)`). The role each atom reads is listed under "Tray roles" in [DESIGN.md](../../DESIGN.md). [Token layer](../../Sources/AgentCommander/MultiplayerTrayComponents.swift) · [Skin](../../Sources/AgentCommander/MultiplayerSkin.swift)
 
+The triage tray opens main-window pages through one molecule and two values, in `MultiplayerOpenInWindow.swift`:
+
+| Level | Component | Responsibility |
+| --- | --- | --- |
+| Value | `MultiplayerWindowLink` | A tray page as the window page it opens: the `CommanderOpenRequest`, the breadcrumb and the item's name. Nil for a page that stays in the tray. |
+| Value | `MultiplayerWindowOpener` | Open, then close, as two injected steps. The default opens through `CommanderWindowRouter.shared`. Read from `\.multiplayerWindowOpener`. |
+| Value | `MultiplayerPanelWindow`, `MultiplayerPanelWindowProbe` | The window a panel is drawn in, so the opener can close it. |
+| Molecule | `MultiplayerOpenInWindowRow` | One native button in the tray's skin. It receives a link and emits one request through the opener. It reads no model. |
+
+`MultiplayerPanel` (the page) builds the link for its route and places the row first on the page. The tray depends on the request value and the router's `open(_:)` only.
+
 Changes to the atoms and hosts that go with it:
 
 - `MultiplayerLamp` draws the theme's status mark: the lamp shapes, or one dot. `MultiplayerSwitchStyle` draws the theme's switch form and still speaks its label.
@@ -76,6 +87,9 @@ Changes to the atoms and hosts that go with it:
 - `RemoteWorkerZoom` takes `footerTitle` (nil leaves the button out) and, with `allowsSuggestion`, the caller's `suggestion` draft, `reply`, `isBusy` and `onSuggest`. `MultiplayerRemoteWorkerZoomHost` takes `footerTitle` and `allowsSuggestion` and keeps the draft itself.
 - `RemoteWorkerGroup` reads the `wall` group roles for its fill, edge, radius and heading type.
 - `MultiplayerFingerprintText` is one static text for VoiceOver.
+- `MultiplayerKnowledgeForm`'s secret refusal is one static text for VoiceOver, with the heading, the reason and the advice as its label.
+- `MultiplayerClaimHost` and `MultiplayerCardHost` take `onRefused`, called with the `MultiplayerClaimRefusal` before `onFinish` when the relay names who holds the claim or the card.
+- `MultiplayerKnowledgeHost` reads the server's widest knowledge scope itself and names it in a refused share.
 
 **SwiftUI owns the cockpit.** Use native navigation, split views, menu actions, controls and keyboard commands. Apply the dark glass material to navigation and floating controls. Keep terminal wells and long-reading surfaces opaque so an ANSI error or a selection stays readable over changing content. Resolve the reduced-transparency, increased-contrast and reduced-motion settings independently. A material belongs to its region or container, so assembling a row of buttons does not multiply glass layers. Native system materials respond to their surroundings. The HTML specimen approximates those materials for review. [Apple Human Interface Guidelines, Materials](https://developer.apple.com/design/human-interface-guidelines/materials) · [Commander materials and accessibility roles](tokens.json)
 

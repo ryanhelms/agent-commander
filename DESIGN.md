@@ -12,6 +12,7 @@ Sources of truth in code:
 | Tray role tokens | `MultiplayerTheme` in `MultiplayerTrayComponents.swift`: each token names a role of `Theme` and resolves it where it is drawn |
 | Skin atoms, molecules, motion | `MultiplayerSkin.swift` |
 | Tray layout constants | `MultiplayerLayout` in `MultiplayerComponents.swift` |
+| Open-in-window row and its opener | `MultiplayerOpenInWindow.swift` |
 | Reference mockup | `design/mockups/commander-network-tray.html` |
 | Teams components (increment 5) | `MultiplayerTeamsViews.swift`, `MultiplayerMarkdown.swift` |
 | Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
@@ -249,6 +250,7 @@ The descriptions below are the console form. In another theme the same atom take
 | Countdown | Time left as a mono figure, ticking each second, over a 56 × 2 pt line that drains linearly. `working`, then `attention` under five minutes. When the full length isn't known, the line drains over the shortest offered length that holds what is left. With Reduce Motion the line steps. |
 | Decision row | A request with the answers its source can take: Deny and Approve, Decline and Review, Accept, or Reply. The primary answer is the last cell. A worker's Reply opens the request where it is answered, beside the wall. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
+| Open-in-window row | "Open in Agent Commander": the first row of a tray page that has a main-window page (`MultiplayerOpenInWindowRow`). On the footer fill with a hairline under it, 40 pt high: a window mark in `focus`, the title in `name`, where it lands in `fingerprint` as the window's own breadcrumb ("Network › Hand-offs › this hand-off"), and an up-right arrow because the row leaves the tray. The whole row is one native button. It sends a `CommanderOpenRequest` and then closes the panel. VoiceOver reads "Open Hand-offs in Agent Commander", with the hint "Shows this hand-off there and closes this panel." |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
 | Choice card | A selectable card: a thumbnail, a round choice mark, the option's name and one line about it. The selected card is filled `selection` with the leading `focus` marker and the word "Selected" in `working`. |
@@ -355,6 +357,29 @@ The pages are watch view, compare (fan-out columns), consult, hand-off composer,
 
 The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
 
+**The triage tray.** The tray keeps decisions and quick actions. A page that has a main-window page starts with the open-in-window row, directly under the header and above the page's own bands, on every such page in the same place.
+
+| Tray page | Row lands on | Item opened |
+|---|---|---|
+| Access requests, an approval | Network › Approvals | The approval |
+| Shared directory | Network › Directory | — |
+| Hand-offs, a hand-off | Network › Hand-offs | The hand-off |
+| Thread | Network › Threads | The thread |
+| Audit | Network › Audit | The resource's entries |
+| Fan-out, compare | Network › Fan-out | The fan-out |
+| Watch, review | Agents › Runs (the worker wall) | — |
+| Groups, a group | Teams › Team tools › Groups | The group |
+| Workspaces, a workspace, claim, card, queue a branch | The workspace's own place under Teams › Workspaces | The workspace, on Board, Claims or Integration, with the card open |
+| Hosts, run on host | Teams › Team tools › Hosts | The host |
+| Knowledge library, share knowledge, a knowledge item | Teams › Team tools › Knowledge | The item |
+| Reputation, directory search | Teams › Team tools › Directory | The resource's reputation |
+| Relay policy | Teams › Team tools › Admin | The server's policy |
+
+- **Stays, with no row:** home (status strip, presence, server health and trust, friend and server rows), Needs you (approve, deny, accept and decline inline), the grant sheet, Consult, Request access, the hand-off composer, Request review, the control page with Take back, New workspace, Add server, hosting, profile, invite and membership.
+- **Stays for now, with a row:** every page in the table. A page leaves the tray only after its window page has passed a running-window check; until then the row sits above the page and the page works as before. Relay policy and moderation stay until the window's Admin page has passed that check.
+- **Motion.** Under the pointer the row takes the row tint and the arrow leans out a third of `travel` (2 pt up and right) and turns `focus`, at `fast`. Pressed, the arrow goes the full `travel` and fades, at `fast`. With Reduce Motion the arrow stays where it is and only its ink changes. Nothing delays the press: the request is sent at once.
+- **Seams.** The row reads `multiplayerWindowOpener` from the environment (`MultiplayerWindowOpener`: open, then close). The shared router is the default; `MultiplayerPanel` adds the close of its own window. The review stage draws the panel inside the cockpit window and passes `closesOnOpen: false`.
+
 The main window adds the mode rail with a context list (the user's choice of sidebar) and the Needs you row.
 
 A Needs you row is an origin cell, a hairline, the request (title in `name` with its kind tag, one or two lines in `sub`), a clock label and a verb strip. Rows share one panel and are ruled off by hairlines.
@@ -452,8 +477,8 @@ The tray keeps its own versions of these:
 - **Breadcrumbs.** A crumb names the mode, the mode's section, then the place: "Teams › Workspaces › Relay reconnect", "Teams › Team tools › Hosts". A name is said once, so "Network › Approvals" and "People" have no repeated segment.
 - **Sentences wrap.** A band heading's note and a context-list row's name wrap in a narrow window (the row to two lines). A table row's second line wraps where every part of it matters, and the row grows: a knowledge row always shows who shared it and on which server. A sentence is never cut with an ellipsis; only a hash, a path or an ID is truncated, in the middle.
 - **Owners by handle.** Where the relay sends a handle beside an owner's ID (`ownerHandle` on a workspace and a knowledge item), the page shows the handle and counts "you shared" by it. The ID shows only when no handle was sent.
-- **The server's limit, before the refusal.** The share form's footer says how widely the server lets knowledge travel ("studio lets knowledge reach a group at most."), from the policy for an admin or from what the relay tells every member. A refused share that only says "Forbidden." has the same sentence added when the scope asked for was wider.
-- **Opened from the tray.** A tray row that says "Open in Agent Commander" sends a `CommanderOpenRequest` (a place, and optionally a server and an item) to `CommanderWindowRouter.open(_:)`. The cockpit comes forward, reopening if it was closed, and shows the place with the item selected in the window's own state; the tray's route does not move. An item the network no longer lists opens its place alone. A workspace that is gone opens Teams. Watch and Control open the wall zoomed to that worker's remote tile, the same zoom as choosing the tile. A review opens on Hand-offs, as the wall's review row does. A worker with no hand-off tile, or a review that is gone, opens the wall as it is.
+- **The server's limit, before the refusal.** The share form's footer says how widely the server lets knowledge travel ("studio lets knowledge reach a group at most."), from the policy for an admin or from what the relay tells every member. A refused share that only says "Forbidden." has the same sentence added when the scope asked for was wider. The network's own share host adds it too, from what it reads of the server (`loadMe`).
+- **Opened from the tray.** The panel closes after the request is sent. A tray row that says "Open in Agent Commander" sends a `CommanderOpenRequest` (a place, and optionally a server and an item) to `CommanderWindowRouter.open(_:)`. The cockpit comes forward, reopening if it was closed, and shows the place with the item selected in the window's own state; the tray's route does not move. An item the network no longer lists opens its place alone. A workspace that is gone opens Teams. Watch and Control open the wall zoomed to that worker's remote tile, the same zoom as choosing the tile. A review opens on Hand-offs, as the wall's review row does. A worker with no hand-off tile, or a review that is gone, opens the wall as it is.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
 
 ## 6. Open work

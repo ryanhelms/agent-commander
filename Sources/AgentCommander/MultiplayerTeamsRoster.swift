@@ -335,6 +335,15 @@ struct MultiplayerClaimAnswer: Equatable, Sendable {
     }
 }
 
+extension MultiplayerClaimAnswer {
+    /// Hands the answer to a host's caller: who stopped it first, when the relay named a holder,
+    /// then the result as every host reports it.
+    @MainActor func report(to onFinish: (MultiplayerActionResult) -> Void, refused onRefused: ((MultiplayerClaimRefusal) -> Void)?) {
+        if let refusal { onRefused?(refusal) }
+        onFinish(result)
+    }
+}
+
 extension MultiplayerEnvelope {
     /// The fields a refusal carries beside `error`. Nil for a success or an unreadable reply.
     static func refusal(from output: MultiplayerHelperOutput) -> MultiplayerJSON? {
