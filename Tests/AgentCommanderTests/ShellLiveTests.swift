@@ -192,10 +192,9 @@ import Testing
         #expect(access.detail.hasPrefix("relay-worker on studio."))
         #expect(access.verbs == [.decline, .review] && access.waiting == 1_260)
 
-        // The network model has no way to decline a friend request, so the row offers Accept alone.
         let friend = try #require(inbox.items.first { $0.id == "friend:srv-studio/fr-1" })
         #expect(friend.title == "tomas sent a friend request")
-        #expect(friend.verbs == [.accept])
+        #expect(friend.verbs == [.decline, .accept])
     }
 
     @Test func aDecidedRequestShowsItsOutcomeEvenAfterItsSourceDropsIt() throws {

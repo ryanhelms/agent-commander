@@ -15,7 +15,9 @@ import SwiftUI
 //   ShellTable           header and rows on one panel, or its empty note (molecule)
 //   ShellServerTag       a server's swatch and name (molecule)
 //   ShellNote            a lamp and one sentence inside a panel (molecule)
+//   ShellPersonCell      a person and the server they are on (molecule)
 //   NetworkInspector     the panel beside a collection: title, an embedded tray organism, footer (organism)
+//   NetworkSplit         a collection beside its inspector, or over it in a narrow window (template)
 //   NetworkPageScaffold  header, telemetry strip, alert band, then the page's bands (template)
 
 enum NetworkLayout {
@@ -24,11 +26,17 @@ enum NetworkLayout {
     static let inspectorWidth: CGFloat = 420
     /// A narrow collection beside a wide detail (fan-out, threads).
     static let listWidth: CGFloat = 340
+    /// The network model's grant sheet scrolls inside itself, so its inspector gives it a height.
+    static let grantHeight: CGFloat = 560
+    /// The least a column without a width of its own is given.
+    static let flexibleColumn: CGFloat = 132
+    /// The least width a collection keeps beside its inspector. Narrower, the inspector goes under it.
+    static let collectionMinimum: CGFloat = 540
     static let stateColumn: CGFloat = 132
     static let serverColumn: CGFloat = 116
     static let figureColumn: CGFloat = 72
     static let timeColumn: CGFloat = 84
-    static let personColumn: CGFloat = 148
+    static let personColumn: CGFloat = 132
     /// The least width of one person's cell in the people grid.
     static let personCell: CGFloat = 248
     /// The least width of one answer in the compare columns.
@@ -136,7 +144,8 @@ extension View {
     /// Sizes a cell to its column, so header and rows line up without measuring content.
     func shellCell(_ column: ShellColumn) -> some View {
         frame(width: column.width, alignment: column.alignment)
-            .frame(maxWidth: column.width == nil ? .infinity : nil, alignment: column.alignment)
+            .frame(minWidth: column.width == nil ? NetworkLayout.flexibleColumn : nil,
+                   maxWidth: column.width == nil ? .infinity : nil, alignment: column.alignment)
     }
 }
 
@@ -188,7 +197,13 @@ struct ShellTableRow<Cells: View, Verbs: View>: View {
             } else {
                 row.accessibilityElement(children: .ignore).accessibilityAddTraits(.isStaticText).accessibilityLabel(spoken)
             }
-            if trailing > 0 { verbs.frame(width: trailing, alignment: .trailing) }
+            // The room is kept even when a row has no verb, so every row's cells line up with the header.
+            if trailing > 0 {
+                ZStack(alignment: .trailing) {
+                    Color.clear.frame(width: trailing, height: 1)
+                    verbs
+                }
+            }
         }
         .padding(.horizontal, Space.m)
         .frame(minHeight: theme.space.rowHeight)
@@ -253,6 +268,25 @@ struct ShellServerTag: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("on \(name)")
+    }
+}
+
+/// A person as a cell: the avatar, the handle, and under it the server they are on.
+struct ShellPersonCell: View {
+    let name: String
+    let serverID: String
+    let serverName: String
+
+    var body: some View {
+        HStack(spacing: Space.s) {
+            MultiplayerAvatar(image: nil, name: name, size: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                ShellCellFigure(text: name)
+                ShellServerTag(id: serverID, name: serverName)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name) on \(serverName)")
     }
 }
 
@@ -416,7 +450,36 @@ struct NetworkInspectorNote: View {
     }
 }
 
-// MARK: - Template
+// MARK: - Templates
+
+/// A collection beside its inspector, on the main window's `CollectionInspector`. When the window
+/// is too narrow for both, the inspector goes under the collection at its own measure.
+struct NetworkSplit<Collection: View, Inspector: View>: View {
+    var minimum = NetworkLayout.collectionMinimum
+    @ViewBuilder var collection: Collection
+    @ViewBuilder var inspector: Inspector
+    /// The width the page gives this template. Zero until the first layout.
+    @State private var width: CGFloat = 0
+
+    private var sideBySide: Bool {
+        width == 0 || width >= minimum + Space.l + NetworkLayout.inspectorWidth
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear.frame(maxWidth: .infinity).frame(height: 0)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            if sideBySide {
+                CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) { collection } inspector: { inspector }
+            } else {
+                VStack(alignment: .leading, spacing: Space.l) {
+                    collection
+                    inspector.frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
+                }
+            }
+        }
+    }
+}
 
 /// A network page: the header with its one action, the telemetry strip, what the network is
 /// doing now, then the page's bands. Without a helper or a server it says so instead of the bands.

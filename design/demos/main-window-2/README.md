@@ -26,7 +26,7 @@ The window counts as a viewer of the network model while it is open, so the mode
 |---|---|
 | ⌘1 | Focus the coordinator (unchanged) |
 | ⌘] and ⌘[ | Zoom the focused worker, return to the wall (unchanged) |
-| ⇧⌘A | Next request. From another page it first returns to the wall. |
+| ⇧⌘A | Next request. From another page it first returns to the wall. With no request from your own workers it does nothing. |
 | ⌘N | New run |
 | ⌥⌘1 to ⌥⌘4 | Agents, Network, People, Teams |
 | ⌥⌘5 | Settings |

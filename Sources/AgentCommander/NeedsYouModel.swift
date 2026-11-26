@@ -58,6 +58,8 @@ struct NeedsYouItem: Identifiable, Equatable, Sendable {
     var expiresIn: TimeInterval? = nil
     /// Nil while the request waits.
     var decision: NeedsYouDecision? = nil
+    /// Why the last answer didn't go through. The row says so in place of its detail.
+    var failure: String? = nil
     /// The answers this request can take here, when they are fewer than its kind's. A live
     /// worker request offers Reply alone; a friend request offers Accept alone.
     var answers: [NeedsYouVerb]? = nil

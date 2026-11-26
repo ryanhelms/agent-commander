@@ -251,7 +251,8 @@ struct NeedsYouRow: View {
                                 .lineLimit(1)
                             NeedsYouKindTag(kind: item.kind)
                         }
-                        Text(item.detail).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                        Text(item.failure ?? item.detail).themeType(theme.type.sub)
+                            .foregroundStyle(.theme(item.failure == nil ? \.color.secondary : \.color.failure))
                             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
                     }
@@ -261,7 +262,7 @@ struct NeedsYouRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Open this request")
-                .accessibilityLabel("\(item.kind.tag): \(item.title). \(item.detail)")
+                .accessibilityLabel("\(item.kind.tag): \(item.title). \(item.failure ?? item.detail)")
                 .accessibilityHint("Opens the full request")
                 NeedsYouClockLabel(waiting: item.waiting, expiresIn: item.isPending ? item.expiresIn : nil)
                     .frame(width: NeedsYouLayout.clockWidth, alignment: .trailing)

@@ -25,8 +25,23 @@ struct NetworkGrantInspector: View {
     var body: some View {
         let state = pages.content, actions = pages.actions
         let found = state.server(server)
-        NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), note: state.grantHint,
-                         close: actions.back) {
+        if let host = pages.grantHost {
+            // The network model's own sheet, with its footer: Share reports its result there, and a
+            // refusal stays on the sheet.
+            NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), close: actions.closeGrant) {
+                host(server).frame(height: NetworkLayout.grantHeight)
+            }
+        } else {
+            sample
+        }
+    }
+
+    /// The sheet drawn from values, for the previews.
+    private var sample: some View {
+        let state = pages.content, actions = pages.actions
+        let found = state.server(server)
+        return NetworkInspector(title: "Share", serverID: server, serverName: state.serverName(server), note: state.grantHint,
+                         close: actions.closeGrant) {
             if let refusal = state.grantRefusal {
                 MultiplayerBand { MultiplayerBanner(kind: .failure, message: refusal) }
                     .accessibilityIdentifier("network-grant-refusal")
@@ -37,7 +52,7 @@ struct NetworkGrantInspector: View {
                                   onServer: actions.setGrantServer, onResourceChange: actions.reconcileGrant,
                                   onToggle: actions.toggleGrantAction)
         } footer: {
-            Button("Cancel", action: actions.back).buttonStyle(MultiplayerTrayButtonStyle())
+            Button("Cancel", action: actions.closeGrant).buttonStyle(MultiplayerTrayButtonStyle())
             Button("Share", action: actions.confirmGrant)
                 .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                 .disabled(!state.canGrant)
@@ -56,12 +71,11 @@ struct NetworkDirectoryTable: View {
 
     private static let name = ShellColumn(title: "resource")
     private static let owner = ShellColumn(title: "owner", width: NetworkLayout.personColumn)
-    private static let agent = ShellColumn(title: "runs on", width: 196)
-    private static let server = ShellColumn(title: "server", width: NetworkLayout.serverColumn)
-    private static let access = ShellColumn(title: "your access", width: 96)
+    private static let agent = ShellColumn(title: "runs on", width: 190)
+    private static let access = ShellColumn(title: "your access", width: 84)
 
     var body: some View {
-        ShellTable(columns: [Self.name, Self.owner, Self.agent, Self.server, Self.access], items: rows,
+        ShellTable(columns: [Self.name, Self.owner, Self.agent, Self.access], items: rows,
                    empty: "No friend has published a resource yet. When one does, it shows here with what it offers.") { row in
             let entry = row.entry
             ShellTableRow(isSelected: row.id == selected, spoken: spoken(row), hint: "Shows what it offers",
@@ -72,11 +86,9 @@ struct NetworkDirectoryTable: View {
                     ShellCellText(title: entry.name.multiplayerDisplay, detail: actions(entry))
                 }
                 .shellCell(Self.name)
-                HStack(spacing: Space.xs + 2) {
-                    MultiplayerAvatar(image: nil, name: entry.owner, size: 18)
-                    ShellCellFigure(text: entry.owner.isEmpty ? "a friend" : entry.owner.multiplayerDisplay)
-                }
-                .shellCell(Self.owner)
+                ShellPersonCell(name: entry.owner.isEmpty ? "a friend" : entry.owner.multiplayerDisplay,
+                                serverID: row.server, serverName: row.serverName)
+                    .shellCell(Self.owner)
                 Group {
                     if let chip = entry.capabilities, chip.headline != nil {
                         MultiplayerAgentChip(capabilities: chip)
@@ -86,11 +98,11 @@ struct NetworkDirectoryTable: View {
                     }
                 }
                 .shellCell(Self.agent)
-                ShellServerTag(id: row.server, name: row.serverName).shellCell(Self.server)
                 MultiplayerStateLabel(lamp: entry.granted.isEmpty ? (row.isWaiting ? .waiting : .off) : .on,
                                       text: row.access.title, tone: row.access.tone)
                     .shellCell(Self.access)
             }
+            .padding(.vertical, Space.xs)
             .accessibilityIdentifier("network-directory-\(row.id)")
         }
     }
@@ -117,7 +129,7 @@ struct NetworkDirectoryPage: View {
         let state = pages.content, actions = pages.actions
         let rows = state.directoryRows
         NetworkPageScaffold(place: NetworkPlace.directory, pages: pages) {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.s) {
                     ShellBandHeading(title: "Offered by friends", count: "\(rows.count)")
                     NetworkDirectoryTable(rows: rows, selected: selected(in: rows)?.id) { row in
@@ -188,27 +200,21 @@ struct NetworkApprovalTable: View {
 
     private static let who = ShellColumn(title: "from", width: NetworkLayout.personColumn)
     private static let wants = ShellColumn(title: "wants to")
-    private static let server = ShellColumn(title: "server", width: NetworkLayout.serverColumn)
     private static let clock = ShellColumn(title: "time", width: NeedsYouLayout.clockWidth, alignment: .trailing)
     private static let verbs: CGFloat = 150
 
     var body: some View {
-        ShellTable(columns: [Self.who, Self.wants, Self.server, Self.clock], trailing: Self.verbs, items: rows,
+        ShellTable(columns: [Self.who, Self.wants, Self.clock], trailing: Self.verbs, items: rows,
                    empty: "Nothing is waiting for you", emptyLamp: .on) { row in
             ShellTableRow(isSelected: row.id == selected,
                           spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)",
                           hint: "Shows the request and the grant it runs under", select: { open(row) }, trailing: Self.verbs) {
-                HStack(spacing: Space.xs + 2) {
-                    MultiplayerAvatar(image: nil, name: row.who, size: 18)
-                    ShellCellFigure(text: row.who)
-                }
-                .shellCell(Self.who)
+                ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.approval.headline,
                               detail: row.result?.rowText
                                 ?? (row.approval.request.isEmpty ? row.resourceName : "\(row.resourceName): \(row.approval.request)"),
                               detailTone: row.result?.rowTone ?? .neutral)
                     .shellCell(Self.wants)
-                ShellServerTag(id: row.server, name: row.serverName).shellCell(Self.server)
                 NeedsYouClockLabel(waiting: row.waiting, expiresIn: row.expiresIn).shellCell(Self.clock)
             } verbs: {
                 NetworkRowVerbs(isRunning: row.isRunning, result: row.result, verbs: [
@@ -235,27 +241,21 @@ struct NetworkAccessTable: View {
 
     private static let who = ShellColumn(title: "who", width: NetworkLayout.personColumn)
     private static let what = ShellColumn(title: "asks for")
-    private static let way = ShellColumn(title: "direction", width: 84)
-    private static let server = ShellColumn(title: "server", width: NetworkLayout.serverColumn)
-    private static let sent = ShellColumn(title: "sent", width: NetworkLayout.timeColumn, alignment: .trailing)
+    private static let way = ShellColumn(title: "sent", width: 56)
+    private static let sent = ShellColumn(title: "when", width: 72, alignment: .trailing)
     private static let verbs: CGFloat = 150
 
     var body: some View {
-        ShellTable(columns: [Self.who, Self.what, Self.way, Self.server, Self.sent], trailing: Self.verbs, items: rows,
+        ShellTable(columns: [Self.who, Self.what, Self.way, Self.sent], trailing: Self.verbs, items: rows,
                    empty: "No access request is open. Ask for access from the Directory.") { row in
             let request = row.request
             ShellTableRow(spoken: spoken(row), trailing: Self.verbs) {
-                HStack(spacing: Space.xs + 2) {
-                    MultiplayerAvatar(image: nil, name: row.who, size: 18)
-                    ShellCellFigure(text: row.who)
-                }
-                .shellCell(Self.who)
+                ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.resourceName, detail: row.result?.rowText ?? MultiplayerAccessRequestsPage.detail(request),
                               detailTone: row.result?.rowTone ?? .neutral)
                     .shellCell(Self.what)
                 MultiplayerBadge(text: row.isIncoming ? "to you" : "by you", tone: row.isIncoming ? .attention : .neutral)
                     .shellCell(Self.way)
-                ShellServerTag(id: row.server, name: row.serverName).shellCell(Self.server)
                 ShellCellFigure(text: MultiplayerActivityRow.time(request.createdAt, now: now)).shellCell(Self.sent)
             } verbs: {
                 if row.isIncoming {
@@ -294,7 +294,7 @@ struct NetworkApprovalsPage: View {
         let state = pages.content, actions = pages.actions
         let approvals = state.approvalRows, access = state.accessRows
         NetworkPageScaffold(place: NetworkPlace.approvals, pages: pages) {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.l) {
                     VStack(alignment: .leading, spacing: Space.s) {
                         ShellBandHeading(title: "Waiting on you", count: "\(approvals.count)",
@@ -324,8 +324,8 @@ struct NetworkApprovalsPage: View {
 
     @ViewBuilder private func inspector(_ row: NetworkApprovalRow?) -> some View {
         let state = pages.content, actions = pages.actions
-        if let page = state.sharePage, page.page == .grant {
-            NetworkGrantInspector(server: page.server, pages: pages)
+        if let server = pages.selection.grant {
+            NetworkGrantInspector(server: server, pages: pages)
         } else if let row {
             let approval = row.approval
             let server = state.server(row.server)
@@ -373,35 +373,42 @@ struct NetworkSharedTable: View {
     let share: (NetworkSharedRow) -> Void
 
     private static let name = ShellColumn(title: "resource")
-    private static let people = ShellColumn(title: "shared with", width: 220)
-    private static let grants = ShellColumn(title: "grants", width: NetworkLayout.figureColumn, alignment: .trailing)
-    private static let lapses = ShellColumn(title: "first lapses", width: 108, alignment: .trailing)
-    private static let server = ShellColumn(title: "server", width: NetworkLayout.serverColumn)
-    private static let verbs: CGFloat = 76
+    private static let people = ShellColumn(title: "shared with", width: 176)
+    private static let grants = ShellColumn(title: "grants", width: 48, alignment: .trailing)
+    private static let lapses = ShellColumn(title: "first lapses", width: 132, alignment: .trailing)
+    private static let verbs: CGFloat = 64
 
     var body: some View {
-        ShellTable(columns: [Self.name, Self.people, Self.grants, Self.lapses, Self.server], trailing: Self.verbs, items: rows,
+        ShellTable(columns: [Self.name, Self.people, Self.grants, Self.lapses], trailing: Self.verbs, items: rows,
                    empty: "You share nothing yet. Share a worker or a repository from its menu on the wall.") { row in
             ShellTableRow(isSelected: row.id == selected, spoken: spoken(row), hint: "Shows its grants",
                           select: { select(row) }, trailing: Self.verbs) {
                 HStack(spacing: Space.s) {
                     MultiplayerMark(symbol: MultiplayerResourceKind.symbol(for: row.resource.kind),
                                     tone: row.grants.isEmpty ? .neutral : .working, size: 20)
-                    ShellCellText(title: row.resource.name.multiplayerDisplay,
-                                  detail: MultiplayerResourceKind.title(for: row.resource.kind).multiplayerDisplay)
-                    if let holder = row.holders.first { MultiplayerHolderBadge(who: holder.who) }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: Space.s) {
+                            ShellCellText(title: row.resource.name.multiplayerDisplay)
+                            Text(MultiplayerResourceKind.title(for: row.resource.kind).multiplayerDisplay)
+                                .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
+                        }
+                        HStack(spacing: Space.s) {
+                            ShellServerTag(id: row.server, name: row.serverName)
+                            if let holder = row.holders.first { MultiplayerHolderBadge(who: holder.who) }
+                        }
+                    }
                 }
                 .shellCell(Self.name)
                 people(row).shellCell(Self.people)
                 ShellCellFigure(text: "\(row.grants.count)").shellCell(Self.grants)
                 ShellCellFigure(text: row.nextExpiry.map { MultiplayerTime.display($0, now: now) } ?? "–").shellCell(Self.lapses)
-                ShellServerTag(id: row.server, name: row.serverName).shellCell(Self.server)
             } verbs: {
                 MultiplayerVerbStrip(verbs: [
                     MultiplayerRowVerb(id: "share", title: "Share…", isEnabled: !isBusy,
                                        hint: "Share \(row.resource.name.multiplayerDisplay) with a friend", action: { share(row) })
                 ])
             }
+            .padding(.vertical, Space.xs)
             .accessibilityIdentifier("network-shared-\(row.id)")
         }
     }
@@ -490,7 +497,7 @@ struct NetworkSharedPage: View {
         let rows = state.sharedRows
         let selected = rows.first { $0.id == pages.selection.shared }
         NetworkPageScaffold(place: NetworkPlace.shared, pages: pages) {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.s) {
                     ShellBandHeading(title: "You share", count: "\(rows.count)")
                     NetworkSharedTable(rows: rows, selected: selected?.id, now: state.now, isBusy: state.isBusy,
@@ -502,8 +509,8 @@ struct NetworkSharedPage: View {
                                        share: { actions.share($0.server, nil, $0.resource.id) })
                 }
             } inspector: {
-                if let page = state.sharePage, page.page == .grant {
-                    NetworkGrantInspector(server: page.server, pages: pages)
+                if let server = pages.selection.grant {
+                    NetworkGrantInspector(server: server, pages: pages)
                 } else if let selected {
                     NetworkSharedInspector(row: selected, pages: pages)
                 } else {

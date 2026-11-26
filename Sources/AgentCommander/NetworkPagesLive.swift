@@ -6,14 +6,13 @@ import SwiftUI
 // pages themselves see only values.
 //
 // The pages are a second view of the model's route: opening a server, an approval, a hand-off, a
-// thread, the audit log or the grant sheet here opens it in the model, exactly as the tray does,
-// so the tray shows the same page when it is opened next.
+// thread or the audit log here opens it in the model, exactly as the tray does, so the tray shows
+// the same page when it is opened next. The grant sheet is the exception: it is hosted here
+// (MultiplayerGrantHost) and never moves the tray.
 //
 //   NetworkPagesContent.init(model:)   the model's state, as values
-//   NetworkPageActions.live(model)     THE ACTION BOUNDARY: each result-bearing action, backed by
-//                                      today's model methods. When the network model's result
-//                                      API arrives (MultiplayerActionResult, declineFriend,
-//                                      prepareGrant, sendGrant), only this function changes.
+//   NetworkPageActions.live(model)     THE ACTION BOUNDARY: each result-bearing action, sent to
+//                                      the model's per-request calls (MultiplayerActionResult)
 //   NetworkPagesLiveState              the window's own selections and each row's result
 //   LiveNetworkPage                    the page for a place, bound to the model
 
@@ -83,9 +82,6 @@ extension NetworkPagesContent {
         canSendFanout = live.canSendFanout
         self.results = results.results
         running = results.running
-        if case .share(let server, .grant) = model.route {
-            grantRefusal = results.results[NetworkActionResult.key(.grant, "sheet", on: server)]?.reason
-        }
         working = model.working
         failure = model.failure
         notice = model.notice
@@ -96,66 +92,41 @@ extension NetworkPagesContent {
 
 // MARK: - The action boundary, live
 
-extension NetworkPageActions {
-    /// Why an action wasn't started: the model takes one at a time.
-    static let busy = "Commander is finishing another network action. Try again in a moment."
-
-    /// Every result-bearing network action, backed by the model's existing methods.
-    ///
-    /// Today the model reports an action's end only through its shared `failure` and `notice`,
-    /// so each closure starts the action, waits for it and reads those two. PENDING TRAY API:
-    /// once `MultiplayerActionResult` is on this branch, each body becomes one call
-    /// (`await model.decide(…)`, `model.remove(…)`, `model.acceptFriend(…)`, `model.declineFriend(…)`,
-    /// `share.prepareGrant(…)`, `model.sendGrant()`) mapped case for case, and `declineFriend`
-    /// stops being nil.
-    @MainActor static func live(_ model: MultiplayerModel) -> NetworkPageActions {
-        let share = model.share
-
-        /// Waits for an action the model started and reads how it ended.
-        func finish(_ task: Task<Void, Never>?, id: String, server: String) async -> NetworkActionResult {
-            guard let task else { return .failed(id: id, server: server, reason: busy) }
-            await task.value
-            if let failure = model.failure { return .failed(id: id, server: server, reason: failure) }
-            return .done(id: id, server: server, message: model.notice)
+extension NetworkActionResult {
+    /// The network model's result, case for case.
+    init(_ result: MultiplayerActionResult) {
+        switch result {
+        case .done(let id, let server, let message): self = .done(id: id, server: server, message: message)
+        case .failed(let id, let server, let reason): self = .failed(id: id, server: server, reason: reason)
         }
+    }
+}
 
-        return NetworkPageActions(
-            acceptFriend: { request, server in
-                guard let session = model.session(server), !session.isBusy else {
-                    return .failed(id: request.handle, server: server, reason: busy)
-                }
-                let task = session.perform(.accept(requestID: request.id, handle: request.handle))
-                guard let task else { return .failed(id: request.handle, server: server, reason: busy) }
-                await task.value
-                if let failure = session.actionFailure { return .failed(id: request.handle, server: server, reason: failure.message) }
-                return .done(id: request.handle, server: server, message: session.notice)
-            },
-            // PENDING TRAY API: the network model has no decline for a friend request yet.
-            declineFriend: nil,
-            decide: { approval, server, approve in
-                await finish(share.decide(approval, on: server, approve: approve), id: approval.id, server: server)
-            },
+extension NetworkPageActions {
+    /// Every result-bearing network action, sent to the network model's own per-request calls
+    /// (MultiplayerActions.swift). Each comes back for that one request, so a row shows its own
+    /// outcome; the model's banner text is unchanged.
+    @MainActor static func live(_ model: MultiplayerModel) -> NetworkPageActions {
+        NetworkPageActions(
+            acceptFriend: { request, server in NetworkActionResult(await model.acceptFriend(request, on: server)) },
+            declineFriend: { request, server in NetworkActionResult(await model.declineFriend(request, on: server)) },
+            decide: { approval, server, approve in NetworkActionResult(await model.decide(approval, on: server, approve: approve)) },
             removeAccess: { request, server, declining in
-                await finish(share.remove(request, on: server, declining: declining), id: request.id, server: server)
+                NetworkActionResult(await model.remove(request, on: server, declining: declining))
             },
+            // Fills the sheet's draft without moving the tray. The window then hosts the sheet.
             prepareGrant: { server, handle, resource, actions in
-                share.startGrant(on: server, handle: handle, resourceID: resource, actions: actions)
-                return model.route == .share(server, .grant)
+                model.share.prepareGrant(on: server, handle: handle, resourceID: resource, actions: actions)
             },
-            sendGrant: { server in
-                let resource = share.grantDraft.resourceID
-                guard share.canGrant, let task = share.confirmGrant() else {
-                    return .failed(id: resource, server: server, reason: model.isBusy ? busy : share.grantHint)
-                }
-                return await finish(task, id: resource, server: server)
-            })
+            // The hosted sheet sends its own grant. This is the same call, for a caller without it.
+            sendGrant: { _ in NetworkActionResult(await model.sendGrant()) })
     }
 }
 
 // MARK: - Live state and page
 
-/// The window's own part of the network pages: the two selections the model has no route for, and
-/// how each row's last action ended.
+/// The window's own part of the network pages: the selections the model has no route for, and how
+/// each row's last action ended.
 @Observable @MainActor
 final class NetworkPagesLiveState {
     var selection = NetworkPagesSelection()
@@ -209,8 +180,14 @@ struct LiveNetworkPage: View {
                                         comment: $share.commentDraft, fanout: $live.fanoutDraft, reviewLink: $live.postDraft,
                                         profile: $model.profileDraft, activityServer: $model.activityServer,
                                         activityFriend: $model.activityFriend)
+        let model = model, state = state
         return NetworkPages(content: NetworkPagesContent(model: model, results: state.results, now: now),
-                            selection: state.selection, drafts: drafts, actions: actions)
+                            selection: state.selection, drafts: drafts, actions: actions,
+                            grantHost: { _ in
+                                AnyView(MultiplayerGrantHost(model: model, onCancel: { state.selection.grant = nil },
+                                                             // A refusal stays on the sheet; a grant that went through closes it.
+                                                             onFinish: { result in if result.isDone { state.selection.grant = nil } }))
+                            })
     }
 
     /// Every intent, sent to the model method the tray calls for the same thing.
@@ -230,10 +207,11 @@ struct LiveNetworkPage: View {
         actions.refresh = { model.refreshAll() }
         actions.close = { model.go(.home) }
         actions.back = { share.back() }
+        actions.closeGrant = { state.selection.grant = nil }
         actions.bind(.live(model), results: state.results,
-                     grantServer: { if case .share(let server, .grant) = model.route { return server } else { return nil } },
-                     // The model closes the sheet itself when the grant goes through, and says so in its notice.
-                     grantFinished: { _ in })
+                     openGrant: { state.selection.grant = $0 },
+                     grantServer: { state.selection.grant },
+                     grantFinished: { result in if result.isDone { state.selection.grant = nil } })
         actions.setGrantServer = { share.setGrantServer($0) }
         actions.reconcileGrant = { share.reconcileGrantActions() }
         actions.toggleGrantAction = { share.toggleGrantAction($0) }

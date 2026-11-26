@@ -174,7 +174,7 @@ struct PeoplePage: View {
                 }
             }
         } content: {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.l) {
                     VStack(alignment: .leading, spacing: Space.s) {
                         ShellBandHeading(title: "Friend requests", count: "\(requests.count)")
@@ -192,8 +192,8 @@ struct PeoplePage: View {
                     }
                 }
             } inspector: {
-                if let page = state.sharePage, page.page == .grant {
-                    NetworkGrantInspector(server: page.server, pages: pages)
+                if let server = pages.selection.grant {
+                    NetworkGrantInspector(server: server, pages: pages)
                 } else {
                     PeopleInspector(pages: pages)
                 }

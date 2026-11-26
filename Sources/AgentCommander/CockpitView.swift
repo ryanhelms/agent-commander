@@ -45,6 +45,10 @@ final class CockpitPresentationState {
     var contextListHidden = false
     /// Network requests answered in Needs you a moment ago, kept while their outcome shows.
     var needsYouDecided: [NeedsYouItem] = []
+    /// Why the last answer to a network request didn't go through, by request.
+    var needsYouFailures: [String: String] = [:]
+    /// Network requests whose answer is still on its way.
+    var needsYouRunning = Set<String>()
     /// The network pages' own selections and each row's last result.
     let networkPages = NetworkPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
@@ -656,7 +660,8 @@ struct CockpitScreen: View {
         if LiveShell.showsWall(selection) {
             canvas
         } else if selection == LiveShell.needsYou {
-            LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided, now: shell.now,
+            LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided,
+                             failures: ui.needsYouFailures, now: shell.now,
                              decide: { inbox, id, decision in decide(id, decision, in: inbox, shell) },
                              open: { id in openFromInbox(id, shell) },
                              reply: { id in openFromInbox(id, shell) })
@@ -736,35 +741,48 @@ struct CockpitScreen: View {
         open(request)
     }
 
-    /// One answer to a network request. The network model does the work; the row shows the
-    /// outcome for a moment and then leaves. If the model is busy with another action the answer
-    /// is not taken and the row stays as it was.
+    /// One answer to a network request. The network model does the work and says how it ended
+    /// for this request alone: the row shows the outcome for a moment and then leaves, or says
+    /// why the answer didn't go through and keeps its answers.
     private func decide(_ id: String, _ decision: NeedsYouDecision, in inbox: NeedsYouInbox, _ shell: ShellContext) {
-        guard var item = inbox.items.first(where: { $0.id == id }), item.isPending else { return }
-        let network = shell.network
-        let taken: Bool
+        guard var item = inbox.items.first(where: { $0.id == id }), item.isPending, !ui.needsYouRunning.contains(id) else { return }
+        let network = shell.network, answers = shell.actions.answers
+        let work: @MainActor () async -> NetworkActionResult
         switch (item.kind, decision) {
         case (.networkApproval, .approved), (.networkApproval, .denied):
             guard let approval = network.approvals.first(where: { LiveShell.id($0) == id }) else { return }
-            taken = shell.actions.decideApproval(approval, decision == .approved)
+            work = { await answers.decide(approval.item, approval.server, decision == .approved) }
         case (.accessRequest, .declined):
             guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
-            taken = shell.actions.declineAccess(request)
+            work = { await answers.removeAccess(request.item, request.server, true) }
         case (.accessRequest, .inReview):
             // The grant sheet is the review. It opens beside the request in Approvals.
             guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
             if shell.actions.reviewAccess(request) { show(place: NetworkPlace.approvals) }
             return
-        case (.friendRequest, .accepted):
+        case (.friendRequest, .accepted), (.friendRequest, .declined):
             guard let friend = network.friendRequests.first(where: { LiveShell.id($0) == id }) else { return }
-            taken = shell.actions.acceptFriend(friend)
+            if decision == .accepted {
+                work = { await answers.acceptFriend(friend.request, friend.server) }
+            } else {
+                guard let decline = answers.declineFriend else { return }
+                work = { await decline(friend.request, friend.server) }
+            }
         default:
-            taken = false
+            return
         }
-        guard taken else { return }
-        item.decision = decision
-        ui.needsYouDecided.append(item)
+        ui.needsYouRunning.insert(id)
+        ui.needsYouFailures[id] = nil
         Task {
+            let result = await work()
+            ui.needsYouRunning.remove(id)
+            guard result.isDone else {
+                ui.needsYouFailures[id] = result.reason
+                return
+            }
+            item.decision = decision
+            item.failure = nil
+            ui.needsYouDecided.append(item)
             try? await Task.sleep(for: .milliseconds(2400))
             ui.needsYouDecided.removeAll { $0.id == id }
         }
@@ -1646,26 +1664,17 @@ struct CockpitView: View {
         if network.client != nil { panel = { MultiplayerLinkWindow.show(network) } }
         return ShellNetworkActions(
             setPresence: { choice in _ = network.setPresence(choice) },
-            decideApproval: { pending, approve in
-                let task = network.share.decide(pending.item, on: pending.server, approve: approve)
-                return task != nil
-            },
-            declineAccess: { pending in
-                let task = network.share.remove(pending.item, on: pending.server, declining: true)
-                return task != nil
-            },
-            acceptFriend: { friend in
-                guard let session = network.session(friend.server), !session.isBusy else { return false }
-                network.accept(friend.request, on: friend.server)
-                return true
-            },
+            answers: .live(network),
             openNetworkPanel: panel,
             openLink: { link in
                 if case .approval(let id, let server) = link { network.share.open(.approval(id), on: server) }
             },
             reviewAccess: { pending in
-                NetworkPageActions.live(network).prepareGrant(pending.server, pending.item.requester, pending.item.resource,
-                                                              Set(pending.item.actions))
+                // Fills the grant sheet from the request; Approvals then hosts it beside the request.
+                guard network.share.prepareGrant(on: pending.server, handle: pending.item.requester,
+                                                 resourceID: pending.item.resource, actions: Set(pending.item.actions)) else { return false }
+                ui.networkPages.selection.grant = pending.server
+                return true
             })
     }
 

@@ -128,7 +128,7 @@ enum NetworkSample {
         studioServer.membershipMode = "invite"
         studioServer.friends = [MultiplayerFriend(handle: "mira", online: true), MultiplayerFriend(handle: "ines", online: true),
                                 MultiplayerFriend(handle: "priya", online: false)]
-        studioServer.friendRequests = [MultiplayerIncoming(id: "fr-1", handle: "tomas")]
+        studioServer.friendRequests = [MultiplayerIncoming(id: "fr-1", handle: "tomas", requestedAt: ago(5_400))]
         studioServer.resources = decode("""
         [{"id":"res-relay","name":"relay-worker","kind":"agent","actions":["agent.ask","agent.handoff","agent.watch","agent.suggest","review.request","thread.read","thread.comment","agent.status","agent.result"]},
          {"id":"res-docs","name":"docs-agent","kind":"agent","actions":["agent.ask","thread.read","thread.comment"]},
@@ -200,8 +200,9 @@ enum NetworkSample {
                 MultiplayerFanoutChild(id: "fo-2-b", resource: "d-ines", status: "ok", value: .string("Yes for interactive calls. Keep 30 s there and use 60 s for background work."))
             ])
         ]
+        // The tray's holder row counts down against the real clock, so this one is set from it.
         studioServer.handovers = [MultiplayerHandover(handle: "mira", user: "u-mira", resource: "res-relay",
-                                                      until: now.addingTimeInterval(1_140), server: studio, minutes: 30)]
+                                                      until: Date().addingTimeInterval(1_140), server: studio, minutes: 30)]
 
         var labServer = NetworkPagesContent.Server(summary: summary(lab, "lab", state: .online, friendsOnline: 1, presence: .online))
         labServer.isOnline = true
@@ -230,7 +231,6 @@ enum NetworkSample {
         content.servers = [studioServer, labServer, harborServer]
         content.reports = ["ho-1": handoffReport(result: true)].compactMapValues { $0 }
         content.winners = [MultiplayerWinnerStore.key("fo-2", on: studio): "fo-2-a"]
-        content.friendArrivals = ["\(studio)/fr-1": ago(5_400)]
         content.people = people(for: content.servers)
         content.friendsAvailable = 4
         content.activity = [
@@ -409,7 +409,7 @@ final class NetworkPreviewState {
                     }
                     resummarise(server)
                 }
-                return .done(id: request.handle, server: server,
+                return .done(id: request.id, server: server,
                              message: "\(request.handle) is now a friend on \(content.serverName(server)).")
             },
             declineFriend: { [self] request, server in
@@ -418,7 +418,7 @@ final class NetworkPreviewState {
                     update(server) { $0.friendRequests.removeAll { $0.id == request.id } }
                     resummarise(server)
                 }
-                return .done(id: request.handle, server: server, message: "Declined. \(request.handle) is not told.")
+                return .done(id: request.id, server: server, message: "Declined. \(request.handle) can ask again.")
             },
             decide: { [self] approval, server, approve in
                 await pause()
@@ -449,7 +449,7 @@ final class NetworkPreviewState {
                 draft.resourceID = resource ?? (found.resources.count == 1 ? found.resources[0].id : "")
                 draft.actions = actions
                 grant = draft
-                open(.share(server, .grant))
+                content.grantRefusal = nil
                 return true
             },
             sendGrant: { [self] server in
@@ -485,12 +485,14 @@ final class NetworkPreviewState {
         actions.dismissFailure = { [self] in content.failure = nil }
         actions.close = { [self] in open(.home) }
         actions.back = { [self] in open(.home) }
+        actions.closeGrant = { [self] in selection.grant = nil }
         actions.bind(network, results: results,
-                     grantServer: { [self] in content.sharePage?.server },
+                     openGrant: { [self] in selection.grant = $0 },
+                     grantServer: { [self] in selection.grant },
                      grantFinished: { [self] result in
                          if result.isDone {
                              grant = MultiplayerShareDraft()
-                             open(.home)
+                             selection.grant = nil
                              content.notice = result.message
                          } else {
                              content.grantRefusal = result.reason
@@ -500,7 +502,7 @@ final class NetworkPreviewState {
             grant.server = server
             grant.handle = ""
             grant.resourceID = ""
-            open(.share(server, .grant))
+            selection.grant = server
         }
         actions.reconcileGrant = { [self] in
             let offered = content.server(grant.server)?.resources.first { $0.id == grant.resourceID }?.actions ?? []
@@ -558,12 +560,12 @@ final class NetworkPreviewState {
         actions.sendAccessRequest = { [self] in
             guard let page = content.sharePage, case .requestAccess(let resource) = page.page,
                   let entry = content.entry(resource, on: page.server) else { return }
-            let draft = access
+            let draft = access, now = content.now
             update(page.server) {
                 $0.outgoingAccess.insert(MultiplayerAccessRequest(id: "ac-\($0.outgoingAccess.count + 10)", resource: resource,
                                                                   owner: entry.owner, requester: "ryan",
                                                                   actions: draft.actions.sorted(), note: draft.trimmedNote,
-                                                                  createdAt: content.now), at: 0)
+                                                                  createdAt: now), at: 0)
             }
             open(.home)
             content.notice = "Request sent. \(entry.owner) decides whether to share \(entry.name)."
@@ -620,14 +622,14 @@ final class NetworkPreviewState {
         }
         actions.sendFanout = { [self] in
             guard let page = content.sharePage, page.page == .fanout, fanout.canSend else { return }
-            let draft = fanout
+            let draft = fanout, now = content.now
             var request = ""
             update(page.server) { server in
                 request = "fo-\(server.fanouts.count + 10)"
                 let children = server.fanoutTargets.filter { draft.targets.contains($0.id) }.enumerated().map { index, entry in
                     MultiplayerFanoutChild(id: "\(request)-\(index)", resource: entry.id, status: "pending")
                 }
-                server.fanouts.insert(MultiplayerFanout(request: request, title: draft.title, at: content.now, children: children), at: 0)
+                server.fanouts.insert(MultiplayerFanout(request: request, title: draft.title, at: now, children: children), at: 0)
             }
             fanout = MultiplayerFanoutDraft()
             open(.share(page.server, .compare(request: request)))

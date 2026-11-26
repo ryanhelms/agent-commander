@@ -8,8 +8,9 @@ import SwiftUI
 //
 // The pages are a second view of the network model's own route. Which server, approval, hand-off,
 // thread or fan-out is open is read from `route`, so the main window and the tray never disagree
-// about what is open. Only two selections have no route and are kept by the window itself: the
-// directory entry and the shared resource (`NetworkPagesSelection`).
+// about what is open. Three selections have no route and are kept by the window itself: the
+// directory entry, the shared resource, and the server the grant sheet is open on
+// (`NetworkPagesSelection`). The grant sheet never moves the tray.
 //
 //   NetworkPlace            the place IDs that have a page
 //   NetworkPagesContent     the network's state, as values
@@ -137,8 +138,6 @@ struct NetworkPagesContent {
     var running: Set<String> = []
     /// Why the grant sheet's last Share was refused.
     var grantRefusal: String? = nil
-    /// When each friend request arrived, by `server/request`. Empty until the network model says.
-    var friendArrivals: [String: Date] = [:]
     /// What the model is doing now, why its last action failed, and what it last confirmed.
     var working: String? = nil
     var failure: String? = nil
@@ -326,9 +325,9 @@ struct NetworkPagesContent {
     var friendRequests: [NetworkFriendRow] {
         servers.filter { $0.isOnline && $0.summary.state != .certChanged }.flatMap { server in
             server.friendRequests.map { request -> NetworkFriendRow in
-                let key = NetworkActionResult.key(.friend, request.handle, on: server.id)
+                let key = NetworkActionResult.key(.friend, request.id, on: server.id)
                 return NetworkFriendRow(server: server.id, serverName: server.name, request: request,
-                                        waiting: friendArrivals["\(server.id)/\(request.id)"].map { max(0, now.timeIntervalSince($0)) },
+                                        waiting: request.requestedAt.map { max(0, now.timeIntervalSince($0)) },
                                         result: results[key], isRunning: running.contains(key))
             }
         }
@@ -470,7 +469,7 @@ struct NetworkFriendRow: Identifiable, Equatable {
     let server: String
     let serverName: String
     let request: MultiplayerIncoming
-    /// How long the request has waited. Nil while the network model doesn't say when it arrived.
+    /// How long the request has waited. Nil when the relay gave no time.
     let waiting: TimeInterval?
     var result: NetworkActionResult? = nil
     var isRunning = false
@@ -558,6 +557,8 @@ struct NetworkPagesSelection: Equatable {
     var directory: String? = nil
     /// `server/resource` of your resource in the inspector.
     var shared: String? = nil
+    /// The server the grant sheet is open on. Nil while it is closed.
+    var grant: String? = nil
 }
 
 /// What is being edited, as bindings into whoever owns the text.
@@ -625,6 +626,7 @@ struct NetworkPagesActions {
     var reconcileGrant: () -> Void = {}
     var toggleGrantAction: (String) -> Void = { _ in }
     var confirmGrant: () -> Void = {}
+    var closeGrant: () -> Void = {}
 
     // Hand-offs and reviews
     var openHandoff: (String, String) -> Void = { _, _ in }
@@ -675,6 +677,9 @@ struct NetworkPages {
     var selection = NetworkPagesSelection()
     var drafts = NetworkPagesDrafts()
     var actions = NetworkPagesActions()
+    /// The network model's own grant sheet for a server, with its footer. Nil draws the sheet from
+    /// the values above (the previews).
+    var grantHost: ((_ server: String) -> AnyView)? = nil
 }
 
 // MARK: - The action boundary
@@ -685,7 +690,7 @@ enum NetworkActionResult: Equatable, Sendable {
     case done(id: String, server: String, message: String?)
     case failed(id: String, server: String, reason: String)
 
-    /// What an action was taken on. A friend request's ID is the handle.
+    /// What an action was taken on.
     enum Subject: String, Sendable { case approval, access, friend, grant }
 
     var id: String {
@@ -727,8 +732,8 @@ struct NetworkPageActions {
     typealias Result = NetworkActionResult
 
     var acceptFriend: @MainActor (MultiplayerIncoming, _ server: String) async -> Result
-        = { request, server in .failed(id: request.handle, server: server, reason: "Not available.") }
-    /// Nil while the network model can't decline a friend request.
+        = { request, server in .failed(id: request.id, server: server, reason: "Not available.") }
+    /// Nil where a friend request can't be declined.
     var declineFriend: (@MainActor (MultiplayerIncoming, _ server: String) async -> Result)? = nil
     var decide: @MainActor (MultiplayerApproval, _ server: String, _ approve: Bool) async -> Result
         = { approval, server, _ in .failed(id: approval.id, server: server, reason: "Not available.") }
@@ -772,9 +777,11 @@ final class NetworkRowResults {
 
 extension NetworkPagesActions {
     /// Sends the result-bearing intents through the boundary and keeps each row's result.
+    ///   openGrant      shows the grant sheet on a server, once its draft is filled
     ///   grantServer    the server the open grant sheet is on
     ///   grantFinished  called when Share ends, so the owner can close the sheet or keep it open
     @MainActor mutating func bind(_ network: NetworkPageActions, results: NetworkRowResults,
+                                  openGrant: @escaping @MainActor (String) -> Void,
                                   grantServer: @escaping @MainActor () -> String?,
                                   grantFinished: @escaping @MainActor (NetworkActionResult) -> Void) {
         decide = { approval, server, approve in
@@ -784,17 +791,17 @@ extension NetworkPagesActions {
             results.run(NetworkActionResult.key(.access, request.id, on: server)) { await network.removeAccess(request, server, declining) }
         }
         acceptFriend = { request, server in
-            results.run(NetworkActionResult.key(.friend, request.handle, on: server)) { await network.acceptFriend(request, server) }
+            results.run(NetworkActionResult.key(.friend, request.id, on: server)) { await network.acceptFriend(request, server) }
         }
         declineFriend = network.declineFriend.map { decline in
             { request, server in
-                results.run(NetworkActionResult.key(.friend, request.handle, on: server)) { await decline(request, server) }
+                results.run(NetworkActionResult.key(.friend, request.id, on: server)) { await decline(request, server) }
             }
         }
         reviewAccess = { request, server in
-            _ = network.prepareGrant(server, request.requester, request.resource, Set(request.actions))
+            if network.prepareGrant(server, request.requester, request.resource, Set(request.actions)) { openGrant(server) }
         }
-        share = { server, handle, resource in _ = network.prepareGrant(server, handle, resource, []) }
+        share = { server, handle, resource in if network.prepareGrant(server, handle, resource, []) { openGrant(server) } }
         confirmGrant = {
             guard let server = grantServer() else { return }
             results.run(NetworkActionResult.key(.grant, "sheet", on: server), { await network.sendGrant(server) }, finished: grantFinished)

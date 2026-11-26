@@ -19,22 +19,23 @@ struct NetworkServerTable: View {
     let signIn: (String) -> Void
 
     private static let name = ShellColumn(title: "server")
-    private static let state = ShellColumn(title: "state", width: NetworkLayout.stateColumn + 40)
-    private static let you = ShellColumn(title: "you", width: NetworkLayout.serverColumn)
-    private static let key = ShellColumn(title: "key", width: 168)
-    private static let friends = ShellColumn(title: "friends on", width: NetworkLayout.figureColumn, alignment: .trailing)
-    private static let requests = ShellColumn(title: "requests", width: NetworkLayout.figureColumn, alignment: .trailing)
-    private static let verbs: CGFloat = 76
+    private static let state = ShellColumn(title: "state", width: 152)
+    private static let key = ShellColumn(title: "key", width: 120)
+    private static let friends = ShellColumn(title: "friends", width: 52, alignment: .trailing)
+    private static let requests = ShellColumn(title: "requests", width: 60, alignment: .trailing)
+    private static let verbs: CGFloat = 64
 
     var body: some View {
-        ShellTable(columns: [Self.name, Self.state, Self.you, Self.key, Self.friends, Self.requests], trailing: Self.verbs,
+        ShellTable(columns: [Self.name, Self.state, Self.key, Self.friends, Self.requests], trailing: Self.verbs,
                    items: servers, empty: "No server yet.") { server in
             let summary = server.summary
             ShellTableRow(isSelected: server.id == openID, spoken: spoken(summary),
                           hint: "Shows its certificate and settings", select: { open(server.id) }, trailing: Self.verbs) {
                 HStack(spacing: Space.s) {
                     MultiplayerSwatch(color: MultiplayerTheme.swatch(for: server.id))
-                    ShellCellText(title: summary.displayName, detail: summary.host)
+                    ShellCellText(title: summary.displayName,
+                                  detail: summary.signedIn && !summary.handle.isEmpty
+                                    ? "\(summary.host), as \(summary.handle.multiplayerDisplay)" : summary.host)
                     if summary.favorite {
                         Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(.theme(\.color.attention))
                             .accessibilityHidden(true)
@@ -44,8 +45,6 @@ struct NetworkServerTable: View {
                 MultiplayerStateLabel(lamp: summary.state.lamp, text: summary.stateTitle(now: now), tone: summary.state.tone)
                     .lineLimit(1)
                     .shellCell(Self.state)
-                ShellCellFigure(text: summary.signedIn && !summary.handle.isEmpty ? summary.handle.multiplayerDisplay : "–")
-                    .shellCell(Self.you)
                 keyCell(summary).shellCell(Self.key)
                 ShellCellFigure(text: server.isOnline ? "\(summary.friendsOnline)" : "–").shellCell(Self.friends)
                 ShellCellFigure(text: server.isOnline ? "\(summary.incoming)" : "–", tone: summary.incoming > 0 ? .attention : .neutral)
@@ -58,6 +57,7 @@ struct NetworkServerTable: View {
                     ])
                 }
             }
+            .padding(.vertical, Space.xs)
             .accessibilityIdentifier("network-server-\(server.id)")
         }
     }
@@ -173,7 +173,7 @@ struct NetworkServersPage: View {
                     .accessibilityIdentifier("network-add-server")
             }
         } content: {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.s) {
                     ShellBandHeading(title: "Servers", count: "\(state.servers.count)")
                     NetworkServerTable(servers: state.servers, openID: state.openServer?.id, now: state.now,

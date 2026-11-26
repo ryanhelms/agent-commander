@@ -65,7 +65,7 @@ struct NetworkHandoffsPage: View {
         let state = pages.content, actions = pages.actions
         let rows = state.workRows
         NetworkPageScaffold(place: NetworkPlace.handoffs, pages: pages) {
-            CollectionInspector(spacing: Space.l, inspectorWidth: NetworkLayout.inspectorWidth) {
+            NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.s) {
                     ShellBandHeading(title: "Sent by you", count: "\(rows.count)",
                                      note: "Hand off a task from a friend’s agent in the Directory.")
@@ -171,7 +171,7 @@ struct NetworkThreadsPage: View {
                 }
             } inspector: {
                 if let open {
-                    NetworkInspector(title: open.title.isEmpty ? "Thread" : open.title.multiplayerDisplay, serverID: open.server,
+                    NetworkInspector(title: "Thread", serverID: open.server,
                                      serverName: state.serverName(open.server),
                                      note: "⌘Return posts.", close: actions.close) {
                         MultiplayerThreadPage(title: open.title, state: state.thread, draft: pages.drafts.comment, now: state.now,

@@ -124,6 +124,9 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | Tray width | 400 pt |
 | Page inset | 24 pt |
 | Table row height | 34 pt |
+| Inspector width | 420 pt, so a tray organism sits in it at its own measure |
+| Collection beside an inspector | 540 pt at least; narrower, the inspector goes under it |
+| Flexible table column | 132 pt at least |
 | Sidebar row height | 28 pt |
 | Mode rail width | 48 pt |
 | Mode rail cell | 32 pt square, 18 pt icon |
@@ -195,6 +198,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Band heading | Mono section name, its count, and one trailing action. |
 | Band | Padded region with a hairline under it. This is how the tray is divided. |
 | Trace row | Time (`HH:MM:SS`), a kind tag and text, with a 2 pt left rule coloured by kind: message `foreground`, tool `focus`, status `attention`. Hairline under each line. |
+| Countdown, row form | In a table row the countdown is the time left in `data` over the same 56 × 2 pt line. From an hour up the figure reads `h:mm:ss`. |
 | Countdown | Time left as a mono figure, ticking each second, over a 56 × 2 pt line that drains linearly. `working`, then `attention` under five minutes. When the full length isn't known, the line drains over the shortest offered length that holds what is left. With Reduce Motion the line steps. |
 | Decision row | A request with the answers its source can take: Deny and Approve, Decline and Review, Accept, or Reply. The primary answer is the last cell. A worker's Reply opens the request where it is answered, beside the wall. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
@@ -227,6 +231,18 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. The frame clips the system focus ring, so the copy cell draws an inset focus ring. |
 | Inset focus ring | For a control whose frame clips the system focus ring, such as a cell joined to its neighbours: 2 pt of `focus` inside the control's own edge while it has keyboard focus. The control stays a native button. |
 | Device row | A paired device: a mark, its name, "paired … , ends …" in mono, then Rename and Revoke (`danger`). Rename opens a well under the row with a "Device name" field box holding the name, then Cancel and a primary Save name; Return saves and Escape cancels. Revoke opens an inline confirm. One of the two is open at a time, and the row's verbs hide while it is. |
+
+### Main-window molecules and organisms (network pages)
+
+| Component | What it is |
+|---|---|
+| Data table | Header cells in `label` on the header fill, then hairline rows of 34 pt on one panel. A column has a fixed width or shares what is left; figures and times are mono and right-aligned. The row's cells are one button that selects it (`selection` fill with the leading `focus` marker); its verbs sit after them as a verb strip. With no rows the table shows one note. |
+| Person cell | An avatar, the handle in `data`, and under it the server as a swatch and its name. Used where a row is about someone on a server. |
+| Row outcome | What takes a row's verb strip after an answer: a spinner while it runs, then a state label "Done" for 2.4 s. The row's second line says what happened in `working`. After a failure the verbs stay and the second line gives the reason in `failure` until the row is tried again. |
+| Alert band, page form | The network's last action across the page, under the telemetry strip: a spinner and a sentence on the well while it runs, a lit lamp when it confirmed, the `failure` fill and edge when it failed. Confirmed and failed bands can be dismissed. |
+| Inspector | The panel beside a collection: a title with the server's swatch and name, a state label, a close action, then the content, then a footer on the well with one line of context and the actions. Its content is a tray organism used as it is. With nothing chosen it is one note saying what choosing a row shows. |
+| Compare columns, page form | A fan-out's answers side by side, each column as wide as the page allows and 248 pt at least; more than fit scroll sideways. The winner's column is `selection` at 35% with a 2 pt `focus` top edge. |
+| People grid | Friends by server on one panel: a header line per server (swatch, name, "2 of 3 online"), then that server's friend rows in as many columns of 248 pt as fit. |
 
 ### Organisms (in the tray today)
 
@@ -281,6 +297,8 @@ Increment 6 (the Remote web page) adds:
 
 ### What the main window reuses
 
+The network pages (Servers, Directory, Approvals, Hand-offs, Threads, Audit, Fan-out, Shared, People) reuse these as they are, inside an inspector: certificate review, server settings, identity band, directory card, request-access form, approval page, grant sheet (through its host), hand-off detail, review page, thread page, fan-out composer, holder row, friend row, activity band and profile editor. Two are drawn again at page scale because the tray's forms are fixed to its width: the audit list (a data table) and the compare columns.
+
 Reuse the following:
 - All atoms and molecules listed above
 - Trace row
@@ -304,6 +322,7 @@ The tray keeps its own versions of these:
 - **Footer:** one line of context on the well, then the page's actions.
 - **Order of urgency:** what needs the person first ("Needs you"), then live work, then what they own, then what others offer.
 - **Needs you order:** a request with under five minutes left comes first whatever its kind; then the person's own stopped workers, longest wait first; then network approvals, soonest end first; then access requests; then friend requests. A decided row keeps its place while its outcome shows.
+- **Network pages (main window).** The header's trailing action is the page's one way to start something (Add server, New fan-out, Add friend). Under the telemetry strip the body is a collection beside an inspector: a data table on the left and, at 420 pt on the right, the tray's organism for the chosen row (certificate review, server settings, directory card, approval, grant sheet, hand-off detail, review, profile editor, activity band). Threads and Fan-out turn it round: a narrow list of 340 pt, then the thread or the compare columns in the room that is left. Audit is one full-width table with a server choice and a resource menu beside its heading. In a window too narrow for both, the inspector goes under the collection.
 - **Preferences.** Sections stack: a mono heading, a `title`, and a trailing scope note. Appearance comes first and offers one choice card per theme, followed by the line "Consoles, terminals and the pretty view look the same in every theme."
 
 ## 5. Behaviour
@@ -321,6 +340,8 @@ The tray keeps its own versions of these:
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
 - **Refused answers.** When a network answer isn't taken or fails, the row returns to its waiting form and the reason shows in an `error` load note above the list.
 - **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
+- **One route.** The main window's network pages show what the network model has open: a server, an approval, a hand-off, a thread, the audit log, a fan-out. Opening one in the window opens it in the tray too, and the other way round. The grant sheet is the exception: a view outside the tray hosts it and the tray does not move.
+- **Answers per row.** An answer given on a row (approve, deny, decline, withdraw, accept) comes back for that row alone and shows there as a row outcome. The page's alert band still carries the model's own sentence.
 - **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
 
 ## 6. Open work
