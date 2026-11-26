@@ -136,10 +136,21 @@ enum NeedsYouClock {
         return "\(total / 3600)h " + String(format: "%02dm", (total % 3600) / 60)
     }
 
-    /// Time left as minutes and seconds: "4:12".
+    /// Time left as minutes and seconds, "4:12", or with hours from an hour up, "1:11:00".
     static func left(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
+        if total >= 3600 { return "\(total / 3600):" + String(format: "%02d:%02d", (total % 3600) / 60, total % 60) }
         return "\(total / 60):" + String(format: "%02d", total % 60)
+    }
+
+    /// The lengths a request is offered for. When a request doesn't say how long it was given,
+    /// its line drains over the shortest of these that holds what is left.
+    static let spans: [TimeInterval] = [300, 900, 3_600, 28_800, 86_400]
+
+    /// How full a countdown's line is: what is left of the whole span.
+    static func fraction(left: TimeInterval, waited: TimeInterval?) -> Double {
+        let span = waited.map { $0 + left } ?? spans.first { $0 >= left } ?? left
+        return span > 0 ? min(max(left / span, 0), 1) : 0
     }
 }
 

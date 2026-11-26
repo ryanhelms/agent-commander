@@ -45,6 +45,8 @@ final class CockpitPresentationState {
     var contextListHidden = false
     /// Network requests answered in Needs you a moment ago, kept while their outcome shows.
     var needsYouDecided: [NeedsYouItem] = []
+    /// The network pages' own selections and each row's last result.
+    let networkPages = NetworkPagesLiveState()
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
     var composingRun = false
@@ -338,12 +340,18 @@ struct WorkspaceToolbar: ToolbarContent {
     /// The redesigned shell's readouts (servers, presence), after the service state.
     var readouts: AnyView? = nil
 
+    /// The shell's items sit flat on the toolbar: no shared glass capsule behind them. The console
+    /// display menu and the adapter notice are the console's own controls and keep their look.
+    private var capsule: Visibility { title == nil ? .automatic : .hidden }
+
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             Button { sidebarExpanded.toggle() } label: { Image(systemName: "sidebar.left") }
+                .buttonStyle(.plain)
                 .help(sidebarExpanded ? "Collapse navigation" : "Expand navigation")
                 .accessibilityLabel(sidebarExpanded ? "Collapse navigation" : "Expand navigation")
         }
+        .sharedBackgroundVisibility(capsule)
         ToolbarItem(placement: .navigation) {
             if let title {
                 title
@@ -358,6 +366,7 @@ struct WorkspaceToolbar: ToolbarContent {
                 .padding(.horizontal, 6)
             }
         }
+        .sharedBackgroundVisibility(capsule)
         // Flexible space keeps the breadcrumb leading and pins the service indicator to the trailing
         // edge. Without it the native toolbar packs the indicator directly after the breadcrumb.
         ToolbarSpacer(.flexible, placement: .automatic)
@@ -379,6 +388,7 @@ struct WorkspaceToolbar: ToolbarContent {
                 .keyboardShortcut("k", modifiers: .command)
                 .accessibilityLabel("Search workspace")
             }
+            .sharedBackgroundVisibility(capsule)
         }
         if let adapterUpdates {
             AdapterUpdateToolbarItem(feed: adapterUpdates)
@@ -386,8 +396,10 @@ struct WorkspaceToolbar: ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             ConnectionIndicator(connection: connection)
         }
+        .sharedBackgroundVisibility(capsule)
         if let readouts {
             ToolbarItem(placement: .primaryAction) { readouts }
+                .sharedBackgroundVisibility(capsule)
         }
     }
 }
@@ -588,12 +600,19 @@ struct CockpitScreen: View {
         let inbox = LiveShell.inbox(pending: content.pending, network: shell.network, now: shell.now ?? Date(),
                                     decided: ui.needsYouDecided)
         return LiveShell.navigation(runs: content.runs, openRunPath: run?.path, composing: ui.composingRun,
-                                    place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network)
+                                    place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network,
+                                    isOnline: isOnline)
     }
 
     /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
     private func shellCrumbs(_ navigation: CommanderNavigation) -> [String] {
-        LiveShell.showsWall(navigation.selection) ? crumbs : navigation.crumbs
+        guard LiveShell.showsWall(navigation.selection) else { return navigation.crumbs }
+        // With no run open the wall has no crumbs of its own, so the place says where this is.
+        if crumbs.isEmpty {
+            let mode = navigation.modes.first { $0.id == navigation.selectedModeID }?.title
+            return [mode, navigation.place(LiveShell.wall)?.title].compactMap { $0 }
+        }
+        return crumbs
     }
 
     private func shellReadouts(_ shell: ShellContext) -> some View {
@@ -604,8 +623,9 @@ struct CockpitScreen: View {
 
     private func shellFrame(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
         ShellTemplate(chrome: shell.chrome) {
+            // The modes' keys are bound once, with the window's other shortcuts.
             ShellModeRail(navigation: navigation, modeModifiers: LiveShell.modeModifiers,
-                          showsContext: !ui.contextListHidden) { action in
+                          showsContext: !ui.contextListHidden, bindsModeKeys: false) { action in
                 act(action, in: navigation, shell)
             }
             .popover(isPresented: $ui.showingRunChooser, arrowEdge: .trailing) {
@@ -638,8 +658,8 @@ struct CockpitScreen: View {
         } else if selection == LiveShell.needsYou {
             LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided, now: shell.now,
                              decide: { inbox, id, decision in decide(id, decision, in: inbox, shell) },
-                             open: { id in openFromInbox(id) },
-                             reply: { id in openFromInbox(id) })
+                             open: { id in openFromInbox(id, shell) },
+                             reply: { id in openFromInbox(id, shell) })
         } else if selection == LiveShell.settings {
             PreferencesPage(projectName: run?.project ?? "", retention: "", retentionOptions: [],
                             showsSystemAppearance: false, presentation: ui.attentionPresentation,
@@ -647,6 +667,8 @@ struct CockpitScreen: View {
                             chooseTheme: { id in ThemeChoice.select(id) },
                             presentations: AttentionPresentationMenu.options, showsRecording: false,
                             openAppSettings: { openSettings() })
+        } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
+            page(selection) { place in show(place: place) }
         } else {
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
                                  note: LiveShell.note(for: selection, network: shell.network),
@@ -684,6 +706,8 @@ struct CockpitScreen: View {
             ui.composingRun = false
             ui.shellPlace = LiveShell.wall
         } else if id == LiveShell.newRun {
+            // No run can start while the service is offline; the row and ⌘N are both off.
+            guard isOnline else { return }
             ui.shellPlace = LiveShell.wall
             startComposing()
         } else if let path = LiveShell.projectPath(of: id) {
@@ -697,9 +721,15 @@ struct CockpitScreen: View {
     }
 
     /// A worker's request chosen in Needs you is answered where it always is: the wall comes
-    /// back and the request opens exactly as Next request opens it. A network request's text
-    /// opens nothing until its page exists.
-    private func openFromInbox(_ id: String) {
+    /// back and the request opens exactly as Next request opens it. A network request opens on
+    /// its page: an approval in Approvals with its review beside it, an access request in
+    /// Approvals, a friend request in People.
+    private func openFromInbox(_ id: String, _ shell: ShellContext) {
+        if let link = NetworkDeepLink(inboxID: id) {
+            shell.actions.openLink(link)
+            show(place: link.place)
+            return
+        }
         guard let request = content.pending.first(where: { $0.id == id }) else { return }
         ui.composingRun = false
         ui.shellPlace = LiveShell.wall
@@ -721,8 +751,10 @@ struct CockpitScreen: View {
             guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
             taken = shell.actions.declineAccess(request)
         case (.accessRequest, .inReview):
-            // The grant sheet is the review. It has no page in this window yet.
-            taken = true
+            // The grant sheet is the review. It opens beside the request in Approvals.
+            guard let request = network.access.first(where: { LiveShell.id($0) == id }) else { return }
+            if shell.actions.reviewAccess(request) { show(place: NetworkPlace.approvals) }
+            return
         case (.friendRequest, .accepted):
             guard let friend = network.friendRequests.first(where: { LiveShell.id($0) == id }) else { return }
             taken = shell.actions.acceptFriend(friend)
@@ -800,7 +832,20 @@ struct CockpitScreen: View {
     /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return. ⌘N and ⇧⌘A live on their navigation rows.
     private var shortcuts: some View {
         Group {
-            Button("Focus coordinator") { focusCoordinator() }.keyboardShortcut("1", modifiers: .command)
+            // The shell's modes: ⌥⌘1 to ⌥⌘5. They come before ⌘1 and name the digit itself on every
+            // keyboard layout, so ⌥ is never read as another key or dropped.
+            if let shell {
+                let navigation = shellNavigation(shell)
+                ForEach(navigation.modeItems) { item in
+                    if let number = item.shortcut, let key = "\(number)".first {
+                        Button(item.mode.title) { act(.selectMode(item.mode.id), in: navigation, shell) }
+                            .keyboardShortcut(KeyboardShortcut(KeyEquivalent(key), modifiers: LiveShell.modeModifiers,
+                                                               localization: .custom))
+                    }
+                }
+            }
+            Button("Focus coordinator") { focusCoordinator() }
+                .keyboardShortcut(KeyboardShortcut("1", modifiers: .command, localization: .custom))
             Button("Zoom worker") { zoomFocused() }.keyboardShortcut("]", modifiers: .command)
             Button("Return to wall") { returnToWall() }.keyboardShortcut("[", modifiers: .command)
                 .disabled(ui.zoomedWorkerID == nil && ui.zoomedRemoteWorkerID == nil)
@@ -1567,7 +1612,11 @@ struct CockpitView: View {
     var body: some View {
         CockpitScreen(content: CockpitContent(model: model), ui: ui, actions: actions,
                       adapterUpdates: model.adapterUpdates,
-                      shell: ShellContext(network: ShellNetwork(model: network), actions: networkActions))
+                      shell: ShellContext(network: ShellNetwork(model: network), actions: networkActions,
+                                          networkPage: { place, go in
+                                              AnyView(LiveNetworkPage(place: place, model: network, state: ui.networkPages, go: go,
+                                                                      openPanel: networkActions.openNetworkPanel))
+                                          }))
             .task { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }
@@ -1610,7 +1659,14 @@ struct CockpitView: View {
                 network.accept(friend.request, on: friend.server)
                 return true
             },
-            openNetworkPanel: panel)
+            openNetworkPanel: panel,
+            openLink: { link in
+                if case .approval(let id, let server) = link { network.share.open(.approval(id), on: server) }
+            },
+            reviewAccess: { pending in
+                NetworkPageActions.live(network).prepareGrant(pending.server, pending.item.requester, pending.item.resource,
+                                                              Set(pending.item.actions))
+            })
     }
 
     private var actions: CockpitActions {

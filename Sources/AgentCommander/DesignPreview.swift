@@ -73,6 +73,16 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case shellB = "shell-b"
     case shellC = "shell-c"
     case needsYou = "needs-you"
+    // The full-size network pages, in sidebar B (NetworkPagesPreview.swift).
+    case networkServers = "network-servers"
+    case networkDirectory = "network-directory"
+    case networkApprovals = "network-approvals"
+    case networkHandoffs = "network-handoffs"
+    case networkThreads = "network-threads"
+    case networkAudit = "network-audit"
+    case networkFanout = "network-fanout"
+    case networkShared = "network-shared"
+    case people = "people"
 
     struct Info {
         let title: String
@@ -101,7 +111,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     }
 
     /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
-    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou }
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -207,6 +217,33 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         case .needsYou:
             Info(title: "Needs you inbox", group: "Main window redesign", crumbs: ["Workspace", "Needs you"], active: "Needs you",
                  summary: "One list of local and network requests in order of urgency, decided in place.")
+        case .networkServers:
+            Info(title: "Network · Servers", group: "Main window redesign", crumbs: ["Network", "Servers"], active: "Servers",
+                 summary: "Every saved server, with the open one's certificate review or settings beside it.")
+        case .networkDirectory:
+            Info(title: "Network · Directory", group: "Main window redesign", crumbs: ["Network", "Directory"], active: "Directory",
+                 summary: "What friends offer on your servers, and what you can do with each.")
+        case .networkApprovals:
+            Info(title: "Network · Approvals", group: "Main window redesign", crumbs: ["Network", "Approvals"], active: "Approvals",
+                 summary: "Uses of your resources that wait for you, and access requests in both directions.")
+        case .networkHandoffs:
+            Info(title: "Network · Hand-offs", group: "Main window redesign", crumbs: ["Network", "Hand-offs"], active: "Hand-offs",
+                 summary: "Hand-offs and reviews you sent, with the open one's status, result and artifacts.")
+        case .networkThreads:
+            Info(title: "Network · Threads", group: "Main window redesign", crumbs: ["Network", "Threads"], active: "Threads",
+                 summary: "The comments on each request you sent.")
+        case .networkAudit:
+            Info(title: "Network · Audit", group: "Main window redesign", crumbs: ["Network", "Audit"], active: "Audit",
+                 summary: "Every use of a shared resource, as a table.")
+        case .networkFanout:
+            Info(title: "Network · Fan-out", group: "Main window redesign", crumbs: ["Network", "Fan-out"], active: "Fan-out",
+                 summary: "One prompt sent to several workers, with their answers side by side.")
+        case .networkShared:
+            Info(title: "Network · Shared", group: "Main window redesign", crumbs: ["Network", "Shared"], active: "Shared",
+                 summary: "What you share, who can use it and for how long.")
+        case .people:
+            Info(title: "People", group: "Main window redesign", crumbs: ["People"], active: "People",
+                 summary: "Friend requests, friends by server, your profile and the activity feed.")
         }
     }
 
@@ -588,7 +625,8 @@ struct PreviewCanvas: View {
                             chooseTheme: { id in ThemeChoice.select(id) })
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
              .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
-             .shellA, .shellB, .shellC, .needsYou:
+             .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
+             .networkThreads, .networkAudit, .networkFanout, .networkShared, .people:
             // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }

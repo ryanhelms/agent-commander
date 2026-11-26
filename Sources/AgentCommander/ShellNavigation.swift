@@ -36,6 +36,8 @@ struct CommanderPlace: Identifiable, Equatable, Sendable {
     var countNoun = "waiting"
     /// The place can be shared with a friend (a project's repository). Its row offers Share….
     var canShare = false
+    /// The place can't be opened now. Its row is dimmed and takes no press.
+    var isDisabled = false
 
     /// What sits at the row's trailing edge, if anything.
     var badge: String? { figure ?? (count > 0 ? "\(count)" : nil) }
@@ -85,6 +87,12 @@ struct CommanderProfile: Equatable, Sendable {
     var presence: MultiplayerPersonPresence?
     /// The person's choice. Nil until the device agent has said which is in force.
     var choice: MultiplayerPresenceChoice?
+
+    /// The presence as the readout and VoiceOver give it: "Auto: Busy" while the choice is Auto.
+    var spokenPresence: String {
+        guard presence != nil else { return presenceTitle }
+        return choice == .auto ? "Auto: \(presenceTitle)" : presenceTitle
+    }
 
     /// The word beside the presence lamp.
     var presenceTitle: String {

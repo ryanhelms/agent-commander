@@ -40,7 +40,10 @@ enum ShellConcept: String, CaseIterable, Identifiable, Sendable {
         case .shellA: self = .grouped
         case .shellB: self = .modeRail
         case .shellC, .needsYou: self = .needsYouFirst
-        default: return nil
+        default:
+            // A network page opens in the chosen sidebar, B.
+            guard scenario.networkPlace != nil else { return nil }
+            self = .modeRail
         }
     }
 }
@@ -96,14 +99,15 @@ enum ShellSample {
     /// The whole navigation for the given counts.
     static func navigation(inbox: NeedsYouInbox, attention: Int, selection: String,
                            collapsed: Set<String> = [], profile: CommanderProfile = profile,
-                           servers: CommanderServerHealth = servers) -> CommanderNavigation {
+                           servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
+                           handoffs: Int = 0) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
                            isHot: hot && count > 0, isDetail: detail, countNoun: noun)
         }
-        let approvals = inbox.pendingCount(of: .networkApproval)
-        let friendRequests = inbox.pendingCount(of: .friendRequest)
+        let approvals = approvals ?? inbox.pendingCount(of: .networkApproval)
+        let friendRequests = friendRequests ?? inbox.pendingCount(of: .friendRequest)
         let places = [
             place("needs-you", "Needs you", "tray", count: inbox.pendingCount, hot: true),
             place("runs", "Runs", "rectangle.split.2x1"),
@@ -117,7 +121,7 @@ enum ShellSample {
             place("network.shared", "Shared", "square.and.arrow.up.on.square"),
             place("network.directory", "Directory", "magnifyingglass", detail: true),
             place("network.approvals", "Approvals", "checkmark.shield", count: approvals, hot: true, detail: true),
-            place("network.handoffs", "Hand-offs", "arrow.up.right", detail: true),
+            place("network.handoffs", "Hand-offs", "arrow.up.right", count: handoffs, detail: true, noun: "sent"),
             place("network.threads", "Threads", "bubble.left.and.bubble.right", detail: true),
             place("network.audit", "Audit", "list.bullet.rectangle", detail: true),
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
@@ -190,11 +194,15 @@ final class ShellPreviewState {
     var collapsed: Set<String> = []
     var profile = ShellSample.profile
     var inbox = ShellSample.inbox
+    /// The sample network behind the network pages.
+    let network: NetworkPreviewState
     /// How long an outcome stays before its row leaves.
     var outcomeDwell: Duration = .milliseconds(2400)
 
     init(selection: String) {
         self.selection = selection
+        // A page opened directly shows its detail; the others start with nothing open.
+        network = NetworkPreviewState(place: NetworkPlace.hasPage(selection) ? selection : nil)
     }
 
     /// The inbox without the questions already answered in the Attention queue.
@@ -206,7 +214,9 @@ final class ShellPreviewState {
 
     func navigation(attention: Int, answered: Set<String>) -> CommanderNavigation {
         ShellSample.navigation(inbox: inbox(answered: answered), attention: attention, selection: selection,
-                               collapsed: collapsed, profile: profile)
+                               collapsed: collapsed, profile: profile, servers: network.health,
+                               approvals: network.approvalCount, friendRequests: network.friendRequestCount,
+                               handoffs: network.handoffCount)
     }
 
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {
@@ -242,7 +252,8 @@ struct ShellPreviewPage: View {
         self.store = store
         self.gallery = gallery
         self.chrome = chrome
-        _state = State(initialValue: state ?? ShellPreviewState(selection: store.scenario == .needsYou ? "needs-you" : "all-agents"))
+        _state = State(initialValue: state ?? ShellPreviewState(
+            selection: store.scenario.networkPlace ?? (store.scenario == .needsYou ? "needs-you" : "all-agents")))
     }
 
     private var concept: ShellConcept { ShellConcept(scenario: store.scenario) ?? .grouped }
@@ -264,7 +275,7 @@ struct ShellPreviewPage: View {
                 if let gallery { gallery }
                 ShellPreviewSwitcher(concept: concept, choose: { store.scenario = $0.scenario },
                                      chooseTheme: { ThemeChoice.select($0) })
-                ShellToolbarReadouts(servers: ShellSample.servers,
+                ShellToolbarReadouts(servers: state.network.health,
                                      profile: concept == .needsYouFirst ? nil : navigation.profile,
                                      openServers: { act(.select("network.servers")) },
                                      pickPresence: { act(.setPresence($0)) })
@@ -369,6 +380,8 @@ struct ShellPreviewCanvas: View {
                             showsSystemAppearance: false, presentation: store.presentation,
                             choosePresentation: { mode in store.presentation = mode },
                             chooseTheme: { id in ThemeChoice.select(id) })
+        case let place where NetworkPlace.hasPage(place):
+            NetworkPageView(place: place, pages: state.network.pages(go: { act(.select($0)) }))
         default:
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
                                  note: ShellSample.note(for: navigation.selection))

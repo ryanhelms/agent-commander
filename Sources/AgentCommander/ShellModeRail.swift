@@ -13,6 +13,8 @@ struct ShellModeRail: View {
     var modeModifiers: EventModifiers = .command
     /// The context list can be put away to give the canvas its width. The rail stays.
     var showsContext = true
+    /// The cells bind their own ⌘-numbers. Off where the window binds them in one place.
+    var bindsModeKeys = true
     let act: (CommanderNavigationAction) -> Void
 
     var body: some View {
@@ -34,11 +36,11 @@ struct ShellModeRail: View {
     private func rail(_ modes: [CommanderNavigation.ModeItem]) -> some View {
         VStack(spacing: Space.s - 2) {
             ForEach(modes.filter { !$0.mode.isTrailing }) { item in
-                ShellModeCell(item: item, modifiers: modeModifiers) { act(.selectMode($0)) }
+                ShellModeCell(item: item, modifiers: modeModifiers, bindsShortcut: bindsModeKeys) { act(.selectMode($0)) }
             }
             Spacer(minLength: Space.s)
             ForEach(modes.filter(\.mode.isTrailing)) { item in
-                ShellModeCell(item: item, modifiers: modeModifiers) { act(.selectMode($0)) }
+                ShellModeCell(item: item, modifiers: modeModifiers, bindsShortcut: bindsModeKeys) { act(.selectMode($0)) }
             }
         }
         .padding(.top, theme.space.bandTop + Space.xs)
