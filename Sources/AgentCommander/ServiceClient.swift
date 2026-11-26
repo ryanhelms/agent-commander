@@ -638,6 +638,70 @@ final class ServiceEndpoint: @unchecked Sendable {
     }
 }
 
+extension FileHandle {
+    /// What is written to this handle, in the chunks it arrives in, read on the handle's own
+    /// dispatch source. The stream ends when the writer closes its end.
+    ///
+    /// `FileHandle.bytes` reads every handle in the process through one shared actor, one blocking
+    /// read at a time. A handle that stays quiet, like the output of `agentctl host connect`
+    /// between events, holds that actor, and nothing reaches any other `bytes` reader until the
+    /// quiet handle has data. Every long-lived child (both event streams and the host connection)
+    /// is read this way instead, so each is independent of the others.
+    var ownChunks: AsyncStream<Data> {
+        AsyncStream { output in
+            readabilityHandler = { handle in
+                let data = handle.availableData
+                // No data means the writer closed its end.
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    output.finish()
+                } else {
+                    output.yield(data)
+                }
+            }
+            output.onTermination = { [weak self] _ in self?.readabilityHandler = nil }
+        }
+    }
+
+    /// The lines written to this handle, read as `ownChunks` reads.
+    var ownLines: AsyncStream<String> {
+        let chunks = ownChunks
+        return AsyncStream { output in
+            let reader = Task.detached {
+                var buffer = LineBuffer()
+                for await chunk in chunks {
+                    for line in buffer.take(chunk) { output.yield(line) }
+                }
+                if let rest = buffer.rest() { output.yield(rest) }
+                output.finish()
+            }
+            output.onTermination = { _ in reader.cancel() }
+        }
+    }
+}
+
+/// Splits what a child writes into lines.
+struct LineBuffer {
+    private var pending = Data()
+
+    /// The lines `chunk` completes.
+    mutating func take(_ chunk: Data) -> [String] {
+        pending.append(chunk)
+        var lines: [String] = []
+        while let end = pending.firstIndex(of: 10) {
+            lines.append(String(decoding: pending[pending.startIndex..<end], as: UTF8.self))
+            pending.removeSubrange(pending.startIndex...end)
+        }
+        return lines
+    }
+
+    /// A last line that was not ended, once the writer closed.
+    mutating func rest() -> String? {
+        defer { pending.removeAll() }
+        return pending.isEmpty ? nil : String(decoding: pending, as: UTF8.self)
+    }
+}
+
 // All GUI operations use the service's HTTP API over the selected endpoint's socket. The
 // serialized client keeps short requests off the UI thread and sends project paths and prompt
 // text as JSON data.

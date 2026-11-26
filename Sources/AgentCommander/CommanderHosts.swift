@@ -137,10 +137,13 @@ struct CommanderHostsService: Sendable {
                 process.standardOutput = pipe
                 process.standardError = FileHandle.nullDevice
                 let events = AsyncStream<HostConnectEvent> { output in
+                    // Not `bytes.lines`: this child is quiet between events, and a quiet handle
+                    // read that way holds up every other `bytes` reader (`FileHandle.ownChunks`).
+                    let lines = pipe.fileHandleForReading.ownLines
                     let reader = Task.detached {
                         do {
                             try process.run()
-                            for try await line in pipe.fileHandleForReading.bytes.lines {
+                            for await line in lines {
                                 if let event = HostConnectEvent(line: line) { output.yield(event) }
                             }
                         } catch {
@@ -243,6 +246,10 @@ final class CommanderHostsModel {
 
     /// Called after the endpoint moved to another socket.
     @ObservationIgnored var serviceChanged: @MainActor () -> Void = {}
+    /// Called when the connection to the host in use dropped. agentctl is retrying.
+    @ObservationIgnored var serviceInterrupted: @MainActor (_ destination: String) -> Void = { _ in }
+    /// Called when the host in use answers again on the same socket after a drop.
+    @ObservationIgnored var serviceResumed: @MainActor () -> Void = {}
 
     @ObservationIgnored private let endpoint: ServiceEndpoint
     @ObservationIgnored private let service: CommanderHostsService
@@ -355,11 +362,16 @@ final class CommanderHostsModel {
     private func take(_ event: HostConnectEvent, from destination: String) {
         switch event {
         case .ready(_, let socket, let version, _):
+            var dropped = false
+            if case .disconnected = link { dropped = true }
             link = .connected(version: version)
-            point(at: ServiceEndpoint.Remote(destination: destination, socket: socket))
+            let moved = point(at: ServiceEndpoint.Remote(destination: destination, socket: socket))
+            // The same socket answers again: nothing moved, but both event streams start again.
+            if dropped, !moved { serviceResumed() }
         case .disconnected(_, let detail):
             // The endpoint stays on the host: agentctl is retrying, and the same socket answers again.
             link = .disconnected(detail: detail)
+            if inUse == destination { serviceInterrupted(destination) }
         case .failed(_, let detail):
             fail(destination, detail)
         }
@@ -374,9 +386,11 @@ final class CommanderHostsModel {
         point(at: nil)
     }
 
-    private func point(at remote: ServiceEndpoint.Remote?) {
+    /// Returns whether the endpoint moved to another socket.
+    @discardableResult private func point(at remote: ServiceEndpoint.Remote?) -> Bool {
         let changed = endpoint.select(remote)
         inUse = remote?.destination
         if changed { serviceChanged() }
+        return changed
     }
 }

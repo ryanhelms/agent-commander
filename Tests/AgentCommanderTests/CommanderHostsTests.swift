@@ -160,12 +160,16 @@ private final class RecordingSocket: @unchecked Sendable {
     @Test func followsReadyDisconnectedReady() async {
         let (model, fake, endpoint) = Self.model()
         await model.refresh()
-        var changes = 0
+        var changes = 0, interrupted: [String] = [], resumed = 0
         model.serviceChanged = { changes += 1 }
+        model.serviceInterrupted = { interrupted.append($0) }
+        model.serviceResumed = { resumed += 1 }
         model.use("acx-headless")
 
         fake.send(Self.ready, to: "acx-headless")
         await Self.settle { model.inUse != nil }
+        // The first answer moves the endpoint. It is not a resumed connection.
+        #expect(interrupted.isEmpty && resumed == 0)
         #expect(model.link == .connected(version: "v0.0.6-test.1"))
         #expect(endpoint.remote == ServiceEndpoint.Remote(destination: "acx-headless", socket: "/tmp/hosts/7904df2629a0.sock"))
         #expect(changes == 1)
@@ -178,11 +182,15 @@ private final class RecordingSocket: @unchecked Sendable {
         #expect(dropped.state == .disconnected && dropped.detail == "ssh: connection reset" && dropped.isInUse)
         // agentctl is retrying: the app stays on the host's socket and nothing restarts.
         #expect(endpoint.socket == "/tmp/hosts/7904df2629a0.sock" && changes == 1)
+        // The window is told at once that the service in use is unreachable.
+        #expect(interrupted == ["acx-headless"] && resumed == 0)
 
         fake.send(Self.ready, to: "acx-headless")
         await Self.settle { model.link == .connected(version: "v0.0.6-test.1") }
         #expect(model.entries()[1].state == .connected && model.entries()[1].detail == nil)
         #expect(changes == 1 && fake.stopped.isEmpty)
+        // The same socket answers again: the window is told once, so both streams start again.
+        #expect(resumed == 1)
 
         // Back to this Mac: the process is ended and the local socket is used again.
         model.use(nil)
@@ -308,6 +316,89 @@ private final class RecordingSocket: @unchecked Sendable {
         await #expect(throws: ServiceError.self) { try await client.startService() }
     }
 
+    // MARK: A dropped connection and the event streams
+
+    /// A script standing in for `agentctl host connect`: it says `ready`, then stays quiet.
+    private static func quietAgentctl() throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "ach-quiet-\(getpid())-\(UInt32.random(in: 0..<999_999)).sh")
+        try "#!/bin/sh\necho '\(ready)'\nexec sleep 30\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    /// The defect: the connect child was read with `FileHandle.bytes`, which reads every handle in
+    /// the process through one shared actor. While agentctl was quiet after `ready`, nothing
+    /// reached any other reader, so the event streams of the reconnected host never delivered.
+    @Test func aQuietConnectChildHoldsUpNoOtherReader() async throws {
+        let script = try Self.quietAgentctl()
+        defer { try? FileManager.default.removeItem(at: script) }
+        let connection = CommanderHostsService.live(agentctl: script, environment: [:]).connect("acx-headless")
+        defer { connection.stop() }
+        var events = connection.events.makeAsyncIterator()
+        let first = await events.next()
+        #expect(first == HostConnectEvent(line: Self.ready))
+
+        // agentctl now waits, with its output open. Another handle read the system's way, as the
+        // event streams were, and one read the app's way must both still deliver.
+        let system = Pipe(), own = Pipe()
+        let arrived = Task.detached { () -> [UInt8] in
+            var got: [UInt8] = []
+            for try await byte in system.fileHandleForReading.bytes { got.append(byte) }
+            for await chunk in own.fileHandleForReading.ownChunks { got.append(contentsOf: chunk) }
+            return got
+        }
+        // Give the connect child's reader time to be waiting on its quiet handle.
+        try await Task.sleep(for: .milliseconds(200))
+        try system.fileHandleForWriting.write(contentsOf: Data("a".utf8))
+        try system.fileHandleForWriting.close()
+        try own.fileHandleForWriting.write(contentsOf: Data("b".utf8))
+        try own.fileHandleForWriting.close()
+        let deadline = Task.detached { () -> [UInt8]? in
+            try? await Task.sleep(for: .seconds(5))
+            return nil
+        }
+        let result = await withTaskGroup(of: [UInt8]?.self) { group in
+            group.addTask { try? await arrived.value }
+            group.addTask { await deadline.value }
+            let winner = await group.next() ?? nil
+            arrived.cancel()
+            deadline.cancel()
+            return winner
+        }
+        #expect(result == Array("ab".utf8), "a quiet connect child must not hold up another reader")
+    }
+
+    @Test func linesAreReadAcrossChunksAndAtTheEnd() async {
+        var buffer = LineBuffer()
+        #expect(buffer.take(Data("{\"event\":\"rea".utf8)).isEmpty)
+        #expect(buffer.take(Data("dy\"}\n{\"event\":\"failed\"}\nrest".utf8)) == [#"{"event":"ready"}"#, #"{"event":"failed"}"#])
+        #expect(buffer.rest() == "rest" && buffer.rest() == nil)
+
+        let pipe = Pipe()
+        let lines = pipe.fileHandleForReading.ownLines
+        try? pipe.fileHandleForWriting.write(contentsOf: Data("one\ntwo\nthree".utf8))
+        try? pipe.fileHandleForWriting.close()
+        var read: [String] = []
+        for await line in lines { read.append(line) }
+        #expect(read == ["one", "two", "three"])
+    }
+
+    @Test func aDropTakesTheServiceOfflineAndAnAnswerStartsTheStreamsAgain() {
+        let model = CockpitModel(endpoint: ServiceEndpoint(environment: ["AGENT_COMMANDER_SOCKET": "/tmp/local.sock"]))
+        model.connection = .online
+        let generation = model.serviceGeneration
+
+        model.serviceInterrupted(host: "acx-headless")
+        #expect(model.connection == .offline("The connection to acx-headless dropped. Reconnecting."))
+        // The streams are not restarted while the host is away, and the runs stay.
+        #expect(model.serviceGeneration == generation)
+
+        model.serviceResumed()
+        // The window restarts both subscriptions on a new generation, and the next answer shows.
+        #expect(model.serviceGeneration == generation + 1)
+        #expect(model.connection == .connecting)
+    }
+
     // MARK: Where the choice sits
 
     @Test func hostsIsAPlaceOfTheWorkspaceGroup() {
@@ -332,6 +423,35 @@ private final class RecordingSocket: @unchecked Sendable {
         #expect(CommanderHostEntry.State(.offline("gone")) == .disconnected)
         #expect(CommanderHostDetail.deployed("not a time") == "not a time")
         #expect(CommanderHostDetail.deployed(nil) == "Unknown")
+    }
+
+    @Test func theInspectorsWordsFitTheirPlace() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "America/New_York"))
+        let locale = Locale(identifier: "en_US")
+        let now = try Date("2026-11-26T19:00:00Z", strategy: .iso8601)
+        // This year: the day and the time, no year ("Nov 26 at 1:05 PM"). An earlier year: the day and the year.
+        #expect(CommanderHostDetail.deployed("2026-11-26T18:05:25Z", now: now, calendar: calendar, locale: locale)
+            .replacingOccurrences(of: "\u{202F}", with: " ") == "Nov 26 at 1:05 PM")
+        #expect(CommanderHostDetail.deployed("2025-03-02T18:05:25Z", now: now, calendar: calendar, locale: locale) == "Mar 2, 2025")
+
+        func host(_ state: CommanderHostEntry.State, inUse: Bool) -> CommanderHostEntry {
+            CommanderHostEntry(id: "h", destination: "h", name: "h", kind: "Headless host", typeLabel: "Headless host",
+                               symbol: "server.rack", state: state, isInUse: inUse)
+        }
+        // Every footer line sits beside its action on one line; the rest is the tooltip's.
+        for entry in [host(.disconnected, inUse: true), host(.connecting, inUse: false), host(.connected, inUse: true),
+                      host(.idle, inUse: false), host(.failed, inUse: false)] {
+            #expect(CommanderHostDetail.note(for: entry).count <= 56)
+        }
+        #expect(CommanderHostDetail.note(for: host(.disconnected, inUse: true)) == "Waiting for SSH. The host keeps its workers running.")
+        #expect(CommanderHostDetail.noteHelp(for: host(.disconnected, inUse: true))?.contains("holds their questions") == true)
+        #expect(CommanderHostDetail.noteHelp(for: host(.connected, inUse: true)) == nil)
+
+        // The Hosts row's figure is a name and gives way; a tally never does.
+        #expect(CommanderPlace(id: "hosts", title: "Hosts", mark: .symbol("desktopcomputer"), figure: "acx-headless").figureIsName)
+        #expect(!CommanderPlace(id: "servers", title: "Servers", mark: .symbol("server.rack"), figure: "2/3").figureIsName)
+        #expect(!CommanderPlace(id: "runs", title: "Runs", mark: .symbol("plus"), count: 3).figureIsName)
     }
 
     // MARK: Pictures
@@ -362,6 +482,24 @@ private final class RecordingSocket: @unchecked Sendable {
                     CommanderHostDetail(entry: failed[1]) { _ in }
                 }.padding(32).frame(maxHeight: .infinity, alignment: .top),
                 "commander-hosts-failed", theme: theme, to: folder)
+            // The states the inspector and the Hosts row must fit: a dropped host beside
+            // Disconnect, and the row with a short and a long host in use.
+            func row(_ figure: String) -> some View {
+                ShellPlaceRow(item: .init(place: CommanderPlace(id: "hosts", title: "Hosts", mark: .symbol("desktopcomputer"),
+                                                                figure: figure), isSelected: true, shortcut: nil)) { _ in }
+                    .frame(width: 180)
+            }
+            try await ThemeRenderTests.write(
+                HStack(alignment: .top, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        row("acx-headless")
+                        row("ops@build-server-01.example.com")
+                    }
+                    CommanderHostDetail(entry: host("acx-headless", .disconnected, inUse: true,
+                                                    detail: "ssh: exit status 255: Connection to 127.0.0.1 closed by remote host.")) { _ in }
+                        .frame(width: 585)
+                }.padding(32).frame(maxHeight: .infinity, alignment: .top),
+                "commander-hosts-dropped", theme: theme, to: folder)
         }
     }
 }

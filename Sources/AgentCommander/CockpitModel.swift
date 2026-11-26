@@ -47,6 +47,34 @@ final class CockpitModel {
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
         hosts.serviceChanged = { [weak self] in self?.serviceChanged() }
+        hosts.serviceInterrupted = { [weak self] in self?.serviceInterrupted(host: $0) }
+        hosts.serviceResumed = { [weak self] in self?.serviceResumed() }
+    }
+
+    /// The SSH connection to the host in use dropped. The service is offline until it answers
+    /// again; the runs stay as they were last sent.
+    func serviceInterrupted(host: String) {
+        connection = .offline(Self.interrupted(host))
+    }
+
+    static func interrupted(_ host: String) -> String { "The connection to \(host) dropped. Reconnecting." }
+
+    /// The service can't be reached. While the SSH connection to the host in use is down, that is
+    /// the reason shown, whatever the request or the feed said.
+    private func lose(_ reason: String) {
+        if case .disconnected = hosts.link, let host = hosts.inUse {
+            connection = .offline(Self.interrupted(host))
+        } else {
+            connection = .offline(reason)
+        }
+    }
+
+    /// The host in use answers again on the same socket. Both subscriptions start again at once
+    /// (`serviceGeneration`) instead of waiting out their retry pauses, and the first answer shows.
+    func serviceResumed() {
+        serviceGeneration += 1
+        connection = .connecting
+        receivedStreamState = false
     }
 
     /// The selected service changed. What the last one sent is dropped, and the window's
@@ -97,7 +125,7 @@ final class CockpitModel {
                 await refresh()
             } catch {
                 guard !Task.isCancelled else { return }
-                connection = .offline(error.localizedDescription)
+                lose(error.localizedDescription)
             }
             do {
                 try await Task.sleep(for: usingLegacyService ? .seconds(2) : .seconds(1))
@@ -130,7 +158,7 @@ final class CockpitModel {
             }
         } catch {
             guard generation == serviceGeneration else { return }
-            connection = .offline(error.localizedDescription)
+            lose(error.localizedDescription)
         }
     }
 

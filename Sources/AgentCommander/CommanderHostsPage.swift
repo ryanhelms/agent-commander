@@ -126,27 +126,47 @@ struct CommanderHostDetail: View {
     let use: @MainActor (String?) -> Void
     @Environment(\.theme) private var theme
 
-    /// The time of the last deploy as the Mac writes dates; the raw text when it is not a time.
-    static func deployed(_ updated: String?) -> String {
+    /// The time of the last deploy as the Mac writes dates, short enough for its column: the day
+    /// and the time in this year ("Nov 26 at 1:05 PM"), the day and the year before it
+    /// ("Nov 26, 2025"). The raw text when it is not a time.
+    static func deployed(_ updated: String?, now: Date = .now, calendar: Calendar = .current,
+                         locale: Locale = .current) -> String {
         guard let updated, !updated.isEmpty else { return "Unknown" }
         guard let date = try? Date(updated, strategy: .iso8601) else { return updated }
-        return date.formatted(date: .abbreviated, time: .shortened)
+        var style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
+            .month(.abbreviated).day()
+        style = calendar.isDate(date, equalTo: now, toGranularity: .year) ? style.hour().minute() : style.year()
+        return date.formatted(style)
     }
 
-    private var note: String {
+    /// The footer's one line. Short enough to sit beside the action without wrapping.
+    static func note(for entry: CommanderHostEntry) -> String {
         if entry.isInUse {
             switch entry.state {
             case .disconnected where !entry.isLocal:
-                return "Waiting for SSH. The host keeps its workers running and holds their questions."
+                return "Waiting for SSH. The host keeps its workers running."
             default:
                 return entry.isLocal ? "Agent Commander is using this Mac’s service." : "Agent Commander is using this host."
             }
         }
         switch entry.state {
-        case .connecting: return "Opening the SSH connection. Agent Commander stays on this Mac until the host answers."
-        case .disconnected: return "Waiting for SSH. Agent Commander stays on this Mac until the host answers."
+        case .connecting: return "Connecting over SSH. This Mac stays in use until then."
+        case .disconnected: return "Waiting for SSH. This Mac stays in use until then."
         case .failed: return "Agent Commander is using this Mac’s service."
         default: return entry.isLocal ? "This Mac’s service keeps running while you use a host." : "Runs and workers on this host show once you use it."
+        }
+    }
+
+    /// What the footer's line leaves out, as its tooltip. Nil where the line says it all.
+    static func noteHelp(for entry: CommanderHostEntry) -> String? {
+        guard !entry.isLocal else { return nil }
+        switch entry.state {
+        case .disconnected:
+            return "agentctl keeps retrying the SSH connection. The host keeps its workers running and holds their questions until Agent Commander is back."
+        case .connecting:
+            return "Agent Commander keeps using this Mac’s service until the host’s forwarded socket answers."
+        default:
+            return nil
         }
     }
 
@@ -171,11 +191,12 @@ struct CommanderHostDetail: View {
                     ThemeRule(vertical: true).frame(height: 42)
                     FactColumn(label: "Runs on", value: "This Mac")
                 } else {
-                    FactColumn(label: "Connection", value: "SSH-forwarded socket")
+                    FactColumn(label: "Connection", value: "SSH socket")
                     ThemeRule(vertical: true).frame(height: 42)
                     FactColumn(label: "Version", value: entry.version ?? "Unknown", monospaced: true)
                     ThemeRule(vertical: true).frame(height: 42)
-                    FactColumn(label: "API", value: entry.api.map(String.init) ?? "Unknown", monospaced: true)
+                    // The API number is short: its column hugs it and the others share the room.
+                    FactColumn(label: "API", value: entry.api.map(String.init) ?? "Unknown", monospaced: true, hugs: true)
                     ThemeRule(vertical: true).frame(height: 42)
                     FactColumn(label: "Deployed", value: Self.deployed(entry.updated))
                 }
@@ -193,8 +214,10 @@ struct CommanderHostDetail: View {
                     Image(systemName: "waveform.path.ecg").font(.system(size: theme.pageType.meta.size))
                         .foregroundStyle(.theme(\.color.secondary))
                 }
-                Text(note).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                Text(Self.note(for: entry)).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                     .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                    .help(Self.noteHelp(for: entry) ?? "")
                 Spacer(minLength: Space.m)
                 action
             }
