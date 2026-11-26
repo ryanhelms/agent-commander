@@ -693,6 +693,8 @@ struct CockpitScreen: View {
                             openAppSettings: { openSettings() })
         } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
             page(selection) { place in show(place: place) }
+        } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
+            page(selection) { place in show(place: place) }
         } else {
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
                                  note: LiveShell.note(for: selection, network: shell.network),

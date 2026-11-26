@@ -36,6 +36,8 @@ struct ShellNetwork: Equatable {
     /// The presence the servers show now. Nil while signed out everywhere.
     var presence: MultiplayerPersonPresence?
     var presenceChoice: MultiplayerPresenceChoice?
+    /// The person is an admin on at least one server, so Teams lists Admin.
+    var isAdmin = false
     /// Why the last network action didn't go through.
     var failure: String?
     /// The network helper is missing or the server list can't be read.
@@ -57,6 +59,7 @@ struct ShellNetwork: Equatable {
             return (session.status?.incoming ?? []).map { FriendRequest(server: server.id, request: $0) }
         }
         workspaces = model.share.teams.allWorkspaces
+        isAdmin = model.servers.contains { model.isAdmin($0.id) }
         for pending in approvals {
             resourceNames["\(pending.server)/\(pending.item.resource)"] = model.share.resourceName(pending.item.resource, on: pending.server)
         }
@@ -112,6 +115,8 @@ struct ShellContext {
     /// The page for a network place. `go` takes the window to another place. Nil leaves the
     /// placeholder.
     var networkPage: (@MainActor (_ place: String, _ go: @escaping (String) -> Void) -> AnyView)? = nil
+    /// The page for a Teams place: a workspace or a team tool. Nil leaves the placeholder.
+    var teamsPage: (@MainActor (_ place: String, _ go: @escaping (String) -> Void) -> AnyView)? = nil
     /// What the network adds to the coordinator wall: remote workers, who holds control of a
     /// worker, and suggestions waiting. Empty leaves the wall as it is without a network.
     var wall = WallLiveWork()
@@ -151,7 +156,8 @@ enum LiveShell {
     ///   Agents    Needs you, Runs, New run, then one place per project
     ///   Network   Servers, Directory, Approvals, Hand-offs, Threads, Audit, Fan-out, Shared
     ///   People    People
-    ///   Teams     one place per workspace
+    ///   Teams     one place per workspace, then the team tools: Groups, Hosts, Knowledge, Directory
+    ///             and, for an admin, Admin
     ///   Settings  Settings, at the foot of the rail
     /// `place` is where the window is; on the wall the selected row is the open run's project, and
     /// the new-run form selects New run.
@@ -190,7 +196,7 @@ enum LiveShell {
             CommanderPlace(id: newRun, title: "New run", mark: .symbol("plus"), isDisabled: !isOnline)
         ] + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
-        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + [
+        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin) + [
             CommanderPlace(id: settings, title: "Settings", mark: .symbol("gearshape"))
         ]
 
@@ -206,9 +212,8 @@ enum LiveShell {
             CommanderMode(id: "people", title: "People", symbol: "person.2", sections: [
                 CommanderPlaceGroup(id: "people", title: "People", placeIDs: [people])
             ]),
-            CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group", sections: [
-                CommanderPlaceGroup(id: "teams", title: "Teams", placeIDs: teams.isEmpty ? [workspaces] : teams.map(\.id))
-            ]),
+            CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
+                          sections: teamsSections(workspaces: teams.isEmpty ? [workspaces] : teams.map(\.id), isAdmin: network.isAdmin)),
             CommanderMode(id: settings, title: "Settings", symbol: "gearshape", sections: [
                 CommanderPlaceGroup(id: settings, title: "Settings", placeIDs: [settings])
             ], isTrailing: true)
@@ -231,8 +236,21 @@ enum LiveShell {
                                    groups: [], modes: modes, footer: [], profile: network.profile, selection: selection)
     }
 
-    /// A place of the Teams mode: a workspace, or the row shown while there is none.
-    static func isTeamsPlace(_ id: String) -> Bool { id == workspaces || id.hasPrefix("team:") }
+    /// A place of the Teams mode: a workspace, the row shown while there is none, or a team tool.
+    static func isTeamsPlace(_ id: String) -> Bool { TeamsPlace.hasPage(id) }
+
+    /// The team tools as places. Admin is listed only for an admin.
+    static func teamTools(isAdmin: Bool) -> [CommanderPlace] {
+        TeamsPlace.tools.filter { isAdmin || $0 != TeamsPlace.admin }.map {
+            CommanderPlace(id: $0, title: TeamsPlace.title($0), mark: .symbol(TeamsPlace.symbol($0)), isDetail: true)
+        }
+    }
+
+    /// The Teams mode's context list: the workspaces, then the team tools.
+    static func teamsSections(workspaces: [String], isAdmin: Bool) -> [CommanderPlaceGroup] {
+        [CommanderPlaceGroup(id: "teams", title: "Workspaces", placeIDs: workspaces),
+         CommanderPlaceGroup(id: "team-tools", title: "Team tools", placeIDs: teamTools(isAdmin: isAdmin).map(\.id))]
+    }
 
     /// True while the selected row means the coordinator wall, the new-run form or the empty state.
     static func showsWall(_ selection: String) -> Bool {

@@ -41,8 +41,8 @@ enum ShellConcept: String, CaseIterable, Identifiable, Sendable {
         case .shellB: self = .modeRail
         case .shellC, .needsYou: self = .needsYouFirst
         default:
-            // A network page opens in the chosen sidebar, B.
-            guard scenario.networkPlace != nil else { return nil }
+            // A network or Teams page opens in the chosen sidebar, B.
+            guard scenario.networkPlace != nil || scenario.teamsPlace != nil else { return nil }
             self = .modeRail
         }
     }
@@ -100,7 +100,8 @@ enum ShellSample {
     static func navigation(inbox: NeedsYouInbox, attention: Int, selection: String,
                            collapsed: Set<String> = [], profile: CommanderProfile = profile,
                            servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
-                           handoffs: Int = 0) -> CommanderNavigation {
+                           handoffs: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
+                           isAdmin: Bool = true) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -127,8 +128,7 @@ enum ShellSample {
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
             place("people.requests", "Friend requests", "person.badge.plus", count: friendRequests, hot: true, detail: true),
             place("people.groups", "Groups", "person.3", detail: true),
-            CommanderPlace(id: "team.relay-launch", title: "Relay launch", mark: .letter("L")),
-            CommanderPlace(id: "team.infra-guild", title: "Infra guild", mark: .letter("I")),
+        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin) + [
             place("hosts", "Hosts", "desktopcomputer"),
             place("settings", "Settings", "gearshape")
         ]
@@ -136,8 +136,7 @@ enum ShellSample {
                                             placeIDs: ["needs-you", "runs", "all-agents", "attention", "history"])
         let projects = CommanderPlaceGroup(id: "projects", title: "Projects",
                                            placeIDs: ["project.relay", "project.beacon"], isCollapsible: true)
-        let teams = CommanderPlaceGroup(id: "teams", title: "Teams",
-                                        placeIDs: ["team.relay-launch", "team.infra-guild"], isCollapsible: true)
+        let teams = CommanderPlaceGroup(id: "teams", title: "Teams", placeIDs: workspaces.map(\.id), isCollapsible: true)
         return CommanderNavigation(
             places: places,
             inbox: CommanderInbox(placeID: "needs-you", absorbs: ["attention", "network.approvals", "people.requests"],
@@ -160,7 +159,8 @@ enum ShellSample {
                     CommanderPlaceGroup(id: "people", title: "People",
                                         placeIDs: ["network.people", "people.requests", "people.groups"])
                 ]),
-                CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group", sections: [teams]),
+                CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
+                              sections: LiveShell.teamsSections(workspaces: workspaces.map(\.id), isAdmin: isAdmin)),
                 CommanderMode(id: "settings", title: "Settings", symbol: "gearshape", sections: [
                     CommanderPlaceGroup(id: "settings", title: "Settings", placeIDs: ["settings", "hosts"])
                 ], isTrailing: true)
@@ -173,7 +173,6 @@ enum ShellSample {
 
     /// What a place without a page yet says, and which increment brings it.
     static func note(for placeID: String) -> String {
-        if placeID.hasPrefix("team.") { return "This workspace's goal, claims, board and merge queue arrive with the Teams pages." }
         switch placeID {
         case "network.people": return "Your friends, their presence and their agents arrive with the network pages."
         case "network.servers": return "Server health, certificates and settings arrive with the network pages."
@@ -196,15 +195,24 @@ final class ShellPreviewState {
     var inbox = ShellSample.inbox
     /// The sample network behind the network pages.
     let network: NetworkPreviewState
+    /// The sample teams behind the Teams pages.
+    let teams: TeamsPreviewState
     /// How long an outcome stays before its row leaves.
     var outcomeDwell: Duration = .milliseconds(2400)
     /// What the sample network adds to the wall. Take back removes the hold.
     var wall = WallSample.work()
 
-    init(selection: String) {
+    init(selection: String, teams: TeamsPreviewState? = nil) {
         self.selection = selection
         // A page opened directly shows its detail; the others start with nothing open.
         network = NetworkPreviewState(place: NetworkPlace.hasPage(selection) ? selection : nil)
+        self.teams = teams ?? TeamsPreviewState(place: TeamsPlace.hasPage(selection) ? selection : nil)
+    }
+
+    /// The state a scenario opens with.
+    convenience init(scenario: DesignPreviewScenario) {
+        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
+                  teams: scenario.teamsPlace == nil ? nil : TeamsPreviewState(scenario: scenario))
     }
 
     /// The inbox without the questions already answered in the Attention queue.
@@ -218,7 +226,8 @@ final class ShellPreviewState {
         ShellSample.navigation(inbox: inbox(answered: answered), attention: attention, selection: selection,
                                collapsed: collapsed, profile: profile, servers: network.health,
                                approvals: network.approvalCount, friendRequests: network.friendRequestCount,
-                               handoffs: network.handoffCount)
+                               handoffs: network.handoffCount, workspaces: teams.workspacePlaces,
+                               isAdmin: teams.content.isAdmin)
     }
 
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {
@@ -254,8 +263,7 @@ struct ShellPreviewPage: View {
         self.store = store
         self.gallery = gallery
         self.chrome = chrome
-        _state = State(initialValue: state ?? ShellPreviewState(
-            selection: store.scenario.networkPlace ?? (store.scenario == .needsYou ? "needs-you" : "all-agents")))
+        _state = State(initialValue: state ?? ShellPreviewState(scenario: store.scenario))
     }
 
     private var concept: ShellConcept { ShellConcept(scenario: store.scenario) ?? .grouped }
@@ -329,6 +337,16 @@ struct ShellPreviewCanvas: View {
 
     private func openRuns() { act(.select("runs")) }
 
+    /// The Teams pages. Sharing a host and asking for access are the network pages' own flows.
+    private var teamsPages: TeamsPages {
+        state.teams.shareHost = { _, server in
+            state.network.pages(go: { _ in }).actions.share(server, nil, nil)
+            act(.select(NetworkPlace.shared))
+        }
+        state.teams.requestAccess = { _, _ in act(.select(NetworkPlace.directory)) }
+        return state.teams.pages(go: { act(.select($0)) })
+    }
+
     var body: some View {
         switch navigation.selection {
         case "needs-you":
@@ -386,6 +404,8 @@ struct ShellPreviewCanvas: View {
                             chooseTheme: { id in ThemeChoice.select(id) })
         case let place where NetworkPlace.hasPage(place):
             NetworkPageView(place: place, pages: state.network.pages(go: { act(.select($0)) }))
+        case let place where TeamsPlace.hasPage(place):
+            TeamsPageView(place: place, pages: teamsPages)
         default:
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",
                                  note: ShellSample.note(for: navigation.selection))
