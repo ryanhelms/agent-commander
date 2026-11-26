@@ -362,4 +362,36 @@ import Testing
         #expect(friend.verbs == [.decline, .accept] && friend.waiting == 600)
         #expect(friend.failure == "Couldn’t accept. Try again." && friend.isPending)
     }
+
+    // MARK: The Hand-offs count
+
+    @Test func sentCountsHandoffsAndReviewsTogetherAndSplitsThemOnlyWhenBothAreListed() {
+        #expect(NetworkSentTally(handoffs: 2, reviews: 1).total == 3)
+        #expect(NetworkSentTally(handoffs: 2, reviews: 1).figure == "3: 2 hand-offs, 1 review")
+        #expect(NetworkSentTally(handoffs: 1, reviews: 2).figure == "3: 1 hand-off, 2 reviews")
+        // One kind alone is the number alone.
+        #expect(NetworkSentTally(handoffs: 4).figure == "4")
+        #expect(NetworkSentTally(reviews: 1).figure == "1")
+        #expect(NetworkSentTally().figure == "0")
+    }
+
+    @Test func theHeadingTheReadoutsAndTheNavigationCountTheRowsThePageLists() throws {
+        let content = Self.content
+        let sent = content.sent
+        // The count is the rows of the table, both kinds.
+        #expect(sent.total == content.workRows.count)
+        #expect(sent == NetworkSentTally(handoffs: 3, reviews: 1) && sent.figure == "4: 3 hand-offs, 1 review")
+        // The readouts above the page are the two halves of the same count.
+        let cells = content.readouts(for: NetworkPlace.handoffs)
+        let handoffs = try #require(cells.first { $0.id == "handoffs" }), reviews = try #require(cells.first { $0.id == "reviews" })
+        #expect(handoffs.value == "3" && reviews.value == "1")
+        // The preview's navigation says the same number, as "sent".
+        let place = try #require(ShellPreviewState(selection: NetworkPlace.handoffs).navigation(attention: 0, answered: []).place(NetworkPlace.handoffs))
+        #expect(place.count == sent.total && place.spoken == "Hand-offs, 4 sent")
+
+        // With no review the heading is the number alone.
+        var alone = content
+        for index in alone.servers.indices { alone.servers[index].reviews = [] }
+        #expect(alone.sent.figure == "3" && alone.sent.total == alone.workRows.count)
+    }
 }

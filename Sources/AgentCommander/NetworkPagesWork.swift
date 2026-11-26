@@ -67,7 +67,7 @@ struct NetworkHandoffsPage: View {
         NetworkPageScaffold(place: NetworkPlace.handoffs, pages: pages) {
             NetworkSplit {
                 VStack(alignment: .leading, spacing: Space.s) {
-                    ShellBandHeading(title: "Sent by you", count: "\(rows.count)",
+                    ShellBandHeading(title: "Sent by you", count: state.sent.figure,
                                      note: "Hand off a task from a friend’s agent in the Directory.")
                     NetworkWorkTable(rows: rows, selected: open(in: rows)?.id, now: state.now,
                                      empty: "You have handed nothing off yet.") { row in

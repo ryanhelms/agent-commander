@@ -34,8 +34,8 @@ struct ShellNetwork: Equatable {
     var workspaces: [MultiplayerPending<MultiplayerWorkspace>] = []
     /// Resource names by `server/resource`, for the requests above.
     var resourceNames: [String: String] = [:]
-    /// Hand-offs the person sent.
-    var handoffs = 0
+    /// Everything the person sent that Hand-offs lists: hand-offs and reviews together.
+    var sent = 0
     var friendsOnline = 0
     /// The presence the servers show now. Nil while signed out everywhere.
     var presence: MultiplayerPersonPresence?
@@ -76,7 +76,11 @@ struct ShellNetwork: Equatable {
         for pending in access {
             resourceNames["\(pending.server)/\(pending.item.resource)"] = model.share.resourceName(pending.item.resource, on: pending.server)
         }
-        handoffs = model.share.allHandoffs.count
+        // The same lists, server by server, that the Hand-offs page reads (NetworkPagesContent.init(model:state:)).
+        sent = model.servers.reduce(into: NetworkSentTally()) { tally, server in
+            tally.handoffs += model.share.handoffs[server.id]?.count ?? 0
+            tally.reviews += model.share.live.reviews[server.id]?.count ?? 0
+        }.total
         friendsOnline = model.tally.friendsOnline
         presence = model.shownPresence
         presenceChoice = model.effectivePresenceChoice
@@ -197,7 +201,7 @@ enum LiveShell {
             row(servers, "Servers", "server.rack", figure: health.total > 0 ? health.figure : nil),
             row("network.directory", "Directory", "magnifyingglass"),
             row(approvals, "Approvals", "checkmark.shield", count: network.waitingApprovals.count, hot: true),
-            row("network.handoffs", "Hand-offs", "arrow.up.right", count: network.handoffs, noun: "sent"),
+            row("network.handoffs", "Hand-offs", "arrow.up.right", count: network.sent, noun: "sent"),
             row("network.threads", "Threads", "bubble.left.and.bubble.right"),
             row("network.audit", "Audit", "list.bullet.rectangle"),
             row("network.fanout", "Fan-out", "arrow.triangle.branch"),

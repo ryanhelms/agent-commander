@@ -40,7 +40,7 @@ import Testing
             MultiplayerPending(server: "srv-studio", item: MultiplayerWorkspace(id: "ws-1", name: "Relay launch"))
         ]
         network.resourceNames = ["srv-studio/res-docs": "docs-agent", "srv-studio/res-relay": "relay-worker"]
-        network.handoffs = 2
+        network.sent = 3
         network.friendsOnline = 3
         network.presence = .online
         network.presenceChoice = .auto
@@ -83,7 +83,7 @@ import Testing
         #expect(network.map(\.title) == ["Servers", "Directory", "Approvals", "Hand-offs", "Threads", "Audit", "Fan-out", "Shared"])
         #expect(network[0].badge == "1/2" && !network[0].isHot)
         #expect(network[2].badge == "2" && network[2].isHot)
-        #expect(network[3].badge == "2" && !network[3].isHot)
+        #expect(network[3].badge == "3" && !network[3].isHot)
 
         #expect(Self.navigation(place: LiveShell.people).contextSections.flatMap(\.items).map(\.place.spoken)
                 == ["People, 3 friends online"])
@@ -259,5 +259,14 @@ import Testing
         #expect(content.isSourceInView(request, ui))
         ui.shellPlace = LiveShell.needsYou
         #expect(!content.isSourceInView(request, ui))
+    }
+
+    @Test func handOffsSaysHowManyWereSentReviewsIncluded() throws {
+        // The fixture network sent two hand-offs and one review: three rows on the page, three here.
+        let place = try #require(Self.navigation().place(NetworkPlace.handoffs))
+        #expect(place.count == 3 && place.badge == "3" && place.spoken == "Hand-offs, 3 sent")
+        var none = Self.network
+        none.sent = 0
+        #expect(Self.navigation(network: none).place(NetworkPlace.handoffs)?.spoken == "Hand-offs")
     }
 }
