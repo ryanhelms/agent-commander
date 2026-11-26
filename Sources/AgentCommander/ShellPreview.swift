@@ -233,6 +233,8 @@ final class ShellPreviewState {
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {
         var next = navigation
         next.apply(action)
+        // What a Teams page said stays on that page.
+        if next.selection != selection { teams.state.left(selection) }
         selection = next.selection
         collapsed = next.collapsed
         if let profile = next.profile { self.profile = profile }
@@ -344,7 +346,7 @@ struct ShellPreviewCanvas: View {
             act(.select(NetworkPlace.shared))
         }
         state.teams.requestAccess = { _, _ in act(.select(NetworkPlace.directory)) }
-        return state.teams.pages(go: { act(.select($0)) })
+        return state.teams.pages(place: navigation.selection, go: { act(.select($0)) })
     }
 
     var body: some View {

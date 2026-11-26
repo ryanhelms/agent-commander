@@ -191,13 +191,21 @@ struct CommanderNavigation: Equatable, Sendable {
         (modes.first { $0.placeIDs.contains(selection) } ?? modes.first)?.id
     }
 
-    /// Where the selected place sits, for a breadcrumb: its group's title, then its own. A place
-    /// named like its group (People in People) is said once.
+    /// Where the selected place sits, for a breadcrumb: its mode, its group's title, then its own
+    /// ("Teams › Workspaces › Relay reconnect", "Teams › Team tools › Hosts"). A name is said once:
+    /// a group named like its mode (Network in Network) or a place named like its group (People in
+    /// People) adds no segment.
     var crumbs: [String] {
         guard let place = selectedPlace else { return [] }
-        let group = groups.first { $0.placeIDs.contains(selection) }
-            ?? modes.flatMap(\.sections).first { $0.placeIDs.contains(selection) }
-        return (group.flatMap { $0.title == place.title ? nil : [$0.title] } ?? []) + [place.title]
+        let mode = modes.first { $0.sections.contains { $0.placeIDs.contains(selection) } }
+        // A mode's own section names the place more closely than a list sidebar's group does.
+        let group = mode?.sections.first { $0.placeIDs.contains(selection) }
+            ?? groups.first { $0.placeIDs.contains(selection) }
+        var crumbs: [String] = []
+        for title in [mode?.title, group?.title, place.title] {
+            if let title, crumbs.last != title { crumbs.append(title) }
+        }
+        return crumbs
     }
 
     // MARK: Arrangements

@@ -143,7 +143,10 @@ struct TeamsWorker: Identifiable, Equatable {
     var state = "Working"
     var tone = Tone.working
     var branch = ""
+    /// Nil while nothing reports checks for the worker: shown as a dash, never as zero.
     var checks: TeamsChecks? = nil
+    /// Its live claims in the workspace, when the combined view lists them.
+    var claims: [MultiplayerClaim] = []
 }
 
 /// A member of a workspace and the workers they run for it.
@@ -157,18 +160,26 @@ struct TeamsMemberWork: Identifiable, Equatable {
 
 /// Someone on a server an admin can moderate, and a device signed in to it.
 struct TeamsMember: Identifiable, Equatable {
+    /// Empty until the member chooses a handle. Such a member can't be suspended yet.
     let handle: String
     var isSuspended = false
     var isAdmin = false
+    /// The list's own ID for the row, for a member without a handle.
+    var key: String? = nil
 
-    var id: String { handle }
+    var id: String { key ?? handle }
+    /// Suspend and Unsuspend name a member by handle.
+    var canModerate: Bool { !handle.isEmpty }
 }
 
 struct TeamsDevice: Identifiable, Equatable {
     let id: String
+    /// The relay stores no device name today, so this is the ID.
     var name: String
     var owner: String
     var lastSeen: Date? = nil
+    /// The device holds a session now. Nil when the relay doesn't say.
+    var isOnline: Bool? = nil
 }
 
 struct TeamsPagesContent {
@@ -188,6 +199,10 @@ struct TeamsPagesContent {
         var policy: MultiplayerRelayPolicy? = nil
         var members: [TeamsMember] = []
         var devices: [TeamsDevice] = []
+        /// The widest scope the relay lets a member share knowledge with, as it tells every member.
+        var knowledgeWidest: MultiplayerKnowledgeScope? = nil
+        /// Why the policy or the member and device lists couldn't be read.
+        var adminProblem: String? = nil
     }
 
     var now = Date()
@@ -272,8 +287,35 @@ struct TeamsPagesContent {
 
     /// The widest scope a server lets knowledge be shared with.
     func widestScope(on server: String) -> MultiplayerKnowledgeScope {
-        self.server(server)?.policy.flatMap { MultiplayerKnowledgeScope(rawValue: $0.knowledgeWidest) } ?? .server
+        knownWidestScope(on: server) ?? .server
     }
+
+    /// The widest scope, when the server has said: from its policy for an admin, or from what it
+    /// tells every member.
+    func knownWidestScope(on server: String) -> MultiplayerKnowledgeScope? {
+        let found = self.server(server)
+        return found?.policy.flatMap { MultiplayerKnowledgeScope(rawValue: $0.knowledgeWidest) } ?? found?.knowledgeWidest
+    }
+
+    /// What a server lets knowledge reach, as one sentence.
+    func reachNote(on server: String) -> String? {
+        guard let widest = knownWidestScope(on: server) else { return nil }
+        let name = serverName(server)
+        return widest == .server ? "\(name) lets knowledge reach everyone on it."
+                                 : "\(name) lets knowledge reach \(TeamsKnowledgePage.reach(widest)) at most."
+    }
+
+    /// A refused share with the server's limit named, when the scope asked for is wider than the
+    /// server allows and the refusal doesn't already say so.
+    func shareRefusal(_ reason: String?, scope: MultiplayerKnowledgeScope, on server: String) -> String? {
+        guard let reason, let widest = knownWidestScope(on: server), scope.rank > widest.rank,
+              let note = reachNote(on: server), !reason.contains(note) else { return reason }
+        return "\(reason) \(note)"
+    }
+
+    /// Who shared a knowledge item: the owner's handle, or the owner as the relay names them when
+    /// it sends no handle.
+    static func owner(of item: MultiplayerKnowledgeItem) -> String { item.ownerHandle.isEmpty ? item.owner : item.ownerHandle }
 
     // MARK: Rows
 
@@ -282,8 +324,11 @@ struct TeamsPagesContent {
         let handle = TeamsKey.split(workspace).map { self.handle(on: $0.server) } ?? ""
         return (cards[workspace] ?? []).filter { $0.known == state }.map { card in
             let key = TeamsKey.result("card", TeamsKey.make(card.id, on: workspace))
+            // A claim's own note ("Nobody else can take it while you hold it.") is true only while
+            // the card is claimed. A refusal stays until the card is tried again.
+            let result = results[key].flatMap { $0.isDone && state != .claimed ? nil : $0 }
             return TeamsBoardCard(workspace: workspace, card: card, isMine: card.isAssigned(to: handle),
-                                  result: results[key], isRunning: running.contains(key))
+                                  result: result, isRunning: running.contains(key))
         }
     }
 
@@ -299,7 +344,8 @@ struct TeamsPagesContent {
             return member.workers.enumerated().map { index, worker in
                 TeamsCombinedRow(id: "\(member.handle)/\(worker.id)", handle: member.handle, isOnline: member.isOnline, isMine: mine,
                                  showsMember: index == 0, worker: worker,
-                                 claim: found.workspace.claims.first { $0.holder == "\(member.handle)/\(worker.name)" })
+                                 claim: worker.claims.first ?? found.workspace.claims.first { $0.holder == "\(member.handle)/\(worker.name)" },
+                                 moreClaims: max(0, worker.claims.count - 1))
             }
         }
     }
@@ -329,7 +375,8 @@ struct TeamsPagesContent {
     var knowledgeRows: [TeamsKnowledgeRow] {
         servers.flatMap { server in
             server.knowledge.map { item in
-                TeamsKnowledgeRow(server: server.id, serverName: server.name, item: item, isMine: item.owner == server.handle,
+                TeamsKnowledgeRow(server: server.id, serverName: server.name, item: item,
+                                  isMine: !server.handle.isEmpty && Self.owner(of: item) == server.handle,
                                   visibility: MultiplayerKnowledgeScope.describe(item.visibility) { groupName($0, on: server.id) })
             }
         }
@@ -339,7 +386,7 @@ struct TeamsPagesContent {
     func memberRows(on server: String) -> [TeamsMemberRow] {
         (self.server(server)?.members ?? []).map { member in
             let key = TeamsKey.result("member", TeamsKey.make(member.handle, on: server))
-            return TeamsMemberRow(server: server, member: member, isYou: member.handle == handle(on: server),
+            return TeamsMemberRow(server: server, member: member, isYou: member.canModerate && member.handle == handle(on: server),
                                   result: results[key], isRunning: running.contains(key))
         }
     }
@@ -449,12 +496,17 @@ struct TeamsCombinedRow: Identifiable, Equatable {
     let showsMember: Bool
     let worker: TeamsWorker?
     let claim: MultiplayerClaim?
+    /// Claims the worker holds beside the one shown.
+    var moreClaims = 0
 
     var spoken: String {
         var parts = [handle.multiplayerDisplay]
         guard let worker else { return parts[0] + ", no worker here" }
         parts.append("\(worker.name.multiplayerDisplay), \(worker.state)")
-        if let claim { parts.append("holds \(claim.kindTitle.lowercased()) \(claim.key.multiplayerDisplay)") }
+        if let claim {
+            parts.append("holds \(claim.kindTitle.lowercased()) \(claim.key.multiplayerDisplay)"
+                         + (moreClaims > 0 ? " and \(moreClaims) more" : ""))
+        }
         if !worker.branch.isEmpty { parts.append("branch \(worker.branch.multiplayerDisplay)") }
         if let checks = worker.checks { parts.append("checks: \(checks.title.lowercased())") }
         return parts.joined(separator: ", ")
@@ -508,7 +560,7 @@ struct TeamsMemberRow: Identifiable, Equatable {
     var result: NetworkActionResult? = nil
     var isRunning = false
 
-    var id: String { TeamsKey.make(member.handle, on: server) }
+    var id: String { TeamsKey.make(member.id, on: server) }
 }
 
 // MARK: - Selection, drafts, intents
@@ -520,6 +572,8 @@ enum TeamsComposer: Hashable {
     case group(server: String)
     case knowledge(server: String)
     case workspace(server: String)
+    /// The owner's edit of a workspace, by workspace key.
+    case editWorkspace(String)
 
     var title: String {
         switch self {
@@ -529,6 +583,7 @@ enum TeamsComposer: Hashable {
         case .group: "New group"
         case .knowledge: "Share knowledge"
         case .workspace: "New workspace"
+        case .editWorkspace: "Edit workspace"
         }
     }
 }
@@ -634,6 +689,8 @@ enum TeamsConfirmation: Equatable {
     case releaseCard(card: String, workspace: String)
     case removeQueued(entry: String, workspace: String)
     case merge(workspace: String)
+    case saveWorkspace(workspace: String)
+    case leaveWorkspace(workspace: String)
     case deleteGroup(String)
     case removeMember(handle: String, group: String)
     case install(TeamsInstallDraft)
@@ -669,6 +726,7 @@ struct TeamsPagesDrafts: Equatable {
     var cardResult = ""
     var claim = MultiplayerClaimDraft()
     var queue = MultiplayerQueueDraft()
+    var workspace = MultiplayerWorkspaceEdit()
     var groupName = ""
     var hostRun = MultiplayerHostRunDraft()
     var knowledge = MultiplayerKnowledgeDraft()
@@ -686,6 +744,8 @@ enum TeamsIntent {
 
     // Workspace
     case newWorkspace(server: String)
+    case startEdit(workspace: String), askSaveWorkspace
+    case askLeave(workspace: String)
     case showBand(TeamsBand, workspace: String)
     case openCard(String?, workspace: String)
     case newCard(workspace: String), sendCard
@@ -747,18 +807,24 @@ struct TeamsPageActions {
     }
 
     // Workspace
-    var claim: @MainActor (MultiplayerClaimDraft, _ workspace: String, _ server: String) async -> Result
-        = { draft, _, server in unavailable(draft.trimmedKey, server) }
+    /// Saves the owner's edit, sending only what differs from the workspace as it stands.
+    var editWorkspace: @MainActor (MultiplayerWorkspaceEdit, _ workspace: String, _ server: String) async -> Result
+        = { _, workspace, server in unavailable(workspace, server) }
+    /// Leaves a workspace. The owner can't.
+    var leaveWorkspace: @MainActor (_ workspace: String, _ server: String) async -> Result
+        = { workspace, server in unavailable(workspace, server) }
+    var claim: @MainActor (MultiplayerClaimDraft, _ workspace: String, _ server: String) async -> TeamsClaimOutcome
+        = { draft, _, server in .failed(id: draft.trimmedKey, server: server, reason: "Not available.") }
     var release: @MainActor (_ claim: String, _ workspace: String, _ server: String) async -> Result
         = { claim, _, server in unavailable(claim, server) }
     var createCard: @MainActor (MultiplayerCardDraft, _ workspace: String, _ server: String) async -> Result
         = { _, workspace, server in unavailable(workspace, server) }
-    var claimCard: @MainActor (_ card: String, _ workspace: String, _ server: String) async -> Result
-        = { card, _, server in unavailable(card, server) }
+    var claimCard: @MainActor (_ card: String, _ workspace: String, _ server: String) async -> TeamsClaimOutcome
+        = { card, _, server in .failed(id: card, server: server, reason: "Not available.") }
     var releaseCard: @MainActor (_ card: String, _ workspace: String, _ server: String) async -> Result
         = { card, _, server in unavailable(card, server) }
-    var completeCard: @MainActor (_ card: String, _ result: String, _ workspace: String, _ server: String) async -> Result
-        = { card, _, _, server in unavailable(card, server) }
+    var completeCard: @MainActor (_ card: String, _ result: String, _ workspace: String, _ server: String) async -> TeamsClaimOutcome
+        = { card, _, _, server in .failed(id: card, server: server, reason: "Not available.") }
     var queueAdd: @MainActor (MultiplayerQueueDraft, _ workspace: String, _ server: String) async -> Result
         = { draft, _, server in unavailable(draft.trimmedBranch, server) }
     var removeQueued: @MainActor (_ entry: String, _ workspace: String, _ server: String) async -> Result
@@ -809,6 +875,62 @@ struct TeamsPageActions {
         = { device, server in unavailable(device, server) }
 }
 
+/// How a claim, or a card's claim or completion, ended: the result, and who stopped it when the
+/// relay refused because someone else holds the work.
+struct TeamsClaimOutcome: Equatable {
+    var result: NetworkActionResult
+    var refusal: MultiplayerClaimRefusal? = nil
+
+    static func done(id: String, server: String, message: String?) -> TeamsClaimOutcome {
+        TeamsClaimOutcome(result: .done(id: id, server: server, message: message))
+    }
+
+    static func failed(id: String, server: String, reason: String, refusal: MultiplayerClaimRefusal? = nil) -> TeamsClaimOutcome {
+        TeamsClaimOutcome(result: .failed(id: id, server: server, reason: reason), refusal: refusal)
+    }
+
+    /// The result with the holder, the agent and the claim named from the refusal's own fields.
+    /// `claims` are the workspace's, so the claim is named by what it holds.
+    /// `known` is the claim when the caller knows what was asked for: a card's claim is on that card.
+    func named(in claims: [MultiplayerClaim], known: MultiplayerClaim? = nil, card title: (String) -> String?) -> NetworkActionResult {
+        guard let refusal, case .failed(let id, let server, let reason) = result else { return result }
+        let sentence = Self.sentence(refusal, blocking: Self.blocking(refusal, in: claims) ?? known, card: title)
+        return .failed(id: id, server: server, reason: reason.contains(sentence) ? reason : "\(Self.lead(reason)) \(sentence)")
+    }
+
+    /// The claim a refusal names. The list may be older than the refusal, so a claim it names by
+    /// ID is found by that ID alone; the holder is tried only when no ID is given.
+    static func blocking(_ refusal: MultiplayerClaimRefusal, in claims: [MultiplayerClaim]) -> MultiplayerClaim? {
+        refusal.claim.isEmpty ? refusal.blocking(in: claims) : claims.first { $0.id == refusal.claim }
+    }
+
+    /// The row to mark for a refusal: the claim's ID.
+    static func conflict(_ refusal: MultiplayerClaimRefusal, in claims: [MultiplayerClaim]) -> String? {
+        refusal.claim.isEmpty ? refusal.blocking(in: claims)?.id : refusal.claim
+    }
+
+    /// The first sentence of a refusal: what couldn't be done.
+    private static func lead(_ reason: String) -> String {
+        guard let stop = reason.firstIndex(of: ".") else { return reason }
+        return String(reason[...stop])
+    }
+
+    /// "sam holds it with the agent sam-codex, under the issue claim 12."
+    static func sentence(_ refusal: MultiplayerClaimRefusal, blocking: MultiplayerClaim?, card title: (String) -> String?) -> String {
+        let who = refusal.holder.isEmpty ? "Someone else" : refusal.holder.multiplayerDisplay
+        var text = "\(who) holds it"
+        if !refusal.agent.isEmpty { text += " with the agent \(refusal.agent.multiplayerDisplay)" }
+        if let blocking {
+            let isCard = blocking.kind == MultiplayerClaim.Kind.card.rawValue
+            let key = (isCard ? title(blocking.key) : nil) ?? blocking.key
+            text += ", under the \(blocking.kindTitle.lowercased()) claim \(key.multiplayerDisplay)"
+        } else if !refusal.claim.isEmpty {
+            text += ", under claim \(refusal.claim.multiplayerDisplay)"
+        }
+        return text + "."
+    }
+}
+
 // MARK: - The window's state
 
 /// What the window keeps for the Teams pages, and what each intent does to it. It reads the
@@ -826,29 +948,49 @@ final class TeamsPagesState {
     var notice: String? = nil
     var failure: String? = nil
     var refusal: String? = nil
+    /// The place whose action raised `notice` or `failure`. The band shows on that page alone, and
+    /// both are cleared when the window leaves it. Nil for a caller that names no place.
+    private(set) var messagePlace: String? = nil
+    /// Who stopped the last claim on a card, by card key, so the card can say who holds it.
+    private(set) var refusals: [String: MultiplayerClaimRefusal] = [:]
     /// The one action that isn't a row's: what it is doing.
     var working: String? = nil
 
     /// The content with the window's own reads and results laid over it.
-    func shown(_ content: TeamsPagesContent) -> TeamsPagesContent {
+    /// `place` is the page being drawn: a message raised on another page is left out.
+    func shown(_ content: TeamsPagesContent, place: String? = nil) -> TeamsPagesContent {
         var shown = content
         shown.results = results.results
         shown.running = results.running
         shown.search = search
         shown.hostRuns = hostRuns
-        shown.notice = notice
-        shown.failure = failure
+        let isHere = place == nil || messagePlace == nil || messagePlace == place
+        shown.notice = isHere ? notice : nil
+        shown.failure = isHere ? failure : nil
         shown.refusal = refusal
         shown.working = working
         return shown
     }
 
-    func pages(_ content: TeamsPagesContent, through actions: TeamsPageActions, go: @escaping (String) -> Void,
+    /// `place` is the page these values are for. Every action sent through them reports to that
+    /// page alone.
+    func pages(_ content: TeamsPagesContent, place: String? = nil, through actions: TeamsPageActions, go: @escaping (String) -> Void,
                host: ((TeamsHosted) -> AnyView)? = nil) -> TeamsPages {
-        let laid = shown(content)
+        let laid = shown(content, place: place)
         return TeamsPages(content: laid, selection: selection,
                           drafts: Binding(get: { [self] in drafts }, set: { [self] in drafts = $0 }),
-                          send: { [self] intent in send(intent, in: laid, through: actions, go: go) }, host: host)
+                          send: { [self] intent in send(intent, in: laid, through: actions, go: go, from: place) }, host: host)
+    }
+
+    /// The window left a page: what that page last said goes with it, and so does a second press
+    /// that was waiting there.
+    func left(_ place: String) {
+        if messagePlace == nil || messagePlace == place {
+            notice = nil
+            failure = nil
+            messagePlace = nil
+        }
+        selection.confirming = nil
     }
 
     /// A host put itself away.
@@ -863,22 +1005,34 @@ final class TeamsPagesState {
         }
     }
 
+    /// Who stopped the last claim on a card.
+    func refusal(card: String, in workspace: String) -> MultiplayerClaimRefusal? { refusals[TeamsKey.make(card, on: workspace)] }
+
     /// A host finished a change. A form that went through is put away and its confirmation shows
     /// across the page; a refusal stays on the host, which shows it itself.
-    func hostFinished(_ hosted: TeamsHosted, _ result: NetworkActionResult) {
+    func hostFinished(_ hosted: TeamsHosted, _ result: NetworkActionResult, from place: String? = nil) {
         guard result.isDone else { return }
         switch hosted {
         case .workspace, .claim, .queue, .knowledge: selection.composer = nil
-        case .card, .hostRun, .policy: break
+        case .card(let card, let workspace):
+            // The card moved on, so what its last claim said no longer holds.
+            let key = TeamsKey.make(card, on: workspace)
+            results.clear(TeamsKey.result("card", key))
+            refusals[key] = nil
+        // These say how they ended themselves: the run's exit code, the policy's "Saved".
+        case .hostRun, .policy: return
         }
-        report(result)
+        report(result, from: place)
     }
 
-    /// Says how an action ended across the page.
-    func report(_ result: NetworkActionResult) {
+    /// Says how an action ended, on the page that raised it. `place` is that page; the band shows
+    /// there alone (`shown`), so an action that ends after the window moved on says nothing on
+    /// the page it moved to.
+    func report(_ result: NetworkActionResult, from place: String? = nil) {
+        messagePlace = place
         if result.isDone {
             failure = nil
-            if let message = result.message { notice = message }
+            notice = result.message
         } else {
             notice = nil
             failure = result.reason
@@ -886,7 +1040,7 @@ final class TeamsPagesState {
     }
 
     /// Runs a form's send: the form closes when it went through and keeps its refusal when it didn't.
-    private func submit(_ key: String, _ work: @escaping @MainActor () async -> NetworkActionResult,
+    private func submit(_ key: String, from place: String?, _ work: @escaping @MainActor () async -> NetworkActionResult,
                         done: @escaping @MainActor () -> Void = {}) {
         refusal = nil
         results.run(key, work) { [self] result in
@@ -894,22 +1048,24 @@ final class TeamsPagesState {
                 selection.composer = nil
                 selection.conflict = nil
                 done()
-                report(result)
+                report(result, from: place)
             } else {
                 refusal = result.reason
             }
         }
     }
 
-    private func run(_ key: String, _ work: @escaping @MainActor () async -> NetworkActionResult,
+    private func run(_ key: String, from place: String?, _ work: @escaping @MainActor () async -> NetworkActionResult,
                      done: @escaping @MainActor () -> Void = {}) {
         results.run(key, work) { [self] result in
             if result.isDone { done() }
-            report(result)
+            report(result, from: place)
         }
     }
 
-    func send(_ intent: TeamsIntent, in content: TeamsPagesContent, through actions: TeamsPageActions, go: (String) -> Void) {
+    /// `place` is the page the intent came from. What the action says is shown there alone.
+    func send(_ intent: TeamsIntent, in content: TeamsPagesContent, through actions: TeamsPageActions,
+              go: @escaping (String) -> Void, from place: String? = nil) {
         switch intent {
         case .go(let place):
             go(place)
@@ -924,11 +1080,31 @@ final class TeamsPagesState {
         case .cancelConfirmation:
             selection.confirming = nil
         case .confirm:
-            confirm(in: content, through: actions)
+            confirm(in: content, through: actions, go: go, from: place)
 
         // Workspace
         case .newWorkspace(let server):
             open(.workspace(server: server))
+        case .startEdit(let workspace):
+            // Only the owner edits. The form starts from the workspace as it stands.
+            guard let found = content.workspace(workspace), found.workspace.isOwned(by: found.server.handle) else { return }
+            drafts.workspace = MultiplayerWorkspaceEdit(found.workspace)
+            open(.editWorkspace(workspace))
+        case .askSaveWorkspace:
+            guard case .editWorkspace(let workspace)? = selection.composer, let found = content.workspace(workspace) else { return }
+            if let hint = drafts.workspace.hint {
+                refusal = hint
+            } else if drafts.workspace.changes(from: found.workspace).isEmpty {
+                refusal = "Nothing changed yet."
+            } else {
+                refusal = nil
+                selection.confirming = .saveWorkspace(workspace: workspace)
+            }
+        case .askLeave(let workspace):
+            // The owner can't leave: the relay refuses it, so it isn't offered.
+            guard let found = content.workspace(workspace), !found.workspace.isOwned(by: found.server.handle) else { return }
+            selection.composer = nil
+            selection.confirming = .leaveWorkspace(workspace: workspace)
         case .showBand(let band, let workspace):
             selection.band[workspace] = band
             selection.composer = nil
@@ -945,19 +1121,31 @@ final class TeamsPagesState {
         case .sendCard:
             guard case .card(let workspace)? = selection.composer, let parts = TeamsKey.split(workspace), drafts.card.canSend else { return }
             let draft = drafts.card
-            submit(TeamsKey.result("composer", workspace)) { await actions.createCard(draft, parts.id, parts.server) }
+            submit(TeamsKey.result("composer", workspace), from: place) { await actions.createCard(draft, parts.id, parts.server) }
         case .claimCard(let card, let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
-            results.run(TeamsKey.result("card", TeamsKey.make(card.id, on: workspace)), keeps: true) {
-                await actions.claimCard(card.id, parts.id, parts.server)
+            let key = TeamsKey.make(card.id, on: workspace)
+            let claims = content.workspace(workspace)?.workspace.claims ?? []
+            refusals[key] = nil
+            results.run(TeamsKey.result("card", key), keeps: true) { [self] in
+                let outcome = await actions.claimCard(card.id, parts.id, parts.server)
+                // A refused claim names who holds the card, and marks their claim's row.
+                refusals[key] = outcome.refusal
+                guard let refusal = outcome.refusal else { return outcome.result }
+                selection.conflict = TeamsClaimOutcome.conflict(refusal, in: claims)
+                // The blocking claim is newer than the list this page drew from. It is on this card.
+                let held = MultiplayerClaim(id: refusal.claim, kind: MultiplayerClaim.Kind.card.rawValue, key: card.id,
+                                            holder: refusal.holderName, expiresAt: nil)
+                return outcome.named(in: claims, known: held) { content.card($0, in: workspace)?.title }
             }
         case .askReleaseCard(let card, let workspace):
             selection.confirming = .releaseCard(card: card.id, workspace: workspace)
         case .completeCard(let card, let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
             let text = drafts.cardResult.trimmingCharacters(in: .whitespacesAndNewlines)
-            run(TeamsKey.result("card", TeamsKey.make(card.id, on: workspace)),
-                { await actions.completeCard(card.id, text, parts.id, parts.server) },
+            let claims = content.workspace(workspace)?.workspace.claims ?? []
+            run(TeamsKey.result("card", TeamsKey.make(card.id, on: workspace)), from: place,
+                { await actions.completeCard(card.id, text, parts.id, parts.server).named(in: claims) { content.card($0, in: workspace)?.title } },
                 done: { [self] in drafts.cardResult = "" })
         case .startClaim(let workspace):
             drafts.claim = MultiplayerClaimDraft()
@@ -968,14 +1156,21 @@ final class TeamsPagesState {
             // A refused claim names its holder; the row it overlaps is found by that holder.
             let claims = content.workspace(workspace)?.workspace.claims ?? []
             refusal = nil
-            results.run(TeamsKey.result("composer", workspace), { await actions.claim(draft, parts.id, parts.server) }) { [self] result in
+            var stopped: MultiplayerClaimRefusal?
+            results.run(TeamsKey.result("composer", workspace), {
+                let outcome = await actions.claim(draft, parts.id, parts.server)
+                stopped = outcome.refusal
+                return outcome.named(in: claims) { content.card($0, in: workspace)?.title }
+            }) { [self] result in
                 if result.isDone {
                     selection.composer = nil
                     selection.conflict = nil
-                    report(result)
+                    report(result, from: place)
                 } else {
                     refusal = result.reason
-                    selection.conflict = claims.first { result.reason?.contains($0.holder) == true }?.id
+                    // The refusal's own fields name the claim. Without them, the holder in its sentence does.
+                    selection.conflict = stopped.flatMap { TeamsClaimOutcome.conflict($0, in: claims) }
+                        ?? claims.first { result.reason?.contains($0.holder) == true }?.id
                 }
             }
         case .askRelease(let claim, let workspace):
@@ -988,7 +1183,7 @@ final class TeamsPagesState {
         case .sendQueue:
             guard case .queue(let workspace)? = selection.composer, let parts = TeamsKey.split(workspace), drafts.queue.canSend else { return }
             let draft = drafts.queue
-            submit(TeamsKey.result("composer", workspace)) { await actions.queueAdd(draft, parts.id, parts.server) }
+            submit(TeamsKey.result("composer", workspace), from: place) { await actions.queueAdd(draft, parts.id, parts.server) }
         case .askRemoveQueued(let entry, let workspace):
             selection.confirming = .removeQueued(entry: entry.id, workspace: workspace)
         case .askMerge(let workspace):
@@ -1012,10 +1207,10 @@ final class TeamsPagesState {
             guard case .group(let server)? = selection.composer else { return }
             let name = drafts.groupName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { return }
-            submit(TeamsKey.result("composer", server)) { await actions.createGroup(name, server) }
+            submit(TeamsKey.result("composer", server), from: place) { await actions.createGroup(name, server) }
         case .addMember(let handle, let group):
             guard let parts = TeamsKey.split(group) else { return }
-            run(TeamsKey.result("group", group)) { await actions.setMember(handle, parts.id, parts.server, true) }
+            run(TeamsKey.result("group", group), from: place) { await actions.setMember(handle, parts.id, parts.server, true) }
         case .askRemoveMember(let handle, let group):
             selection.confirming = .removeMember(handle: handle, group: group)
         case .askDeleteGroup(let group):
@@ -1037,7 +1232,7 @@ final class TeamsPagesState {
                 if let reply = answer.1 { hostRuns[key] = reply }
                 return answer.0
             }, finished: { [self] result in
-                if !result.isDone { report(result) }
+                if !result.isDone { report(result, from: place) }
             })
         case .shareHost(let resource, let server):
             actions.shareHost?(resource, server)
@@ -1058,7 +1253,12 @@ final class TeamsPagesState {
         case .sendShare:
             guard case .knowledge(let server)? = selection.composer, drafts.knowledge.canSend else { return }
             let draft = drafts.knowledge
-            submit(TeamsKey.result("composer", server)) { await actions.shareKnowledge(draft, server) }
+            submit(TeamsKey.result("composer", server), from: place) {
+                let result = await actions.shareKnowledge(draft, server)
+                // A relay that only says "Forbidden." is given the limit the window knows.
+                guard case .failed(let id, let on, let reason) = result else { return result }
+                return .failed(id: id, server: on, reason: content.shareRefusal(reason, scope: draft.scope, on: server) ?? reason)
+            }
         case .askInstall(let item, let server):
             let file = MultiplayerKnowledgeKind(rawValue: item.kind) == .mcp ? actions.chooseInstallFile?(item.name.multiplayerDisplay) : nil
             // An MCP item with no file chosen installs nothing.
@@ -1085,7 +1285,7 @@ final class TeamsPagesState {
         case .endorse(let resource, let server):
             let skill = drafts.skill.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !skill.isEmpty else { return }
-            run(TeamsKey.result("endorse", TeamsKey.make(resource, on: server)),
+            run(TeamsKey.result("endorse", TeamsKey.make(resource, on: server)), from: place,
                 { await actions.endorse(resource, skill, server) },
                 done: { [self] in
                     drafts.skill = ""
@@ -1111,7 +1311,7 @@ final class TeamsPagesState {
         case .askSuspend(let handle, let server):
             selection.confirming = .suspend(handle: handle, server: server)
         case .unsuspend(let handle, let server):
-            run(TeamsKey.result("member", TeamsKey.make(handle, on: server))) { await actions.setSuspended(handle, server, false) }
+            run(TeamsKey.result("member", TeamsKey.make(handle, on: server)), from: place) { await actions.setSuspended(handle, server, false) }
         case .askRevoke(let device, let server):
             selection.confirming = .revokeDevice(device: device, server: server)
         }
@@ -1125,41 +1325,56 @@ final class TeamsPagesState {
     }
 
     /// The second press: runs what was waiting for it.
-    private func confirm(in content: TeamsPagesContent, through actions: TeamsPageActions) {
+    private func confirm(in content: TeamsPagesContent, through actions: TeamsPageActions,
+                         go: @escaping (String) -> Void, from place: String?) {
         guard let waiting = selection.confirming else { return }
         selection.confirming = nil
         switch waiting {
         case .releaseClaim(let claim, let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
-            run(TeamsKey.result("claim", TeamsKey.make(claim, on: workspace))) { await actions.release(claim, parts.id, parts.server) }
+            run(TeamsKey.result("claim", TeamsKey.make(claim, on: workspace)), from: place) { await actions.release(claim, parts.id, parts.server) }
         case .releaseCard(let card, let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
-            run(TeamsKey.result("card", TeamsKey.make(card, on: workspace)),
+            run(TeamsKey.result("card", TeamsKey.make(card, on: workspace)), from: place,
                 { await actions.releaseCard(card, parts.id, parts.server) },
                 done: { [self] in drafts.cardResult = "" })
         case .removeQueued(let entry, let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
-            run(TeamsKey.result("queue", TeamsKey.make(entry, on: workspace))) { await actions.removeQueued(entry, parts.id, parts.server) }
+            run(TeamsKey.result("queue", TeamsKey.make(entry, on: workspace)), from: place) { await actions.removeQueued(entry, parts.id, parts.server) }
         case .merge(let workspace):
             guard let parts = TeamsKey.split(workspace) else { return }
-            run(TeamsKey.result("merge", workspace)) { await actions.runMerge(parts.id, parts.server) }
+            run(TeamsKey.result("merge", workspace), from: place) { await actions.runMerge(parts.id, parts.server) }
+        case .saveWorkspace(let workspace):
+            guard let parts = TeamsKey.split(workspace) else { return }
+            let edit = drafts.workspace
+            submit(TeamsKey.result("composer", workspace), from: place) { await actions.editWorkspace(edit, parts.id, parts.server) }
+        case .leaveWorkspace(let workspace):
+            guard let parts = TeamsKey.split(workspace) else { return }
+            // The workspace leaves the navigation, so the window goes to where the others are listed
+            // and says there what happened.
+            results.run(TeamsKey.result("workspace", workspace), { await actions.leaveWorkspace(parts.id, parts.server) }) { [self] result in
+                guard result.isDone else { return report(result, from: place) }
+                selection.band[workspace] = nil
+                go(TeamsPlace.workspaces)
+                report(result, from: nil)
+            }
         case .deleteGroup(let group):
             guard let parts = TeamsKey.split(group) else { return }
-            run(TeamsKey.result("group", group), { await actions.deleteGroup(parts.id, parts.server) },
+            run(TeamsKey.result("group", group), from: place, { await actions.deleteGroup(parts.id, parts.server) },
                 done: { [self] in if selection.group == group { selection.group = nil } })
         case .removeMember(let handle, let group):
             guard let parts = TeamsKey.split(group) else { return }
-            run(TeamsKey.result("group", group)) { await actions.setMember(handle, parts.id, parts.server, false) }
+            run(TeamsKey.result("group", group), from: place) { await actions.setMember(handle, parts.id, parts.server, false) }
         case .install(let draft):
-            run(TeamsKey.result("install", TeamsKey.make(draft.item, on: draft.server))) { await actions.installKnowledge(draft) }
+            run(TeamsKey.result("install", TeamsKey.make(draft.item, on: draft.server)), from: place) { await actions.installKnowledge(draft) }
         case .setPolicy(let server):
             guard let saved = content.server(server)?.policy else { return }
             let draft = drafts.policy
-            run(TeamsKey.result("policy", server)) { await actions.setPolicy(draft, saved, server) }
+            run(TeamsKey.result("policy", server), from: place) { await actions.setPolicy(draft, saved, server) }
         case .suspend(let handle, let server):
-            run(TeamsKey.result("member", TeamsKey.make(handle, on: server))) { await actions.setSuspended(handle, server, true) }
+            run(TeamsKey.result("member", TeamsKey.make(handle, on: server)), from: place) { await actions.setSuspended(handle, server, true) }
         case .revokeDevice(let device, let server):
-            run(TeamsKey.result("device", TeamsKey.make(device, on: server))) { await actions.revokeDevice(device, server) }
+            run(TeamsKey.result("device", TeamsKey.make(device, on: server)), from: place) { await actions.revokeDevice(device, server) }
         }
     }
 }

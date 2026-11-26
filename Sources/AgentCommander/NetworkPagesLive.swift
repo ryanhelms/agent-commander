@@ -126,25 +126,57 @@ extension NetworkActionResult {
     }
 }
 
+/// Answers wait their turn. The network model runs one action at a time and refuses a second
+/// while the first is in flight, so an answer pressed on another row was lost. Each answer sent
+/// from the window joins this line instead: it goes when the answers before it have ended and the
+/// model is free. One that waits longer than `patience` is sent anyway, and the model's own
+/// sentence says why it wasn't taken.
+@MainActor
+final class NetworkAnswerQueue {
+    static let shared = NetworkAnswerQueue()
+
+    var patience: Duration = .seconds(20)
+    private var last: Task<Void, Never>?
+
+    func send(on model: MultiplayerModel, _ work: @escaping @MainActor () async -> NetworkActionResult) async -> NetworkActionResult {
+        let previous = last, patience = patience
+        let task = Task { @MainActor () -> NetworkActionResult in
+            await previous?.value
+            let clock = ContinuousClock(), deadline = clock.now + patience
+            while model.isBusy, clock.now < deadline { try? await Task.sleep(for: .milliseconds(40)) }
+            return await work()
+        }
+        last = Task { @MainActor in _ = await task.value }
+        return await task.value
+    }
+}
+
 extension NetworkPageActions {
     /// Every result-bearing network action, sent to the network model's own per-request calls
     /// (MultiplayerActions.swift). Each comes back for that one request, so a row shows its own
-    /// outcome; the model's banner text is unchanged.
-    @MainActor static func live(_ model: MultiplayerModel) -> NetworkPageActions {
+    /// outcome; the model's banner text is unchanged. The answers (accept, decline, approve, deny,
+    /// withdraw) go through `NetworkAnswerQueue`, so a second one pressed at once is not lost.
+    @MainActor static func live(_ model: MultiplayerModel, queue: NetworkAnswerQueue = .shared) -> NetworkPageActions {
         NetworkPageActions(
-            acceptFriend: { request, server in NetworkActionResult(await model.acceptFriend(request, on: server)) },
+            acceptFriend: { request, server in
+                await queue.send(on: model) { NetworkActionResult(await model.acceptFriend(request, on: server)) }
+            },
             // A declined request leaves its row at once, so the page's band says what happened.
             declineFriend: { request, server in
-                let result = NetworkActionResult(await model.declineFriend(request, on: server))
-                if result.isDone, model.notice == nil {
-                    let who = request.handle.isEmpty ? "They" : request.handle.multiplayerDisplay
-                    model.post(notice: result.message ?? "Declined. \(who) can ask again.")
+                await queue.send(on: model) {
+                    let result = NetworkActionResult(await model.declineFriend(request, on: server))
+                    if result.isDone, model.notice == nil {
+                        let who = request.handle.isEmpty ? "They" : request.handle.multiplayerDisplay
+                        model.post(notice: result.message ?? "Declined. \(who) can ask again.")
+                    }
+                    return result
                 }
-                return result
             },
-            decide: { approval, server, approve in NetworkActionResult(await model.decide(approval, on: server, approve: approve)) },
+            decide: { approval, server, approve in
+                await queue.send(on: model) { NetworkActionResult(await model.decide(approval, on: server, approve: approve)) }
+            },
             removeAccess: { request, server, declining in
-                NetworkActionResult(await model.remove(request, on: server, declining: declining))
+                await queue.send(on: model) { NetworkActionResult(await model.remove(request, on: server, declining: declining)) }
             },
             // Fills the sheet's draft without moving the tray. The window then hosts the sheet.
             prepareGrant: { server, handle, resource, actions in
@@ -153,8 +185,6 @@ extension NetworkPageActions {
             // The hosted sheet sends its own grant. This is the same call, for a caller without it.
             sendGrant: { _ in NetworkActionResult(await model.sendGrant()) },
             chooseCheckout: { artifact in MultiplayerFilePanel.chooseCheckout(for: artifact) },
-            // `apply` is the share model's own call. It reports through the model's banner, so the
-            // result for this artifact is read from the banner once the call has ended.
             // The model answers for this one artifact, and names a saved file's final name.
             applyArtifact: { draft, row in
                 NetworkActionResult(await model.apply(artifact: draft.index, of: row, on: draft.server, checkout: draft.checkout))
@@ -237,7 +267,12 @@ struct LiveNetworkPage: View {
             }
         }
         .task(id: place) { enter() }
-        // The band says how the last action on this page ended. It does not follow to another page.
+        // The band says how the last action on this page ended. It does not follow to another page,
+        // and what an action on a Teams page or in the tray said does not arrive with the window.
+        .onAppear {
+            model.dismissNotice()
+            model.dismissFailure()
+        }
         .onChange(of: place) { _, _ in
             model.dismissNotice()
             model.dismissFailure()

@@ -1696,6 +1696,8 @@ struct CockpitView: View {
     @State private var ui = CockpitView.initialState()
     /// The floating window for the PiP presentation. It lives as long as the live page.
     @State private var floatingPanel: FloatingAttentionController?
+    /// This window's place with the open-in-window router, while it shows.
+    @State private var routerAttachment: Int?
 
     /// Where the developer's choice of attention presentation is kept on this Mac.
     private static let attentionPresentationKey = "attentionPresentation"
@@ -1742,6 +1744,19 @@ struct CockpitView: View {
             // The window is one more viewer of the network model: it polls while the window shows.
             .onAppear { network.open() }
             .onDisappear { network.close() }
+            // The tray's "Open in Agent Commander" arrives here (CommanderWindowRouter.swift). A
+            // request sent while the window was closed is handed over as it reopens.
+            .onAppear {
+                let ui = ui, network = network
+                routerAttachment = CommanderWindowRouter.shared.attach { request in
+                    let places = LiveShell.places(network: ShellNetwork(model: network))
+                    request.destination(in: CommanderOpenCatalog(places: places, model: network)).show(in: ui, model: network)
+                }
+            }
+            .onDisappear {
+                if let routerAttachment { CommanderWindowRouter.shared.detach(routerAttachment) }
+                routerAttachment = nil
+            }
             // Its own task: a missing or old catalog endpoint never holds up the workspace feed.
             .task { await model.adapterUpdates.follow() }
             .onAppear {

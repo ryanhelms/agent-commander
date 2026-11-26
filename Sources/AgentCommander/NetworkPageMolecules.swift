@@ -69,7 +69,9 @@ struct ShellBandHeading<Trailing: View>: View {
             .accessibilityAddTraits(.isHeader)
             .accessibilityLabel(count.map { "\(title), \($0)" } ?? title)
             if let note {
-                Text(note).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
+                // A sentence wraps in a narrow window. It is never cut short.
+                Text(note).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: Space.s)
             trailing

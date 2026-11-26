@@ -10,7 +10,7 @@ import SwiftUI
 //   ShellNetworkActions   the network model's intents the shell can ask for
 //   ShellContext          both, plus how the toolbar is drawn and the wall's live work (WallLiveWork);
 //                         given to CockpitScreen by the live page
-//   LiveShell             place IDs, navigation(…) and inbox(…) built from live state
+//   LiveShell             place IDs, navigation(…), places(…) and inbox(…) built from live state
 //   LiveNeedsYouPage      the inbox page, re-read each second while a request counts down
 
 /// The network model's state as the main window shows it.
@@ -248,6 +248,12 @@ enum LiveShell {
         return CommanderNavigation(places: places,
                                    inbox: CommanderInbox(placeID: Self.needsYou, absorbs: [approvals]),
                                    groups: [], modes: modes, footer: [], profile: network.profile, selection: selection)
+    }
+
+    /// Every place the network gives the navigation, for a request from outside the window
+    /// (CommanderWindowRouter.swift). Runs and projects are the cockpit's own and are left out.
+    static func places(network: ShellNetwork) -> Set<String> {
+        Set(navigation(runs: [], openRunPath: nil, composing: false, place: wall, needsYou: 0, network: network).places.map(\.id))
     }
 
     /// A place of the Teams mode: a workspace, the row shown while there is none, or a team tool.

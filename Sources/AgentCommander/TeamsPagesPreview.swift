@@ -86,7 +86,7 @@ enum TeamsSample {
             MultiplayerGroup(id: "g-infra", name: "Infra guild", owner: "ines", members: ["ines", "ryan", "priya"])
         ]
         studioServer.workspaces = [
-            MultiplayerWorkspace(id: relay, owner: "ryan", group: "g-relay", name: "Relay launch",
+            MultiplayerWorkspace(id: relay, owner: "u-ryan", ownerHandle: "ryan", group: "g-relay", name: "Relay launch",
                                  goal: "Ship the per-request retry budget and the lease renewal fix for 1.4.",
                                  repository: "ryanhelms/relay", base: "main", integration: MultiplayerIntegration.queue.rawValue,
                                  claims: [
@@ -95,20 +95,20 @@ enum TeamsSample {
                                     MultiplayerClaim(id: "cl-3", kind: "card", key: "card-3", holder: "ryan/relay-worker", expiresAt: ahead(2_400)),
                                     MultiplayerClaim(id: "cl-4", kind: "card", key: "card-4", holder: "sam/sam-codex", expiresAt: ahead(1_200))
                                  ]),
-            MultiplayerWorkspace(id: infra, owner: "ines", group: "g-infra", name: "Infra guild",
+            MultiplayerWorkspace(id: infra, owner: "u-ines", ownerHandle: "ines", group: "g-infra", name: "Infra guild",
                                  goal: "Move the relay’s CI to the shared runners.",
                                  repository: "adagio/infra", base: "main", integration: MultiplayerIntegration.pullRequest.rawValue,
                                  claims: [MultiplayerClaim(id: "cl-9", kind: "paths", key: "ci/runners", holder: "ines/ines-codex", expiresAt: ahead(2_000))])
         ]
         studioServer.knowledge = [
-            MultiplayerKnowledgeItem(id: "k-1", owner: "mira", kind: "skill", name: "relay-triage", content: triage,
+            MultiplayerKnowledgeItem(id: "k-1", owner: "u-mira", ownerHandle: "mira", kind: "skill", name: "relay-triage", content: triage,
                                      visibility: "group:g-relay", version: 3, createdAt: ago(5_400)),
-            MultiplayerKnowledgeItem(id: "k-2", owner: "ryan", kind: "prompt", name: "Review checklist",
+            MultiplayerKnowledgeItem(id: "k-2", owner: "u-ryan", ownerHandle: "ryan", kind: "prompt", name: "Review checklist",
                                      content: "Check the retry budget, the lease timer and the fake clock before you approve.",
                                      visibility: "group:g-relay", version: 1, createdAt: ago(86_400)),
-            MultiplayerKnowledgeItem(id: "k-3", owner: "ines", kind: "mcp", name: "github-mcp", content: mcp,
+            MultiplayerKnowledgeItem(id: "k-3", owner: "u-ines", ownerHandle: "ines", kind: "mcp", name: "github-mcp", content: mcp,
                                      visibility: "friend:ryan", version: 2, createdAt: ago(172_800)),
-            MultiplayerKnowledgeItem(id: "k-4", owner: "sam", kind: "instructions", name: "Commit style",
+            MultiplayerKnowledgeItem(id: "k-4", owner: "u-sam", ownerHandle: "sam", kind: "instructions", name: "Commit style",
                                      content: "Conventional Commit subjects under 72 characters. One change per commit.",
                                      visibility: "group:g-relay", version: 1, createdAt: ago(259_200))
         ]
@@ -132,17 +132,20 @@ enum TeamsSample {
                                       ]))
         ]
         studioServer.policy = policy
+        // As the relay lists them: a member who hasn't chosen a handle, and devices by ID, because
+        // the relay stores no device name.
         studioServer.members = [TeamsMember(handle: "ryan", isAdmin: true), TeamsMember(handle: "mira"), TeamsMember(handle: "ines"),
-                                TeamsMember(handle: "sam"), TeamsMember(handle: "priya", isSuspended: true), TeamsMember(handle: "tomas")]
-        studioServer.devices = [TeamsDevice(id: "dev-7f3a", name: "mira-mbp", owner: "mira", lastSeen: ago(120)),
-                                TeamsDevice(id: "dev-22c1", name: "sam-linux", owner: "sam", lastSeen: ago(900)),
-                                TeamsDevice(id: "dev-51be", name: "tomas-air", owner: "tomas", lastSeen: ago(86_400))]
+                                TeamsMember(handle: "sam"), TeamsMember(handle: "priya", isSuspended: true), TeamsMember(handle: "tomas"),
+                                TeamsMember(handle: "", key: "#6")]
+        studioServer.devices = [TeamsDevice(id: "dev-7f3a", name: "dev-7f3a", owner: "mira", isOnline: true),
+                                TeamsDevice(id: "dev-22c1", name: "dev-22c1", owner: "sam", lastSeen: ago(900), isOnline: false),
+                                TeamsDevice(id: "dev-51be", name: "dev-51be", owner: "tomas", lastSeen: ago(86_400), isOnline: false)]
 
         var labServer = TeamsPagesContent.Server(id: lab, name: "lab", handle: "ryan")
         labServer.friends = [MultiplayerFriend(handle: "jonah", online: true)]
         labServer.groups = [MultiplayerGroup(id: "g-docs", name: "Docs circle", owner: "jonah", members: ["jonah", "ryan"])]
         labServer.knowledge = [
-            MultiplayerKnowledgeItem(id: "k-5", owner: "jonah", kind: "summary", name: "Retry design notes",
+            MultiplayerKnowledgeItem(id: "k-5", owner: "u-jonah", ownerHandle: "jonah", kind: "summary", name: "Retry design notes",
                                      content: "## Why per request\n\nA client-wide budget starves long uploads. Each request now carries its own.",
                                      visibility: "group:g-docs", version: 2, createdAt: ago(43_200))
         ]
@@ -203,10 +206,23 @@ enum TeamsSample {
             ]),
             TeamsMemberWork(handle: "ryan"), TeamsMemberWork(handle: "priya", isOnline: false)
         ]
+        // Each worker carries its live claims, as the relay's combined view lists them.
+        for key in [relayKey, infraKey] {
+            let claims = content.workspace(key)?.workspace.claims ?? []
+            content.work[key] = content.work[key]?.map { member in
+                var member = member
+                member.workers = member.workers.map { worker in
+                    var worker = worker
+                    worker.claims = claims.filter { $0.holder == "\(member.handle)/\(worker.name)" }
+                    return worker
+                }
+                return member
+            }
+        }
         content.versions[TeamsKey.make("k-1", on: studio)] = .loaded([
-            MultiplayerKnowledgeItem(id: "k-1", owner: "mira", kind: "skill", name: "relay-triage", content: "## Relay triage\n\nRead the failing test first.",
+            MultiplayerKnowledgeItem(id: "k-1", owner: "u-mira", ownerHandle: "mira", kind: "skill", name: "relay-triage", content: "## Relay triage\n\nRead the failing test first.",
                                      visibility: "private", version: 1, createdAt: ago(604_800)),
-            MultiplayerKnowledgeItem(id: "k-1", owner: "mira", kind: "skill", name: "relay-triage",
+            MultiplayerKnowledgeItem(id: "k-1", owner: "u-mira", ownerHandle: "mira", kind: "skill", name: "relay-triage",
                                      content: "## Relay triage\n\nRead the failing test first, then check the lease timer.",
                                      visibility: "friend:ryan", version: 2, createdAt: ago(259_200)),
             studioServer.knowledge[0]
@@ -307,7 +323,10 @@ final class TeamsPreviewState {
         self.init(place: scenario.teamsPlace, band: scenario == .teamsBoard ? .board : nil)
     }
 
-    func pages(go: @escaping (String) -> Void) -> TeamsPages { state.pages(content, through: actions, go: go) }
+    /// `place` is the page the values are for: what an action says shows there alone.
+    func pages(place: String? = nil, go: @escaping (String) -> Void) -> TeamsPages {
+        state.pages(content, place: place, through: actions, go: go)
+    }
 
     // MARK: Shell counts
 
@@ -378,15 +397,38 @@ final class TeamsPreviewState {
                 return wanted.contains { path in claim.key.split(separator: ",").contains { Self.overlaps(path, $0.trimmingCharacters(in: .whitespaces)) } }
             }
             if let holder {
-                // The relay answers an overlapping claim with 409 and the holder.
+                // The relay answers an overlapping claim with 409, and says who holds what.
                 return .failed(id: draft.trimmedKey, server: server,
-                               reason: MultiplayerSentence.join("Couldn’t claim it.", "relay HTTP 409: overlapping claim held by \(holder.holder)"))
+                               reason: MultiplayerSentence.join("Couldn’t claim it.", "relay HTTP 409: overlapping claim held by \(holder.holder)"),
+                               refusal: MultiplayerClaimRefusal(holder: holder.holderHandle, agent: holder.holderAgent, claim: holder.id))
             }
             setClaims(workspace, on: server) {
                 $0 + [MultiplayerClaim(id: "cl-\($0.count + 20)", kind: draft.kind.rawValue, key: draft.trimmedKey,
                                        holder: "\(handle)/\(draft.trimmedAgent)", expiresAt: now.addingTimeInterval(3_600))]
             }
             return .done(id: draft.trimmedKey, server: server, message: "Claimed \(draft.trimmedKey) for \(draft.trimmedAgent).")
+        }
+        actions.editWorkspace = { [self] edit, workspace, server in
+            await pause()
+            guard let saved = content.workspace(TeamsKey.make(workspace, on: server))?.workspace else {
+                return .failed(id: workspace, server: server, reason: "Couldn’t save the workspace. Commander can’t find this workspace any more.")
+            }
+            let fields = edit.changes(from: saved)
+            update(server) { found in
+                guard let index = found.workspaces.firstIndex(where: { $0.id == workspace }) else { return }
+                found.workspaces[index] = MultiplayerWorkspace(
+                    id: saved.id, owner: saved.owner, ownerHandle: saved.ownerHandle, group: saved.group,
+                    name: fields["name"] ?? saved.name, goal: fields["goal"] ?? saved.goal,
+                    repository: fields["repository"] ?? saved.repository, base: fields["base"] ?? saved.base,
+                    integration: fields["integration"] ?? saved.integration, claims: saved.claims)
+            }
+            return .done(id: workspace, server: server, message: "Saved \((fields["name"] ?? saved.name).multiplayerDisplay).")
+        }
+        actions.leaveWorkspace = { [self] workspace, server in
+            await pause()
+            let name = content.workspace(TeamsKey.make(workspace, on: server))?.workspace.name.multiplayerDisplay ?? workspace
+            update(server) { $0.workspaces.removeAll { $0.id == workspace } }
+            return .done(id: workspace, server: server, message: "Left \(name). Your claims in it have ended.")
         }
         actions.release = { [self] claim, workspace, server in
             await pause()
@@ -409,13 +451,14 @@ final class TeamsPreviewState {
             if contested.remove(card) != nil {
                 // Someone else's agent claimed it a moment before: the relay says who.
                 let holder = "sam/sam-codex"
+                let blocking = "cl-\((content.workspace(key)?.workspace.claims.count ?? 0) + 20)"
                 setCard(card, in: key, state: "claimed", assignee: holder)
                 setClaims(workspace, on: server) {
-                    $0 + [MultiplayerClaim(id: "cl-\($0.count + 20)", kind: "card", key: card, holder: holder,
-                                           expiresAt: now.addingTimeInterval(1_800))]
+                    $0 + [MultiplayerClaim(id: blocking, kind: "card", key: card, holder: holder, expiresAt: now.addingTimeInterval(1_800))]
                 }
                 return .failed(id: card, server: server,
-                               reason: MultiplayerSentence.join("Couldn’t claim it.", "relay HTTP 409: overlapping claim held by \(holder)"))
+                               reason: MultiplayerSentence.join("Couldn’t claim it.", "relay HTTP 409: overlapping claim held by \(holder)"),
+                               refusal: MultiplayerClaimRefusal(holder: "sam", agent: "sam-codex", claim: blocking))
             }
             let holder = "\(handle)/relay-worker"
             setCard(card, in: key, state: "claimed", assignee: holder)
@@ -530,7 +573,7 @@ final class TeamsPreviewState {
             var id = ""
             update(server) {
                 id = "k-\($0.knowledge.count + 10)"
-                $0.knowledge.insert(MultiplayerKnowledgeItem(id: id, owner: handle, kind: draft.kind.rawValue, name: draft.trimmedName,
+                $0.knowledge.insert(MultiplayerKnowledgeItem(id: id, owner: "u-\(handle)", ownerHandle: handle, kind: draft.kind.rawValue, name: draft.trimmedName,
                                                              content: draft.content, visibility: draft.visibility, version: 1,
                                                              createdAt: now), at: 0)
             }

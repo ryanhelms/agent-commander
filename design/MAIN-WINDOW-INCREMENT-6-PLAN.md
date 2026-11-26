@@ -2,13 +2,14 @@
 
 Increment 6 of [the main window redesign plan](MAIN-WINDOW-REDESIGN-PLAN.md) makes the Commander network tray a triage tray. It keeps the decisions and quick actions that suit a 400 pt menu-bar panel. Its dense pages open the matching main-window page instead. Issue #19. Written 26 November 2026, after PR #17 merged into `develop` at `91df5dc`.
 
-## Owner decisions needed first
+## Owner decisions
 
-The increment contracts give the dense pages to the tray, so the owner must agree to each move. Each decision:
+The increment contracts give the dense pages to the tray, so the owner had to agree to each move. The owner decided on 26 November 2026:
 
-1. **Which pages leave the tray.** The proposal is the "Moves" column below.
-2. **Remove or link.** Either the tray drops a moved page and shows an "Open in Agent Commander" row, or it keeps the page and adds the link. The proposal is to remove each page, but only after its window page has passed a running-window check.
-3. **The tray's tabs.** The proposal is to keep Agents, Network and People, with less in each.
+1. **The split is approved as written.** The "Moves" column below stands.
+2. **Remove, after a check.** The tray drops a moved page and shows an "Open in Agent Commander" row. Each tray page is removed only after its window page passes a running-window check.
+3. **The tabs stay** Agents, Network and People, with less in each.
+4. **Policy and moderation stay in the tray for now.** The tray keeps them until the window's Admin page, with the member and device list reads from issue #18, passes a running-window check. The router maps the policy page anyway, so the tray can link to it later.
 
 ## What stays and what moves
 
@@ -59,7 +60,7 @@ The tray side adds an "Open in Agent Commander" row atom where a page used to be
 
 ## Order
 
-1. The owner agrees to the table and to remove or link.
+1. The owner agrees to the table and to remove or link. Done: see "Owner decisions".
 2. Main-window PR: the router, its tests, `DESIGN.md`.
 3. Network-session PR: the tray links to the window and drops the moved pages. It removes a page only once its window page has passed a running-window check. The increment 5 check is in [main-window-5/verify](demos/main-window-5/verify/REPORT.md).
 4. Running-window check of the two together: each tray link opens the right page and item, with the window closed and with it open.

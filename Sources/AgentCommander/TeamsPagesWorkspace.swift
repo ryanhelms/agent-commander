@@ -21,6 +21,10 @@ struct TeamsWorkspaceContext {
 
     var handle: String { server.handle }
     var name: String { workspace.name.multiplayerDisplay }
+    /// The person owns the workspace: they edit it and run its merge queue.
+    var isOwner: Bool { workspace.isOwned(by: server.handle) }
+    /// The owner as the pages name them: "you", their handle, or "its owner" when the relay names none.
+    var ownerName: String { isOwner ? "you" : workspace.ownerHandle.isEmpty ? "its owner" : workspace.ownerHandle.multiplayerDisplay }
 }
 
 // MARK: - Board
@@ -203,6 +207,10 @@ struct TeamsCombinedBand: View {
                 MultiplayerBadge(text: claim.kindTitle, symbol: claim.symbol, tone: row.isMine ? .focus : .neutral)
                 Text(title(of: claim)).themeType(theme.type.data).foregroundStyle(.theme(\.color.foreground))
                     .lineLimit(1).truncationMode(.middle)
+                if row.moreClaims > 0 {
+                    Text("+\(row.moreClaims)").themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                        .help("\(MultiplayerPlural.count(row.moreClaims, "more claim")) held by this worker. See Claims.")
+                }
             }
         } else {
             ShellCellFigure(text: "–")
@@ -235,12 +243,17 @@ struct TeamsIntegrationBand: View {
         let waiting = entries.filter(\.isQueued)
         let merging = state.merging.contains(key) || pages.isRunning("merge", key)
         let confirming = pages.selection.confirming == .merge(workspace: key)
+        // Only the owner's Mac runs the queue, so only the owner adds to it, removes from it and runs it.
+        let owner = context.isOwner
         return NetworkSplit {
             VStack(alignment: .leading, spacing: Space.s) {
                 ShellBandHeading(title: "Merge queue", count: "\(entries.count)",
-                                 note: "The queue on this Mac. It tests each branch and merges them in order.") {
-                    Button("Add branch…") { pages.send(.startQueue(workspace: key)) }.buttonStyle(ThemeButtonStyle(compact: true))
-                        .disabled(merging)
+                                 note: owner ? "The queue on this Mac. It tests each branch and merges them in order."
+                                             : "The queue on the owner’s Mac. Only \(context.ownerName) adds branches and runs it.") {
+                    if owner {
+                        Button("Add branch…") { pages.send(.startQueue(workspace: key)) }.buttonStyle(ThemeButtonStyle(compact: true))
+                            .disabled(merging)
+                    }
                 }
                 TeamsRowPanel(items: entries.enumerated().map { QueueItem(position: $0.offset + 1, entry: $0.element) },
                               empty: "No branch is queued.") { item in
@@ -248,7 +261,7 @@ struct TeamsIntegrationBand: View {
                     MultiplayerQueueRow(position: item.position, entry: item.entry, now: state.now,
                                         isBusy: merging || pages.isRunning("queue", TeamsKey.make(item.entry.id, on: key)),
                                         isConfirming: removing,
-                                        onRemove: { pages.send(.askRemoveQueued(item.entry, workspace: key)) },
+                                        onRemove: owner ? { pages.send(.askRemoveQueued(item.entry, workspace: key)) } : nil,
                                         onCancel: { pages.send(.cancelConfirmation) }, onConfirm: { pages.send(.confirm) })
                 }
                 do {
@@ -263,12 +276,14 @@ struct TeamsIntegrationBand: View {
                                 .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
                         }
                         Spacer(minLength: Space.s)
-                        Button("Run merge…") { pages.send(.askMerge(workspace: key)) }
-                            .buttonStyle(ThemeButtonStyle(prominent: true, compact: true))
-                            .disabled(waiting.isEmpty || merging || confirming)
-                            .accessibilityIdentifier("teams-run-merge")
+                        if owner {
+                            Button("Run merge…") { pages.send(.askMerge(workspace: key)) }
+                                .buttonStyle(ThemeButtonStyle(prominent: true, compact: true))
+                                .disabled(waiting.isEmpty || merging || confirming)
+                                .accessibilityIdentifier("teams-run-merge")
+                        }
                     }
-                    if confirming {
+                    if confirming, owner {
                         TeamsConfirmWell(question: "Run the merge queue for \(context.name)?",
                                          steps: waiting.map { ($0.branch.multiplayerDisplay, Self.test($0)) },
                                          consequence: "Your Mac runs each branch’s test command in its checkout, then merges it into \(context.workspace.base.multiplayerDisplay), in this order. A branch whose tests fail or that conflicts is not merged; it stays in the queue with its output.",
@@ -296,7 +311,9 @@ struct TeamsIntegrationBand: View {
                         .disabled(!pages.drafts.wrappedValue.queue.canSend || pages.isRunning("composer", key))
                 }
             } else {
-                NetworkInspectorNote(text: "Add a branch a contributor pushed to this Mac. Run merge asks first, naming each branch’s test command and the order.")
+                NetworkInspectorNote(text: owner
+                    ? "Add a branch a contributor pushed to this Mac. Run merge asks first, naming each branch’s test command and the order."
+                    : "Push your branch to the owner’s Mac and ask \(context.ownerName) to queue it. Only the owner adds branches and runs the merge.")
             }
         }
     }
@@ -401,6 +418,74 @@ struct TeamsClaimsBand: View {
     }
 }
 
+// MARK: - Editing
+
+/// The owner's edit of a workspace, on the page above its bands: the fields, then a confirmation
+/// that names each change before anything is saved. The group can't change.
+struct TeamsWorkspaceEditForm: View {
+    let context: TeamsWorkspaceContext
+
+    /// What an edit changes, as "label: old → new" lines.
+    static func changes(_ edit: MultiplayerWorkspaceEdit, from saved: MultiplayerWorkspace) -> [(label: String, value: String)] {
+        let fields = edit.changes(from: saved)
+        func line(_ key: String, _ label: String, _ old: String, _ shown: (String) -> String = { $0.multiplayerDisplay }) -> (String, String)? {
+            fields[key].map { (label, "\(shown(old)) → \(shown($0))") }
+        }
+        return [line("name", "Name", saved.name), line("goal", "Goal", saved.goal),
+                line("repository", "Repository", saved.repository), line("base", "Base branch", saved.base),
+                line("integration", "Lands by", saved.integration) { MultiplayerIntegration.title(for: $0).lowercased() }]
+            .compactMap { $0 }
+    }
+
+    var body: some View {
+        let pages = context.pages, key = context.key, drafts = pages.drafts
+        let edit = drafts.wrappedValue.workspace
+        let confirming = pages.selection.confirming == .saveWorkspace(workspace: key)
+        let running = pages.isRunning("composer", key)
+        NetworkInspector(title: "Edit workspace", serverID: context.server.id, serverName: context.name,
+                         note: "Its group can’t change.", close: { pages.send(.closeComposer) }) {
+            TeamsFormBand(refusal: pages.content.refusal) {
+                MultiplayerBand {
+                    VStack(alignment: .leading, spacing: Space.m) {
+                        MultiplayerField(label: "Name") {
+                            MultiplayerTextField(label: "Name", placeholder: "Relay launch", text: drafts.workspace.name)
+                        }
+                        MultiplayerField(label: "Goal", hint: "What the workspace is for. Every member sees it.") {
+                            MultiplayerTextArea(label: "Goal", text: drafts.workspace.goal, lines: 3)
+                        }
+                        MultiplayerField(label: "Repository") {
+                            MultiplayerTextField(label: "Repository", placeholder: "owner/name", text: drafts.workspace.repository, monospaced: true)
+                        }
+                        MultiplayerField(label: "Base branch") {
+                            MultiplayerTextField(label: "Base branch", placeholder: "main", text: drafts.workspace.base, monospaced: true)
+                        }
+                        MultiplayerField(label: "Work lands by", hint: edit.integration.explanation) {
+                            MultiplayerSegments(label: "Work lands by", options: MultiplayerIntegration.allCases, title: \.title,
+                                                selection: drafts.workspace.integration)
+                        }
+                    }
+                }
+                if confirming {
+                    MultiplayerBand {
+                        TeamsConfirmWell(question: "Save these changes to \(context.name)?",
+                                         changes: Self.changes(edit, from: context.workspace),
+                                         consequence: "Every member sees the change at once. Cards, claims and the queue stay as they are.",
+                                         keepTitle: "Keep editing", confirmTitle: "Save changes", isBusy: running,
+                                         cancel: { pages.send(.cancelConfirmation) }, confirm: { pages.send(.confirm) })
+                    }
+                }
+            }
+        } footer: {
+            Button("Cancel") { pages.send(.closeComposer) }.buttonStyle(MultiplayerTrayButtonStyle())
+            Button("Save changes…") { pages.send(.askSaveWorkspace) }.buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                .disabled(confirming || running)
+                .accessibilityIdentifier("teams-save-workspace")
+        }
+        .frame(maxWidth: NetworkLayout.inspectorWidth + 120, alignment: .leading)
+        .accessibilityIdentifier("teams-edit-workspace-form")
+    }
+}
+
 // MARK: - Page
 
 /// Teams, one workspace.
@@ -414,8 +499,31 @@ struct TeamsWorkspacePage: View {
             let context = TeamsWorkspaceContext(key: key, server: found.server, workspace: found.workspace, pages: pages)
             let band = pages.selection.band(of: key)
             TeamsPageScaffold(place: place, pages: pages) {
-                newWorkspace
+                HStack(spacing: Space.s) {
+                    // The owner edits; a member leaves. The relay lets the owner do the first only,
+                    // and refuses an owner who tries to leave.
+                    if context.isOwner {
+                        Button("Edit…") { pages.send(.startEdit(workspace: key)) }.buttonStyle(ThemeButtonStyle())
+                            .disabled(pages.selection.composer == .editWorkspace(key))
+                            .accessibilityLabel("Edit \(context.name)")
+                            .accessibilityIdentifier("teams-edit-workspace")
+                    } else {
+                        Button("Leave…") { pages.send(.askLeave(workspace: key)) }.buttonStyle(ThemeButtonStyle())
+                            .disabled(pages.selection.confirming == .leaveWorkspace(workspace: key) || pages.isRunning("workspace", key))
+                            .accessibilityLabel("Leave \(context.name)")
+                            .accessibilityIdentifier("teams-leave-workspace")
+                    }
+                    newWorkspace
+                }
             } content: {
+                if pages.selection.composer == .editWorkspace(key) { TeamsWorkspaceEditForm(context: context) }
+                if pages.selection.confirming == .leaveWorkspace(workspace: key) {
+                    TeamsConfirmWell(question: "Leave \(context.name)?",
+                                     consequence: "Your live claims in it end, and it leaves your Teams list. You stay in its group and keep the group’s other workspaces. To come back, the group’s owner removes you from the group and adds you again.",
+                                     keepTitle: "Stay", confirmTitle: "Leave \(context.name)",
+                                     cancel: { pages.send(.cancelConfirmation) }, confirm: { pages.send(.confirm) })
+                        .frame(maxWidth: TeamsLayout.rowPanel, alignment: .leading)
+                }
                 VStack(alignment: .leading, spacing: Space.m) {
                     TeamsFacts(facts: facts(context))
                     TeamsBandTabs(cells: cells(context), selection: band, choose: { pages.send(.showBand($0, workspace: key)) })
@@ -451,14 +559,15 @@ struct TeamsWorkspacePage: View {
         let group = context.pages.content.groupName(workspace.group, on: context.server.id) ?? workspace.group
         return [("repository", workspace.repository.multiplayerDisplay), ("base", workspace.base.multiplayerDisplay),
                 ("lands by", MultiplayerIntegration.title(for: workspace.integration).lowercased()),
-                ("group", group.multiplayerDisplay)]
+                ("group", group.multiplayerDisplay), ("owner", context.ownerName)]
     }
 
     private func cells(_ context: TeamsWorkspaceContext) -> [TeamsBandTabs.Cell] {
         let state = context.pages.content, key = context.key
         let landing = context.workspace.usesQueue ? (state.queue[key] ?? []).filter(\.isQueued).count
                                                   : state.pullRequests[key]?.value?.pullRequests.count ?? 0
-        return [.init(band: .board, count: (state.cards[key] ?? []).filter { $0.known != .done }.count),
+        // Each tab's figure is the figure its band's heading shows.
+        return [.init(band: .board, count: (state.cards[key] ?? []).count),
                 .init(band: .combined, count: state.combinedRows(in: key).filter { $0.worker != nil }.count),
                 .init(band: .integration, count: landing, tone: .focus),
                 .init(band: .claims, count: context.workspace.claims.count, tone: .attention)]

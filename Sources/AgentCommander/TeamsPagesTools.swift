@@ -96,9 +96,17 @@ struct TeamsGroupsPage: View {
             let removing: String? = { if case .removeMember(let handle, key)? = pages.selection.confirming { return handle } else { return nil } }()
             NetworkInspector(title: found.group.name.multiplayerDisplay, serverID: found.server.id, serverName: found.server.name,
                              close: { pages.send(.openGroup(nil)) }) {
+                if pages.selection.confirming == .deleteGroup(key) {
+                    // The window's own second press: the tray's reads "Its 1 member lose".
+                    MultiplayerBand {
+                        MultiplayerInlineConfirm(message: Self.deleteQuestion(found.group),
+                                                 keepTitle: "Keep group", confirmTitle: "Delete group", isBusy: busy,
+                                                 onCancel: { pages.send(.cancelConfirmation) }, onConfirm: { pages.send(.confirm) })
+                    }
+                }
                 MultiplayerGroupPage(group: found.group, handle: found.server.handle,
                                      addable: state.addable(to: found.group, on: found.server.id), isBusy: busy,
-                                     confirmingDelete: pages.selection.confirming == .deleteGroup(key), confirmingRemoval: removing,
+                                     confirmingDelete: false, confirmingRemoval: removing,
                                      onAdd: { pages.send(.addMember($0, group: key)) },
                                      onRemove: { pages.send(.askRemoveMember($0, group: key)) },
                                      onConfirmRemove: { _ in pages.send(.confirm) },
@@ -114,6 +122,13 @@ struct TeamsGroupsPage: View {
         } else {
             NetworkInspectorNote(text: "Choose a group to see who is in it. You can add friends to a group you own.")
         }
+    }
+}
+
+extension TeamsGroupsPage {
+    /// "Its 1 member loses every grant", "Its 3 members lose every grant".
+    static func deleteQuestion(_ group: MultiplayerGroup) -> String {
+        "Delete \(group.name.multiplayerDisplay)? Its \(group.memberTitle) \(group.members.count == 1 ? "loses" : "lose") every grant made to the group."
     }
 }
 
@@ -306,7 +321,7 @@ struct TeamsKnowledgePage: View {
                                 MultiplayerMark(symbol: MultiplayerKnowledgeKind.symbol(for: row.item.kind), tone: row.isMine ? .focus : .neutral,
                                                 size: 22)
                                 ShellCellText(title: row.item.name.multiplayerDisplay,
-                                              detail: "\(kind), \(row.isMine ? "by you" : "by \(row.item.owner.multiplayerDisplay)") on \(row.serverName)")
+                                              detail: "\(kind), \(row.isMine ? "by you" : "by \(TeamsPagesContent.owner(of: row.item).multiplayerDisplay)") on \(row.serverName)")
                             }
                             .shellCell(Self.item)
                             ShellCellText(title: row.visibility).shellCell(Self.visible)
@@ -327,14 +342,15 @@ struct TeamsKnowledgePage: View {
     @ViewBuilder private var inspector: some View {
         let state = pages.content
         if case .knowledge(let server)? = pages.selection.composer, let found = state.server(server), let host = pages.host {
-            NetworkInspector(title: "Share knowledge", serverID: server, serverName: found.name, close: { pages.send(.closeComposer) }) {
+            // The form is the network model's own. The window adds what it knows of the server's
+            // limit, so a share the relay only calls "Forbidden." can be read against it.
+            NetworkInspector(title: "Share knowledge", serverID: server, serverName: found.name,
+                             note: state.reachNote(on: server), close: { pages.send(.closeComposer) }) {
                 host(.knowledge(server: server))
             }
         } else if case .knowledge(let server)? = pages.selection.composer, let found = state.server(server) {
-            let widest = state.widestScope(on: server)
             NetworkInspector(title: "Share knowledge", serverID: server, serverName: found.name,
-                             note: widest == .server ? "\(found.name) lets knowledge reach everyone on it."
-                                                     : "\(found.name) lets knowledge reach \(Self.reach(widest)) at most.",
+                             note: state.reachNote(on: server) ?? "\(found.name) lets knowledge reach everyone on it.",
                              close: { pages.send(.closeComposer) }) {
                 // A secret refusal has its own well in the form; any other refusal shows above it.
                 TeamsFormBand(refusal: state.refusal.flatMap { MultiplayerSecretCheck.isRefusal($0) ? nil : $0 }) {
@@ -616,16 +632,7 @@ struct TeamsAdminPage: View {
         let state = pages.content
         let server = pages.selection.adminServer.flatMap(state.server) ?? state.adminServers.first
         TeamsPageScaffold(place: TeamsPlace.admin, pages: pages) {
-            if let server, server.isAdmin, let host = pages.host {
-                serverChoice(server)
-                // The network model's own host: the policy, then suspending a member or revoking a
-                // device, each after a second press that names its target.
-                NetworkInspector(title: "Policy, members and devices", serverID: server.id, serverName: server.name) {
-                    host(.policy(server: server.id))
-                }
-                .frame(maxWidth: TeamsLayout.rowPanel, alignment: .leading)
-                .id(server.id)
-            } else if let server, server.isAdmin, let saved = server.policy {
+            if let server, server.isAdmin, let saved = server.policy {
                 serverChoice(server)
                 NetworkSplit {
                     policy(server, saved: saved)
@@ -634,6 +641,15 @@ struct TeamsAdminPage: View {
                 }
                 // The draft starts from the server's saved policy.
                 .task(id: server.id) { if pages.selection.adminServer != server.id { pages.send(.chooseAdminServer(server.id)) } }
+            } else if let server, server.isAdmin {
+                // The policy and the lists are the window's own reads: a member or a device is
+                // chosen from the list the relay gives, never typed.
+                serverChoice(server)
+                if let problem = server.adminProblem {
+                    ShellLoadNote(text: problem, lamp: .error)
+                } else {
+                    ShellLoadNote(text: "Reading \(server.name)’s policy, members and devices…", lamp: .waiting)
+                }
             } else {
                 ShellLoadNote(text: "You administer no server. A relay’s admin sets its policy and moderates its members here.")
             }
@@ -688,6 +704,12 @@ struct TeamsAdminPage: View {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
                     MultiplayerBandHeading(title: "Members", count: "\(members.count)") { EmptyView() }
+                    if let problem = server.adminProblem {
+                        Text(problem).font(MultiplayerTheme.sub).foregroundStyle(MultiplayerTheme.failure)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if members.isEmpty {
+                        Text("No member is listed.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                    }
                     ForEach(Array(members.enumerated()), id: \.element.id) { index, row in
                         if index > 0 { ThemeRule() }
                         memberRow(row, server: server)
@@ -710,7 +732,7 @@ struct TeamsAdminPage: View {
     }
 
     @ViewBuilder private func memberRow(_ row: TeamsMemberRow, server: TeamsPagesContent.Server) -> some View {
-        let member = row.member, name = member.handle.multiplayerDisplay
+        let member = row.member, name = member.canModerate ? member.handle.multiplayerDisplay : "No handle yet"
         let confirming = pages.selection.confirming == .suspend(handle: member.handle, server: server.id)
         HStack(spacing: Space.s) {
             MultiplayerAvatar(image: nil, name: name, size: 24)
@@ -722,6 +744,10 @@ struct TeamsAdminPage: View {
                 }
                 MultiplayerStateLabel(lamp: member.isSuspended ? .error : .on, text: member.isSuspended ? "Suspended" : "Active",
                                       tone: member.isSuspended ? .failure : .working)
+                if let text = row.result?.rowText, row.result?.isDone == false {
+                    Text(text).font(MultiplayerTheme.sub).foregroundStyle(MultiplayerTheme.failure)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isStaticText)
@@ -729,6 +755,9 @@ struct TeamsAdminPage: View {
             Spacer(minLength: Space.s)
             if row.isRunning {
                 MultiplayerSpinner().accessibilityLabel("In progress")
+            } else if !member.canModerate {
+                // Suspending names a member by handle, and this one hasn't chosen one.
+                Text("Can’t be suspended yet").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             } else if member.isSuspended {
                 Button("Unsuspend") { pages.send(.unsuspend(member.handle, server: server.id)) }
                     .buttonStyle(MultiplayerTrayButtonStyle())
@@ -740,7 +769,7 @@ struct TeamsAdminPage: View {
             }
         }
         .frame(minHeight: 40)
-        .accessibilityIdentifier("teams-member-\(member.handle)")
+        .accessibilityIdentifier("teams-member-\(member.id)")
         if confirming {
             MultiplayerInlineConfirm(message: "Suspend \(name) on \(server.name)? Every device of theirs is cut off from this relay until you unsuspend them, and they leave the directory.",
                                      keepTitle: "Keep member", confirmTitle: "Suspend \(name)", isBusy: row.isRunning,
@@ -757,7 +786,7 @@ struct TeamsAdminPage: View {
             MultiplayerMark(symbol: "laptopcomputer", size: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(MultiplayerTheme.name).foregroundStyle(MultiplayerTheme.foreground).lineLimit(1)
-                Text("\(device.owner.multiplayerDisplay), \(device.id.multiplayerDisplay)\(device.lastSeen.map { ", seen \(MultiplayerTime.display($0, now: pages.content.now))" } ?? "")")
+                Text(Self.detail(device, now: pages.content.now))
                     .font(MultiplayerTheme.fingerprint).foregroundStyle(.inkSecondary).lineLimit(1).truncationMode(.middle)
             }
             .accessibilityElement(children: .combine)
@@ -772,11 +801,30 @@ struct TeamsAdminPage: View {
         }
         .frame(minHeight: 40)
         if confirming {
-            MultiplayerInlineConfirm(message: "Revoke \(name), \(device.owner.multiplayerDisplay)’s device, on \(server.name)? It is signed out of this relay at once, and its owner has to sign in on it again.",
+            MultiplayerInlineConfirm(message: "Revoke \(name), \(Self.owner(device))’s device, on \(server.name)? It is signed out of this relay at once, and its owner has to sign in on it again.",
                                      keepTitle: "Keep device", confirmTitle: "Revoke \(name)", isBusy: running,
                                      onCancel: { pages.send(.cancelConfirmation) }, onConfirm: { pages.send(.confirm) })
                 .padding(.bottom, Space.xs + 2)
         }
+    }
+}
+
+extension TeamsAdminPage {
+    static func owner(_ device: TeamsDevice) -> String { device.owner.isEmpty ? "a member without a handle" : device.owner.multiplayerDisplay }
+
+    /// Whose device it is, its ID when it has a name of its own, and whether it is connected or
+    /// when it last was.
+    static func detail(_ device: TeamsDevice, now: Date) -> String {
+        var parts = [owner(device)]
+        if device.name != device.id { parts.append(device.id.multiplayerDisplay) }
+        if device.isOnline == true {
+            parts.append("online now")
+        } else if let seen = device.lastSeen {
+            parts.append("seen \(MultiplayerTime.display(seen, now: now))")
+        } else if device.isOnline == false {
+            parts.append("never connected")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 

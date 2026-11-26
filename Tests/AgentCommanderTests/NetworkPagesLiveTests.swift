@@ -116,6 +116,38 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
         #expect(content.readouts(for: NetworkPlace.approvals).first { $0.id == "approvals" }?.value == "\(waiting - 1)")
     }
 
+    /// The model takes one action at a time. Two answers pressed together both go through: the
+    /// second waits its turn instead of being refused.
+    @Test func aSecondAnswerWaitsItsTurn() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-queue")
+        defer { model.close() }
+        let approval = try #require(model.share.waitingApprovals.first)
+        let friend = try #require(ShellNetwork(model: model).friendRequests.first)
+
+        // Sent straight to the model, the second is refused while the first runs.
+        let actions = NetworkPageActions.live(model, queue: NetworkAnswerQueue())
+        let first = Task { @MainActor in await actions.decide(approval.item, approval.server, true) }
+        let second = Task { @MainActor in await actions.acceptFriend(friend.request, friend.server) }
+        let results = [await first.value, await second.value]
+        let refused = results.compactMap { $0.reason }
+        #expect(refused.isEmpty, "\(refused)")
+        #expect(results.count == 2 && model.share.waitingApprovals.contains { $0.id == approval.id } == false)
+    }
+
+    /// An answer that can't get its turn is sent anyway, and the model's own sentence says why.
+    @Test func anAnswerThatCannotWaitSaysWhy() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-queue-busy")
+        defer { model.close() }
+        let queue = NetworkAnswerQueue()
+        queue.patience = .milliseconds(1)
+        var sent = 0
+        let result = await queue.send(on: model) {
+            sent += 1
+            return .failed(id: "ap", server: Self.home, reason: model.notSent("Couldn’t deny the request."))
+        }
+        #expect(sent == 1 && result.reason?.hasPrefix("Couldn’t deny the request.") == true)
+    }
+
     @Test func aGrantIsRevokedByValueAndTheRowSaysHowItEnded() async throws {
         let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-revoke")
         defer { model.close() }

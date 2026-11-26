@@ -127,7 +127,221 @@ import Testing
         await Self.settle(state)
         #expect(state.content.card(TeamsSample.contested, in: Self.relay)?.assignee == "sam/sam-codex")
         let shown = state.pages(go: { _ in }).content.boardCards(.claimed, in: Self.relay).first { $0.id == TeamsSample.contested }
-        #expect(shown?.result?.reason == "Couldn’t claim it. Overlapping claim held by sam/sam-codex.")
+        // The refusal's own fields name the holder, the agent and the claim; the claim's row is marked.
+        #expect(shown?.result?.reason == "Couldn’t claim it. sam holds it with the agent sam-codex, under the card claim Fuzz the lease parser.")
+        let blocking = state.content.workspace(Self.relay)?.workspace.claims.first { $0.key == TeamsSample.contested }
+        #expect(blocking != nil && state.state.selection.conflict == blocking?.id)
+        #expect(state.state.refusal(card: TeamsSample.contested, in: Self.relay) == MultiplayerClaimRefusal(holder: "sam", agent: "sam-codex", claim: blocking?.id ?? ""))
+    }
+
+    /// A claim's note is true only while the card is claimed: a Done card doesn't keep it.
+    @Test func aDoneCardDropsItsClaimNote() async throws {
+        let state = Self.preview(TeamsSample.relayPlace)
+        let card = try #require(state.content.card("card-1", in: Self.relay))
+        Self.send(state, .claimCard(card, workspace: Self.relay))
+        await Self.settle(state)
+        func shown(_ column: MultiplayerCard.State) -> TeamsBoardCard? {
+            state.pages(go: { _ in }).content.boardCards(column, in: Self.relay).first { $0.id == "card-1" }
+        }
+        #expect(shown(.claimed)?.result?.message == "Claimed for relay-worker.")
+        // The network model's own card host completes it: the window's row result was never run again.
+        state.content.cards[Self.relay] = state.content.cards[Self.relay]?.map {
+            $0.id == "card-1" ? MultiplayerCard(id: $0.id, title: $0.title, state: "done", assignee: $0.assignee, result: "Shipped.") : $0
+        }
+        #expect(shown(.done) != nil && shown(.done)?.result == nil)
+        // And the host's own finish clears what the claim said.
+        state.state.hostFinished(.card("card-1", workspace: Self.relay), .done(id: "card-1", server: Self.studio, message: nil))
+        #expect(state.state.results.results[TeamsKey.result("card", TeamsKey.make("card-1", on: Self.relay))] == nil)
+    }
+
+    // MARK: Messages stay on their page
+
+    @Test func aMessageShowsOnlyOnThePageThatRaisedIt() async throws {
+        let state = Self.preview(TeamsSample.relayPlace)
+        let relayPlace = TeamsSample.relayPlace
+        func notice(on place: String) -> String? { state.pages(place: place, go: { _ in }).content.notice }
+        state.pages(place: relayPlace, go: { _ in }).send(.startQueue(workspace: Self.relay))
+        state.state.drafts.queue = MultiplayerQueueDraft(branch: "collab/verify", checkout: NetworkSample.checkout)
+        state.pages(place: relayPlace, go: { _ in }).send(.sendQueue)
+        await Self.settle(state) { state.state.notice != nil }
+        let queued = try #require(state.state.notice)
+        // On its own page, and nowhere else: not on Groups, and not above Admin's own messages.
+        #expect(notice(on: relayPlace) == queued)
+        #expect(notice(on: TeamsPlace.groups) == nil && notice(on: TeamsPlace.admin) == nil)
+        // Leaving the page clears it, so it isn't there on the way back.
+        state.state.left(relayPlace)
+        #expect(state.state.notice == nil && notice(on: relayPlace) == nil)
+    }
+
+    @Test func anActionThatEndsAfterYouLeftSaysNothingOnTheNextPage() async {
+        let state = Self.preview(TeamsSample.relayPlace)
+        state.latency = .milliseconds(60)
+        let relayPlace = TeamsSample.relayPlace
+        state.pages(place: relayPlace, go: { _ in }).send(.newGroup(server: Self.studio))
+        state.state.drafts.groupName = "Verify crew"
+        state.pages(place: TeamsPlace.groups, go: { _ in }).send(.createGroup)
+        // The window moves on while the group is being created.
+        state.state.left(TeamsPlace.groups)
+        await Self.settle(state) { state.state.notice != nil }
+        #expect(state.pages(place: TeamsPlace.knowledge, go: { _ in }).content.notice == nil)
+        #expect(state.pages(place: TeamsPlace.groups, go: { _ in }).content.notice?.contains("Verify crew") == true)
+    }
+
+    @Test func aHostThatSaysItsOwnOutcomeAddsNoBand() {
+        let state = TeamsPagesState()
+        state.hostFinished(.policy(server: Self.studio), .done(id: Self.studio, server: Self.studio, message: "Saved."), from: TeamsPlace.admin)
+        #expect(state.notice == nil, "the policy host shows its own Saved")
+        state.hostFinished(.queue(workspace: Self.relay), .done(id: "q", server: Self.studio, message: "Queued collab/x."), from: TeamsSample.relayPlace)
+        #expect(state.shown(TeamsPagesContent(), place: TeamsSample.relayPlace).notice == "Queued collab/x.")
+        #expect(state.shown(TeamsPagesContent(), place: TeamsPlace.admin).notice == nil)
+    }
+
+    // MARK: Owner
+
+    @Test func theOwnerEditsAfterAConfirmationThatNamesEachChange() async throws {
+        let state = Self.preview(TeamsSample.relayPlace)
+        Self.send(state, .startEdit(workspace: Self.relay))
+        #expect(state.state.selection.composer == .editWorkspace(Self.relay) && state.state.drafts.workspace.name == "Relay launch")
+        // Nothing changed yet: the form says so and asks nothing.
+        Self.send(state, .askSaveWorkspace)
+        #expect(state.state.refusal == "Nothing changed yet." && state.state.selection.confirming == nil)
+        state.state.drafts.workspace.name = "Relay reconnect"
+        state.state.drafts.workspace.integration = .pullRequest
+        Self.send(state, .askSaveWorkspace)
+        #expect(state.state.selection.confirming == .saveWorkspace(workspace: Self.relay))
+        let saved = try #require(state.content.workspace(Self.relay)?.workspace)
+        let changes = TeamsWorkspaceEditForm.changes(state.state.drafts.workspace, from: saved)
+        #expect(changes.map(\.label) == ["Name", "Lands by"])
+        #expect(changes.map(\.value) == ["Relay launch → Relay reconnect", "merge queue → pull requests"])
+        #expect(state.content.workspace(Self.relay)?.workspace.name == "Relay launch", "nothing is saved before the second press")
+        Self.send(state, .confirm)
+        await Self.settle(state) { state.state.selection.composer == nil }
+        #expect(state.content.workspace(Self.relay)?.workspace.name == "Relay reconnect")
+        #expect(state.content.workspace(Self.relay)?.workspace.usesQueue == false && state.state.notice == "Saved Relay reconnect.")
+    }
+
+    @Test func onlyTheOwnerEditsAndOnlyAMemberLeaves() async throws {
+        let state = Self.preview(TeamsSample.infraPlace)
+        let infra = TeamsSample.infraKey
+        // ines owns Infra guild: there is nothing for ryan to edit.
+        Self.send(state, .startEdit(workspace: infra))
+        #expect(state.state.selection.composer == nil)
+        // ryan owns Relay launch: the relay refuses an owner who leaves, so it isn't asked.
+        Self.send(state, .askLeave(workspace: Self.relay))
+        #expect(state.state.selection.confirming == nil)
+
+        var went: [String] = []
+        state.pages(place: TeamsSample.infraPlace, go: { went.append($0) }).send(.askLeave(workspace: infra))
+        #expect(state.state.selection.confirming == .leaveWorkspace(workspace: infra))
+        #expect(state.content.workspace(infra) != nil, "nothing is left before the second press")
+        state.pages(place: TeamsSample.infraPlace, go: { went.append($0) }).send(.confirm)
+        await Self.settle(state) { !went.isEmpty }
+        #expect(state.content.workspace(infra) == nil && went == [TeamsPlace.workspaces])
+        #expect(state.state.notice == "Left Infra guild. Your claims in it have ended.")
+        let context = try #require(state.content.workspace(Self.relay)).workspace
+        #expect(context.isOwned(by: "ryan") && !context.isOwned(by: "mira"))
+    }
+
+    // MARK: The new reads
+
+    @Test func theRosterBecomesMemberAndDeviceRows() {
+        let roster = MultiplayerRelayRoster(
+            members: [MultiplayerRelayMember(handle: "alice", admin: true), MultiplayerRelayMember(handle: "bob", suspended: true),
+                      MultiplayerRelayMember(id: "#2", handle: "")],
+            devices: [MultiplayerRelayDevice(id: "3f2c", owner: "alice", online: true),
+                      MultiplayerRelayDevice(id: "9a71", owner: "bob", online: false, lastSeen: TeamsSample.now.addingTimeInterval(-3_600))])
+        let members = TeamsLiveMapper.members(roster), devices = TeamsLiveMapper.devices(roster)
+        #expect(members.map(\.id) == ["alice", "bob", "#2"] && members[0].isAdmin && members[1].isSuspended)
+        // A member with no handle is listed and can't be suspended yet.
+        #expect(members[2].canModerate == false && members[0].canModerate)
+        // The relay stores no device name: the ID is the name, and it isn't said twice.
+        #expect(devices.map(\.name) == ["3f2c", "9a71"] && devices[0].isOnline == true)
+        #expect(TeamsAdminPage.detail(devices[0], now: TeamsSample.now) == "alice, online now")
+        #expect(TeamsAdminPage.detail(devices[1], now: TeamsSample.now).hasPrefix("bob, seen "))
+        #expect(TeamsAdminPage.detail(TeamsDevice(id: "x", name: "x", owner: "", isOnline: false), now: TeamsSample.now)
+                == "a member without a handle, never connected")
+    }
+
+    @Test func theCombinedViewBecomesWorkersWithTheirClaims() {
+        let claim = MultiplayerClaim(id: "c9", kind: "paths", key: "src", holder: "alice/w-42", expiresAt: nil)
+        let other = MultiplayerClaim(id: "c10", kind: "issue", key: "12", holder: "alice/w-42", expiresAt: nil)
+        let view = MultiplayerCombinedView(workspace: "ws", members: [
+            MultiplayerCombinedMember(handle: "alice", online: true, workers: [
+                MultiplayerCombinedWorker(id: "build-worker", name: "Build worker", resource: "build-worker", agent: "w-42",
+                                          harness: "claude", model: "opus", state: "working", claims: [claim, other])]),
+            MultiplayerCombinedMember(handle: "bob", online: nil, workers: [
+                MultiplayerCombinedWorker(id: "bob/w-7", name: "w-7", agent: "w-7", state: "offline",
+                                          checks: MultiplayerWorkerChecks(passed: 3, failed: 1))]),
+            MultiplayerCombinedMember(handle: "cy", online: false)
+        ])
+        let work = TeamsLiveMapper.work(view)
+        #expect(work.map(\.handle) == ["alice", "bob", "cy"] && work[0].isOnline && !work[1].isOnline)
+        let worker = work[0].workers[0]
+        #expect(worker.name == "Build worker" && worker.state == "Working" && worker.tone == .working)
+        #expect(worker.capabilities.harness == "claude" && worker.capabilities.model == "opus")
+        // Nothing the relay has no source for is made up: no branch, and no checks rather than zero.
+        #expect(worker.branch.isEmpty && worker.checks == nil && worker.claims == [claim, other])
+        #expect(work[1].workers[0].checks == TeamsChecks(passed: 3, failed: 1) && work[1].workers[0].tone == .neutral)
+
+        var content = TeamsSample.content
+        content.work[Self.relay] = work
+        let rows = content.combinedRows(in: Self.relay)
+        #expect(rows.map(\.id) == ["alice/build-worker", "bob/bob/w-7", "cy"])
+        #expect(rows[0].claim == claim && rows[0].moreClaims == 1 && rows[0].spoken.contains("holds paths src and 1 more"))
+        #expect(rows[2].worker == nil)
+    }
+
+    @Test func aRefusalNamesTheHolderTheAgentAndTheClaim() {
+        let claims = [MultiplayerClaim(id: "d2", kind: "issue", key: "12", holder: "bob/w-7", expiresAt: nil)]
+        let refusal = MultiplayerClaimRefusal(holder: "bob", agent: "w-7", claim: "d2")
+        let outcome = TeamsClaimOutcome.failed(id: "12", server: Self.studio, reason: "Couldn’t claim it. Overlapping claim held by bob/w-7.", refusal: refusal)
+        #expect(outcome.named(in: claims) { _ in nil }.reason == "Couldn’t claim it. bob holds it with the agent w-7, under the issue claim 12.")
+        // The claim isn't in the list any more: its ID is said. No agent: it is left out.
+        #expect(TeamsClaimOutcome.sentence(refusal, blocking: nil) { _ in nil } == "bob holds it with the agent w-7, under claim d2.")
+        #expect(TeamsClaimOutcome.sentence(MultiplayerClaimRefusal(holder: "bob"), blocking: nil) { _ in nil } == "bob holds it.")
+        // Any other refusal is left as the relay said it.
+        let plain = TeamsClaimOutcome.failed(id: "12", server: Self.studio, reason: "Couldn’t claim it. The server is offline.")
+        #expect(plain.named(in: claims) { _ in nil }.reason == "Couldn’t claim it. The server is offline.")
+    }
+
+    // MARK: Knowledge
+
+    @Test func knowledgeCountsWhatYouSharedAndNamesOwnersByHandle() async {
+        let state = Self.preview(TeamsPlace.knowledge)
+        func shared() -> String? { state.pages(go: { _ in }).content.readouts(for: TeamsPlace.knowledge).first { $0.id == "mine" }?.value }
+        let before = state.content.knowledgeRows.filter(\.isMine).count
+        // The relay names an owner by user ID. The handle beside it says whose it is.
+        #expect(before == 1 && shared() == "1")
+        #expect(state.content.knowledgeRows.allSatisfy { TeamsPagesContent.owner(of: $0.item) == $0.item.ownerHandle && !$0.item.owner.hasPrefix($0.item.ownerHandle) })
+        #expect(TeamsPagesContent.owner(of: MultiplayerKnowledgeItem(id: "k", owner: "u-sam", kind: "prompt", name: "n")) == "u-sam")
+        Self.send(state, .startShare(server: Self.studio))
+        state.state.drafts.knowledge.name = "Verify notes"
+        state.state.drafts.knowledge.content = "Check the lease timer."
+        Self.send(state, .sendShare)
+        await Self.settle(state) { state.state.selection.composer == nil }
+        #expect(state.content.knowledgeRows.filter(\.isMine).count == before + 1 && shared() == "\(before + 1)")
+    }
+
+    @Test func aForbiddenShareNamesTheWidestScopeTheServerAllows() {
+        var content = TeamsSample.content
+        // The sample's policy lets knowledge reach a group at most.
+        #expect(content.reachNote(on: Self.studio) == "studio lets knowledge reach a group at most.")
+        #expect(content.shareRefusal("Couldn’t share policy-probe. Forbidden.", scope: .server, on: Self.studio)
+                == "Couldn’t share policy-probe. Forbidden. studio lets knowledge reach a group at most.")
+        // Within the limit, or when the server hasn't said, the relay's own words stand.
+        #expect(content.shareRefusal("Couldn’t share it. Forbidden.", scope: .group, on: Self.studio) == "Couldn’t share it. Forbidden.")
+        #expect(content.reachNote(on: TeamsSample.lab) == nil)
+        #expect(content.shareRefusal("Couldn’t share it. Forbidden.", scope: .server, on: TeamsSample.lab) == "Couldn’t share it. Forbidden.")
+        // A member who isn't an admin knows the limit from what the relay tells every member.
+        content.servers[1].knowledgeWidest = .friend
+        #expect(content.reachNote(on: TeamsSample.lab) == "lab lets knowledge reach one friend at most.")
+    }
+
+    @Test func deletingAGroupSaysLosesForOneMember() {
+        let one = MultiplayerGroup(id: "g", name: "Solo", owner: "ryan", members: ["ryan"])
+        let three = MultiplayerGroup(id: "g", name: "Crew", owner: "ryan", members: ["ryan", "mira", "sam"])
+        #expect(TeamsGroupsPage.deleteQuestion(one) == "Delete Solo? Its 1 member loses every grant made to the group.")
+        #expect(TeamsGroupsPage.deleteQuestion(three) == "Delete Crew? Its 3 members lose every grant made to the group.")
     }
 
     @Test func completingACardWritesItsResultAndReleasesItsClaim() async throws {
@@ -163,7 +377,7 @@ import Testing
         state.state.drafts.claim = MultiplayerClaimDraft(kind: .paths, key: "Sources/Relay", agent: "relay-worker")
         Self.send(state, .sendClaim)
         await Self.settle(state) { state.state.refusal != nil }
-        #expect(state.state.refusal == "Couldn’t claim it. Overlapping claim held by sam/sam-claude.")
+        #expect(state.state.refusal == "Couldn’t claim it. sam holds it with the agent sam-claude, under the paths claim Sources/Relay/Lease.")
         #expect(state.state.selection.conflict == "cl-2" && state.state.selection.composer == .claim(workspace: Self.relay))
         // Another path is free: the form closes and the claim is listed.
         state.state.drafts.claim.key = "Docs"
@@ -504,5 +718,71 @@ import Testing
             _ = host(hosted)
         }
         #expect(model.route == .hosting, "nothing the window did moved the tray")
+    }
+
+    /// The window's own reads of what the relay added for it: the combined view, the workspace's
+    /// owner, what a member may share, and an admin's members and devices. Against the fixture.
+    @Test func theLivePagesReadTheRosterTheCombinedViewAndTheOwner() async throws {
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-teams")
+        defer { model.close() }
+        let home = MultiplayerRemoteTests.home, tray = model.route
+        let live = TeamsPagesLiveState()
+        let relay = TeamsKey.make("ws-relay", on: home), ios = TeamsKey.make("ws-ios", on: home)
+        let actions = live.actions(model, share: { _, _ in }, requestAccess: { _, _ in })
+        func send(_ intent: TeamsIntent, from place: String) {
+            live.pages.send(intent, in: live.pages.shown(live.content(model), place: place), through: actions, go: { _ in }, from: place)
+        }
+        func settle(_ done: @MainActor () -> Bool) async {
+            for _ in 0..<400 where !done() || !live.pages.results.running.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        }
+
+        // Combined view: every claim the relay lists for the workspace is on a worker's row, and
+        // nothing is made up for a branch or for checks.
+        await live.read(place: TeamsPlace.workspace("ws-relay", on: home), model: model)
+        var content = live.content(model)
+        let listed = try #require(content.workspace(relay)).workspace.claims
+        let rows = content.combinedRows(in: relay)
+        #expect(Set(rows.compactMap(\.worker).flatMap(\.claims).map(\.id)) == Set(listed.map(\.id)))
+        #expect(rows.compactMap(\.worker).allSatisfy { $0.branch.isEmpty && $0.checks == nil })
+        #expect(rows.first { $0.isMine }?.worker?.capabilities.harness == "claude")
+
+        // Owner: you own ws-relay, so you edit it and can't leave it. ws-ios is someone else's.
+        #expect(content.workspace(relay)?.workspace.isOwned(by: content.handle(on: home)) == true)
+        #expect(content.workspace(ios)?.workspace.isOwned(by: content.handle(on: home)) == false)
+        send(.askLeave(workspace: relay), from: TeamsPlace.workspace("ws-relay", on: home))
+        #expect(live.pages.selection.confirming == nil)
+        send(.startEdit(workspace: relay), from: TeamsPlace.workspace("ws-relay", on: home))
+        live.pages.drafts.workspace.goal = "Ship the relay"
+        send(.askSaveWorkspace, from: TeamsPlace.workspace("ws-relay", on: home))
+        #expect(live.pages.selection.confirming == .saveWorkspace(workspace: relay))
+        send(.confirm, from: TeamsPlace.workspace("ws-relay", on: home))
+        await settle { live.pages.selection.composer == nil }
+        #expect(model.share.teams.workspace("ws-relay", on: home)?.goal == "Ship the relay")
+
+        // Knowledge: yours are counted by handle, and the relay's limit is known to a member.
+        await live.read(place: TeamsPlace.knowledge, model: model)
+        content = live.content(model)
+        #expect(content.knownWidestScope(on: home) == .server)
+        let mine = content.knowledgeRows.filter(\.isMine).count
+        #expect(mine == content.knowledgeRows.filter { $0.item.ownerHandle == content.handle(on: $0.server) }.count)
+        #expect(content.knowledgeRows.allSatisfy { !TeamsPagesContent.owner(of: $0.item).hasPrefix("u-") })
+
+        // Admin: the members and devices come from the relay's list, and a suspension shows in it.
+        await live.read(place: TeamsPlace.admin, model: model)
+        content = live.content(model)
+        let server = try #require(content.server(home))
+        let saved = try #require(server.policy)
+        #expect(server.adminProblem == nil && live.pages.drafts.policy == MultiplayerPolicyDraft(saved))
+        #expect(server.members.count >= 2 && server.devices.allSatisfy { $0.name == $0.id })
+        let other = try #require(content.memberRows(on: home).first { !$0.isYou && !$0.member.isSuspended })
+        send(.askSuspend(other.member.handle, server: home), from: TeamsPlace.admin)
+        #expect(live.content(model).server(home)?.members.first { $0.id == other.member.id }?.isSuspended == false, "nothing before the second press")
+        send(.confirm, from: TeamsPlace.admin)
+        await settle { live.content(model).server(home)?.members.first { $0.id == other.member.id }?.isSuspended == true }
+        #expect(live.content(model).server(home)?.members.first { $0.id == other.member.id }?.isSuspended == true)
+        // What Admin said stays on Admin.
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.admin).notice != nil)
+        #expect(live.pages.shown(live.content(model), place: TeamsPlace.groups).notice == nil)
+        #expect(model.route == tray, "nothing the window did moved the tray")
     }
 }
