@@ -676,6 +676,23 @@ import Testing
     }
 }
 
+// A table cell's second line (NetworkPageMolecules.swift). Laid out, never drawn.
+@MainActor @Suite struct ShellCellTextTests {
+    static func height(_ wraps: Bool, width: CGFloat) -> CGFloat {
+        let cell = ShellCellText(title: "Retry budget", detail: "Skill, by fixture-sam on studio", detailWraps: wraps)
+        return NSHostingView(rootView: cell.frame(width: width, alignment: .leading)).fittingSize.height
+    }
+
+    /// At the width the knowledge table's item column has in a 1280 pt window with the inspector
+    /// open, the second line wraps onto another line and isn't cut short.
+    @Test func aKnowledgeRowsSecondLineWrapsInANarrowColumn() {
+        let cut = Self.height(false, width: 110), wrapped = Self.height(true, width: 110)
+        #expect(wrapped > cut, "the wrapped line takes the height it needs")
+        // With room, it stays on one line and the row keeps its height.
+        #expect(Self.height(true, width: 400) == Self.height(false, width: 400))
+    }
+}
+
 // The live binding (TeamsPagesLive.swift), against the teams fixture. No test reaches a network.
 @MainActor @Suite struct TeamsPagesLiveTests {
     @Test func theLivePagesReadAndActWithoutMovingTheTray() async throws {
