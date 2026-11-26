@@ -50,6 +50,8 @@ private enum TeamsRosterFixture {
                 if call.body?["key"] == .string("Sources/Relay") { return refused }
                 if call.body?["key"] == .string("#7") { return "!relay HTTP 403: forbidden" }
                 return #"{"id":"cl-9"}"#
+            case .relay where call.method == "PUT" && call.path == "/v1/workspaces/ws-1/cards/card-8": return refused
+            case .relay where call.method == "PUT" && call.path == "/v1/workspaces/ws-1/cards/card-9": return "!relay HTTP 403: forbidden"
             default: return nil
             }
         }
@@ -280,6 +282,38 @@ private enum TeamsRosterFixture {
         model.close()
     }
 
+    /// Issue #23: a card claim or edit refused because someone else holds the card names them too.
+    @Test func aRefusedCardClaimOrEditSaysWhoHoldsIt() async throws {
+        let (model, helper) = await TeamsRosterFixture.model()
+        func card(_ id: String, _ state: String = "open") throws -> MultiplayerCard {
+            try #require(MultiplayerCard(try MultiplayerLiveFixture.json(#"{"id":"\#(id)","title":"Replay requests","state":"\#(state)","assignee":"","result":""}"#)))
+        }
+        let who = MultiplayerClaimRefusal(holder: "fixture-bo", agent: "bo-agent", claim: "cl-1")
+        let reason = "Couldn’t update the card. Overlapping claim held by fixture-bo/bo-agent."
+
+        let held = await model.updateCardAnswer(try card("card-8"), in: "ws-1", on: home, to: .claimed)
+        #expect(held == MultiplayerClaimAnswer(result: .failed(id: "card-8", server: home, reason: reason), refusal: who))
+        #expect(helper.relays("PUT").last?.path == "/v1/workspaces/ws-1/cards/card-8")
+        // The row to mark is in the workspace's claims.
+        let claims = try #require(model.share.teams.workspace("ws-1", on: home)?.claims)
+        #expect(held.refusal?.blocking(in: claims)?.id == "cl-1")
+        // The plain calls read the same refusal.
+        #expect(await model.updateCard(try card("card-8"), in: "ws-1", on: home, to: .claimed) == held.result)
+        #expect(await model.completeCard(try card("card-8", "claimed"), in: "ws-1", on: home, result: "Done.") == held.result)
+        // Completing and reopening a held card name the holder as well.
+        #expect(await model.completeCardAnswer(try card("card-8", "claimed"), in: "ws-1", on: home, result: "Done.") == held)
+        #expect(await model.updateCardAnswer(try card("card-8", "done"), in: "ws-1", on: home, to: .open) == held)
+
+        // Another refusal, an edit not sent and a card that was moved name no one.
+        let forbidden = await model.updateCardAnswer(try card("card-9"), in: "ws-1", on: home, to: .claimed)
+        #expect(forbidden.result.reason?.hasPrefix("Couldn’t update the card.") == true && !forbidden.result.isDone && forbidden.refusal == nil)
+        #expect(await model.updateCardAnswer(try card("card-8"), in: "ws-1", on: "s-gone", to: .claimed)
+            == MultiplayerClaimAnswer(result: .failed(id: "card-8", server: "s-gone", reason: "Couldn’t update the card. Sign in to that server first.")))
+        let moved = await model.updateCardAnswer(try card("card-1"), in: "ws-1", on: home, to: .claimed)
+        #expect(moved.result.isDone && moved.result.id == "card-1" && moved.refusal == nil)
+        model.close()
+    }
+
     /// Request 8: a page that is a host's home has nothing to close.
     @Test func aHostWithNoCancelDrawsNone() async throws {
         let (model, _) = await TeamsRosterFixture.model()
@@ -358,7 +392,7 @@ private enum TeamsRosterFixture {
         edit.integration = .pullRequest
         #expect(await model.editWorkspace("ws-relay", to: edit, on: home).isDone)
         let edited = try #require(teams.workspace("ws-relay", on: home))
-        #expect(edited.goal == "Ship the relay" && !edited.usesQueue && edited.name == "Relay reconnect" && edited.claims.count == 3)
+        #expect(edited.goal == "Ship the relay" && !edited.usesQueue && edited.name == "Relay reconnect" && edited.claims.count == 4)
         // Only the owner edits, and the owner can't leave.
         var theirs = MultiplayerWorkspaceEdit(try #require(teams.workspace("ws-ios", on: home)))
         theirs.base = "main"
@@ -368,6 +402,21 @@ private enum TeamsRosterFixture {
         let held = await model.claimAnswer(MultiplayerClaimDraft(kind: .issue, key: "#212", agent: "relay-worker"), in: "ws-relay", on: home)
         #expect(held.refusal == MultiplayerClaimRefusal(holder: "fixture-mei", agent: "mei-agent", claim: "cl-3"))
         #expect(held.refusal?.blocking(in: edited.claims)?.key == "#212" && held.result.reason?.hasPrefix("Couldn’t claim it.") == true)
+
+        // A card someone else holds: claiming, completing and reopening it are refused with its holder.
+        let board = try #require(await teams.loadCards(in: "ws-relay", on: home).value)
+        let theirs3 = try #require(board.first { $0.id == "card-3" })
+        let sam = MultiplayerClaimRefusal(holder: "fixture-sam", agent: "sam-agent", claim: "cl-5")
+        let taken = await model.updateCardAnswer(theirs3, in: "ws-relay", on: home, to: .claimed)
+        #expect(taken.refusal == sam && taken.result.id == "card-3")
+        #expect(taken.result.reason == "Couldn’t update the card. Overlapping claim held by fixture-sam/sam-agent.")
+        #expect(taken.refusal?.blocking(in: edited.claims)?.key == "card-3")
+        #expect(await model.completeCardAnswer(theirs3, in: "ws-relay", on: home, result: "Done.") == taken)
+        #expect(await model.updateCardAnswer(theirs3, in: "ws-relay", on: home, to: .open) == taken)
+        #expect(await model.updateCard(theirs3, in: "ws-relay", on: home, to: .claimed) == taken.result)
+        // An open card is claimed and names no one.
+        let open = await model.updateCardAnswer(try #require(board.first { $0.id == "card-1" }), in: "ws-relay", on: home, to: .claimed)
+        #expect(open.result.isDone && open.refusal == nil)
 
         #expect(await model.leaveWorkspace("ws-ios", on: home).isDone)
         #expect(teams.workspaces[home]?.map(\.id) == ["ws-relay"])

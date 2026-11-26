@@ -234,16 +234,33 @@ extension MultiplayerModel {
     /// `result`, and `.open` reopens it or gives it up. The ID is the card's.
     func updateCard(_ card: MultiplayerCard, in workspace: String, on server: String,
                     to state: MultiplayerCard.State, result text: String = "") async -> MultiplayerActionResult {
+        await updateCardAnswer(card, in: workspace, on: server, to: state, result: text).result
+    }
+
+    /// Moves a card, as `updateCard(_:in:on:to:result:)` does, and says who stopped it when the
+    /// relay refused because someone else holds the card: `refusal` names the holder and the
+    /// blocking claim, so the caller can mark that row. `refusal` is nil for a card that was moved
+    /// and for any other refusal.
+    func updateCardAnswer(_ card: MultiplayerCard, in workspace: String, on server: String,
+                          to state: MultiplayerCard.State, result text: String = "") async -> MultiplayerClaimAnswer {
         let lead = "Couldn’t update the card."
-        if let problem = teamsOffline(server) { return refused(card.id, server, lead, problem) }
-        return await result(id: card.id, server: server, failing: lead) {
-            share.teams.updateCard(card, in: workspace, on: server, to: state, result: text, report: $0)
+        if let problem = teamsOffline(server) { return MultiplayerClaimAnswer(result: refused(card.id, server, lead, problem)) }
+        var refusal: MultiplayerClaimRefusal?
+        let result = await result(id: card.id, server: server, failing: lead) {
+            share.teams.updateCard(card, in: workspace, on: server, to: state, result: text, report: $0, refused: { refusal = $0 })
         }
+        return MultiplayerClaimAnswer(result: result, refusal: result.isDone ? nil : refusal)
     }
 
     /// Completes a card with the result it was finished with. The ID is the card's.
     func completeCard(_ card: MultiplayerCard, in workspace: String, on server: String, result text: String) async -> MultiplayerActionResult {
-        await updateCard(card, in: workspace, on: server, to: .done, result: text)
+        await completeCardAnswer(card, in: workspace, on: server, result: text).result
+    }
+
+    /// Completes a card, as `completeCard(_:in:on:result:)` does, and says who holds it when the
+    /// relay refused for that.
+    func completeCardAnswer(_ card: MultiplayerCard, in workspace: String, on server: String, result text: String) async -> MultiplayerClaimAnswer {
+        await updateCardAnswer(card, in: workspace, on: server, to: .done, result: text)
     }
 
     // MARK: Merge queue
