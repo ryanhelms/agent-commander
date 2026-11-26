@@ -47,6 +47,31 @@ let networkFitRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_FIT
         }
     }
 
+    /// The split puts the inspector beside the collection only when the collection's least width
+    /// leaves the inspector at least the tray's own measure.
+    @Test func theSplitStacksWhenTheCollectionCannotShrinkEnough() {
+        let layout = NetworkSplitLayout()
+        // Room to spare: the inspector at its full 420 pt.
+        #expect(layout.arrangement(width: 1148, collectionMinimum: 600)
+                == .init(beside: true, collection: 1148 - 16 - 420, inspector: 420))
+        // Tight: the inspector narrows, but never under 400 pt.
+        #expect(layout.arrangement(width: 1020, collectionMinimum: 600) == .init(beside: true, collection: 600, inspector: 404))
+        // Too tight: the inspector goes under, and neither is wider than the page.
+        let stacked = layout.arrangement(width: 988, collectionMinimum: 600)
+        #expect(stacked == .init(beside: false, collection: 988, inspector: 540))
+        #expect(layout.arrangement(width: 480, collectionMinimum: 600) == .init(beside: false, collection: 600, inspector: 480))
+    }
+
+    @Test func labelsSayTheTimeTheScreenShows() {
+        #expect(NetworkSpoken.clock(waiting: 130, expiresIn: 252) == "4 minutes 12 seconds left")
+        #expect(NetworkSpoken.clock(waiting: 130, expiresIn: nil) == "waiting 2 minutes 10 seconds")
+        #expect(NetworkSpoken.clock(waiting: nil, expiresIn: nil) == nil)
+        #expect(NetworkSpoken.duration(3_660) == "1 hour 1 minute" && NetworkSpoken.duration(7_200) == "2 hours")
+        #expect(NetworkSpoken.duration(45) == "45 seconds" && NetworkSpoken.duration(1_260) == "21 minutes")
+        #expect(NetworkSpoken.suffix(nil).isEmpty && NetworkSpoken.suffix("waiting 1 second") == ", waiting 1 second")
+        #expect(MultiplayerPlural.count(1, "friend request") == "1 friend request")
+    }
+
     @Test(.enabled(if: networkFitRenderDirectory != nil)) func drawsThePagesAtTheDefaultWindowSize() async throws {
         let folder = URL(fileURLWithPath: try #require(networkFitRenderDirectory), isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

@@ -561,6 +561,10 @@ struct NetworkPagesSelection: Equatable {
     var grant: String? = nil
     /// The artifact waiting for its confirmation, with the checkout chosen for it.
     var apply: NetworkApplyDraft? = nil
+    /// The access request in the inspector, as its row's ID.
+    var access: String? = nil
+    /// The friend request in the inspector, as its row's ID.
+    var friend: String? = nil
     /// The composer open on the page. Nil while none is.
     var composer: NetworkComposer? = nil
     /// The grant waiting for its second press before it is revoked, as `server/grant`.
@@ -942,6 +946,28 @@ extension NetworkPagesActions {
             results.run(waiting.key, keeps: true) { await send(waiting, sent) }
         }
     }
+}
+
+/// What a row's clock says aloud, so a label holds what the screen shows.
+enum NetworkSpoken {
+    /// "4 minutes 12 seconds left", "waiting 2 minutes", or nothing when the source gives no time.
+    static func clock(waiting: TimeInterval?, expiresIn: TimeInterval?) -> String? {
+        if let expiresIn { return "\(duration(expiresIn)) left" }
+        if let waiting { return "waiting \(duration(waiting))" }
+        return nil
+    }
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let hours = total / 3600, minutes = (total % 3600) / 60, rest = total % 60
+        func unit(_ count: Int, _ noun: String) -> String { MultiplayerPlural.count(count, noun) }
+        if hours > 0 { return minutes > 0 ? "\(unit(hours, "hour")) \(unit(minutes, "minute"))" : unit(hours, "hour") }
+        if minutes > 0 { return rest > 0 && minutes < 10 ? "\(unit(minutes, "minute")) \(unit(rest, "second"))" : unit(minutes, "minute") }
+        return unit(rest, "second")
+    }
+
+    /// A sentence joined to what follows it: nothing when there is no time to say.
+    static func suffix(_ text: String?) -> String { text.map { ", \($0)" } ?? "" }
 }
 
 // MARK: - Deep links

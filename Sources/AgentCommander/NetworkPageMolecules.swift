@@ -100,11 +100,14 @@ struct ShellAlertBand: View {
             case .success: MultiplayerLamp(kind: .on)
             case .failure: MultiplayerLamp(kind: .error)
             }
+            // The sentence is one static text and Dismiss is its own button beside it.
             Text(text).themeType(theme.type.body).foregroundStyle(.theme(\.color.foreground))
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("\(spokenKind): \(text)")
+                .accessibilityIdentifier("network-alert-\(kind)")
             Spacer(minLength: Space.s)
             if let dismiss, kind != .progress {
-                SymbolButton(symbol: "xmark", label: "Dismiss", size: 10, action: dismiss)
+                SymbolButton(symbol: "xmark", label: "Dismiss this message", size: 10, action: dismiss)
                     .foregroundStyle(.theme(\.color.secondary))
             }
         }
@@ -112,8 +115,15 @@ struct ShellAlertBand: View {
         .frame(minHeight: theme.space.fieldHeight)
         .background(fill, in: shape)
         .overlay { shape.strokeBorder(edge, lineWidth: theme.line.hairline) }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("network-alert-\(kind)")
+        .accessibilityElement(children: .contain)
+    }
+
+    private var spokenKind: String {
+        switch kind {
+        case .progress: "In progress"
+        case .success: "Done"
+        case .failure: "Failed"
+        }
     }
 
     private var fill: Color {
@@ -392,7 +402,7 @@ struct NetworkInspector<Content: View, Footer: View>: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).themeType(theme.type.title).foregroundStyle(.theme(\.color.foreground))
                         .lineLimit(1).truncationMode(.middle).accessibilityAddTraits(.isHeader)
-                    if let serverName {
+                    if let serverName, !serverName.isEmpty {
                         Text(serverName).themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
                     }
                 }
@@ -440,6 +450,30 @@ extension NetworkInspector where Footer == EmptyView {
 }
 
 /// An inspector with nothing chosen: one sentence saying what choosing a row shows.
+/// A request with no page of its own in the network (an access request, a friend request): who,
+/// what and when, as labelled lines, with one sentence about what the answers do.
+struct NetworkRequestInspector: View {
+    let title: String
+    let serverID: String
+    let serverName: String
+    let lines: [(label: String, value: String)]
+    let note: String
+    let close: () -> Void
+
+    var body: some View {
+        NetworkInspector(title: title, serverID: serverID, serverName: serverName, close: close) {
+            MultiplayerBand {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        MultiplayerSummaryLine(label: line.label, value: line.value)
+                    }
+                    Text(note).font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 struct NetworkInspectorNote: View {
     let text: String
     var lamp: MultiplayerLamp.Kind = .off

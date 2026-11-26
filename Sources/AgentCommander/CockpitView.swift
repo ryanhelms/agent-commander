@@ -351,8 +351,10 @@ struct WorkspaceToolbar: ToolbarContent {
     var adapterUpdates: AdapterUpdateFeed? = nil
     /// The redesigned shell's wordmark and breadcrumb, in place of the ones drawn here.
     var title: AnyView? = nil
-    /// The redesigned shell's readouts (servers, presence), after the service state.
+    /// The redesigned shell's readouts, after the service state. Each is its own toolbar item, so
+    /// each is its own element for assistive apps: the servers button, then the presence menu.
     var readouts: AnyView? = nil
+    var presence: AnyView? = nil
 
     /// The shell's items sit flat on the toolbar: no shared glass capsule behind them. The console
     /// display menu and the adapter notice are the console's own controls and keep their look.
@@ -413,6 +415,10 @@ struct WorkspaceToolbar: ToolbarContent {
         .sharedBackgroundVisibility(capsule)
         if let readouts {
             ToolbarItem(placement: .primaryAction) { readouts }
+                .sharedBackgroundVisibility(capsule)
+        }
+        if let presence {
+            ToolbarItem(placement: .primaryAction) { presence }
                 .sharedBackgroundVisibility(capsule)
         }
     }
@@ -569,7 +575,8 @@ struct CockpitScreen: View {
                                      // Toolbar items don't inherit the window's theme, so it is handed on.
                                      title: AnyView(ShellToolbarTitle(crumbs: shellCrumbs(shellNavigation))
                                         .environment(\.theme, theme)),
-                                     readouts: AnyView(shellReadouts(shell).environment(\.theme, theme)))
+                                     readouts: AnyView(shellReadouts(shell, part: .servers).environment(\.theme, theme)),
+                                     presence: AnyView(shellReadouts(shell, part: .presence).environment(\.theme, theme)))
                 }
             } else {
                 WorkspaceToolbar(sidebarExpanded: $ui.sidebarExpanded, crumbs: crumbs, connection: content.connection,
@@ -631,8 +638,8 @@ struct CockpitScreen: View {
         return crumbs
     }
 
-    private func shellReadouts(_ shell: ShellContext) -> some View {
-        ShellToolbarReadouts(servers: shell.network.health, profile: shell.network.profile,
+    private func shellReadouts(_ shell: ShellContext, part: ShellToolbarReadouts.Part = .both) -> some View {
+        ShellToolbarReadouts(part: part, servers: shell.network.health, profile: shell.network.profile,
                              openServers: { show(place: LiveShell.servers) },
                              pickPresence: { shell.actions.setPresence($0) })
     }

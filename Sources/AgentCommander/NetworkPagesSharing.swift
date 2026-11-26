@@ -211,7 +211,8 @@ struct NetworkApprovalTable: View {
         ShellTable(columns: [Self.who, Self.wants, Self.clock], trailing: Self.verbs, items: rows,
                    empty: "Nothing is waiting for you", emptyLamp: .on) { row in
             ShellTableRow(isSelected: row.id == selected,
-                          spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)",
+                          spoken: "\(row.approval.headline), \(row.resourceName) on \(row.serverName)"
+                            + NetworkSpoken.suffix(NetworkSpoken.clock(waiting: row.waiting, expiresIn: row.expiresIn)),
                           hint: "Shows the request and the grant it runs under", select: { open(row) }, trailing: Self.verbs) {
                 ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.approval.headline,
@@ -237,8 +238,12 @@ struct NetworkApprovalTable: View {
 struct NetworkAccessTable: View {
     @Environment(\.theme) private var theme
     let rows: [NetworkAccessRow]
+    /// The row in the inspector.
+    var selected: String? = nil
     let now: Date
     let isBusy: Bool
+    /// Shows a request in the inspector. Nil leaves the rows as text.
+    var select: ((NetworkAccessRow) -> Void)? = nil
     let review: (NetworkAccessRow) -> Void
     /// Declines a request sent to you, or withdraws one you sent.
     let remove: (NetworkAccessRow) -> Void
@@ -253,7 +258,8 @@ struct NetworkAccessTable: View {
         ShellTable(columns: [Self.who, Self.what, Self.way, Self.sent], trailing: Self.verbs, items: rows,
                    empty: "No access request is open. Ask for access from the Directory.") { row in
             let request = row.request
-            ShellTableRow(spoken: spoken(row), trailing: Self.verbs) {
+            ShellTableRow(isSelected: row.id == selected, spoken: spoken(row), hint: "Shows the request",
+                          select: select.map { select in { select(row) } }, trailing: Self.verbs) {
                 ShellPersonCell(name: row.who, serverID: row.server, serverName: row.serverName).shellCell(Self.who)
                 ShellCellText(title: row.resourceName, detail: row.result?.rowText ?? MultiplayerAccessRequestsPage.detail(request),
                               detailTone: row.result?.rowTone ?? .neutral)
@@ -285,8 +291,11 @@ struct NetworkAccessTable: View {
     }
 
     private func spoken(_ row: NetworkAccessRow) -> String {
-        row.isIncoming ? "\(row.who) asks for \(row.resourceName) on \(row.serverName). \(MultiplayerAccessRequestsPage.detail(row.request))"
-                       : "You asked \(row.who) for \(row.resourceName) on \(row.serverName). \(row.request.statusTitle)"
+        let when = MultiplayerActivityRow.time(row.request.createdAt, now: now)
+        let sent = when.isEmpty ? "" : " Sent \(when)."
+        return row.isIncoming
+            ? "\(row.who) asks for \(row.resourceName) on \(row.serverName). \(MultiplayerAccessRequestsPage.detail(row.request))\(sent)"
+            : "You asked \(row.who) for \(row.resourceName) on \(row.serverName). \(row.request.statusTitle).\(sent)"
     }
 }
 
@@ -304,21 +313,59 @@ struct NetworkApprovalsPage: View {
                         ShellBandHeading(title: "Waiting on you", count: "\(approvals.count)",
                                          note: approvals.isEmpty ? nil : "A grant set to Ask each time stops here until you answer.")
                         NetworkApprovalTable(rows: approvals, selected: openApproval(in: approvals)?.id, isBusy: state.isBusy,
-                                             open: { actions.openApproval($0.approval.id, $0.server) },
+                                             open: {
+                                                 select(access: nil)
+                                                 actions.openApproval($0.approval.id, $0.server)
+                                             },
                                              decide: { row, approve in actions.decide(row.approval, row.server, approve) })
                     }
                     VStack(alignment: .leading, spacing: Space.s) {
                         ShellBandHeading(title: "Access requests", count: "\(access.count)",
                                          note: "Review opens the share sheet. Granting it answers the request.")
-                        NetworkAccessTable(rows: access, now: state.now, isBusy: state.isBusy,
+                        NetworkAccessTable(rows: access, selected: openApproval(in: approvals) == nil ? pages.selection.access : nil,
+                                           now: state.now, isBusy: state.isBusy,
+                                           select: { row in
+                                               // One thing in the inspector: the open approval gives way.
+                                               actions.close()
+                                               select(access: row.id)
+                                           },
                                            review: { actions.reviewAccess($0.request, $0.server) },
                                            remove: { actions.removeAccess($0.request, $0.server, $0.isIncoming) })
                     }
                 }
             } inspector: {
-                inspector(openApproval(in: approvals))
+                if let server = pages.selection.grant {
+                    NetworkGrantInspector(server: server, pages: pages)
+                } else if openApproval(in: approvals) == nil, let row = access.first(where: { $0.id == pages.selection.access }) {
+                    accessInspector(row)
+                } else {
+                    inspector(openApproval(in: approvals))
+                }
             }
         }
+    }
+
+    private func select(access id: String?) {
+        var next = pages.selection
+        next.access = id
+        pages.actions.select(next)
+    }
+
+    private func accessInspector(_ row: NetworkAccessRow) -> some View {
+        let request = row.request, now = pages.content.now
+        var lines: [(label: String, value: String)] = [
+            (row.isIncoming ? "From" : "To", row.who),
+            ("Resource", row.resourceName),
+            ("Asks to", MultiplayerAccessRequestsPage.detail(request))
+        ]
+        let when = MultiplayerActivityRow.time(request.createdAt, now: now)
+        if !when.isEmpty { lines.append(("Sent", when)) }
+        if !row.isIncoming { lines.append(("State", request.statusTitle)) }
+        return NetworkRequestInspector(title: "Access request", serverID: row.server, serverName: row.serverName, lines: lines,
+                                       note: row.isIncoming
+                                        ? "Review opens the share sheet with what they asked for. Sharing answers the request; Decline refuses it and they can ask again."
+                                        : "\(row.who) decides. Withdraw takes the request back.",
+                                       close: { select(access: nil) })
     }
 
     private func openApproval(in rows: [NetworkApprovalRow]) -> NetworkApprovalRow? {

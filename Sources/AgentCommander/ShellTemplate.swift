@@ -25,10 +25,14 @@ struct ShellToolbarTitle: View {
                                 .font(.system(size: theme.type.label.size - 2, weight: .semibold))
                                 .foregroundStyle(.theme(\.surface.quietInk))
                         }
+                        // A place's name is short and is never cut while the toolbar has room: the
+                        // last crumb keeps its full width first, then the ones before it.
                         Text(crumb)
                             .themeType(theme.pageType.meta)
                             .foregroundStyle(.theme(index == crumbs.count - 1 ? \.color.foreground : \.color.secondary))
                             .lineLimit(1)
+                            .fixedSize(horizontal: crumb.count <= ShellLayout.crumbKeptWhole, vertical: false)
+                            .layoutPriority(Double(index + 1))
                     }
                 }
             }

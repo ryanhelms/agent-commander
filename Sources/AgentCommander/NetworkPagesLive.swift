@@ -120,7 +120,15 @@ extension NetworkPageActions {
     @MainActor static func live(_ model: MultiplayerModel) -> NetworkPageActions {
         NetworkPageActions(
             acceptFriend: { request, server in NetworkActionResult(await model.acceptFriend(request, on: server)) },
-            declineFriend: { request, server in NetworkActionResult(await model.declineFriend(request, on: server)) },
+            // A declined request leaves its row at once, so the page's band says what happened.
+            declineFriend: { request, server in
+                let result = NetworkActionResult(await model.declineFriend(request, on: server))
+                if result.isDone, model.notice == nil {
+                    let who = request.handle.isEmpty ? "They" : request.handle.multiplayerDisplay
+                    model.post(notice: result.message ?? "Declined. \(who) can ask again.")
+                }
+                return result
+            },
             decide: { approval, server, approve in NetworkActionResult(await model.decide(approval, on: server, approve: approve)) },
             removeAccess: { request, server, declining in
                 NetworkActionResult(await model.remove(request, on: server, declining: declining))
@@ -218,6 +226,15 @@ struct LiveNetworkPage: View {
             }
         }
         .task(id: place) { enter() }
+        // The band says how the last action on this page ended. It does not follow to another page.
+        .onChange(of: place) { _, _ in
+            model.dismissNotice()
+            model.dismissFailure()
+        }
+        .onDisappear {
+            model.dismissNotice()
+            model.dismissFailure()
+        }
     }
 
     /// Opens what a place shows first, so its page never starts empty: the server that needs a

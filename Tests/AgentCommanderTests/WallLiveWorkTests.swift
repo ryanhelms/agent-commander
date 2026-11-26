@@ -71,8 +71,8 @@ import Testing
 
     /// The network model's own state, read as the wall's value, and the wall's intents sent back.
     @Test func readsTheNetworkModelAndOpensWorkOnItsRoute() async throws {
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("wall-live-work")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("wall-live-work")
+        defer { model.close() }
         let wall = WallLiveWork(model: model)
         #expect(wall.remoteWorkers == model.share.remoteWorkers && !wall.remoteWorkers.isEmpty)
         #expect(wall.controls.map(\.handover) == model.share.live.activeHandovers.map(\.item))

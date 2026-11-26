@@ -78,8 +78,8 @@ struct NetworkServerTable: View {
     private func spoken(_ server: MultiplayerServerSummary) -> String {
         var parts = [server.displayName, server.stateTitle(now: now)]
         if server.signedIn, !server.handle.isEmpty { parts.append("signed in as \(server.handle.multiplayerDisplay)") }
-        if server.state == .certChanged { parts.append("its certificate changed") }
-        if server.incoming > 0 { parts.append("\(server.incoming) friend requests") }
+        // The state already says a changed certificate; it is said once.
+        if server.incoming > 0 { parts.append(MultiplayerPlural.count(server.incoming, "friend request")) }
         return parts.joined(separator: ", ")
     }
 }

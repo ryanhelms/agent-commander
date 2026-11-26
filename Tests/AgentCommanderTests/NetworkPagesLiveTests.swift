@@ -5,7 +5,7 @@ import Testing
 
 // The live network pages own what they show. Opening a page, reading a thread or the audit log,
 // posting, and revoking go through the network model's calls that name their target, and none of
-// them moves the tray's route. Run against the network fixture, as the tray's own tests are.
+// them moves the tray's route. Run against the network fixture, each test with a state file of its own.
 //
 //     NETWORK_LIVE_RENDER_DIR=design/demos/main-window-4 swift test --filter NetworkPagesLive
 //
@@ -27,8 +27,8 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
     }
 
     @Test func openingAndReadingNeverMovesTheTray() async throws {
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("pages-live-read")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-read")
+        defer { model.close() }
         let state = NetworkPagesLiveState()
         let (intents, actions) = Self.pages(model, state)
         // The tray is on a form the person is filling in.
@@ -61,8 +61,8 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
     }
 
     @Test func aCommentIsPostedToTheThreadTheWindowHasOpen() async throws {
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("pages-live-comment")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-comment")
+        defer { model.close() }
         let state = NetworkPagesLiveState()
         let (_, actions) = Self.pages(model, state)
         let tray = model.route
@@ -81,8 +81,8 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
     }
 
     @Test func aGrantIsRevokedByValueAndTheRowSaysHowItEnded() async throws {
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("pages-live-revoke")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-revoke")
+        defer { model.close() }
         let state = NetworkPagesLiveState()
         let (_, actions) = Self.pages(model, state)
         let tray = model.route
@@ -99,8 +99,8 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
     }
 
     @Test func composersOpenOnThePageAndTheFanoutDraftIsTheWindowsOwn() async throws {
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("pages-live-compose")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-compose")
+        defer { model.close() }
         let state = NetworkPagesLiveState()
         let (_, actions) = Self.pages(model, state)
         let tray = model.route
@@ -131,8 +131,8 @@ let networkLiveRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_LI
         let folder = URL(fileURLWithPath: try #require(networkLiveRenderDirectory), isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         _ = NSApplication.shared
-        let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("pages-live-render")
-        defer { model.close(); defaults.removePersistentDomain(forName: suite) }
+        let model = try await MultiplayerRemoteTests.fixtureModel("pages-live-render")
+        defer { model.close() }
         func page(_ place: String, _ state: NetworkPagesLiveState) -> some View {
             ThemeCanvas { LiveNetworkPage(place: place, model: model, state: state, go: { _ in }, openPanel: nil) }
         }
