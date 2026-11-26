@@ -473,18 +473,20 @@ enum MultiplayerTrayTab: String, CaseIterable, Identifiable, Sendable {
 /// becomes a fade or nothing.
 extension MultiplayerTheme {
     enum Motion {
-        /// Hover and press feedback.
-        static let fast: Double = 0.10
-        /// A row arriving or leaving, a tab changing, a count ticking.
-        static let standard: Double = 0.18
-        /// A meter filling.
-        static let slow: Double = 0.25
-        /// One beat of a live lamp.
-        static let pulse: Double = 1.4
-        /// How far an arriving row travels.
-        static let travel: CGFloat = 6
+        private static let motion = Theme.console.motion
 
-        static func ease(_ duration: Double = standard) -> Animation { .easeOut(duration: duration) }
+        /// Hover and press feedback.
+        static let fast = motion.fast
+        /// A row arriving or leaving, a tab changing, a count ticking.
+        static let standard = motion.standard
+        /// A meter filling.
+        static let slow = motion.slow
+        /// One beat of a live lamp.
+        static let pulse = motion.pulse
+        /// How far an arriving row travels.
+        static let travel = motion.travel
+
+        static func ease(_ duration: Double = standard) -> Animation { motion.animation(duration) }
     }
 }
 

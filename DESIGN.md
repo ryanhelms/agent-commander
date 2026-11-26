@@ -15,6 +15,9 @@ Sources of truth in code:
 | Reference mockup | `design/mockups/commander-network-tray.html` |
 | Teams components (increment 5) | `MultiplayerTeamsViews.swift`, `MultiplayerMarkdown.swift` |
 | Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
+| Themes | `themes` in `design/system/tokens.json`, `Theme` in `ThemeTokens.swift` |
+
+The app has two themes. **Console** is the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
@@ -54,9 +57,20 @@ Dark by default. The web surface (the Remote page) also has a light theme throug
 
 Tinted states use the tone colour at 12% opacity for a fill and 45% opacity for an edge.
 
+Components name a surface, not a base colour: a panel is `panel` with a `hair` edge and no shadow; a mark or a field is `well` with a `border` edge; a standard button is clear with a `border` edge; a primary button is filled `focus`; a selected row or card is `selection` with a 2 pt `focus` leading marker; a table header and a footer are `well`; a search match is filled `attention` with `onAccent` ink.
+
 Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `well` `#ECEDF1`, `hair` `#D8DAE1`, `border` `#B3B7C2`, `foreground` `#101116`, `secondary` `#4B4E5A`, `focus` `#1D5BB8`, `working` `#1A7548`, `attention` `#8A5800`, `failure` `#B2362A`, `selection` `#DBE6F7`, `onAccent` `#FFFFFF`. Light swatches are `#16A34A`, `#0284C7`, `#DB2777` and `#65A30D`.
 
 **Swatches** identify a server or harness. They are mint `#4ADE80`, sky `#38BDF8`, pink `#F472B6` and lime `#A3E635`. A server's swatch is chosen by a stable FNV hash of its ID. Show it as a 4 × 12 pt bar beside the name, or as a 2 pt left edge on a row's metadata line.
+
+### Material
+
+| Token | Console | Black glass |
+|---|---|---|
+| Window | Opaque `window` | System glass |
+| Canvas | `window` | Dark gradient over the glass |
+
+Reduce Transparency forces the opaque fill in both themes. The web Remote page is unaffected.
 
 ### Shape
 
@@ -84,6 +98,12 @@ Light theme roles (web surface only): `window` `#F5F6F8`, `panel` `#FFFFFF`, `we
 | `label` | Mono | 9.5 semibold | Readout labels, chips, badges, counts |
 | `fingerprint` | Mono | 10.5 | Hashes, times |
 | `figure` | Mono | 14 semibold | Big numbers in a readout |
+| `pageTitle` | System | 20 semibold | The title of a full-size page |
+| `control` | Mono | 12 medium | Button labels |
+
+On a full-size page, a title inside a panel and a section title both use `title`, the note beside a heading uses `sub`, and the line above a page title uses `label`.
+
+Black glass only, provisional: `figure` is system 22 semibold.
 
 Section headings read like `Needs you 3`. The name is in secondary ink and the count is in full ink.
 
@@ -100,6 +120,8 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | Tab height | 34 pt |
 | Chip height | 16–18 pt |
 | Tray width | 400 pt |
+| Page inset | 24 pt |
+| Table row height | 34 pt |
 
 ### Motion
 
@@ -111,6 +133,8 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | `pulse` | 1.4 s | One beat of a live lamp |
 | `travel` | 6 pt | How far an arriving row moves |
 | Curve | ease-out only | No spring, no bounce |
+
+Black glass only, provisional: `fast` 0.15 s, `standard` 0.25 s, `slow` 0.35 s, ease-in-out, `travel` 0, `pulse` 1.7 s.
 
 With Reduce Motion on:
 - Movement becomes a fade.
@@ -126,6 +150,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Component | What it is |
 |---|---|
 | Lamp | 9 pt state mark: `on` filled circle, `off` outlined circle, `waiting` open arc, `error` diamond, `unknown` focus ring, `busy` square, `away` half-filled circle, `doNotDisturb` circle with a bar. Live lamps pulse. |
+| Tone lamp | Where a view has a tone but no specific state, the lamp follows the tone: working `on`, attention `busy`, failure `error`, focus `unknown`, neutral `off`. |
 | Spinner | 12 pt arc turning every 1.1 s. Labelled "In progress". |
 | Mark | Square icon tile for a non-person thing: agent, repository, resource. Well fill, border edge, optional tone. |
 | Avatar | Round picture, or the initial on the well when there is no picture. |
@@ -164,6 +189,8 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Setting row | Label at a fixed measure, then the control. |
 | Well | Sunken block for a value read closely. |
+| Choice card | A selectable card: a thumbnail, a round choice mark, the option's name and one line about it. The selected card is filled `selection` with the leading `focus` marker and the word "Selected" in `working`. |
+| Theme thumbnail | A small window drawn in one theme's own tokens: its rail, two panels with a state mark, and a primary action. |
 | Alert band | Full-width band under the status strip: `failure` at 12% fill with a 45% lower edge, an error lamp and one sentence, such as "Can't reach your Mac". |
 | Load note | A lamp and one sentence in a hairline-topped row. The lamp is `waiting` while reading, `error` when the read failed, `off` when empty, and `on` for "Nothing is waiting for you". |
 | Outcome well | A well holding a state label ("Approved", "Denied") that replaces a verb strip once its action is done, then fades out. |
@@ -235,6 +262,7 @@ The tray keeps its own versions of these:
 - **Rows:** mark or avatar (28 pt), or a kind glyph for remote work, then the name, then a metadata line with the swatch edge, then trailing verbs. State words sit right-aligned in tone colour.
 - **Footer:** one line of context on the well, then the page's actions.
 - **Order of urgency:** what needs the person first ("Needs you"), then live work, then what they own, then what others offer.
+- **Preferences.** Sections stack: a mono heading, a `title`, and a trailing scope note. Appearance comes first and offers one choice card per theme, followed by the line "Consoles, terminals and the pretty view look the same in every theme."
 
 ## 5. Behaviour
 
@@ -251,6 +279,6 @@ The tray keeps its own versions of these:
 
 ## 6. Open work
 
-- **Unify the token layers.** `MultiplayerTheme` holds the tray's roles, radii, type and motion. `design/system/tokens.json` and `DesignTokens.swift` hold the base palette. Move the theme's roles, type, radii and motion into the shared token layer. Rename the components from `Multiplayer*` to app-wide names once they are shared. The design must stay pluggable and themeable: a skin redefines one token layer.
+- **Unify the token layers.** `Theme` (`ThemeTokens.swift`) now holds both themes' roles, type, radii, spacing and motion, checked against `design/system/tokens.json`. `MultiplayerTheme` reads `Theme.console`, so the tray always draws in the console theme; making the tray follow the person's choice is a separate decision. Rename the components from `Multiplayer*` to app-wide names once they are shared. The design must stay pluggable and themeable: a skin redefines one token layer.
 - **Coordinate the files.** `MultiplayerTray.swift` (1,522 lines) and `MultiplayerShareViews.swift` (1,355 lines) need splitting. The tray session is still changing every `Sources/AgentCommander/Multiplayer*.swift` file. Promote shared components only by agreement with that session. Increment 5 also edits `CockpitView.swift`, `Organisms.swift` and `Molecules.swift` to put hand-off cards on the cockpit wall (D8).
 - **Bring the wall's own groups to hard lines.** The Remote workers band uses the 2 pt tile radius. The local worker groups beside it still use the main window's older `Radius.group` (15 pt) and `Radius.tile` (13 pt), as do the console tiles inside the band. Restyle them together when the main window adopts this language.
