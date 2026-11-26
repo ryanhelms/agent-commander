@@ -77,7 +77,7 @@ The main Agent Commander window takes on the Commander network tray's design and
 | Level | Reused from the tray as is | New for the main window |
 |---|---|---|
 | Atoms | Lamp, Mark, Meter, Spinner, Avatar, Swatch, Badge, Signed, Grant, Holder and Read-only badges, FingerprintText, button styles, motion modifiers (full list in `DESIGN.md` §3) | Theme-aware wrappers where an atom hard-codes `MultiplayerTheme` |
-| Molecules | HashChip, AgentChip, StateLabel, Segments, TraceRow, VerbStrip, Countdown, HolderRow, FindingRow, DecisionRow, ActivityRow, NeedRow | Inbox row that combines a local request with network origin |
+| Molecules | HashChip, AgentChip, StateLabel, Segments, TraceRow, VerbStrip, Countdown, HolderRow, FindingRow, DecisionRow, ActivityRow, NeedRow, alert band, load note, outcome well | Inbox row that combines a local request with network origin |
 | Organisms | Approval, Watch, Thread, Audit, HandoffDetail, Compare, Directory, GrantSheet, ProfileEditor, Membership, CertificateReview, ServerSettings | Three sidebars, Needs you list, people grid, server table, board columns, workspace combined view |
 | Templates | Use the main window's `WorkspacePage`, `CollectionInspector` and `TaskSheet`. Don't use `MultiplayerPanelShell`, which is fixed at 400 pt. | Navigation templates A, B and C |
 | Pages | — | Needs you, People, Servers, Shared, Hand-offs, Threads, Audit, Fan-out, Workspaces, Board, Knowledge, Admin |
@@ -119,9 +119,9 @@ The main window needs these, and `DESIGN.md` doesn't define them yet. `.claude/r
 | Page scale | The type roles top out at `title` 14 pt, which suits a 400 pt tray but not a full window | Add `pageTitle`: system 20 semibold. Add a page header made of a title, a one-line state summary and a telemetry strip, following `DESIGN.md` §4. Bands keep their sizes. |
 | Wide layouts | Full-width pages, tables and an inspector | Use the existing `WorkspacePage` and `CollectionInspector` templates with hairline grids. Add a data table molecule: mono header cells in `label`, hairline rows, and right-aligned figures. |
 | Wall frame around the exempt console | Tiles sit inside a wall that gets themed | Only the gaps, wall headers and group rules take the theme. The console tile shell and its controls stay as they are. Remote workers from hand-offs use the same tile shell with a kind glyph and a Read-only badge in its existing header slot. |
-| Needs you inbox row | It combines local and network requests | A decision row with an origin cell: a local worker's mark, or a server swatch and the friend's avatar. Approve and Deny work as `DESIGN.md` specifies. |
+| Needs you inbox row | It combines local and network requests | A decision row with an origin cell: a local worker's mark, or a server swatch and the friend's avatar. Approve and Deny work as `DESIGN.md` specifies. After a decision, an outcome well replaces the verb strip. An empty inbox shows a load note reading "Nothing is waiting for you". |
 | Board columns | Teams task board | Columns are hairline-divided, with the band heading pattern for each state. Cards are square, have no shadow, and carry a holder badge when claimed. |
-| Window material per theme | Black glass uses system glass. `DESIGN.md` forbids glass. | Material is a theme token: glass in black glass, opaque `window` in console. Reduce Transparency forces the opaque fill in both. |
+| Window material per theme | Black glass uses system glass. `DESIGN.md` forbids glass. | Material is a theme token for native surfaces: glass in black glass, opaque `window` in console. Reduce Transparency forces the opaque fill in both. The web Remote page is unaffected and keeps its own `prefers-color-scheme` light and dark roles. |
 | Toolbar | Presence and server health in the window toolbar | A readout pair (`servers 2/3`, presence menu) in the status-strip style, placed in native toolbar items |
 
 ## Open questions and risks
@@ -130,7 +130,7 @@ The main window needs these, and `DESIGN.md` doesn't define them yet. `.claude/r
 - **D8 has two possible owners.** The increment 3 contract gives it to the tray session's increment 5 frontend agent. This plan's increment 4 also covers it. Settle the owner before either side builds it.
 - **Increment 5 backend gaps.** It has no dedicated `groups`, `workspaces`, `claim` or `release` verbs, no group grants and no merge-queue tests. Teams pages can be demos before then, but not live.
 - **Increment 4 backend.** It has no tests, and watch reads `/history` while the contract says `/output`. Live work stays a demo until the tray session's four queued fixes land.
-- **Dark only.** Both themes are dark only. Light appearance is out of scope unless the owner adds it.
+- **Dark on native.** Per `DESIGN.md` (from `94ea134` on the tray branch), native surfaces are dark only, and only the web Remote page has a light theme. Both native themes stay dark. A native light appearance is out of scope unless the owner adds it. If added, it would start from the web page's light roles, not a new palette.
 
 ## Verified and reported
 
