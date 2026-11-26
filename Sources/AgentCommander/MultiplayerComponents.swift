@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Atoms and molecules for the network panel.
-// They reuse the cockpit's tokens and atoms (IconTile, Hairline, SymbolButton, CapsuleButtonStyle,
-// FieldBox) and native controls. Each takes values and emits a targeted action; none reads the
+// They reuse the cockpit's atoms (IconTile, Hairline, SymbolButton, FieldBox), native controls and
+// the tray's token layer (MultiplayerTheme), so a server's page reads as part of the tray. Each takes values and emits a targeted action; none reads the
 // model or calls the helper. Helper-supplied text is drawn through `multiplayerDisplay`.
 
 enum MultiplayerLayout {
@@ -25,49 +25,6 @@ enum MultiplayerLayout {
 
 // MARK: - Atoms
 
-/// The presence light. A filled, haloed light for a live state or one that needs the developer;
-/// a hollow ring when offline. The shape differs as well as the color, and text always accompanies it.
-struct MultiplayerPresenceLight: View {
-    let tone: Tone
-    let lit: Bool
-    var size: CGFloat = 10
-
-    var body: some View {
-        ZStack {
-            if lit {
-                Circle()
-                    .fill(tone.color.opacity(0.16))
-                    .frame(width: size * 2.2, height: size * 2.2)
-            }
-            Circle()
-                .fill(lit ? tone.color : Color.clear)
-                .overlay { Circle().strokeBorder(tone.color, lineWidth: lit ? 0 : 1.5) }
-                .frame(width: size, height: size)
-                .shadow(color: lit ? tone.color.opacity(0.7) : .clear, radius: 3)
-        }
-        .frame(width: size * 2.2, height: size * 2.2)
-        .accessibilityHidden(true)
-    }
-}
-
-/// Destructive confirmation control, the failure-ink counterpart of the prominent capsule.
-struct MultiplayerDangerButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    var height: CGFloat = MultiplayerLayout.controlHeight
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Palette.onAccent)
-            .padding(.horizontal, 14)
-            .frame(height: height)
-            .background(Capsule().fill(Palette.failure))
-            .overlay { Capsule().strokeBorder(Color.white.opacity(0.35)) }
-            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
-            .contentShape(Capsule())
-    }
-}
-
 /// Native single-line text field in the cockpit's field box.
 struct MultiplayerTextField: View {
     let label: String
@@ -79,7 +36,7 @@ struct MultiplayerTextField: View {
     var body: some View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
-            .font(monospaced ? .system(size: 13, design: .monospaced) : TypeRole.control)
+            .font(monospaced ? .system(size: 13, design: .monospaced) : MultiplayerTheme.name)
             .foregroundStyle(Palette.foreground)
             .autocorrectionDisabled()
             .fieldBox(focused: isFocused, height: MultiplayerLayout.fieldHeight)
@@ -99,18 +56,18 @@ struct MultiplayerField<Control: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
-                .font(TypeRole.ownership)
-                .foregroundStyle(Palette.foreground)
+                .font(MultiplayerTheme.sub)
+                .foregroundStyle(.inkSecondary)
                 .accessibilityHidden(true)
             control
             if let problem {
                 Label(problem, systemImage: "exclamationmark.circle")
-                    .font(TypeRole.caption)
+                    .font(MultiplayerTheme.sub)
                     .foregroundStyle(Palette.failure)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let hint {
                 Text(hint)
-                    .font(TypeRole.caption)
+                    .font(MultiplayerTheme.sub)
                     .foregroundStyle(.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -133,13 +90,13 @@ struct MultiplayerRow<Trailing: View>: View {
             IconTile(symbol: symbol, tone: tone, size: MultiplayerLayout.rowIcon)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title.multiplayerDisplay)
-                    .font(monospacedTitle ? .system(size: 13, weight: .medium, design: .monospaced) : TypeRole.control)
-                    .foregroundStyle(Palette.foreground)
+                    .font(monospacedTitle ? .system(size: 12.5, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
+                    .foregroundStyle(MultiplayerTheme.foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let caption {
                     Text(caption)
-                        .font(TypeRole.caption)
+                        .font(MultiplayerTheme.sub)
                         .foregroundStyle(.inkSecondary)
                         .lineLimit(2)
                 }
@@ -149,7 +106,7 @@ struct MultiplayerRow<Trailing: View>: View {
             .accessibilityElement(children: .combine)
             trailing
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .accessibilityElement(children: .contain)
     }
 }
@@ -176,7 +133,7 @@ struct MultiplayerRows<Item: Identifiable, Row: View>: View {
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Hairline() }
+                    if index > 0 { Rectangle().fill(MultiplayerTheme.hair).frame(height: 1) }
                     row(item)
                 }
             }
@@ -193,7 +150,7 @@ struct MultiplayerSectionAction {
     let perform: () -> Void
 }
 
-/// A titled list region with an optional count and one action.
+/// A titled list region with an optional count and one action: one band of the tray.
 struct MultiplayerSection<Content: View>: View {
     let title: String
     var count: Int? = nil
@@ -201,36 +158,19 @@ struct MultiplayerSection<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            HStack(spacing: Space.s) {
-                Text(title)
-                    .font(TypeRole.label)
-                    .foregroundStyle(Palette.foreground)
-                    .accessibilityAddTraits(.isHeader)
-                if let count, count > 0 {
-                    Text("\(count)")
-                        .font(TypeRole.monoMeta)
-                        .foregroundStyle(.inkSecondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: Radius.chip))
-                        .accessibilityLabel("\(count) items")
-                }
-                Spacer(minLength: Space.s)
-                if let action {
-                    Button(action: action.perform) {
-                        Label(action.title, systemImage: action.symbol)
-                            .font(.system(size: 12, weight: .semibold))
+        MultiplayerBand {
+            VStack(alignment: .leading, spacing: 2) {
+                MultiplayerBandHeading(title: title, count: count.flatMap { $0 > 0 ? "\($0)" : nil }) {
+                    if let action {
+                        Button(action: action.perform) { Label(action.title, systemImage: action.symbol) }
+                            .buttonStyle(MultiplayerTrayButtonStyle())
+                            .disabled(!action.isEnabled)
+                            .help(action.help ?? action.title)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(action.isEnabled ? AnyShapeStyle(Palette.focus) : AnyShapeStyle(.inkSecondary))
-                    .disabled(!action.isEnabled)
-                    .help(action.help ?? action.title)
                 }
+                content
             }
-            content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -245,7 +185,7 @@ struct MultiplayerBanner: View {
     var onDismiss: (() -> Void)? = nil
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.field, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
         HStack(alignment: .top, spacing: Space.s) {
             icon.frame(width: 16, height: 16)
             Text(message)
@@ -256,7 +196,7 @@ struct MultiplayerBanner: View {
                 .textSelection(.enabled)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .buttonStyle(CapsuleButtonStyle(height: 24))
+                    .buttonStyle(MultiplayerTrayButtonStyle())
                     .fixedSize()
             }
             if let onDismiss {
@@ -310,7 +250,7 @@ struct MultiplayerCapabilityNote: View {
     let resourceName: String
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.field, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius, style: .continuous)
         HStack(alignment: .top, spacing: Space.s) {
             Image(systemName: MultiplayerCapability.symbol(capability))
                 .font(.system(size: 13, weight: .semibold))
@@ -318,7 +258,7 @@ struct MultiplayerCapabilityNote: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(MultiplayerCapability.title(capability))
-                    .font(TypeRole.ownership)
+                    .font(MultiplayerTheme.heading)
                     .foregroundStyle(Palette.foreground)
                 Text(MultiplayerCapability.explanation(capability, resource: resourceName.multiplayerDisplay))
                     .font(.system(size: 12))
@@ -343,11 +283,11 @@ struct MultiplayerSummaryLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
             Text(label)
-                .font(TypeRole.caption)
+                .font(MultiplayerTheme.sub)
                 .foregroundStyle(.inkSecondary)
                 .frame(width: 72, alignment: .leading)
             Text(value.multiplayerDisplay)
-                .font(monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : TypeRole.control)
+                .font(monospaced ? .system(size: 13, weight: .medium, design: .monospaced) : MultiplayerTheme.name)
                 .foregroundStyle(Palette.foreground)
                 .lineLimit(2)
                 .truncationMode(.middle)

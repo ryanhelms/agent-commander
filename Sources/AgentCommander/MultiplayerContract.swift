@@ -21,6 +21,11 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case serverUpdate = "server-update"
     case serverRemove = "server-remove"
     case serverTrust = "server-trust"
+    /// Social (increment 2). `contacts`, `activity`, `activity-seen` and `join` name no server.
+    case presence, contacts, activity, avatar, membership, join, me
+    case activitySeen = "activity-seen"
+    case membershipSet = "membership-set"
+    case inviteCreate = "invite-create"
 
     /// Positional process arguments. Never passed through a shell.
     var arguments: [String] { ["tray", rawValue] }
@@ -154,9 +159,14 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
     let grants: [MultiplayerGrant]
     let resources: [MultiplayerResource]
     let shared: [MultiplayerShared]
+    /// The person's own profile on this server, when the helper reports it (increment 2).
+    let displayName: String
+    let statusMessage: String
+    let hasAvatar: Bool
 
     private enum CodingKeys: String, CodingKey {
         case online, signedIn, handle, loginPending, error, friends, outgoing, incoming, grants, resources, shared
+        case displayName, statusMessage, hasAvatar
     }
 
     init(from decoder: any Decoder) throws {
@@ -174,6 +184,11 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
         grants = MultiplayerUnique.keep(try container.decodeIfPresent([MultiplayerGrant].self, forKey: .grants) ?? []) { $0.id }
         resources = MultiplayerUnique.keep(try container.decodeIfPresent([MultiplayerResource].self, forKey: .resources) ?? []) { $0.id }
         shared = MultiplayerUnique.keep(try container.decodeIfPresent([MultiplayerShared].self, forKey: .shared) ?? []) { $0.id }
+        displayName = ((try? container.decodeIfPresent(String.self, forKey: .displayName)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        statusMessage = ((try? container.decodeIfPresent(String.self, forKey: .statusMessage)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        hasAvatar = (try? container.decodeIfPresent(Bool.self, forKey: .hasAvatar)) ?? false
     }
 }
 
@@ -411,6 +426,8 @@ enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStrin
     case string(String)
     case number(Int)
     case bool(Bool)
+    /// A list of plain strings, for the membership lists.
+    case strings([String])
 
     init(stringLiteral value: String) { self = .string(value) }
     init(integerLiteral value: Int) { self = .number(value) }
@@ -421,6 +438,7 @@ enum MultiplayerPayloadValue: Encodable, Equatable, Sendable, ExpressibleByStrin
         case .string(let text): try container.encode(text)
         case .number(let value): try container.encode(value)
         case .bool(let value): try container.encode(value)
+        case .strings(let values): try container.encode(values)
         }
     }
 }

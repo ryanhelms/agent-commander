@@ -44,14 +44,13 @@ struct MultiplayerAccountCard: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
         VStack(alignment: .leading, spacing: Space.m) {
             HStack(alignment: .top, spacing: Space.m) {
-                IconTile(symbol: symbol, tone: presence.tone, size: 32)
+                IconTile(symbol: symbol, tone: presence.tone, size: MultiplayerLayout.rowIcon)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(TypeRole.sectionTitle)
-                        .foregroundStyle(Palette.foreground)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MultiplayerTheme.foreground)
                         .accessibilityAddTraits(.isHeader)
                     Text(message)
                         .font(.system(size: 12))
@@ -63,10 +62,7 @@ struct MultiplayerAccountCard: View {
             }
             controls
         }
-        .padding(Space.m + 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.footer, in: shape)
-        .overlay { shape.strokeBorder(.inkHairline) }
     }
 
     @ViewBuilder private var controls: some View {
@@ -74,7 +70,7 @@ struct MultiplayerAccountCard: View {
         case .checking:
             HStack(spacing: Space.s) {
                 ProgressView().controlSize(.small)
-                Text("Asking the network helper…").font(TypeRole.caption).foregroundStyle(.inkSecondary)
+                Text("Asking the network helper…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
         case .offline:
@@ -88,7 +84,7 @@ struct MultiplayerAccountCard: View {
                 ProgressView().controlSize(.small).accessibilityLabel("Waiting for sign-in")
                 Spacer(minLength: 0)
                 Button("Open browser again", action: onSignIn)
-                    .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle())
                     .disabled(isBusy)
             }
         case .needsHandle:
@@ -99,7 +95,7 @@ struct MultiplayerAccountCard: View {
                         .focused($handleFocused)
                         .onSubmit { if canClaim { onClaim() } }
                     Button("Claim", action: onClaim)
-                        .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.fieldHeight))
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary, large: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canClaim)
                 }
@@ -116,7 +112,7 @@ struct MultiplayerAccountCard: View {
         HStack {
             Spacer(minLength: 0)
             Button(title, action: action)
-                .buttonStyle(CapsuleButtonStyle(prominent: prominent, height: MultiplayerLayout.controlHeight))
+                .buttonStyle(MultiplayerTrayButtonStyle(role: prominent ? .primary : .standard))
                 .keyboardShortcut(prominent ? KeyboardShortcut.defaultAction : nil)
                 .disabled(isBusy)
         }
@@ -181,14 +177,14 @@ struct MultiplayerHomeLists: View {
     let onSetCredential: (_ resourceID: String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MultiplayerLayout.sectionGap) {
+        VStack(alignment: .leading, spacing: 0) {
             if !status.incoming.isEmpty {
                 MultiplayerSection(title: "Friend requests", count: status.incoming.count) {
                     MultiplayerRows(items: status.incoming, empty: "") { request in
                         MultiplayerRow(symbol: "person.badge.plus", tone: .attention, title: request.handle,
                                        monospacedTitle: true, caption: "Wants to be your friend") {
                             Button("Accept") { onAccept(request) }
-                                .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                                 .disabled(isBusy)
                                 .accessibilityLabel("Accept friend request from \(request.handle.multiplayerDisplay)")
                         }
@@ -204,7 +200,7 @@ struct MultiplayerHomeLists: View {
                                    caption: [friend.presenceTitle, grantSummary(for: friend.handle)]
                                        .compactMap { $0 }.joined(separator: " · ")) {
                         Button("Share") { onShare(friend.handle, nil) }
-                            .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                            .buttonStyle(MultiplayerTrayButtonStyle())
                             .disabled(isBusy || status.resources.isEmpty)
                             .help(status.resources.isEmpty ? "Add a resource first" : "Share a resource with \(friend.handle.multiplayerDisplay)")
                             .accessibilityLabel("Share with \(friend.handle.multiplayerDisplay)")
@@ -237,7 +233,7 @@ struct MultiplayerHomeLists: View {
                             .disabled(isBusy)
                         }
                         Button("Share") { onShare(nil, resource.id) }
-                            .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                            .buttonStyle(MultiplayerTrayButtonStyle())
                             .disabled(isBusy || status.friends.isEmpty || resource.actions.isEmpty)
                             .help(status.friends.isEmpty ? "Add a friend first" : "Share \(resource.name.multiplayerDisplay)")
                             .accessibilityLabel("Share \(resource.name.multiplayerDisplay)")
@@ -250,7 +246,7 @@ struct MultiplayerHomeLists: View {
                     MultiplayerRow(symbol: "key", tone: .attention, title: grant.handle, monospacedTitle: true,
                                    caption: grantCaption(grant)) {
                         Button("Revoke") { onRevoke(grant) }
-                            .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                            .buttonStyle(MultiplayerTrayButtonStyle())
                             .disabled(isBusy)
                             .accessibilityLabel("Revoke \(grant.handle.multiplayerDisplay)’s access")
                     }
@@ -336,27 +332,20 @@ struct MultiplayerPanelShell<Header: View, Content: View, Footer: View>: View {
     }
 }
 
-/// Back, title and a sentence, above one editor's fields and actions. Escape goes back.
+/// A title and a sentence above one editor's fields and actions, as one band. The tray's header
+/// carries Back.
 struct MultiplayerEditorTemplate<Content: View>: View {
     let title: String
     var intro: String? = nil
-    let onBack: () -> Void
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
-            Button(action: onBack) {
-                Label("Back", systemImage: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Palette.focus)
-            .keyboardShortcut(.cancelAction)
-            .help("Back (Esc)")
+        MultiplayerBand {
+          VStack(alignment: .leading, spacing: Space.m) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(TypeRole.consoleName)
-                    .foregroundStyle(Palette.foreground)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(MultiplayerTheme.foreground)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
                 if let intro {
@@ -367,8 +356,9 @@ struct MultiplayerEditorTemplate<Content: View>: View {
                 }
             }
             content
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -418,8 +408,7 @@ struct MultiplayerAddFriendEditor: View {
 
     var body: some View {
         MultiplayerEditorTemplate(title: "Add a friend",
-                                  intro: "Look up one person by their exact handle. Nothing is sent until you choose Send request.",
-                                  onBack: onBack) {
+                                  intro: "Look up one person by their exact handle. Nothing is sent until you choose Send request.") {
             MultiplayerField(label: "Handle", hint: "Commander looks up the handle exactly as typed.") {
                 HStack(spacing: Space.s) {
                     MultiplayerTextField(label: "Friend’s handle", placeholder: "Exact handle", text: $handle,
@@ -427,7 +416,7 @@ struct MultiplayerAddFriendEditor: View {
                         .focused($fieldFocused)
                         .onSubmit { if canLookUp { onLookUp() } }
                     Button("Look up", action: onLookUp)
-                        .buttonStyle(CapsuleButtonStyle(prominent: !isFound, height: MultiplayerLayout.fieldHeight))
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: isFound ? .standard : .primary, large: true))
                         .keyboardShortcut(isFound ? nil : KeyboardShortcut.defaultAction)
                         .disabled(!canLookUp)
                 }
@@ -449,7 +438,7 @@ struct MultiplayerAddFriendEditor: View {
         case .searching(let handle):
             HStack(spacing: Space.s) {
                 ProgressView().controlSize(.small)
-                Text("Looking up \(handle.multiplayerDisplay)…").font(TypeRole.caption).foregroundStyle(.inkSecondary)
+                Text("Looking up \(handle.multiplayerDisplay)…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
         case .found(let handle):
@@ -464,7 +453,7 @@ struct MultiplayerAddFriendEditor: View {
                 if canSend {
                     MultiplayerEditorActions {
                         Button("Send request", action: onSend)
-                            .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                            .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                             .keyboardShortcut(.defaultAction)
                             .disabled(isBusy)
                             .accessibilityLabel("Send friend request to \(handle.multiplayerDisplay)")
@@ -501,8 +490,7 @@ struct MultiplayerAddResourceEditor: View {
 
     var body: some View {
         MultiplayerEditorTemplate(title: "Add a resource",
-                                  intro: "Adding a resource doesn’t share it. You choose who can use it afterwards.",
-                                  onBack: onBack) {
+                                  intro: "Adding a resource doesn’t share it. You choose who can use it afterwards.") {
             Picker("Kind", selection: $draft.kind) {
                 ForEach(MultiplayerResourceKind.allCases) { kind in
                     Label(kind.title, systemImage: kind.symbol).tag(kind)
@@ -532,7 +520,7 @@ struct MultiplayerAddResourceEditor: View {
 
             MultiplayerEditorActions {
                 Button("Add resource", action: onAdd)
-                    .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canAdd)
             }
@@ -559,8 +547,7 @@ struct MultiplayerGrantEditor: View {
 
     var body: some View {
         MultiplayerEditorTemplate(title: "Share a resource",
-                                  intro: "Give one friend one action on one of your resources. You’ll review it before anything is sent.",
-                                  onBack: onBack) {
+                                  intro: "Give one friend one action on one of your resources. You’ll review it before anything is sent.") {
             if let note {
                 MultiplayerBanner(kind: .attention, message: note)
             }
@@ -615,7 +602,7 @@ struct MultiplayerGrantEditor: View {
 
             MultiplayerEditorActions {
                 Button("Review", action: onContinue)
-                    .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canContinue)
             }
@@ -653,7 +640,7 @@ struct MultiplayerGrantLimitsField: View {
                             .accessibilityLabel("Maximum uses")
                     }
                     Text("uses")
-                        .font(TypeRole.caption)
+                        .font(MultiplayerTheme.sub)
                         .foregroundStyle(.inkSecondary)
                         .accessibilityHidden(true)
                     Spacer(minLength: Space.s)
@@ -671,7 +658,7 @@ struct MultiplayerGrantLimitsField: View {
                 if draft.expiry == .custom {
                     HStack(spacing: Space.s) {
                         Text("Expires at")
-                            .font(TypeRole.caption)
+                            .font(MultiplayerTheme.sub)
                             .foregroundStyle(.inkSecondary)
                             .accessibilityHidden(true)
                         DatePicker("Expiry date and time", selection: $draft.customExpiry, in: customExpiryRange,
@@ -712,7 +699,7 @@ struct MultiplayerGrantConfirmation: View {
 
     var body: some View {
         let expires = MultiplayerTime.display(limits.expiresAt)
-        MultiplayerEditorTemplate(title: "Give \(handle.multiplayerDisplay) access?", onBack: onBack) {
+        MultiplayerEditorTemplate(title: "Give \(handle.multiplayerDisplay) access?") {
             if let note {
                 MultiplayerBanner(kind: .attention, message: note)
             }
@@ -727,14 +714,14 @@ struct MultiplayerGrantConfirmation: View {
             }
             MultiplayerCapabilityNote(capability: capability, resourceName: resourceName)
             Text("Access ends after \(limits.usesTitle) or at \(expires), whichever comes first. You can revoke it here at any time.")
-                .font(TypeRole.caption)
+                .font(MultiplayerTheme.sub)
                 .foregroundStyle(.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             MultiplayerEditorActions {
                 Button("Cancel", action: onBack)
-                    .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle())
                 Button("Grant access", action: onConfirm)
-                    .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .keyboardShortcut(.defaultAction)
                     .disabled(isBusy)
             }
@@ -751,7 +738,7 @@ struct MultiplayerRevokeConfirmation: View {
     let onBack: () -> Void
 
     var body: some View {
-        MultiplayerEditorTemplate(title: "Revoke \(grant.handle.multiplayerDisplay)’s access?", onBack: onBack) {
+        MultiplayerEditorTemplate(title: "Revoke \(grant.handle.multiplayerDisplay)’s access?") {
             VStack(alignment: .leading, spacing: Space.s) {
                 MultiplayerSummaryLine(label: "Friend", value: grant.handle, monospaced: true)
                 MultiplayerSummaryLine(label: "Resource", value: resourceName)
@@ -763,9 +750,9 @@ struct MultiplayerRevokeConfirmation: View {
                 .fixedSize(horizontal: false, vertical: true)
             MultiplayerEditorActions {
                 Button("Cancel", action: onBack)
-                    .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle())
                 Button("Revoke access", role: .destructive, action: onConfirm)
-                    .buttonStyle(MultiplayerDangerButtonStyle())
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .danger))
                     .disabled(isBusy)
             }
         }
@@ -786,8 +773,7 @@ struct MultiplayerCredentialEditor: View {
 
     var body: some View {
         MultiplayerEditorTemplate(title: "GitHub token for \(resourceName.multiplayerDisplay)",
-                                  intro: "Used only for shared issue actions and pushes to this repository.",
-                                  onBack: onCancel) {
+                                  intro: "Used only for shared issue actions and pushes to this repository.") {
             MultiplayerSummaryLine(label: "Repository", value: resourceName)
             MultiplayerField(label: "Token",
                              hint: "Use a GitHub token restricted to this repository. The network helper stores it in your macOS Keychain; Commander doesn’t keep it.",
@@ -804,9 +790,9 @@ struct MultiplayerCredentialEditor: View {
             }
             MultiplayerEditorActions {
                 Button("Cancel", action: onCancel)
-                    .buttonStyle(CapsuleButtonStyle(height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle())
                 Button("Save token", action: onSave)
-                    .buttonStyle(CapsuleButtonStyle(prominent: true, height: MultiplayerLayout.controlHeight))
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSave || isBusy)
             }
@@ -823,8 +809,10 @@ struct MultiplayerSessionContent: View {
     @Bindable var model: MultiplayerSessionModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MultiplayerLayout.sectionGap) {
+        VStack(alignment: .leading, spacing: 0) {
             activity
+                .padding(.horizontal, MultiplayerTheme.sectionInset)
+                .padding(.top, 10)
             page
         }
         .onChange(of: model.notice) { _, notice in
@@ -920,13 +908,15 @@ struct MultiplayerSessionContent: View {
                 }
             }
         } else {
-            MultiplayerAccountCard(presence: model.presence, hasStatus: model.status != nil,
-                                   isBusy: model.isBusy, canRetry: model.setupFailure == nil,
-                                   handleDraft: $model.handleDraft, handleProblem: model.handleDraftProblem,
-                                   canClaim: model.canClaimHandle,
-                                   onCheck: { model.refresh() },
-                                   onSignIn: { model.signIn() },
-                                   onClaim: { model.claimHandle() })
+            MultiplayerBand {
+                MultiplayerAccountCard(presence: model.presence, hasStatus: model.status != nil,
+                                       isBusy: model.isBusy, canRetry: model.setupFailure == nil,
+                                       handleDraft: $model.handleDraft, handleProblem: model.handleDraftProblem,
+                                       canClaim: model.canClaimHandle,
+                                       onCheck: { model.refresh() },
+                                       onSignIn: { model.signIn() },
+                                       onClaim: { model.claimHandle() })
+            }
         }
     }
 }
@@ -946,7 +936,7 @@ struct MultiplayerPanelStage: View {
                         .overlay { shape.strokeBorder(.inkEdge) }
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                     Text("The menu bar network panel, shown in this window for review. It uses the same live helper.")
-                        .font(TypeRole.caption)
+                        .font(MultiplayerTheme.sub)
                         .foregroundStyle(.inkSecondary)
                 }
                 .padding(Space.xxl)
@@ -961,7 +951,11 @@ struct MultiplayerMenuBarLabel: View {
     let model: MultiplayerModel
 
     var body: some View {
-        Image(systemName: model.menuSymbol)
-            .accessibilityLabel("Commander network, \(model.menuTitle)")
+        HStack(spacing: 3) {
+            Image(systemName: model.menuSymbol)
+            if model.unseen > 0 { Text("\(model.unseen)").monospacedDigit() }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Commander network, \(model.menuTitle)\(model.unseen > 0 ? ", \(model.unseen) new in activity" : "")")
     }
 }

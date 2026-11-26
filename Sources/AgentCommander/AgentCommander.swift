@@ -19,7 +19,7 @@ struct AgentCommander: App {
     /// Inline native terminal status for every console. Design previews never attach.
     @State private var nativeTerminals = NativeTerminalLedger.forLaunch()
     /// Live network panel state, shared by the menu bar item and the review window.
-    @State private var network = MultiplayerModel.live()
+    @State private var network = MultiplayerModel.shared
 
     var body: some Scene {
         Window("Agent Commander", id: SingleInstanceLaunch.cockpitSceneID) {

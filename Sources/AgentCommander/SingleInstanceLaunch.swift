@@ -161,6 +161,14 @@ final class SingleInstanceCoordinator {
 final class SingleInstanceAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         SingleInstanceCoordinator.shared.applicationDidFinishLaunching()
+        // Keeps the activity feed arriving for notifications while the tray is closed.
+        MultiplayerModel.shared.startActivityWatch()
+    }
+
+    /// An `agentcommander://join` invite link: the network tray opens on its add-server page,
+    /// filled in from the link. A second copy launched by a link hands off before it gets here.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        MultiplayerLinkWindow.open(urls, in: MultiplayerModel.shared)
     }
 
     /// Dock click or Launch Services reopen: restore the cockpit even when only Settings or the

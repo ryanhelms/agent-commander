@@ -55,15 +55,20 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
     let error: String
     let friendsOnline: Int
     let incoming: Int
+    /// The presence this account shows on the server (increment 2). Nil when the helper doesn't say.
+    let presence: MultiplayerPersonPresence?
+    /// Feed events on this server the person hasn't seen.
+    let unseen: Int
 
     private enum CodingKeys: String, CodingKey {
         case id, url, name, favorite, autoConnect, pin, lastUsedAt, state, signedIn, handle, lastSeen, error
-        case friendsOnline, incoming
+        case friendsOnline, incoming, presence, unseen
     }
 
     init(id: String, url: String, name: String, favorite: Bool = false, autoConnect: Bool = true, pin: String = "",
          lastUsedAt: Date? = nil, state: MultiplayerServerState = .signedOut, signedIn: Bool = false,
-         handle: String = "", lastSeen: Date? = nil, error: String = "", friendsOnline: Int = 0, incoming: Int = 0) {
+         handle: String = "", lastSeen: Date? = nil, error: String = "", friendsOnline: Int = 0, incoming: Int = 0,
+         presence: MultiplayerPersonPresence? = nil, unseen: Int = 0) {
         self.id = id
         self.url = url
         self.name = name
@@ -78,6 +83,8 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
         self.error = error
         self.friendsOnline = friendsOnline
         self.incoming = incoming
+        self.presence = presence
+        self.unseen = unseen
     }
 
     /// The identity and the state are required. Everything else is read leniently, so a sparse
@@ -104,6 +111,8 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
         error = text(.error)
         friendsOnline = count(.friendsOnline)
         incoming = count(.incoming)
+        presence = MultiplayerPersonPresence(word: text(.presence))
+        unseen = count(.unseen)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -122,6 +131,8 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
         try container.encode(error, forKey: .error)
         try container.encode(friendsOnline, forKey: .friendsOnline)
         try container.encode(incoming, forKey: .incoming)
+        try container.encodeIfPresent(presence, forKey: .presence)
+        try container.encode(unseen, forKey: .unseen)
     }
 
     /// The nickname, or the host when the server has none.
@@ -163,6 +174,32 @@ enum MultiplayerServerAddress {
         while text.hasSuffix("/") { text.removeLast() }
         if text.hasSuffix(":443") { text.removeLast(4) }
         return text
+    }
+
+    /// This Mac's own names, lowercased: its host name and the first label of it.
+    static let localNames: Set<String> = {
+        var names: Set<String> = ["localhost", "127.0.0.1", "::1"]
+        for name in [ProcessInfo.processInfo.hostName, Host.current().localizedName ?? ""] {
+            let lower = name.lowercased().replacingOccurrences(of: " ", with: "-")
+            guard !lower.isEmpty else { continue }
+            names.insert(lower)
+            if let label = lower.split(separator: ".").first { names.insert(String(label)) }
+        }
+        return names
+    }()
+
+    /// The relay at this address runs on this Mac: the host, or its first label, is one of this
+    /// Mac's names. "ryan-mac.tail.internal" matches a Mac named "ryan-mac.local".
+    static func isThisMac(_ url: String, localNames: Set<String> = localNames) -> Bool {
+        var name = host(url).lowercased()
+        if name.hasPrefix("["), let close = name.firstIndex(of: "]") {
+            name = String(name[name.index(after: name.startIndex)..<close])
+        } else if let colon = name.lastIndex(of: ":"), name.filter({ $0 == ":" }).count == 1 {
+            name = String(name[..<colon])
+        }
+        if localNames.contains(name) { return true }
+        guard name.contains(where: \.isLetter), let label = name.split(separator: ".").first else { return false }
+        return localNames.contains(String(label))
     }
 
     /// The helper decides what resolves. This only stops an entry it could never read.
@@ -212,6 +249,8 @@ struct MultiplayerProbeStep: Codable, Equatable, Sendable {
 struct MultiplayerProbe: Codable, Equatable, Sendable {
     let url: String
     let steps: [MultiplayerProbeStep]
+    /// The ID of the saved server this address already belongs to, when there is one.
+    var existing: String? = nil
 
     func step(_ stage: MultiplayerProbeStage) -> MultiplayerProbeStep? {
         steps.first { $0.step == stage.rawValue }
@@ -269,6 +308,8 @@ struct MultiplayerServerDraft: Equatable {
     var autoConnect = true
     /// "I checked this with the relay admin." Cleared whenever a new check starts.
     var pinConfirmed = false
+    /// The invite this form was opened from. It applies only while the address is still its server.
+    var invite: MultiplayerInviteLink? = nil
 
     var trimmedAddress: String { address.trimmingCharacters(in: .whitespacesAndNewlines) }
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }

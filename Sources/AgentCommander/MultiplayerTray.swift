@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Organisms and the page for the network tray
-// (design/mockups/commander-network-tray.html, states a to e, increment 1 elements only).
+// (design/mockups/commander-network-tray.html, states a to e; the social organisms are in
+// MultiplayerSocialViews.swift).
 // Organisms take values and emit actions. `MultiplayerPanel` is the page: it reads the one live
 // MultiplayerModel and routes between home, add server, a server's page and the hosting note.
 
@@ -139,6 +141,7 @@ struct MultiplayerServerList: View {
                 }
                 ForEach(servers) { server in
                     MultiplayerServerRow(server: server, now: now, isBusy: isBusy,
+                                         hostedHere: MultiplayerServerAddress.isThisMac(server.url),
                                          onOpen: { onOpen(server.id) },
                                          onFavorite: { onFavorite(server) },
                                          onSignIn: { onSignIn(server.id) })
@@ -194,6 +197,8 @@ struct MultiplayerFriendGroups: View {
     /// Servers a friend can be added on now.
     let addable: [MultiplayerServerSummary]
     let isBusy: Bool
+    /// A friend's picture, by server ID and handle.
+    let avatar: (String, String) -> Data?
     let onAddFriend: (String) -> Void
     let onShare: (String, String) -> Void
 
@@ -219,9 +224,10 @@ struct MultiplayerFriendGroups: View {
                     .padding(.bottom, 2)
                     .accessibilityElement(children: .combine)
                     .accessibilityAddTraits(.isHeader)
-                    ForEach(group.friends) { friend in
-                        MultiplayerFriendRow(friend: friend, canShare: group.canShare, isBusy: isBusy) {
-                            onShare(friend.handle, group.server.id)
+                    ForEach(group.people) { person in
+                        MultiplayerFriendRow(person: person, avatar: avatar(person.server, person.handle),
+                                             canShare: group.canShare, isBusy: isBusy) {
+                            onShare(person.handle, group.server.id)
                         }
                     }
                 }
@@ -260,10 +266,40 @@ struct MultiplayerAddServerForm: View {
     let addressProblem: String?
     let probe: MultiplayerProbeState
     let canProbe: Bool
+    /// The invite this form was opened from, and why it can't be used, if it can't.
+    var invite: MultiplayerInviteLink? = nil
+    var inviteProblem: String? = nil
+    /// The saved server this address already belongs to.
+    var existing: MultiplayerServerSummary? = nil
     let onProbe: () -> Void
+    var onOpenExisting: () -> Void = {}
     @FocusState private var addressFocused: Bool
 
     var body: some View {
+        if let invite {
+            MultiplayerInviteNote(invite: invite, problem: inviteProblem,
+                                  matched: probe.probe?.step(.tls)?.ok == true && inviteProblem == nil)
+        }
+        if let existing {
+            MultiplayerBand {
+                MultiplayerWell(edge: MultiplayerTheme.attention) {
+                    HStack(alignment: .center, spacing: Space.s) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Already in your list")
+                                .font(MultiplayerTheme.heading)
+                                .foregroundStyle(MultiplayerTheme.foreground)
+                            Text("This address is saved as \(existing.displayName).")
+                                .font(MultiplayerTheme.sub)
+                                .foregroundStyle(.inkSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Open \(existing.displayName)", action: onOpenExisting)
+                            .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    }
+                }
+            }
+        }
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.xs) {
                 Text("Server address")
@@ -297,20 +333,23 @@ struct MultiplayerAddServerForm: View {
                     let step = probe.probe?.step(stage)
                     MultiplayerProbeStepRow(number: index + 1, title: stage.title, passed: step?.ok,
                                             detail: step.map { Self.detail($0, stage: stage) }) {
-                        if stage == .tls, let result = probe.probe, result.needsPinConfirmation,
-                           let fingerprint = result.fingerprint {
+                        if stage == .tls, invite == nil, existing == nil, let result = probe.probe,
+                           result.needsPinConfirmation, let fingerprint = result.fingerprint {
                             MultiplayerWell {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("SHA-256 fingerprint to pin")
                                         .font(MultiplayerTheme.sub)
                                         .foregroundStyle(.inkSecondary)
                                     MultiplayerFingerprintText(fingerprint: fingerprint)
-                                    Toggle("I checked this with the relay admin. Pin it.", isOn: $draft.pinConfirmed)
-                                        .toggleStyle(.switch)
-                                        .controlSize(.mini)
-                                        .font(MultiplayerTheme.sub)
-                                        .foregroundStyle(MultiplayerTheme.foreground)
-                                        .padding(.top, 2)
+                                    HStack(spacing: Space.s) {
+                                        Toggle("I checked this fingerprint with the relay admin. Pin it.", isOn: $draft.pinConfirmed)
+                                            .toggleStyle(MultiplayerSwitchStyle())
+                                        Text("I checked this with the relay admin. Pin it.")
+                                            .font(MultiplayerTheme.sub)
+                                            .foregroundStyle(MultiplayerTheme.foreground)
+                                            .accessibilityHidden(true)
+                                    }
+                                    .padding(.top, 2)
                                 }
                             }
                             .padding(.top, 4)
@@ -320,18 +359,19 @@ struct MultiplayerAddServerForm: View {
             }
         }
 
-        MultiplayerBand {
+        // An invite is joined as the link describes it; the nickname and connection setting come after.
+        if invite == nil {
+          MultiplayerBand {
             VStack(alignment: .leading, spacing: 2) {
                 MultiplayerSettingRow(label: "Nickname") {
                     MultiplayerTextField(label: "Nickname", placeholder: "Optional", text: $draft.name)
                 }
                 MultiplayerSettingRow(label: "Connect automatically") {
                     Toggle("Connect automatically", isOn: $draft.autoConnect)
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .labelsHidden()
+                        .toggleStyle(MultiplayerSwitchStyle())
                 }
             }
+          }
         }
     }
 
@@ -363,6 +403,9 @@ struct MultiplayerAddServerForm: View {
     /// The helper's own finding, or a plain line when it gave none.
     static func detail(_ step: MultiplayerProbeStep, stage: MultiplayerProbeStage) -> String {
         let text = MultiplayerText.clean(step.detail ?? "", limit: 240, redact: stage != .tls)
+        if stage == .relay, step.ok {
+            return text.isEmpty ? "Compatible" : text.localizedCaseInsensitiveContains("compatible") ? text : "\(text), compatible"
+        }
         if !text.isEmpty { return text }
         if stage == .signin, step.clientConfigured == false {
             return "This Mac has no Desktop OAuth client file for this relay’s client ID. Ask the admin for the file, add it, then check again."
@@ -396,6 +439,21 @@ struct MultiplayerServerSettings: View {
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 }
+                if let pinned = MultiplayerFingerprint.text(pin: server.pin) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pinned certificate, SHA-256")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.inkSecondary)
+                        MultiplayerWell { MultiplayerFingerprintText(fingerprint: pinned) }
+                    }
+                    .padding(.vertical, 4)
+                } else {
+                    MultiplayerSettingRow(label: "Certificate") {
+                        Text(server.pin.isEmpty ? "Trusted by macOS, not pinned" : "Pinned, fingerprint unreadable")
+                            .font(MultiplayerTheme.sub)
+                            .foregroundStyle(.inkSecondary)
+                    }
+                }
                 MultiplayerSettingRow(label: "Nickname") {
                     HStack(spacing: 6) {
                         MultiplayerTextField(label: "Nickname", placeholder: server.host, text: $nickname)
@@ -407,16 +465,12 @@ struct MultiplayerServerSettings: View {
                 }
                 MultiplayerSettingRow(label: "Connect automatically") {
                     Toggle("Connect automatically", isOn: Binding(get: { server.autoConnect }, set: { onAutoConnect($0) }))
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .labelsHidden()
+                        .toggleStyle(MultiplayerSwitchStyle())
                         .disabled(isBusy)
                 }
                 MultiplayerSettingRow(label: "Favorite") {
                     Toggle("Favorite", isOn: Binding(get: { server.favorite }, set: { _ in onFavorite() }))
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .labelsHidden()
+                        .toggleStyle(MultiplayerSwitchStyle())
                         .disabled(isBusy)
                 }
                 if confirmingRemoval {
@@ -666,8 +720,14 @@ struct MultiplayerPanel: View {
     }
 
     private var routedServer: MultiplayerServerSummary? {
-        if case .server(let id) = model.route { return model.server(id) }
-        return nil
+        model.route.serverID.flatMap { model.server($0) }
+    }
+
+    /// Back from a page under a server returns to that server.
+    private func subpageHeader(_ title: String) -> some View {
+        MultiplayerTrayHeader(title: title, color: routedServer.map { MultiplayerTheme.swatch(for: $0.id) },
+                              back: routedServer?.displayName ?? "Back",
+                              onBack: { model.route.serverID.map { model.go(.server($0)) } }) { EmptyView() }
     }
 
     // MARK: Header
@@ -676,6 +736,11 @@ struct MultiplayerPanel: View {
         switch model.route {
         case .home:
             MultiplayerTrayHeader(title: "Commander network", subtitle: homeSubtitle) {
+                if model.hasLoaded, !model.servers.isEmpty {
+                    MultiplayerPresenceMenu(shown: model.shownPresence, title: model.presenceTitle,
+                                            choice: model.presenceChoice, isEnabled: model.canSetPresence,
+                                            onPick: { model.setPresence($0) })
+                }
                 if model.isRefreshing {
                     ProgressView()
                         .controlSize(.small)
@@ -695,10 +760,17 @@ struct MultiplayerPanel: View {
             MultiplayerTrayHeader(title: "Hosting on this Mac", back: "Back", onBack: { model.go(.home) }) { EmptyView() }
         case .server:
             if let server = routedServer {
+                // Inside one of the server's editors, Back returns to the server's own page.
+                let session = model.session(server.id)
+                let inEditor = server.state != .certChanged && session.map { $0.route != .home } == true
                 MultiplayerTrayHeader(title: server.displayName, color: MultiplayerTheme.swatch(for: server.id),
                                       state: (server.state.lamp, server.stateTitle(now: model.currentDate()), server.state.tone),
-                                      back: "Servers", onBack: { model.go(.home) }) { EmptyView() }
+                                      back: inEditor ? "Back" : "Servers",
+                                      onBack: { if inEditor { session?.go(.home) } else { model.go(.home) } }) { EmptyView() }
             }
+        case .profile: subpageHeader("Your profile")
+        case .invite: subpageHeader("Invite")
+        case .membership: subpageHeader("Membership")
         }
     }
 
@@ -737,11 +809,32 @@ struct MultiplayerPanel: View {
         case .addServer:
             MultiplayerAddServerForm(draft: $model.serverDraft, addressProblem: model.addressProblem,
                                      probe: model.currentProbe, canProbe: model.canProbe,
-                                     onProbe: { model.runProbe() })
+                                     invite: model.activeInvite, inviteProblem: model.invitePinProblem,
+                                     existing: model.existingServer,
+                                     onProbe: { model.runProbe() },
+                                     onOpenExisting: { model.existingServer.map { model.openServer($0.id) } })
         case .hosting:
             MultiplayerHostingGuide()
         case .server:
             if let server = routedServer { serverPage(server) }
+        case .profile(let id):
+            MultiplayerProfileEditor(draft: $model.profileDraft, avatar: model.profileAvatar(id),
+                                     serverName: routedServer?.displayName ?? "this server",
+                                     onChoosePicture: { MultiplayerPictureFile.choose().map { model.pickAvatar($0) } },
+                                     onDropPicture: { model.pickAvatar($0) },
+                                     onRemovePicture: { model.removeAvatar() })
+        case .invite(let id):
+            MultiplayerInvitePage(draft: $model.inviteDraft, invite: model.invite,
+                                  serverName: routedServer?.displayName ?? "this server",
+                                  canInvite: model.canInvite(id), now: model.currentDate(),
+                                  onCopy: { link in
+                                      NSPasteboard.general.clearContents()
+                                      NSPasteboard.general.setString(link, forType: .string)
+                                      model.post(notice: "Invite link copied.")
+                                  })
+        case .membership:
+            MultiplayerMembershipPage(state: model.membership, draft: $model.membershipDraft,
+                                      onRetry: { model.loadMembership() })
         }
     }
 
@@ -785,8 +878,13 @@ struct MultiplayerPanel: View {
                 MultiplayerNeedsYou(groups: groups, isBusy: model.isBusy,
                                     onAccept: { model.accept($0, on: $1) })
                 MultiplayerFriendGroups(groups: groups, addable: model.friendServers, isBusy: model.isBusy,
+                                        avatar: { model.avatar(server: $0, handle: $1) },
                                         onAddFriend: { model.addFriend(on: $0) },
                                         onShare: { model.share(with: $0, on: $1) })
+                MultiplayerActivityBand(events: model.filteredActivity, hasAny: !model.activity.isEmpty,
+                                        unseen: model.unseen, servers: model.servers, actors: model.activityActors,
+                                        server: $model.activityServer, friend: $model.activityFriend,
+                                        now: model.currentDate(), onMarkSeen: { model.markActivitySeen() })
             }
         }
     }
@@ -815,10 +913,21 @@ struct MultiplayerPanel: View {
                                           onCancelRemove: { model.cancelRemove() },
                                           onConfirmRemove: { model.confirmRemove() })
             }
+            if let session, session.route == .home, session.isOnline, let status = session.status {
+                MultiplayerIdentityBand(handle: status.handle, displayName: status.displayName,
+                                        statusMessage: status.statusMessage,
+                                        avatar: model.avatar(server: server.id, handle: status.handle),
+                                        presence: server.presence, isAdmin: model.isAdmin(server.id),
+                                        membershipMode: model.me[server.id]?.mode, isBusy: model.isBusy,
+                                        onEdit: { model.startProfile(server.id) },
+                                        onInvite: { model.startInvite(server.id) },
+                                        onMembership: { model.startMembership(server.id) })
+                    .task(id: status.hasAvatar) {
+                        if status.hasAvatar { model.loadAvatar(server: server.id, handle: status.handle) }
+                    }
+            }
             if let session {
                 MultiplayerSessionContent(model: session)
-                    .padding(.horizontal, MultiplayerTheme.sectionInset)
-                    .padding(.vertical, 12)
             }
         }
     }
@@ -850,10 +959,13 @@ struct MultiplayerPanel: View {
                 Button(model.currentProbe == .idle ? "Check server" : "Check again") { model.runProbe() }
                     .buttonStyle(MultiplayerTrayButtonStyle())
                     .disabled(!model.canProbe)
-                Button("Save server") { model.saveServer() }
-                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                    .keyboardShortcut(model.canSaveServer ? KeyboardShortcut.defaultAction : nil)
-                    .disabled(!model.canSaveServer)
+                // A saved address is opened from its notice at the top of the form, not saved again.
+                if model.existingServer == nil {
+                    Button(model.activeInvite == nil ? "Save server" : "Join server") { model.saveServer() }
+                        .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                        .keyboardShortcut(model.canSaveServer ? KeyboardShortcut.defaultAction : nil)
+                        .disabled(!model.canSaveServer)
+                }
             }
         case .hosting:
             MultiplayerTrayFooter(note: "Guidance only. The tray has no hosting controls yet.") {
@@ -876,7 +988,7 @@ struct MultiplayerPanel: View {
                             .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
                     }
                 } else {
-                    MultiplayerTrayFooter(note: server.handle.isEmpty ? nil : "Signed in as \(server.handle.multiplayerDisplay)",
+                    MultiplayerTrayFooter(note: model.session(server.id)?.route != .home ? nil : server.handle.isEmpty ? nil : "Signed in as \(server.handle.multiplayerDisplay)",
                                           isFixture: model.usesFixtureHelper) {
                         if let session = model.session(server.id), session.canSignOut {
                             Button("Sign out") { session.signOut() }
@@ -885,6 +997,29 @@ struct MultiplayerPanel: View {
                         }
                     }
                 }
+            }
+        case .profile(let id):
+            MultiplayerTrayFooter(note: model.profileDraft.hasChanges ? "Only what you changed is sent." : "Nothing changed yet.") {
+                Button("Cancel") { model.go(.server(id)) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Save profile") { model.saveProfile() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .keyboardShortcut(model.canSaveProfile ? KeyboardShortcut.defaultAction : nil)
+                    .disabled(!model.canSaveProfile)
+            }
+        case .invite(let id):
+            MultiplayerTrayFooter(note: model.invite == nil ? nil : "Each new link has its own code.") {
+                Button(model.invite == nil ? "Create invite link" : "Create another") { model.createInvite() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: model.invite == nil ? .primary : .standard))
+                    .disabled(model.isBusy || !model.canInvite(id))
+            }
+        case .membership(let id):
+            MultiplayerTrayFooter(note: model.membership.membership == nil ? nil : "Changes apply to everyone on this relay.") {
+                Button("Cancel") { model.go(.server(id)) }
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                Button("Save membership") { model.saveMembership() }
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
+                    .disabled(!model.canSaveMembership)
             }
         }
     }
