@@ -255,10 +255,13 @@ private func stateText(_ title: String, _ tone: Tone) -> some View {
 
 // MARK: - Home and server bands
 
-/// Hand-offs you sent, across servers: what, to whose agent, and how it stands.
+/// Hand-offs, reviews and fan-outs you sent, across servers: what, to whose agent, and how it stands.
 struct MultiplayerRemoteWorkBand: View {
     struct Item: Identifiable {
         let id: String
+        var symbol = "arrow.up.right"
+        /// What kind of work it is, for VoiceOver and the tooltip.
+        var kind = "Hand-off"
         let title: String
         let detail: String
         let color: Color
@@ -269,16 +272,17 @@ struct MultiplayerRemoteWorkBand: View {
 
     let items: [Item]
     static let preview = 4
+    @State private var showsAll = false
 
     var body: some View {
         if !items.isEmpty {
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
                     MultiplayerBandHeading(title: "Live remote work", count: "\(items.count)")
-                    ForEach(items.prefix(Self.preview)) { item in
+                    ForEach(showsAll ? items : Array(items.prefix(Self.preview))) { item in
                         Button(action: item.open) {
                             HStack(spacing: Space.s) {
-                                Image(systemName: "arrow.up.right")
+                                Image(systemName: item.symbol)
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(.inkSecondary)
                                     .frame(width: 20)
@@ -291,6 +295,7 @@ struct MultiplayerRemoteWorkBand: View {
                                     HStack(spacing: 5) {
                                         MultiplayerSwatch(color: item.color)
                                         Text(item.detail).font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary).lineLimit(1)
+                                            .truncationMode(.middle)
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -301,15 +306,17 @@ struct MultiplayerRemoteWorkBand: View {
                         }
                         .buttonStyle(MultiplayerRowButtonStyle())
                         .multiplayerArriving()
-                        .accessibilityLabel("\(item.title), \(item.detail), \(item.state)")
-                        .accessibilityHint("Opens this hand-off")
+                        .help(item.kind)
+                        .accessibilityLabel("\(item.kind): \(item.title), \(item.detail), \(item.state)")
+                        .accessibilityHint("Opens it")
                     }
                     if items.count > Self.preview {
-                        Text("\(items.count - Self.preview) more on each server’s Hand-offs page.")
-                            .font(MultiplayerTheme.sub)
-                            .foregroundStyle(.inkSecondary)
+                        Button(showsAll ? "Show fewer" : "Show all \(items.count)") { showsAll.toggle() }
+                            .buttonStyle(MultiplayerTrayButtonStyle())
+                            .padding(.top, 4)
                     }
                 }
+                .multiplayerStreaming(showsAll)
             }
         }
     }
@@ -357,21 +364,30 @@ struct MultiplayerSharingBand: View {
     }
 }
 
-/// Agents as first-class entries: yours with who holds access, and friends' with what runs them
-/// and what you can do with each.
+/// Agents as first-class entries: yours with who holds access and control, and friends' with what
+/// runs them and what you can do with each. A row's actions sit under its text as one strip, so
+/// the text keeps the row's full width.
 struct MultiplayerAgentRoster: View {
     let mine: [MultiplayerPending<MultiplayerResource>]
     let theirs: [MultiplayerPending<MultiplayerDirectoryEntry>]
     let serverName: (String) -> String
     let grantCount: (MultiplayerPending<MultiplayerResource>) -> Int
+    /// The friend who holds control of one of your workers now.
+    var holder: (MultiplayerPending<MultiplayerResource>) -> String? = { _ in nil }
     let isWaiting: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Bool
     let isBusy: Bool
+    /// Servers where one prompt can go to several workers.
+    var fanoutServers: [String] = []
     let onShare: (MultiplayerPending<MultiplayerResource>) -> Void
     let onAudit: (MultiplayerPending<MultiplayerResource>) -> Void
+    var onControl: (MultiplayerPending<MultiplayerResource>) -> Void = { _ in }
     let onConsult: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void
     let onHandOff: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void
+    var onWatch: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void = { _ in }
+    var onReview: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void = { _ in }
     let onRequest: (MultiplayerPending<MultiplayerDirectoryEntry>) -> Void
     let onDirectory: (String) -> Void
+    var onFanout: (String) -> Void = { _ in }
 
     var body: some View {
         MultiplayerBand {
@@ -385,33 +401,27 @@ struct MultiplayerAgentRoster: View {
                 }
                 ForEach(mine) { agent in
                     let count = grantCount(agent)
-                    row(symbol: "terminal", tone: count > 0 ? .working : .neutral, name: agent.item.name, server: agent.server,
-                        chip: nil, caption: count == 0 ? "Not shared" : count == 1 ? "Shared with 1 friend" : "Shared with \(count) friends") {
-                        SymbolButton(symbol: "list.bullet.rectangle", label: "Audit for \(agent.item.name.multiplayerDisplay)") { onAudit(agent) }
-                            .foregroundStyle(MultiplayerTheme.foreground)
-                        Button("Share…") { onShare(agent) }
-                            .buttonStyle(MultiplayerTrayButtonStyle())
-                            .disabled(isBusy)
-                            .accessibilityLabel("Share \(agent.item.name.multiplayerDisplay)")
-                    }
+                    let name = agent.item.name.multiplayerDisplay
+                    let held = holder(agent)
+                    row(tone: count > 0 ? .working : .neutral, name: agent.item.name, server: agent.server,
+                        badge: held.map { ("\($0.multiplayerDisplay) has control", "hand.point.up.left", Tone.attention) }
+                            ?? (count == 0 ? ("Not shared", nil, Tone.neutral) : ("Shared with \(count)", nil, Tone.working)),
+                        chip: nil, owner: nil,
+                        verbs: [
+                            MultiplayerRowVerb(id: "share", title: "Share…", isEnabled: !isBusy, hint: "Share \(name)") { onShare(agent) },
+                            MultiplayerRowVerb(id: "control", title: "Control", isEnabled: count > 0,
+                                            hint: count > 0 ? "Hand over control of \(name)" : "Share \(name) before handing over control") { onControl(agent) },
+                            MultiplayerRowVerb(id: "audit", title: "Audit", hint: "Audit for \(name)") { onAudit(agent) },
+                        ])
                 }
             }
         }
         MultiplayerBand {
             VStack(alignment: .leading, spacing: 2) {
                 MultiplayerBandHeading(title: "Friends’ agents", count: theirs.isEmpty ? nil : "\(theirs.count)") {
-                    let servers = MultiplayerUnique.keep(theirs.map(\.server)) { $0 }
-                    if servers.count == 1, let only = servers.first {
-                        Button("Directory") { onDirectory(only) }.buttonStyle(MultiplayerTrayButtonStyle())
-                    } else if servers.count > 1 {
-                        Menu {
-                            ForEach(servers, id: \.self) { id in Button(serverName(id)) { onDirectory(id) } }
-                        } label: { Text("Directory") }
-                        .menuStyle(.button)
-                        .buttonStyle(MultiplayerTrayButtonStyle())
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                    }
+                    serverMenu("Fan out", fanoutServers, help: "Send one prompt to several workers", action: onFanout)
+                    serverMenu("Directory", MultiplayerUnique.keep(theirs.map(\.server)) { $0 }, help: "Everything friends offer",
+                               action: onDirectory)
                 }
                 if theirs.isEmpty {
                     Text("When a friend publishes an agent, it shows up here with what runs it and what it offers.")
@@ -421,60 +431,81 @@ struct MultiplayerAgentRoster: View {
                 }
                 ForEach(theirs) { agent in
                     let entry = agent.item
-                    row(symbol: "terminal", tone: entry.granted.isEmpty ? .neutral : .working, name: entry.name, server: agent.server,
-                        chip: entry.capabilities,
-                        caption: "\(entry.owner.multiplayerDisplay), \(entry.granted.isEmpty ? "offered, not granted" : "granted to you")") {
-                        if entry.canHandOff {
-                            Button("Hand off") { onHandOff(agent) }
-                                .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(isBusy)
-                                .accessibilityLabel("Hand off a task to \(entry.name.multiplayerDisplay)")
-                        }
-                        if entry.canConsult {
-                            Button("Consult") { onConsult(agent) }
-                                .buttonStyle(MultiplayerTrayButtonStyle(role: .primary))
-                                .disabled(isBusy)
-                                .accessibilityLabel("Consult \(entry.name.multiplayerDisplay)")
-                        } else if isWaiting(agent) {
-                            MultiplayerBadge(text: "Request waiting", symbol: "clock", tone: .attention)
-                        } else if !entry.requestable.isEmpty {
-                            Button("Request") { onRequest(agent) }
-                                .buttonStyle(MultiplayerTrayButtonStyle())
-                                .disabled(isBusy)
-                                .accessibilityLabel("Request access to \(entry.name.multiplayerDisplay)")
-                        }
-                    }
+                    let name = entry.name.multiplayerDisplay
+                    let waiting = isWaiting(agent)
+                    row(tone: entry.granted.isEmpty ? .neutral : .working, name: entry.name, server: agent.server,
+                        badge: entry.granted.isEmpty ? (waiting ? ("Request waiting", "clock", Tone.attention) : ("Offered", nil, Tone.neutral))
+                                                     : ("Granted", "checkmark", Tone.working),
+                        chip: entry.capabilities, owner: entry.owner,
+                        verbs: [
+                            entry.canConsult ? MultiplayerRowVerb(id: "consult", title: "Consult", isPrimary: true, isEnabled: !isBusy,
+                                                               hint: "Consult \(name)") { onConsult(agent) } : nil,
+                            entry.canHandOff ? MultiplayerRowVerb(id: "handoff", title: "Hand off", isEnabled: !isBusy,
+                                                               hint: "Hand off a task to \(name)") { onHandOff(agent) } : nil,
+                            entry.canWatch ? MultiplayerRowVerb(id: "watch", title: "Watch", hint: "Watch \(name) work") { onWatch(agent) } : nil,
+                            entry.canReview ? MultiplayerRowVerb(id: "review", title: "Review", isEnabled: !isBusy,
+                                                              hint: "Ask \(name) for a code review") { onReview(agent) } : nil,
+                            !waiting && !entry.requestable.isEmpty
+                                ? MultiplayerRowVerb(id: "request", title: entry.granted.isEmpty ? "Request access" : "Request more",
+                                                  isEnabled: !isBusy, hint: "Request access to \(name)") { onRequest(agent) } : nil,
+                        ].compactMap { $0 })
                 }
             }
         }
     }
 
-    private func row<Trailing: View>(symbol: String, tone: Tone, name: String, server: String,
-                                     chip: MultiplayerCapabilities?, caption: String,
-                                     @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: Space.s) {
-            MultiplayerMark(symbol: symbol, tone: tone, size: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name.multiplayerDisplay)
-                    .font(MultiplayerTheme.name)
-                    .foregroundStyle(MultiplayerTheme.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let chip, chip.headline != nil { MultiplayerAgentChip(capabilities: chip) }
-                HStack(spacing: 5) {
-                    MultiplayerSwatch(color: MultiplayerTheme.swatch(for: server))
-                    Text("\(serverName(server)), \(caption)")
-                        .font(MultiplayerTheme.sub)
-                        .foregroundStyle(.inkSecondary)
-                        .lineLimit(1)
+    /// A heading action that names a server: a button for one, a menu for several, nothing for none.
+    @ViewBuilder private func serverMenu(_ title: String, _ servers: [String], help: String,
+                                         action: @escaping (String) -> Void) -> some View {
+        if servers.count == 1, let only = servers.first {
+            Button(title) { action(only) }.buttonStyle(MultiplayerTrayButtonStyle()).help(help)
+        } else if servers.count > 1 {
+            Menu {
+                ForEach(servers, id: \.self) { id in Button(serverName(id)) { action(id) } }
+            } label: { Text(title) }
+            .menuStyle(.button)
+            .buttonStyle(MultiplayerTrayButtonStyle())
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(help)
+        }
+    }
+
+    private func row(tone: Tone, name: String, server: String, badge: (text: String, symbol: String?, tone: Tone),
+                     chip: MultiplayerCapabilities?, owner: String?, verbs: [MultiplayerRowVerb]) -> some View {
+        HStack(alignment: .top, spacing: Space.s) {
+            MultiplayerMark(symbol: "terminal", tone: tone, size: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(name.multiplayerDisplay)
+                            .font(MultiplayerTheme.name)
+                            .foregroundStyle(MultiplayerTheme.foreground)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                        MultiplayerBadge(text: badge.text, symbol: badge.symbol, tone: badge.tone)
+                            .fixedSize()
+                    }
+                    HStack(spacing: 6) {
+                        if let chip, chip.headline != nil { MultiplayerAgentChip(capabilities: chip) }
+                        MultiplayerSwatch(color: MultiplayerTheme.swatch(for: server))
+                        Text(owner.map { "\($0.multiplayerDisplay) on \(serverName(server))" } ?? serverName(server))
+                            .font(MultiplayerTheme.sub)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([name.multiplayerDisplay, badge.text, chip?.headline,
+                                     owner.map { "owned by \($0.multiplayerDisplay)" }, "on \(serverName(server))"]
+                    .compactMap { $0 }.joined(separator: ", "))
+                if !verbs.isEmpty { MultiplayerVerbStrip(verbs: verbs).padding(.top, 2) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            trailing()
         }
-        .frame(minHeight: 36)
-        .padding(.vertical, 3)
+        .padding(.vertical, 6)
     }
 }
 
@@ -706,6 +737,58 @@ struct MultiplayerApprovalPage: View {
     let now: Date
 
     var body: some View {
+        if approval.isSuggestion { suggestion } else { request }
+    }
+
+    /// A Co-pilot suggestion: the text a friend wants your worker to see, and what approving does.
+    @ViewBuilder private var suggestion: some View {
+        let who = approval.peer.isEmpty ? "Your friend" : approval.peer.multiplayerDisplay
+        let worker = resourceName.multiplayerDisplay
+        MultiplayerBand {
+            VStack(alignment: .leading, spacing: Space.s) {
+                row("From") {
+                    HStack(spacing: 5) {
+                        Text(who)
+                        Text("on").foregroundStyle(.inkSecondary)
+                        MultiplayerSwatch(color: color)
+                        Text(serverName)
+                    }
+                }
+                row("For") { Text("\(MultiplayerResourceKind.title(for: kind)) \(worker)") }
+                MultiplayerWell(edge: MultiplayerTheme.attention.opacity(0.5)) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        MultiplayerBadge(text: "Suggested message", symbol: "lightbulb", tone: .attention)
+                        Text(approval.request.isEmpty ? "The suggestion carried no text." : approval.request)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(MultiplayerTheme.foreground)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Suggested message: \(approval.request)")
+            }
+        }
+        MultiplayerBand {
+            VStack(alignment: .leading, spacing: Space.s) {
+                MultiplayerBandHeading(title: "If you approve")
+                Text("\(worker) gets this text as a message from you and answers it. \(who) sees only the answer. Deny, and \(who) is told it was denied.")
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                row("Arrived") { Text(MultiplayerActivityRow.time(approval.arrived, now: now)) }
+                if let expires = approval.expires {
+                    row("Answer by") { Text(MultiplayerTime.display(expires, now: now)) }
+                }
+                Text("Every suggestion waits for you, whatever the grant says, unless you hand over control.")
+                    .font(MultiplayerTheme.sub)
+                    .foregroundStyle(.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var request: some View {
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.s) {
                 row("Who") {

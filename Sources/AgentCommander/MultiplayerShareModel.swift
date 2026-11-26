@@ -29,6 +29,15 @@ enum MultiplayerSharePage: Equatable {
     case thread(request: String, title: String)
     /// One resource's audit entries, or every resource's when empty.
     case audit(resource: String)
+    /// Live work (increment 4): a friend's worker's output, as it runs.
+    case watch(resource: String)
+    /// Who holds control of one of your workers, and for how long.
+    case control(resource: String)
+    case reviewRequest(resource: String)
+    case review(request: String)
+    case fanout
+    /// A fan-out's results, side by side.
+    case compare(request: String)
 
     var title: String {
         switch self {
@@ -43,6 +52,12 @@ enum MultiplayerSharePage: Equatable {
         case .handoffDetail: "Hand-off"
         case .thread: "Thread"
         case .audit: "Audit"
+        case .watch: "Watch"
+        case .control: "Control"
+        case .reviewRequest: "Request review"
+        case .review: "Review"
+        case .fanout: "Fan out"
+        case .compare: "Compare"
         }
     }
 }
@@ -103,6 +118,9 @@ final class MultiplayerShareModel {
     /// Why the last file couldn't be attached.
     private(set) var attachProblem: String?
 
+    /// Live work (increment 4): watch, control, reviews and fan-outs.
+    let live: MultiplayerLiveModel
+
     private let client: MultiplayerClient?
     private let clock: () -> Date
     /// The pages Back returns through.
@@ -111,9 +129,13 @@ final class MultiplayerShareModel {
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
 
-    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }) {
+    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, defaults: UserDefaults = .standard,
+         watchInterval: Duration = .seconds(2)) {
         self.client = client
         self.clock = now
+        self.live = MultiplayerLiveModel(client: client, now: now, winners: MultiplayerWinnerStore(defaults: defaults),
+                                         watchInterval: watchInterval)
+        self.live.share = self
     }
 
     // MARK: - Navigation
@@ -133,7 +155,7 @@ final class MultiplayerShareModel {
         let fallback = tray.route.serverID.map(MultiplayerTrayRoute.server) ?? .home
         let previous = trail.popLast() ?? fallback
         tray.go(previous, keepingShareTrail: true)
-        if case .share(let server, let page) = previous { load(page, on: server) }
+        if case .share(let server, let page) = previous { load(page, on: server) } else { live.left() }
     }
 
     /// The name of the page Back returns to.
@@ -154,6 +176,7 @@ final class MultiplayerShareModel {
         pageTask = nil
         pageToken &+= 1
         attachProblem = nil
+        live.left()
     }
 
     private func load(_ page: MultiplayerSharePage, on server: String) {
@@ -161,8 +184,17 @@ final class MultiplayerShareModel {
         case .thread(let request, _): loadThread(request, on: server)
         case .audit(let resource): loadAudit(resource, on: server)
         case .handoffs, .handoffDetail: refresh()
+        case .watch(let resource): live.beginWatch(resource, on: server)
+        case .control, .review, .compare: live.refresh()
         default: break
         }
+        if case .watch = page {} else { live.endWatch() }
+    }
+
+    /// Replaces the page now open with the one it produced; Back still returns to where it was opened.
+    func replace(with page: MultiplayerSharePage, on server: String) {
+        tray?.go(.share(server, page), keepingShareTrail: true)
+        load(page, on: server)
     }
 
     // MARK: - Quiet reads
@@ -176,6 +208,7 @@ final class MultiplayerShareModel {
         approvals = approvals.filter { live.contains($0.key) }
         accessRequests = accessRequests.filter { live.contains($0.key) }
         handoffs = handoffs.filter { live.contains($0.key) }
+        self.live.refresh()
         guard !ids.isEmpty else { return }
         quietTask = Task {
             for id in ids where !Task.isCancelled {
@@ -194,6 +227,7 @@ final class MultiplayerShareModel {
         pageTask?.cancel()
         pageTask = nil
         pageToken &+= 1
+        live.cancel()
     }
 
     // MARK: - Derived values

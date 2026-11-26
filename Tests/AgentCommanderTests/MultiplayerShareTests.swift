@@ -406,7 +406,7 @@ enum MultiplayerShareFixture {
         #expect(model.share.startShare(worker))
         #expect(model.route == .share("s-home", .grant))
         let resource = try #require(model.share.grantResource)
-        #expect(resource.isNew && resource.id == worker.resourceID && resource.choices == ["agent.ask", "agent.handoff"])
+        #expect(resource.isNew && resource.id == worker.resourceID && resource.choices == ["agent.ask", "agent.handoff", "agent.watch", "agent.suggest", "review.request"])
         model.share.grantDraft.handle = "fixture-bo"
         model.share.toggleGrantAction("agent.ask")
         #expect(model.share.grantCompanions == ["thread.read", "thread.comment"])
