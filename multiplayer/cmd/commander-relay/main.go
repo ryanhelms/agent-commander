@@ -44,6 +44,7 @@ type config struct {
 	Issuer             string   `json:"issuer"`
 	ClientID           string   `json:"client_id"`
 	AllowedEmails      []string `json:"allowed_emails"`
+	Admins             []string `json:"admins"`
 	IssuerCA           string   `json:"issuer_ca"`
 	// Only explicit IP loopback dependencies can use plaintext in an isolated rehearsal.
 	LoopbackTest bool `json:"loopback_test"`
@@ -205,7 +206,7 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 	defer httpClient.CloseIdleConnections()
 	return serveRelay(ctx, listen, cert, pool, nc, relaySettings{
 		edge: cfg.Edge, replicas: cfg.Replicas, mode: "edge", name: cfg.Edge,
-		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
 	})
 }
 
@@ -250,10 +251,28 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 		}
 		w.WriteHeader(204)
 	})
-	srv := relayServer(cert, cfg, mux)
+	srv := relayServer(cert, cfg, mux, func(ctx context.Context) (string, error) {
+		return control.MembershipMode(ctx, pool)
+	})
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 2)
+	pruned := make(chan struct{})
+	go func() {
+		defer close(pruned)
+		tick := time.NewTicker(time.Hour)
+		defer tick.Stop()
+		for runCtx.Err() == nil {
+			if err := store.PruneEvents(runCtx); err != nil && runCtx.Err() == nil {
+				log.Printf("prune social events: %v", err)
+			}
+			select {
+			case <-runCtx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 	go func() {
 		done <- dispatch.Run(runCtx, nc, store, cfg.edge, cfg.replicas, func() { brokerReady.Store(true) })
 	}()
@@ -266,6 +285,7 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 		received++
 	}
 	stop()
+	<-pruned
 	shutdown, finish := context.WithTimeout(context.Background(), 5*time.Second)
 	defer finish()
 	_ = srv.Shutdown(shutdown)
@@ -281,15 +301,20 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 	}
 	return first
 }
-func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler) *http.Server {
-	info := map[string]string{
-		"version": "1", "mode": cfg.mode, "name": cfg.name,
-		"issuer": cfg.identity.Issuer, "clientId": cfg.identity.ClientID,
-	}
+func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler, membershipMode func(context.Context) (string, error)) *http.Server {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/info" {
+			mode, err := membershipMode(r.Context())
+			if err != nil {
+				http.Error(w, "membership unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(info)
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"version": "1", "mode": cfg.mode, "name": cfg.name, "membership": mode,
+				"issuer": cfg.identity.Issuer, "clientId": cfg.identity.ClientID,
+			})
 			return
 		}
 		// VerifyConnection checked every presented device certificate, including

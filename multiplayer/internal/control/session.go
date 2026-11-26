@@ -19,6 +19,11 @@ type leaseProof struct {
 	Generation int64  `json:"generation"`
 }
 
+// A takeover overwrites expires_at. Preserve the old lease's actual end,
+// including when it already expired before this request arrived.
+const endedLease = `least(mp_leases.expires_at, statement_timestamp())`
+const retireLease = `UPDATE mp_leases SET ready=false,expires_at=` + endedLease
+
 func (s *Service) openLease(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	sess := secret()
 	var v Lease
@@ -27,7 +32,7 @@ func (s *Service) openLease(ctx context.Context, p Principal, _ *http.Request) (
 			return err
 		}
 		err := tx.QueryRow(ctx, `INSERT INTO mp_leases(device,owner_id,edge,session,generation,expires_at,ready) VALUES($1,$2,$3,$4,1,now()+interval '65 seconds',false)
-		ON CONFLICT(device) DO UPDATE SET edge=EXCLUDED.edge,session=EXCLUDED.session,generation=mp_leases.generation+1,expires_at=EXCLUDED.expires_at,ready=false
+		ON CONFLICT(device) DO UPDATE SET last_seen=`+endedLease+`,edge=EXCLUDED.edge,session=EXCLUDED.session,generation=mp_leases.generation+1,expires_at=EXCLUDED.expires_at,ready=false
 		WHERE mp_leases.owner_id=EXCLUDED.owner_id RETURNING session,generation,expires_at`, p.Device, p.User, s.edge, sess).Scan(&v.Session, &v.Generation, &v.ExpiresAt)
 		if err != nil {
 			return err
@@ -62,7 +67,7 @@ func (s *Service) updateLease(ctx context.Context, p Principal, r *http.Request)
 	if r.Method == "DELETE" {
 		var ok bool
 		err := s.write(ctx, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(ctx, `UPDATE mp_leases SET ready=false,expires_at=now() WHERE device=$1 AND owner_id=$2 AND generation=$3 AND session=$4 RETURNING true`, p.Device, p.User, in.Generation, in.Session).Scan(&ok); err != nil {
+			if err := tx.QueryRow(ctx, retireLease+` WHERE device=$1 AND owner_id=$2 AND generation=$3 AND session=$4 RETURNING true`, p.Device, p.User, in.Generation, in.Session).Scan(&ok); err != nil {
 				if err == pgx.ErrNoRows {
 					return conflict("lease is no longer current")
 				}

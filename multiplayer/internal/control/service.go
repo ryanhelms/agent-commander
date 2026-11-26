@@ -21,9 +21,13 @@ import (
 //go:embed schema.sql
 var schema string
 
+//go:embed social.sql
+var socialSchema string
+
 type Principal struct {
 	User, Device string
 	AccessHash   []byte // Set for authenticated requests. Offline recipient checks leave it nil.
+	EmailHash    string // SHA-256 of the verified email for this device enrollment.
 }
 type Authenticate func(*http.Request) (Principal, error)
 type CheckDevice func(context.Context, pgx.Tx, Principal) (bool, error)
@@ -42,11 +46,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, edge string, auth Authenticate
 		return nil, errors.New("control requires a pool, an edge ID and device authentication")
 	}
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		// Multiple new edges may bootstrap the same empty database.
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(1466203104)"); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, schema)
+		_, err := tx.Exec(ctx, socialSchema+schema)
 		return err
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func (s *Service) requireDevice(ctx context.Context, tx pgx.Tx, p Principal) err
 // RevokeDevice participates in the credential revocation transaction. Pending
 // work in either direction is canceled and a revoked executor loses its lease.
 func RevokeDevice(ctx context.Context, tx pgx.Tx, device string) error {
-	if _, err := tx.Exec(ctx, `UPDATE mp_leases SET ready=false,expires_at=clock_timestamp() WHERE device=$1`, device); err != nil {
+	if _, err := tx.Exec(ctx, retireLease+` WHERE device=$1`, device); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE mp_resources SET actions='{}' WHERE device=$1`, device); err != nil {
@@ -83,7 +83,7 @@ func RevokeDevice(ctx context.Context, tx pgx.Tx, device string) error {
 // CloseDeviceSession retires a signed-out device's lease in the same transaction
 // as its credentials. Pending deliveries can wait for a later enrollment.
 func CloseDeviceSession(ctx context.Context, tx pgx.Tx, device string) error {
-	if _, err := tx.Exec(ctx, `UPDATE mp_leases SET ready=false,expires_at=clock_timestamp() WHERE device=$1`, device); err != nil {
+	if _, err := tx.Exec(ctx, retireLease+` WHERE device=$1`, device); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE mp_children SET status='uncertain' WHERE device=$1 AND status='processing'`, device)
@@ -121,10 +121,13 @@ type endpoint func(context.Context, Principal, *http.Request) (any, error)
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	routes := map[string]endpoint{
-		"PUT /v1/profile": s.setProfile, "GET /v1/profile": s.profile, "GET /v1/users/{handle}": s.profile,
+		"GET /v1/events":  s.events,
+		"PUT /v1/profile": s.setProfile, "GET /v1/profile": s.profile, "GET /v1/users/{handle}": s.profile, "GET /v1/users/{handle}/avatar": s.avatar,
 		"GET /v1/friends": s.friends, "POST /v1/friends/{handle}": s.friendChange, "PUT /v1/friends/{handle}": s.friendChange, "DELETE /v1/friends/{handle}": s.friendChange,
 		"PUT /v1/resources/{id}": s.putResource, "GET /v1/resources": s.resources, "GET /v1/grants": s.grants, "PUT /v1/grants/{resource}/{handle}": s.changeGrant, "DELETE /v1/grants/{resource}/{handle}": s.changeGrant,
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
+		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
+		"POST /v1/invites":     s.createInvite,
 		"POST /v1/submissions": s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
 	}
 	for pattern, op := range routes {
@@ -141,6 +144,11 @@ func (s *Service) Handler() http.Handler {
 			v, err := op(r.Context(), p, r)
 			if err != nil {
 				problem(w, err)
+				return
+			}
+			if image, ok := v.(profileAvatar); ok {
+				w.Header().Set("Content-Type", image.contentType)
+				_, _ = w.Write(image.data)
 				return
 			}
 			if v == nil {

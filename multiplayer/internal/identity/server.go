@@ -17,9 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/mail"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -31,19 +29,18 @@ import (
 )
 
 type Config struct {
-	Issuer, ClientID  string
-	AllowedEmails     []string
-	HTTPClient        *http.Client
-	AllowLoopbackHTTP bool
+	Issuer, ClientID      string
+	AllowedEmails, Admins []string
+	HTTPClient            *http.Client
+	AllowLoopbackHTTP     bool
 }
 type Server struct {
-	pool          *pgxpool.Pool
-	config        Config
-	allowedHashes []string
-	verifier      *oidc.IDTokenVerifier
-	CanLookup     func(context.Context, string, string) (bool, error)
-	CloseSession  func(context.Context, pgx.Tx, string) error
-	revokeWork    func(context.Context, pgx.Tx, string) error
+	pool         *pgxpool.Pool
+	config       Config
+	verifier     *oidc.IDTokenVerifier
+	CanLookup    func(context.Context, string, string) (bool, error)
+	CloseSession func(context.Context, pgx.Tx, string) error
+	revokeWork   func(context.Context, pgx.Tx, string) error
 }
 type Session struct {
 	User         string    `json:"user"`
@@ -158,14 +155,6 @@ func discover(ctx context.Context, cfg Config) (*oidc.Provider, error) {
 	return p, nil
 }
 func New(ctx context.Context, pool *pgxpool.Pool, cfg Config) (*Server, error) {
-	var hashes []string
-	for _, email := range cfg.AllowedEmails {
-		m, err := mail.ParseAddress(email)
-		if err != nil || m.Address != email {
-			return nil, errors.New("invalid allowed OIDC email address")
-		}
-		hashes = append(hashes, emailHash(email))
-	}
 	p, err := discover(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -180,6 +169,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config) (*Server, error) {
 	}
 	_, err = tx.Exec(ctx, `
  CREATE TABLE IF NOT EXISTS mp_auth_challenges(device text PRIMARY KEY, nonce text NOT NULL, descriptor jsonb NOT NULL, expires_at timestamptz NOT NULL);
+ ALTER TABLE mp_auth_challenges ADD COLUMN IF NOT EXISTS invite text NOT NULL DEFAULT '';
  CREATE INDEX IF NOT EXISTS mp_auth_challenges_expiry ON mp_auth_challenges(expires_at);
  CREATE TABLE IF NOT EXISTS mp_auth_devices(device text PRIMARY KEY, user_id text NOT NULL, encryption_key text NOT NULL, descriptor jsonb NOT NULL, access_hash bytea, access_expires timestamptz, refresh_hash bytea, refresh_expires timestamptz, revoked boolean NOT NULL DEFAULT false);
  ALTER TABLE mp_auth_devices ADD COLUMN IF NOT EXISTS email_hash text;
@@ -188,14 +178,80 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = control.InitMembership(ctx, tx, cfg.AllowedEmails, cfg.Admins); err != nil {
+		return nil, err
+	}
+	// Before membership was persisted the verified hash lived only on devices.
+	// Prefer a verified hash from the most recently active device.
+	_, err = tx.Exec(ctx, `INSERT INTO mp_members(user_id,contact_key)
+		SELECT DISTINCT ON (user_id) user_id, COALESCE(email_hash,'') FROM mp_auth_devices
+		ORDER BY user_id, (COALESCE(email_hash,'') <> '') DESC, access_expires DESC NULLS LAST, device
+		ON CONFLICT (user_id) DO NOTHING`)
+	if err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return &Server{pool: pool, config: cfg, allowedHashes: hashes, verifier: p.Verifier(&oidc.Config{ClientID: cfg.ClientID})}, nil
+	return &Server{pool: pool, config: cfg, verifier: p.Verifier(&oidc.Config{ClientID: cfg.ClientID})}, nil
 }
 func emailHash(email string) string { return hex.EncodeToString(digest(strings.ToLower(email))) }
-func (s *Server) permitsEmail(email string, verified bool) bool {
-	return len(s.allowedHashes) == 0 || (verified && email != "" && slices.Contains(s.allowedHashes, emailHash(email)))
+
+// Every credential path observes the same settings as enrollment, including
+// changes made by an administrator on another edge.
+const memberAccess = `EXISTS (SELECT FROM mp_membership_policy m
+	WHERE m.mode='open' OR mp_auth_devices.email_hash=ANY(m.allowed_hashes))`
+
+func verifiedHash(email string, verified bool) string {
+	if !verified || email == "" {
+		return ""
+	}
+	return emailHash(email)
+}
+
+// Lock the settings through enrollment so policy changes and competing uses of
+// an invite see one committed admission. A failed device binding rolls it back.
+func admitMember(ctx context.Context, tx pgx.Tx, user, email, hash, invite string) error {
+	var allowed bool
+	err := tx.QueryRow(ctx, `SELECT mode='open' OR $1=ANY(admin_hashes) OR
+		($1=ANY(allowed_hashes) AND (mode='allowlist' OR EXISTS (SELECT FROM mp_members WHERE user_id=$2)))
+		FROM mp_membership_policy FOR UPDATE`, hash, user).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if invite == "" {
+		if allowed {
+			return nil
+		}
+		return denied
+	}
+	if hash == "" {
+		return denied
+	}
+	tag, err := tx.Exec(ctx, `UPDATE mp_invites SET uses=uses+1
+		WHERE code=$1 AND uses<max_uses AND expires_at>clock_timestamp()`, invite)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return denied
+	}
+	_, err = tx.Exec(ctx, "UPDATE mp_membership SET allowed_emails=array_append(allowed_emails,$1) WHERE NOT ($1=ANY(allowed_emails))", strings.ToLower(email))
+	return err
+}
+
+func recordMember(ctx context.Context, tx pgx.Tx, user, hash string) error {
+	tag, err := tx.Exec(ctx, "INSERT INTO mp_members(user_id,contact_key) VALUES($1,$2) ON CONFLICT DO NOTHING", user, hash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return control.RecordMemberJoined(ctx, tx, user)
+	}
+	if hash != "" {
+		_, err = tx.Exec(ctx, "UPDATE mp_members SET contact_key=$2 WHERE user_id=$1 AND contact_key<>$2", user, hash)
+	}
+	return err
 }
 func DeviceID(state *tls.ConnectionState) (string, error) {
 	if state == nil || state.Version < tls.VersionTLS13 || len(state.PeerCertificates) != 1 {
@@ -254,13 +310,15 @@ func (s *Server) Authenticate(r *http.Request) (control.Principal, error) {
 	if err != nil || t == "" {
 		return control.Principal{}, denied
 	}
-	var user string
+	var p control.Principal
 	hash := digest(t)
-	err = s.pool.QueryRow(r.Context(), `SELECT user_id FROM mp_auth_devices WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3))`, id, hash, s.allowedHashes).Scan(&user)
+	err = s.pool.QueryRow(r.Context(), `SELECT user_id, COALESCE(email_hash,'') FROM mp_auth_devices
+		WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked AND `+memberAccess, id, hash).Scan(&p.User, &p.EmailHash)
 	if err != nil {
 		return control.Principal{}, denied
 	}
-	return control.Principal{User: user, Device: id, AccessHash: hash}, nil
+	p.Device, p.AccessHash = id, hash
+	return p, nil
 }
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/challenge", s.begin)
@@ -296,6 +354,7 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Public devicekeys.Public `json:"public"`
+		Invite string            `json:"invite"`
 	}
 	if !body(w, r, &in) {
 		return
@@ -315,13 +374,13 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request) {
 		failure(w, 503)
 		return
 	}
-	_, err = s.pool.Exec(ctx, `INSERT INTO mp_auth_challenges(device,nonce,descriptor,expires_at) VALUES($1,$2,$3,now()+interval '5 minutes')
- ON CONFLICT(device) DO UPDATE SET nonce=excluded.nonce,descriptor=excluded.descriptor,expires_at=excluded.expires_at`, id, n, string(descriptor))
+	_, err = s.pool.Exec(ctx, `INSERT INTO mp_auth_challenges(device,nonce,descriptor,invite,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')
+ ON CONFLICT(device) DO UPDATE SET nonce=excluded.nonce,descriptor=excluded.descriptor,invite=excluded.invite,expires_at=excluded.expires_at`, id, n, string(descriptor), in.Invite)
 	if err != nil {
 		failure(w, 503)
 		return
 	}
-	reply(w, 200, challenge{Nonce: n, Issuer: s.config.Issuer, ClientID: s.config.ClientID, Email: len(s.allowedHashes) > 0})
+	reply(w, 200, challenge{Nonce: n, Issuer: s.config.Issuer, ClientID: s.config.ClientID, Email: true})
 }
 func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	id, err := DeviceID(r.TLS)
@@ -361,14 +420,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		failure(w, 401)
 		return
 	}
-	if !s.permitsEmail(claims.Email, verifiedEmail) {
-		failure(w, 403)
-		return
-	}
-	var enrollmentEmail string
-	if verifiedEmail && claims.Email != "" {
-		enrollmentEmail = emailHash(claims.Email)
-	}
+	enrollmentEmail := verifiedHash(claims.Email, verifiedEmail)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		failure(w, 503)
@@ -376,7 +428,8 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	var stored []byte
-	err = tx.QueryRow(ctx, "DELETE FROM mp_auth_challenges WHERE device=$1 AND nonce=$2 AND expires_at>now() RETURNING descriptor", id, nonce).Scan(&stored)
+	var invite string
+	err = tx.QueryRow(ctx, "DELETE FROM mp_auth_challenges WHERE device=$1 AND nonce=$2 AND expires_at>now() RETURNING descriptor, invite", id, nonce).Scan(&stored, &invite)
 	if err != nil {
 		failure(w, 401)
 		return
@@ -390,6 +443,14 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, denied) {
 			failure(w, 409)
+		} else {
+			failure(w, 503)
+		}
+		return
+	}
+	if err := admitMember(ctx, tx, user, claims.Email, enrollmentEmail, invite); err != nil {
+		if errors.Is(err, denied) {
+			failure(w, 403)
 		} else {
 			failure(w, 503)
 		}
@@ -413,6 +474,10 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	if tag.RowsAffected() != 1 {
 		failure(w, 403)
+		return
+	}
+	if err = recordMember(ctx, tx, user, enrollmentEmail); err != nil {
+		failure(w, 503)
 		return
 	}
 	if tx.Commit(ctx) != nil {
@@ -442,7 +507,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		failure(w, 500)
 		return
 	}
-	err = s.pool.QueryRow(r.Context(), `UPDATE mp_auth_devices SET access_hash=$3,access_expires=$4,refresh_hash=$5 WHERE device=$1 AND refresh_hash=$2 AND refresh_expires>now() AND NOT revoked AND ($6::text[] IS NULL OR email_hash=ANY($6)) RETURNING user_id`, id, digest(in.Refresh), digest(sess.AccessToken), sess.ExpiresAt, digest(sess.RefreshToken), s.allowedHashes).Scan(&sess.User)
+	err = s.pool.QueryRow(r.Context(), `UPDATE mp_auth_devices SET access_hash=$3,access_expires=$4,refresh_hash=$5 WHERE device=$1 AND refresh_hash=$2 AND refresh_expires>now() AND NOT revoked AND `+memberAccess+` RETURNING user_id`, id, digest(in.Refresh), digest(sess.AccessToken), sess.ExpiresAt, digest(sess.RefreshToken)).Scan(&sess.User)
 	if errors.Is(err, pgx.ErrNoRows) {
 		failure(w, 401)
 		return
@@ -524,8 +589,8 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DeviceActive(ctx context.Context, tx pgx.Tx, p control.Principal) (bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `SELECT true FROM mp_auth_devices WHERE device=$1 AND user_id=$2
-		AND NOT revoked AND ($3::text[] IS NULL OR email_hash=ANY($3))
-		AND ($4::bytea IS NULL OR (access_hash=$4 AND access_expires>now())) FOR SHARE`, p.Device, p.User, s.allowedHashes, p.AccessHash).Scan(&active)
+		AND NOT revoked AND `+memberAccess+`
+		AND ($3::bytea IS NULL OR (access_hash=$3 AND access_expires>now())) FOR SHARE`, p.Device, p.User, p.AccessHash).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

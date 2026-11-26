@@ -77,7 +77,7 @@ type Grant struct {
 }
 
 func (s *Service) grants(ctx context.Context, p Principal, _ *http.Request) (any, error) {
-	rows, err := s.pool.Query(ctx, `SELECT g.resource,r.owner_id,r.device,g.grantee,p.handle,g.actions,g.expires_at,g.max_uses,
+	rows, err := s.pool.Query(ctx, `SELECT g.resource,r.owner_id,r.device,g.grantee,coalesce(p.handle,''),g.actions,g.expires_at,g.max_uses,
         CASE WHEN g.per_action THEN COALESCE(l.used,0) ELSE g.used END,l.limits FROM mp_grants g
         JOIN mp_resources r ON r.id=g.resource JOIN mp_profiles p ON p.user_id=g.grantee
         LEFT JOIN LATERAL (SELECT sum(used)::bigint AS used,
@@ -123,11 +123,15 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 			return bad("choose a friend")
 		}
 		if r.Method == "DELETE" {
-			if _, err := tx.Exec(ctx, `DELETE FROM mp_grants WHERE resource=$1 AND grantee=$2`, res, peer); err != nil {
+			tag, err := tx.Exec(ctx, `DELETE FROM mp_grants WHERE resource=$1 AND grantee=$2`, res, peer)
+			if err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE resource=$1 AND sender=$2 AND status='pending'`, res, peer)
-			return err
+			_, err = tx.Exec(ctx, `UPDATE mp_children SET status='revoked' WHERE resource=$1 AND sender=$2 AND status='pending'`, res, peer)
+			if err != nil || tag.RowsAffected() == 0 {
+				return err
+			}
+			return recordEvent(ctx, tx, peer, "grant.revoked", p.User, res)
 		}
 		a, b := ownerPair(p.User, peer)
 		var ok bool
@@ -143,7 +147,10 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 				return bad("grant contains unsupported action")
 			}
 		}
-		return in.replace(ctx, tx, res, peer)
+		if err := in.replace(ctx, tx, res, peer); err != nil {
+			return err
+		}
+		return recordEvent(ctx, tx, peer, "grant.received", p.User, res)
 	})
 	return nil, err
 }

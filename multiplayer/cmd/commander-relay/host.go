@@ -112,7 +112,7 @@ func serveHost(ctx context.Context, dir string, client *http.Client) (err error)
 	}()
 	err = serveRelay(runCtx, ln, cert, pg.Pool, nc, relaySettings{
 		edge: "host", replicas: 1, mode: "host", name: cfg.Name,
-		identity: identity.Config{AllowedEmails: cfg.PermittedEmails(), Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client},
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client},
 	})
 	if cause := context.Cause(runCtx); cause != nil && ctx.Err() == nil {
 		return errors.Join(err, cause)

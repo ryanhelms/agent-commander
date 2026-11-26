@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,10 +76,12 @@ func TestRelayInfo(t *testing.T) {
 	for _, mode := range []string{"edge", "host"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := relaySettings{mode: mode, name: "Studio", identity: identity.Config{Issuer: "https://issuer.test", ClientID: "desktop"}}
+			var membership atomic.Value
+			membership.Store("open")
 			// A 204 means the request reached the existing protected router.
 			server := relayServer(cert, cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
-			}))
+			}), func(context.Context) (string, error) { return membership.Load().(string), nil })
 			ln := newPipeListener()
 			ts := &httptest.Server{Listener: ln, Config: server, TLS: server.TLSConfig}
 			ts.StartTLS()
@@ -89,7 +92,9 @@ func TestRelayInfo(t *testing.T) {
 				return &http.Client{Transport: tr, Timeout: 5 * time.Second}
 			}
 			anon := client()
-			checkInfo(t, anon, ts.URL, mode, cfg.name, cfg.identity.Issuer, cfg.identity.ClientID)
+			checkInfo(t, anon, ts.URL, mode, cfg.name, cfg.identity.Issuer, cfg.identity.ClientID, "open")
+			membership.Store("invite")
+			checkInfo(t, anon, ts.URL, mode, cfg.name, cfg.identity.Issuer, cfg.identity.ClientID, "invite")
 			for _, req := range []struct{ method, path string }{
 				{"GET", "/ready"}, {"POST", "/v1/auth/challenge"}, {"GET", "/v1/profile"},
 				{"HEAD", "/v1/info"}, {"POST", "/v1/info"}, {"GET", "/v1/info/"},
@@ -123,7 +128,7 @@ func TestRelayInfo(t *testing.T) {
 	}
 }
 
-func checkInfo(t *testing.T, client *http.Client, origin, mode, name, issuer, id string) {
+func checkInfo(t *testing.T, client *http.Client, origin, mode, name, issuer, id, membership string) {
 	t.Helper()
 	res, err := client.Get(origin + "/v1/info")
 	if err != nil {
@@ -134,7 +139,7 @@ func checkInfo(t *testing.T, client *http.Client, origin, mode, name, issuer, id
 	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"version": "1", "mode": mode, "name": name, "issuer": issuer, "clientId": id}
+	want := map[string]string{"version": "1", "mode": mode, "name": name, "issuer": issuer, "clientId": id, "membership": membership}
 	if res.StatusCode != http.StatusOK || !reflect.DeepEqual(info, want) {
 		t.Fatalf("GET /v1/info returned HTTP %d %v, want 200 %v", res.StatusCode, info, want)
 	}
