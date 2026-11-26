@@ -32,11 +32,12 @@ Two commands rebuild the app and reopen it, like hot reload for a web app.
 
 | Command | What it does |
 | --- | --- |
-| `make reload` | Builds once, quits the running app, then opens the new build. Add `RELAY=1` to restart the host-mode relay too. |
-| `make dev` | Watches the Swift and Go sources and runs a reload after every change, until you press Ctrl-C. A change under `multiplayer/` also restarts the relay. |
+| `make reload` | Builds once, quits the running app, then opens the new build. Add `SERVICE=1` to restart the local service (`agentctl serve`) too, and `RELAY=1` to restart the host-mode relay. |
+| `make dev` | Watches the Swift and Go sources and runs a reload after every change, until you press Ctrl-C. A change to the service code (`cmd/`, `internal/`, `harness/`) also restarts the service, and a change under `multiplayer/` also restarts the relay. |
 
 - **A failed build leaves your app alone.** The build runs before the app quits. If it fails, the previous build keeps running and a notification says so.
 - **Running work is kept.** Quitting the app doesn't stop running assignments.
+- **The service outlives the app.** A plain reload keeps the running `agentctl serve`, so Go service changes need `SERVICE=1`. Restarting the service keeps tmux workers running, but can interrupt work the service hosts itself, such as an ACP session.
 - **The relay restarts only if it is installed.** That means you ran `commander-relay host install` on this Mac.
 - **Output is saved.** Each reload adds its build output to `dist/dev-reload.log`.
 - **Install `fswatch` for faster reloads.** `make dev` reacts at once with `brew install fswatch`. Without it, it checks for changes every second.

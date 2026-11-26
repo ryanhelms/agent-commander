@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Hot reload for the native app, like a web dev server.
 #
-#   packaging/dev-reload.sh reload [--relay]   build, quit, relaunch once
+#   packaging/dev-reload.sh reload [--relay] [--service]   build, quit, relaunch once
 #   packaging/dev-reload.sh watch              reload on every source change until Ctrl-C
 #
 # `make reload` and `make dev` call this. The script builds before it quits the app, so a compile
 # error leaves the running copy alone and says so. Changes under multiplayer/ also restart the
-# host-mode relay when its LaunchAgent is installed. Every run's output is appended to
+# host-mode relay when its LaunchAgent is installed. Changes to the Go service (cmd/, internal/,
+# harness/, go.mod) also restart `agentctl serve`, which otherwise outlives the app. Every run's output is appended to
 # dist/dev-reload.log.
 set -euo pipefail
 
@@ -69,6 +70,41 @@ restart_relay() {
     fi
 }
 
+service_pids() {
+    pgrep -f '/agentctl serve$' 2>/dev/null || true
+}
+
+# The local service keeps running when the app quits, so a reload alone keeps the old service
+# code. Stopping it lets the new app start its own bundled copy when it finds the service offline.
+# Workers in tmux keep running; work the service hosts itself (an ACP session) can be interrupted.
+stop_service() {
+    local pids
+    pids="$(service_pids)"
+    if [ -z "$pids" ]; then
+        say "No local service running; the new app will start one"
+        return 0
+    fi
+    say "Stopping the local service (agentctl serve, pid $(echo $pids))"
+    kill -TERM $pids 2>/dev/null || true
+    for _ in $(seq 1 50); do
+        [ -n "$(service_pids)" ] || return 0
+        sleep 0.2
+    done
+    say "The local service did not stop within 10 s"
+    return 1
+}
+
+# Network helpers left behind by the quit app: reparented to launchd and running from an app bundle.
+stop_orphaned_helpers() {
+    local pid
+    for pid in $(pgrep -f 'Contents/MacOS/commander-network' 2>/dev/null || true); do
+        if [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = 1 ]; then
+            say "Stopping a network helper left by the old app (pid $pid)"
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
 # Builds everything the bundle needs without touching the bundle, so the app can keep running.
 prebuild() {
     "$MAKE" cli network relay postgres CONFIG="$CONFIG"
@@ -76,12 +112,12 @@ prebuild() {
 }
 
 reload() {
-    local relay="${1:-0}"
+    local relay="${1:-0}" service="${2:-0}"
     local started
     started="$(date +%s)"
     {
         echo
-        echo "=== reload $(date '+%Y-%m-%d %H:%M:%S') relay=$relay"
+        echo "=== reload $(date '+%Y-%m-%d %H:%M:%S') relay=$relay service=$service"
     } >>"$LOG"
 
     say "Building"
@@ -92,12 +128,20 @@ reload() {
     fi
 
     quit_app
+    stop_orphaned_helpers
 
     # Incremental: the compiled products are fresh, so this copies them into the bundle and signs it.
     if ! "$MAKE" app CONFIG="$CONFIG" 2>&1 | tee -a "$LOG"; then
         say "Bundling failed. Agent Commander is not running. Details: $LOG"
         notify "Bundling failed" "Agent Commander was quit and not reopened. See dist/dev-reload.log."
         return 1
+    fi
+
+    if [ "$service" = 1 ]; then
+        if ! stop_service 2>&1 | tee -a "$LOG"; then
+            say "The new app may connect to the old service. Details: $LOG"
+            notify "Service still running" "The old local service did not stop. See dist/dev-reload.log."
+        fi
     fi
 
     if [ "$relay" = 1 ]; then restart_relay 2>&1 | tee -a "$LOG" || say "The relay restart failed. Details: $LOG"; fi
@@ -149,7 +193,7 @@ watch() {
         say "Watching for changes by polling every second (brew install fswatch for instant events). Ctrl-C to stop."
     fi
     say "Starting with a fresh build"
-    reload 1 || true
+    reload 1 1 || true
     while true; do
         # Changes made during the last build count too, so look before waiting for an event.
         if [ -z "$(changed_since "$stamp")" ]; then
@@ -166,23 +210,32 @@ watch() {
         say "Changed:"
         printf '%s\n' "$changed" | head -10 | sed 's/^/  /'
         local relay=0
+        local service=0
         if printf '%s\n' "$changed" | grep -q '^multiplayer/'; then relay=1; fi
-        reload "$relay" || true
+        if printf '%s\n' "$changed" | grep -Eq '^(cmd|internal|harness)/|^go\.(mod|sum)$'; then service=1; fi
+        reload "$relay" "$service" || true
     done
 }
 
 case "${1:-}" in
     reload)
-        relay=0
-        [ "${2:-}" = "--relay" ] && relay=1
+        relay=0 service=0
+        for arg in "${@:2}"; do
+            case "$arg" in
+                --relay) relay=1 ;;
+                --service) service=1 ;;
+                *) echo "unknown option: $arg" >&2; exit 2 ;;
+            esac
+        done
         [ "${RELAY:-0}" = 1 ] && relay=1
-        reload "$relay"
+        [ "${SERVICE:-0}" = 1 ] && service=1
+        reload "$relay" "$service"
         ;;
     watch)
         watch
         ;;
     *)
-        echo "usage: $0 reload [--relay] | watch" >&2
+        echo "usage: $0 reload [--relay] [--service] | watch" >&2
         exit 2
         ;;
 esac

@@ -9,7 +9,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 - Discover provider sessions in the current workspace, reattach verified inactive workers, and attach a file reference or snapshot to a follow-up.
 - Provide a scoped live ACP source subscription with cursor expiration and recovery.
 - Offer opt-in ACP v2, local peer reuse, negotiated system prompts, scoped MCP-over-ACP and ACP session activities for compatibility testing.
-- Add Restart Agent Commander to the app menu, and `make reload` and `make dev` to rebuild and reopen the app after a source change.
+- Add Restart Agent Commander to the app menu, and `make reload` and `make dev` to rebuild and reopen the app, and optionally restart the local service and relay, after a source change.
 
 ### Changed
 

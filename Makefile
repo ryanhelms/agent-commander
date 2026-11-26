@@ -86,10 +86,11 @@ run:
 	@if [ ! -x "$(MACOS)/AgentCommander" ] || [ ! -f "$(APP)/Contents/Info.plist" ]; then $(MAKE) app; fi
 	open "$(APP)"
 
-# Hot reload: build, quit the running app, relaunch the new build. RELAY=1 also restarts the relay.
+# Hot reload: build, quit the running app, relaunch the new build. RELAY=1 also restarts the relay;
+# SERVICE=1 also restarts the local agentctl service.
 reload:
-	MAKE="$(MAKE)" CONFIG="$(CONFIG)" bash packaging/dev-reload.sh reload $(if $(filter 1,$(RELAY)),--relay)
+	MAKE="$(MAKE)" CONFIG="$(CONFIG)" bash packaging/dev-reload.sh reload $(if $(filter 1,$(RELAY)),--relay) $(if $(filter 1,$(SERVICE)),--service)
 
-# Rebuilds and relaunches on every source change until Ctrl-C. Relay changes restart the relay.
+# Rebuilds and relaunches on every source change until Ctrl-C. Relay and service changes restart them.
 dev:
 	MAKE="$(MAKE)" CONFIG="$(CONFIG)" bash packaging/dev-reload.sh watch
