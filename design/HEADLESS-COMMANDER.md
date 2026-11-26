@@ -41,7 +41,7 @@ Add these assets to each release built by `build.yml`, and list them in `SHA256S
 - `agent-commander-headless-linux-amd64.tar.gz` and `agent-commander-headless-linux-arm64.tar.gz`. Each holds the static `agentctl` binary, the systemd unit template and a `VERSION` file that records the Commander version and the API version.
 - `install.sh`. This is the only part not written in Go, because a new server has no Go binary yet. It is short POSIX `sh` that does four things: detect the architecture, download the archive and `SHA256SUMS`, verify the checksum, and run `agentctl host install`. Everything after that runs in Go.
 
-The workflow also requests a GitHub artifact attestation for each archive and `install.sh` (`actions/attest-build-provenance`). Attestations are optional. GitHub issues them for public repositories, and for private ones only on GitHub Enterprise Cloud, so while the repository is private the step may fail without failing the release. A deploy verifies an attestation with `gh attestation verify` when one exists, and otherwise relies on `SHA256SUMS`.
+The workflow does not request GitHub artifact attestations: GitHub refuses them for private repositories owned by a personal account. Request them with `actions/attest-build-provenance` if the repository becomes public. A deploy verifies an attestation with `gh attestation verify` when one exists, and otherwise relies on `SHA256SUMS`.
 
 `build.yml` builds each binary with `-ldflags "-X agentcommander/internal/buildinfo.Version=TAG"`. `go run ./packaging/headless` checks that each binary is a static Linux executable for its architecture and stamped with the tag, then writes reproducible archives.
 
@@ -81,7 +81,7 @@ agentctl host status | rollback | remove
 `deploy` does these steps in order:
 
 1. Read the release list through the GitHub REST API. Use the user's `gh` login or a token stored in the Keychain. List prereleases, because every release is a prerelease today.
-2. Download the archive for the server's architecture. Verify `SHA256SUMS` and the attestation.
+2. Download the archive for the server's architecture. Verify `SHA256SUMS`, and the attestation when one exists.
 3. Check that the release's API version is compatible with this Mac's app. Refuse an incompatible release unless `--force` is given.
 4. Stream the archive to the server over SSH standard input. Unpack it into `~/.local/share/agent-commander/versions/<version>/`.
 5. Run `agentctl host doctor` on the server. Report what is missing. Do not install system packages without `--install-prerequisites`, which installs git, tmux and curl with apt or dnf. Node, Claude Code and the adapter have their own installers, and `doctor` names them.
@@ -115,7 +115,7 @@ The other Python build scripts (`packaging/*.py`, `multiplayer/deploy/prepare.py
 ## Increments
 
 1. **Headless service on Linux.** `agentctl serve` under a systemd user unit, plus `host install` and `host doctor`. Test it in the Linux Docker host from [ssh-worker.md](verification/ssh-worker.md).
-2. **Release assets.** Headless archives, `install.sh`, checksums and attestations in `build.yml`. Publish one prerelease.
+2. **Release assets.** Headless archives, `install.sh` and checksums in `build.yml`. Publish one prerelease.
 3. **Mac-driven deploy.** `agentctl host releases|deploy|status|rollback|remove`, with the compatibility check and automatic rollback.
 4. **Connect.** The app reaches a headless host through an SSH-forwarded socket and shows it as a host. This includes the frontend design work.
 5. **Relay deploy in Go.** `commander-relay deploy` on the shared `hostkit` packages. Remove `remote.py`.
