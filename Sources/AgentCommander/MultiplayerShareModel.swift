@@ -867,14 +867,14 @@ final class MultiplayerShareModel {
         }
     }
 
-    /// Hands off the task on the tray's own composer, which is then replaced by the hand-off it made.
+    /// Hands off the task on the tray's own composer, then returns to where the composer was
+    /// opened. The hand-off itself is a window page; Live remote work on the Agents tab opens it.
     @discardableResult
     func sendHandoff() -> Task<Void, Never>? {
         guard let tray, case .share(let server, .handoff(let resource)) = tray.route else { return nil }
         return sendHandoff(handoffDraft, to: resource, on: server, then: { row in
             self.handoffDraft = MultiplayerHandoffDraft()
-            // Back still returns to where the composer was opened.
-            self.tray?.go(.share(server, .handoffDetail(request: row.request)), keepingShareTrail: true)
+            if self.tray?.route == .share(server, .handoff(resource: resource)) { self.back() }
         })
     }
 

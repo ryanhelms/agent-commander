@@ -152,9 +152,14 @@ struct MultiplayerAXNode: CustomStringConvertible {
         // Newest first among the runs still going.
         let dates = workers.compactMap(\.at)
         #expect(dates == dates.sorted(by: >) || workers.count != dates.count)
-        // Opening one lands on its hand-off page in the tray.
-        model.share.open(fix)
-        #expect(model.route == .share(Self.home, .handoffDetail(request: "rq-handoff-1")))
+        // Opening one opens its hand-off in the main window; the tray stays where it was.
+        var sent: [CommanderOpenRequest] = []
+        let opener = MultiplayerWindowOpener(open: { sent.append($0) })
+        MultiplayerRemoteWorkerLauncher.open(fix, with: opener)
+        MultiplayerRemoteWorkerLauncher.openList(on: Self.home, with: opener)
+        #expect(sent == [CommanderOpenRequest(place: NetworkPlace.handoffs, server: Self.home, item: .handoff(request: "rq-handoff-1")),
+                         CommanderOpenRequest(place: NetworkPlace.handoffs, server: Self.home)])
+        #expect(model.route == .home)
     }
 
     @Test func readsHandoffsForTheWallWithNoPanelOpen() async throws {
@@ -184,8 +189,8 @@ struct MultiplayerAXNode: CustomStringConvertible {
             ("agents", {}),
             ("people", { model.tab = .people }),
             ("grant", { model.tab = .agents; share.startGrant(on: Self.home, handle: "fixture-sam", resourceID: "res-2") }),
+            // A page that moved to the main window is its open-in-window row alone.
             ("directory", { share.open(.directory, on: Self.home) }),
-            ("thread", { share.open(.thread(request: "rq-handoff-1", title: "Fix flaky reconnect test"), on: Self.home) }),
         ]
         for (name, open) in pages {
             model.go(.home)
@@ -214,12 +219,20 @@ struct MultiplayerAXNode: CustomStringConvertible {
                     #expect(found.count == 1 && found.first?.value.isEmpty == false, "\(picker)\n\(dump)")
                 }
                 #expect(!nodes.contains { $0.role == "AXMenuButton" }, "\(dump)")
-            case "thread":
-                let comments = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).hasPrefix("sam-agent, agent, ") }
-                #expect(comments.count == 1, "\(dump)")
+            case "directory":
+                #expect(nodes.contains { $0.role == "AXButton" && $0.label == "Open Directory in Agent Commander" }, "\(dump)")
+                #expect(!nodes.contains { $0.label.contains("sam-agent") }, "\(dump)")
             default: break
             }
         }
+        // The thread is a window page. Its view, as the window draws it, reads a comment as one text.
+        share.open(.thread(request: "rq-handoff-1", title: "Fix flaky reconnect test"), on: Self.home)
+        await model.settle()
+        let thread = MultiplayerThreadPage(title: "Fix flaky reconnect test", state: share.thread, draft: .constant(""),
+                                           now: model.currentDate(), onRetry: {})
+        let nodes = try await MultiplayerAX.nodes(of: thread.environment(\.theme, .console))
+        let comments = nodes.filter { $0.role == "AXStaticText" && ($0.label + $0.value).hasPrefix("sam-agent, agent, ") }
+        #expect(comments.count == 1, "\(nodes.map(\.description).joined(separator: "\n"))")
     }
 
     // MARK: Pictures
@@ -230,9 +243,6 @@ struct MultiplayerAXNode: CustomStringConvertible {
         let (model, defaults, suite) = try await Self.fixtureModel("render")
         defer { model.close(); defaults.removePersistentDomain(forName: suite) }
         let share = model.share
-        share.open(.handoffDetail(request: "rq-handoff-1"), on: Self.home)
-        if let row = share.handoff("rq-handoff-1", on: Self.home) { await share.check(row, on: Self.home, result: true)?.value }
-        try await MultiplayerRenderTests.write(model, "handoff-report-markdown", to: folder)
 
         // The wall's remote workers, as the cockpit draws them under the local tiles.
         let wall = RemoteWorkerGroup(workers: share.remoteWorkers, now: model.currentDate(), onOpen: { _ in }, onOpenAll: {})

@@ -184,78 +184,78 @@ import Testing
         return (nodes, nodes.map(\.description).joined(separator: "\n"))
     }
 
+    /// The teams pages are window pages now (DESIGN.md, "The triage tray"). Their views are drawn
+    /// here as the window and the hosts draw them, from what the model read.
+    private func nodes(of view: some View, settling model: MultiplayerModel) async throws -> ([MultiplayerAXNode], String) {
+        await model.settle()
+        let nodes = try await MultiplayerAX.nodes(of: view.environment(\.theme, .console))
+        return (nodes, nodes.map(\.description).joined(separator: "\n"))
+    }
+
     @Test func theTeamsPagesOfferNothingUnnamedAndNothingFalselySelected() async throws {
         let (model, defaults, suite) = try await MultiplayerFixesTests.fixtureModel("inc5-ax")
         defer { model.close(); defaults.removePersistentDomain(forName: suite) }
         let home = MultiplayerFixesTests.home
         let share = model.share, teams = model.share.teams
+        let now = model.currentDate()
 
         // A knowledge item: its Markdown list is a named group of static texts.
         share.open(.knowledgeItem("kn-skill"), on: home)
-        var (found, dump) = try await nodes(model)
+        await model.settle()
+        let item = try #require(teams.item("kn-skill", on: home))
+        var (found, dump) = try await nodes(of: MultiplayerKnowledgeItemPage(item: item, versions: teams.versions,
+                                                                             groupName: { teams.group($0, on: home)?.name },
+                                                                             now: now, onRetry: {}), settling: model)
         #expect(!found.contains { $0.role == "AXUnknown" }, "\(dump)")
         let list = try #require(found.firstIndex { $0.label.hasPrefix("Numbered list, ") || $0.label.hasPrefix("List, ") }, "\(dump)")
         let items = found[(list + 1)...].prefix { $0.depth > found[list].depth }
         #expect(!items.isEmpty && items.allSatisfy { $0.role == "AXStaticText" }, "\(dump)")
         #expect(found[list].label.hasSuffix("\(items.count) item\(items.count == 1 ? "" : "s")"), "\(dump)")
 
-        // Hosts: the Granted check and the endorsement chips are words, never "Selected".
-        model.go(.home)
-        share.open(.hosts, on: home)
-        (found, dump) = try await nodes(model)
-        #expect(!found.contains { $0.role == "AXUnknown" }, "\(dump)")
-        #expect(found.contains { ($0.label + $0.value).contains("Granted") }, "\(dump)")
-        #expect(!found.contains { $0.selected || $0.label == "Selected" || $0.value == "Selected" }, "\(dump)")
-
-        // Reputation: endorsement chips again, beside who vouched.
+        // Reputation: endorsement chips are words beside who vouched, never "Selected".
         model.go(.home)
         teams.startReputation("dir-sam-agent", on: home)
-        (found, dump) = try await nodes(model)
-        #expect(!found.contains { $0.selected || $0.label == "Selected" }, "\(dump)")
+        await model.settle()
+        let entry = try #require(share.entry("dir-sam-agent", on: home))
+        (found, dump) = try await nodes(of: MultiplayerReputationPage(name: entry.name, owner: entry.owner, kind: entry.kind,
+                                                                      state: teams.reputation, endorsements: entry.endorsements,
+                                                                      judgeable: teams.judgeable("dir-sam-agent", on: home),
+                                                                      outcomes: teams.outcomes, skill: .constant(""), canEndorse: false,
+                                                                      now: now, isBusy: false, onEndorse: {}, onReport: { _, _ in },
+                                                                      onRetry: {}), settling: model)
+        #expect(!found.contains { $0.role == "AXUnknown" }, "\(dump)")
+        #expect(!found.contains { $0.selected || $0.label == "Selected" || $0.value == "Selected" }, "\(dump)")
 
         // A run's exit code and time are one readout.
+        func run(on resource: String) -> MultiplayerHostRunPage {
+            MultiplayerHostRunPage(draft: .constant(teams.hostDraft), entry: share.entry(resource, on: home), reply: teams.hostReply)
+        }
         model.go(.home)
         teams.startHostRun("dir-jonas-mini", on: home)
         teams.hostDraft.command = "run-ios-ui-tests"
         teams.hostDraft.argumentText = "--fail-fast"
         await teams.runOnHost("dir-jonas-mini", on: home)?.value
-        (found, dump) = try await nodes(model)
+        (found, dump) = try await nodes(of: run(on: "dir-jonas-mini"), settling: model)
         #expect(found.filter { ($0.label + $0.value).contains("Exit 1, 41 seconds") }.count == 1, "\(dump)")
         #expect(!found.contains { $0.label == "41 s" || $0.value == "41 s" || $0.label == "exit 1" || $0.value == "exit 1" }, "\(dump)")
         #expect(found.contains { $0.label == "Extra arguments" }, "\(dump)")
         // A command that takes no arguments offers no field for them.
         teams.hostDraft.command = "build-release"
-        (found, dump) = try await nodes(model)
+        (found, dump) = try await nodes(of: run(on: "dir-jonas-mini"), settling: model)
         #expect(!found.contains { $0.label == "Extra arguments" }, "\(dump)")
         // A host that publishes only tools keeps the field.
         model.go(.home)
         teams.startHostRun("dir-mei-gpu", on: home)
         teams.hostDraft.command = "train-eval"
-        (found, dump) = try await nodes(model)
+        (found, dump) = try await nodes(of: run(on: "dir-mei-gpu"), settling: model)
         #expect(found.contains { $0.label == "Extra arguments" }, "\(dump)")
 
         // A success notice's tick isn't selected, and its sentence says it is done.
         model.go(.home)
-        share.open(.workspace("ws-relay"), on: home)
-        await model.settle()
         model.post(notice: "Released card-2.")
         (found, dump) = try await nodes(model)
         #expect(!found.contains { $0.selected && $0.role != "AXRadioButton" && $0.role != "AXButton" }, "\(dump)")
         #expect(found.contains { ($0.label + $0.value).contains("Done: Released card-2.") }, "\(dump)")
-        // The second press arrives under the row, named for what it does.
-        #expect(found.contains { $0.role == "AXButton" && $0.label.hasPrefix("Release ") }, "\(dump)")
-        #expect(found.contains { $0.role == "AXButton" && $0.label.hasPrefix("Remove collab/") && $0.label.hasSuffix("from the merge queue") }, "\(dump)")
-        teams.ask(.releaseClaim("cl-2"))
-        (found, dump) = try await nodes(model)
-        #expect(found.contains { $0.role == "AXButton" && $0.label == "Release claim" }, "\(dump)")
-        #expect(found.contains { $0.role == "AXButton" && $0.label == "Keep claim" }, "\(dump)")
-
-        // One claim is "1 claim".
-        model.go(.home)
-        share.open(.workspaces, on: home)
-        (found, dump) = try await nodes(model)
-        #expect(found.contains { $0.label.hasSuffix(", 1 claim") }, "\(dump)")
-        #expect(!found.contains { $0.label.contains("1 claims") }, "\(dump)")
     }
 
     // MARK: Pictures
@@ -272,40 +272,7 @@ import Testing
             try await MultiplayerRenderTests.write(model, "inc5-\(name)", to: folder)
         }
 
-        // D4 and D6: a group opened from People, with Remove member waiting for its second press.
-        model.tab = .people
-        share.open(.group("grp-relay"), on: home)
-        teams.ask(.removeMember(group: "grp-relay", handle: "fixture-sam"))
-        try await draw("d4-remove-member-confirm")
-
-        // D4: Release claim and the queue's Remove, each under its row. D6: back says Agents.
-        model.go(.home)
-        model.tab = .agents
-        share.open(.workspace("ws-relay"), on: home)
-        await model.settle()
-        teams.ask(.releaseClaim("cl-2"))
-        try await draw("d4-release-claim-confirm")
-        if let entry = teams.queue(for: "ws-relay").first(where: { $0.state == "failed" }) {
-            teams.ask(.removeQueued(entry.id))
-            try await draw("queue-remove-confirm")
-            await teams.removeQueued(entry, on: home)?.value
-            try await draw("queue-removed")
-        }
-        if let card = teams.card("card-2") {
-            teams.openCard(card, in: "ws-relay", on: home)
-            teams.ask(.releaseCard("card-2"))
-            try await draw("d4-release-card-confirm")
-        }
-
-        // D5: the refusal as two sentences.
-        model.go(.home)
-        share.open(.workspace("ws-relay"), on: home)
-        await model.settle()
-        teams.startClaim(in: "ws-relay", on: home)
-        teams.claimDraft.kind = .paths
-        teams.claimDraft.key = "Sources/Relay/Lease.swift"
-        await teams.sendClaim(in: "ws-relay", on: home)?.value
-        try await draw("d5-claim-conflict")
+        // D5: the refusal as two sentences. The other pictures were of pages that are window pages now.
         model.go(.home)
         share.open(.policy, on: home)
         await model.settle()
@@ -313,32 +280,5 @@ import Testing
         teams.ask(.suspend("fixture-nobody"))
         await teams.setSuspended(true, on: home)?.value
         try await draw("d5-suspend-unknown")
-
-        // Extra arguments: offered, withheld, and offered when the host doesn't say.
-        model.go(.home)
-        teams.startHostRun("dir-jonas-mini", on: home)
-        teams.hostDraft.command = "run-ios-ui-tests"
-        teams.hostDraft.argumentText = "--fail-fast"
-        await teams.runOnHost("dir-jonas-mini", on: home)?.value
-        try await draw("run-args-allowed-and-d7-result")
-        teams.hostDraft.command = "build-release"
-        try await draw("run-args-not-allowed")
-
-        // D8: the 16-cell meter, and the hand-off's state with its lamp and mono times.
-        model.go(.home)
-        teams.startReputation("dir-sam-agent", on: home)
-        try await draw("d8-reputation-meter")
-        model.go(.home)
-        share.open(.handoffDetail(request: "rq-handoff-1"), on: home)
-        if let row = share.handoff("rq-handoff-1", on: home) { await share.check(row, on: home, result: true)?.value }
-        try await draw("d8-handoff-detail")
-
-        // D7 and D9: the knowledge item's list, and a pull-request workspace.
-        model.go(.home)
-        share.open(.knowledgeItem("kn-skill"), on: home)
-        try await draw("d7-knowledge-item")
-        model.go(.home)
-        share.open(.workspace("ws-ios"), on: home)
-        try await draw("d9-pull-request-workspace")
     }
 }

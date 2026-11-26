@@ -433,7 +433,8 @@ enum MultiplayerShareFixture {
         #expect(!model.share.canSendHandoff)
         model.share.handoffDraft.task = "Make it pass."
         await model.share.sendHandoff()?.value
-        #expect(model.route == .share("s-home", .handoffDetail(request: "rq-1")))
+        // The hand-off is a window page: the composer closes and the tray is back where it was.
+        #expect(model.route == .home)
         let row = try #require(model.share.handoff("rq-1", on: "s-home"))
         #expect(row.run == "run-1" && model.share.handoffState(row).title == "Started")
         #expect(model.share.handoffTarget(row, on: "s-home") == "fixture-bo’s bo-agent")

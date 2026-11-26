@@ -358,7 +358,9 @@ enum MultiplayerTeamsFixture {
         teams.workspaceDraft.goal = "Survive renewals"
         teams.workspaceDraft.repository = "github.com/example/relay"
         await teams.createWorkspace(on: home)?.value
-        #expect(model.route == .share(home, .workspace("ws-1")))
+        // The workspace is a window page: the composer closes and the tray is back where it was.
+        #expect(model.route == .home)
+        model.share.open(.workspace("ws-1"), on: home)
         #expect(helper.relays("POST").first { $0.path == "/v1/workspaces" }?.body?["integration"] == .string("queue"))
 
         teams.startClaim(in: "ws-1", on: home)
