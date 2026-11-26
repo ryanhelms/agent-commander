@@ -143,6 +143,12 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		}
 	}
 	result["resources"], result["shared"] = own, shared
+	var dir struct {
+		Directory json.RawMessage `json:"directory"`
+	}
+	if a.remote(ctx, s, "GET", "/v1/resources", nil, &dir) == nil && len(dir.Directory) > 0 {
+		result["directory"] = dir.Directory
+	}
 	var grants struct{ Grants []control.Grant }
 	if e = a.remote(ctx, s, "GET", "/v1/grants", nil, &grants); e != nil {
 		return nil, e
