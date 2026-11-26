@@ -17,7 +17,7 @@ Sources of truth in code:
 | Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
 | Themes | `themes` in `design/system/tokens.json`, `Theme` in `ThemeTokens.swift` |
 
-The app has two themes. **Console** is the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
+The app has two themes. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
@@ -124,7 +124,6 @@ Section headings read like `Needs you 3`. The name is in secondary ink and the c
 | Tray width | 400 pt |
 | Page inset | 24 pt |
 | Table row height | 34 pt |
-| Sidebar width | 224 pt |
 | Sidebar row height | 28 pt |
 | Mode rail width | 48 pt |
 | Mode rail cell | 32 pt square, 18 pt icon |
@@ -236,7 +235,7 @@ The pages are watch view, compare (fan-out columns), consult, hand-off composer,
 
 The hand-off detail shows its state as a state label (lamp plus word, such as "Done") and its Sent and Checked times in `fingerprint`.
 
-The main window adds three sidebar organisms, each a prototype pending the user's pick: a grouped sidebar, a mode rail with a context list, and a Needs you sidebar. Two will be dropped once one is chosen. It also adds the Needs you row.
+The main window adds the mode rail with a context list (the user's choice of sidebar) and the Needs you row.
 
 A Needs you row is an origin cell, a hairline, the request (title in `name` with its kind tag, one or two lines in `sub`), a clock label and a verb strip. Rows share one panel and are ruled off by hairlines.
 
@@ -289,7 +288,7 @@ The tray keeps its own versions of these:
 - **Header:** title, then a one-line state summary, then a single trailing icon action. On a page, Back names where it returns: the tab the page was opened from (Agents, Network or People), the parent page, or the server.
 - **Telemetry strip:** a status strip of readouts directly under the header.
 - **Places:** a tab bar or a sidebar of places. Each place shows a count. A sidebar is docked: a `well` against the window's leading edge with a hairline against the canvas. Its groups are ruled off by hairlines and headed in `heading`. Places that are always needed (Hosts, Settings) sit at the foot under a hairline.
-- **Mode rail** (prototype, pending the user's pick): a 48 pt rail of mode cells with Settings at the foot, a hairline, then a 196 pt context list headed by the mode's name in `title` with its hot count. The context list holds every page of the mode.
+- **Mode rail:** the main window's navigation. A 48 pt rail of mode cells with Settings at the foot, a hairline, then a 196 pt context list headed by the mode's name in `title` with its hot count. The context list holds every page of the mode.
 - **Needs you first:** the inbox cell is pinned above the groups. The queues it stands in for (Attention, Approvals, Friend requests) are not listed. A count is never shown twice: a total that includes the inbox leaves those queues out.
 - **Window toolbar:** the app's name and a breadcrumb at the leading edge; toolbar readouts at the trailing edge. Presence moves to the sidebar footer where the sidebar has a profile row.
 - **Body:** stacked bands. Each band has a heading with a count and at most one action, and the band's rows follow.
