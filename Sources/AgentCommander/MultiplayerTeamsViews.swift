@@ -700,6 +700,11 @@ struct MultiplayerGroupPage: View {
 
     private var isOwner: Bool { group.isOwned(by: handle) }
 
+    /// What deleting a group takes with it. One member takes the singular verb.
+    static func deleteQuestion(_ group: MultiplayerGroup) -> String {
+        "Delete \(group.name.multiplayerDisplay)? Its \(group.memberTitle) \(group.members.count == 1 ? "loses" : "lose") every grant made to the group."
+    }
+
     var body: some View {
         MultiplayerBand {
             VStack(alignment: .leading, spacing: Space.s) {
@@ -712,7 +717,7 @@ struct MultiplayerGroupPage: View {
                 teamsNote(isOwner ? "A grant to this group reaches every member. People you add later get it, and people you remove lose it."
                                   : "\(group.owner.multiplayerDisplay) owns this group and decides who is in it.")
                 if confirmingDelete {
-                    MultiplayerInlineConfirm(message: "Delete \(group.name.multiplayerDisplay)? Its \(group.memberTitle) lose every grant made to the group.",
+                    MultiplayerInlineConfirm(message: Self.deleteQuestion(group),
                                              keepTitle: "Keep group", confirmTitle: "Delete group", isBusy: isBusy,
                                              onCancel: onCancelDelete, onConfirm: onConfirmDelete)
                 }
@@ -1459,6 +1464,14 @@ struct MultiplayerKnowledgeForm: View {
     let refusal: String?
     @FocusState private var nameFocused: Bool
 
+    static let secretTitle = "Not shared: a secret was found"
+    static let secretAdvice = "Whoever installs the item fills ${NAME} from their own Keychain. Secrets never travel."
+
+    /// The secret refusal as VoiceOver reads it: what happened, why, and what to do instead.
+    static func secretLabel(_ problem: String) -> String {
+        [secretTitle, problem, secretAdvice].map(MultiplayerSentence.sentence).joined(separator: " ")
+    }
+
     var body: some View {
         if let problem = draft.secretProblem ?? refusal {
             MultiplayerBand {
@@ -1466,15 +1479,19 @@ struct MultiplayerKnowledgeForm: View {
                     HStack(alignment: .top, spacing: Space.s) {
                         MultiplayerLamp(kind: .error).padding(.top, 3)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Not shared: a secret was found").font(MultiplayerTheme.heading).foregroundStyle(MultiplayerTheme.failure)
+                            Text(Self.secretTitle).font(MultiplayerTheme.heading).foregroundStyle(MultiplayerTheme.failure)
                             Text(problem).font(.system(size: 12)).foregroundStyle(MultiplayerTheme.foreground)
                                 .fixedSize(horizontal: false, vertical: true)
-                            Text("Whoever installs the item fills ${NAME} from their own Keychain. Secrets never travel.")
+                            Text(Self.secretAdvice)
                                 .font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .accessibilityElement(children: .combine)
+                    // One static text with the whole refusal: the lamp, the heading and the two
+                    // sentences are not separate elements, and the well is never an empty one.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isStaticText)
+                    .accessibilityLabel(Self.secretLabel(problem))
                 }
             }
             .multiplayerArriving()
