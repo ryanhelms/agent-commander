@@ -59,18 +59,23 @@ All of these live in `agentctl`, under one `host` command group. Each one runs o
 
 ```sh
 agentctl host releases                      # list GitHub releases with headless assets
-agentctl host deploy ops@server             # install or upgrade to the latest release
+agentctl host deploy ops@server             # install or upgrade to the newest release
 agentctl host deploy ops@server --version v0.2.0-pilot.3
-agentctl host status ops@server             # version, service state, API version, prerequisites
+agentctl host deploy ops@server --archive FILE --sums SHA256SUMS   # a local build
+agentctl host status ops@server             # version, service state, API version, linger
 agentctl host rollback ops@server           # switch back to the previous installed version
-agentctl host remove ops@server             # stop and remove the unit; keep the state directory
+agentctl host remove ops@server             # stop and remove the unit; keep versions and state
 ```
 
-These commands run on the server itself. `install.sh` calls the first one:
+SSH options pass through as `--ssh-port N`, `-i KEY`, `-F CONFIG` and `-o NAME=VALUE`. `--repo` and `AGENT_COMMANDER_REPO` choose another repository. `--mirror` and `AGENT_COMMANDER_RELEASE_MIRROR` read releases from a directory or URL laid out as `releases.json` plus `TAG/ASSET`, for offline installs and tests.
+
+These commands run on the server itself. `install.sh` and `deploy` call them:
 
 ```sh
-agentctl host install [--version V]         # install from the local archive and start the unit
-agentctl host doctor                        # check tmux, Node, Claude Code, the ACP adapter and the Claude login
+agentctl host install [--source FILE --version V] [--sudo-linger]   # install and start the unit
+agentctl host doctor                        # check tmux, git, Node, Claude Code, the ACP adapter and the Claude sign-in
+agentctl host version                       # this binary's version and API version
+agentctl host status | rollback | remove
 ```
 
 `deploy` does these steps in order:
@@ -79,9 +84,9 @@ agentctl host doctor                        # check tmux, Node, Claude Code, the
 2. Download the archive for the server's architecture. Verify `SHA256SUMS` and the attestation.
 3. Check that the release's API version is compatible with this Mac's app. Refuse an incompatible release unless `--force` is given.
 4. Stream the archive to the server over SSH standard input. Unpack it into `~/.local/share/agent-commander/versions/<version>/`.
-5. Run `agentctl host doctor` on the server. Report what is missing. Do not install system packages without `--install-prerequisites`.
-6. Switch the `current` link to the new version, restart the unit, and wait for the service to report healthy.
-7. If it is not healthy, switch back to the previous version and report the failure.
+5. Run `agentctl host doctor` on the server. Report what is missing. Do not install system packages without `--install-prerequisites`, which installs git, tmux and curl with apt or dnf. Node, Claude Code and the adapter have their own installers, and `doctor` names them.
+6. Have the installed `agentctl` (or the new one on a first install) run `host install --source NEW --version V`. It switches the `current` link, restarts the unit and waits for the service to report the new version.
+7. If it is not healthy, it switches back to the previous version, and `deploy` reports the failure.
 
 Each step reports a result, the same way the tray's **Add server** check reports DNS, TCP, TLS, relay and sign-in. The app can then show the steps as they run.
 
