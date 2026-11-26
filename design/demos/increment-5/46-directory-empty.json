@@ -1,0 +1,7 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/directory?q=zzzz-none"}, "response": {
+ "data": {
+  "handles": [],
+  "resources": []
+ },
+ "ok": true
+}}

@@ -1,0 +1,11 @@
+{"verb": "relay", "request": {"method":"PUT","path":"/v1/workspaces/689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928/cards/9c18b178da00ef6a2c14299969c78a0ce4866f3085d891fd","body":{"state":"claimed","assignee":"ryan/board-agent"}}, "response": {
+ "data": {
+  "assignee": "ryan/board-agent",
+  "body": "As the MCP tool claims it",
+  "id": "9c18b178da00ef6a2c14299969c78a0ce4866f3085d891fd",
+  "result": "",
+  "state": "claimed",
+  "title": "Board-op card"
+ },
+ "ok": true
+}}

@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"POST","path":"/v1/outcomes","body":{"resource":"no-such-resource","request":"rq-x","accepted":true}}, "response": {
+ "error": "relay HTTP 404: not found",
+ "ok": false
+}}

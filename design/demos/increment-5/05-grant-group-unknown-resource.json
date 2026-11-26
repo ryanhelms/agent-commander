@@ -1,0 +1,4 @@
+{"verb": "grant", "request": {"resource":"no-such-resource","group":"bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070","actions":["agent.ask"]}, "response": {
+ "error": "invalid request",
+ "ok": false
+}}

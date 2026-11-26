@@ -1,0 +1,4 @@
+{"verb": "knowledge-install", "request": {"item":{"kind":"mcp","name":"x","content":"{}"}}, "response": {
+ "error": "choose where to save this item",
+ "ok": false
+}}

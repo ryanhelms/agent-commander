@@ -1,0 +1,9 @@
+{"verb": "knowledge-install", "request": {"item":{"kind":"mcp","name":"demo5-gh-mcp","content":"{\"command\":\"gh-mcp\",\"env\":{\"GITHUB_TOKEN\":\"${DEMO5_GH_TOKEN}\"}}"},"destination":"/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/install/gh-mcp.json"}, "response": {
+ "data": {
+  "installed": "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-commander-network-f774d6/f09a39f9-b47e-42c9-a672-f65a521d28ac/scratchpad/demo5/install/gh-mcp.json",
+  "missing": [
+   "DEMO5_GH_TOKEN"
+  ]
+ },
+ "ok": true
+}}

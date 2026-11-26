@@ -1,0 +1,16 @@
+{"verb": "groups", "request": {}, "response": {
+ "data": {
+  "groups": [
+   {
+    "id": "bc54dfc46817fe34d636ac4444f26f99ad5f04a7acf6c070",
+    "members": [
+     "ryan"
+    ],
+    "name": "demo5-team",
+    "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+    "ownerHandle": "ryan"
+   }
+  ]
+ },
+ "ok": true
+}}

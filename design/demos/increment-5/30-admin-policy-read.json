@@ -1,0 +1,12 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/admin/policy"}, "response": {
+ "data": {
+  "directory": true,
+  "knowledgeDefault": "private",
+  "knowledgeWidest": "server",
+  "maxBudgetTokens": 0,
+  "maxGrantDays": 0,
+  "reputationVisibility": "owner",
+  "retentionDays": 30
+ },
+ "ok": true
+}}

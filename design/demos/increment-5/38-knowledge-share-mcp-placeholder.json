@@ -1,0 +1,13 @@
+{"verb": "knowledge-share", "request": {"item":{"kind":"mcp","name":"demo5-gh-mcp","content":"{\"command\":\"gh-mcp\",\"env\":{\"GITHUB_TOKEN\":\"${DEMO5_GH_TOKEN}\"}}","visibility":"private"}}, "response": {
+ "data": {
+  "content": "{\"command\":\"gh-mcp\",\"env\":{\"GITHUB_TOKEN\":\"${DEMO5_GH_TOKEN}\"}}",
+  "createdAt": "2026-11-25T21:09:03.850231-05:00",
+  "id": "c1f5631c80edd9fd06d08438bed796c9fce651beec106fbf",
+  "kind": "mcp",
+  "name": "demo5-gh-mcp",
+  "owner": "b66508a9844d42d899ac57556e52c766df1a23001dd599362f0e011d0b82684a",
+  "version": 1,
+  "visibility": "private"
+ },
+ "ok": true
+}}

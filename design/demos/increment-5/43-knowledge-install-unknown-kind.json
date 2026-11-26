@@ -1,0 +1,4 @@
+{"verb": "knowledge-install", "request": {"item":{"kind":"tool","name":"x","content":"y"}}, "response": {
+ "error": "unknown knowledge kind",
+ "ok": false
+}}

@@ -1,0 +1,4 @@
+{"verb": "relay", "request": {"method":"GET","path":"/v1/reputation/no-such-resource"}, "response": {
+ "error": "relay HTTP 404: not found",
+ "ok": false
+}}

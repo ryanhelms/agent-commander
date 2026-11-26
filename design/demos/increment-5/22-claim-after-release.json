@@ -1,0 +1,10 @@
+{"verb": "claim", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928","kind":"paths","key":"multiplayer/internal/device/queue.go","holder":"ryan/other-agent"}, "response": {
+ "data": {
+  "expiresAt": "2026-11-25T21:19:33.773543-05:00",
+  "holder": "ryan/other-agent",
+  "id": "d96b7913bf2a83761a97afc74c3732e428afdc0a0af0e317",
+  "key": "multiplayer/internal/device/queue.go",
+  "kind": "paths"
+ },
+ "ok": true
+}}

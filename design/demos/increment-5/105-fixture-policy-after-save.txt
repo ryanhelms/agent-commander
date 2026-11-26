@@ -1,0 +1,1 @@
+{'knowledgeDefault': 'private', 'knowledgeWidest': 'server', 'reputationVisibility': 'server', 'directory': True, 'maxGrantDays': 30, 'maxBudgetTokens': 0, 'retentionDays': 90}

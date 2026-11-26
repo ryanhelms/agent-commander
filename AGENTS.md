@@ -16,6 +16,14 @@ Use Claude Opus for every new Commander-managed Claude session and project Claud
 
 Keep all design tokens, components, fixtures and assets in this repository. The repository named `design-system` is a separate project.
 
+## Using this Mac
+
+Any session or agent may use this Mac whenever the work needs it, without asking first. This includes Computer Use, accessibility automation, AppleScript, keyboard and mouse input, screenshots, and launching and driving apps, the user's live Agent Commander among them. It also includes toggling system settings for a test.
+
+- Restore any system setting you change, and say in your report what you changed and restored.
+- Coordinate a quit or relaunch of the user's live app with them first, as described under Native UI.
+- Report which windows you drove, so other sessions' demos are not confused by it.
+
 ## Native UI
 
 Use the primary checkout’s `dist/Agent Commander.app` for the user-facing cockpit. Its name is **Agent Commander** and its bundle identifier is `local.agentcommander.cockpit`. Run `make run` in that checkout to build it on first use or reopen the existing bundle through Launch Services. Use the same app for interactive QA and session demos. Coordinate an explicit quit and reopen before rebuilding a running app or changing its launch arguments or environment. Preserve the developer’s chosen `CODE_SIGN_IDENTITY` for subsequent builds. Use headless fixtures for independent verification while the user is working in Commander.

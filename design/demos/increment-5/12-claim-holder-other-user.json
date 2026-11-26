@@ -1,0 +1,4 @@
+{"verb": "claim", "request": {"workspace":"689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928","kind":"issue","key":"#43","holder":"someone-else/agent"}, "response": {
+ "error": "relay HTTP 403: access denied",
+ "ok": false
+}}

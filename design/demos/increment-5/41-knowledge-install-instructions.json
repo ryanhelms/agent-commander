@@ -1,0 +1,6 @@
+{"verb": "knowledge-install", "request": {"item":{"kind":"instructions","name":"demo5-style","content":"Use plain language."}}, "response": {
+ "data": {
+  "content": "Use plain language."
+ },
+ "ok": true
+}}

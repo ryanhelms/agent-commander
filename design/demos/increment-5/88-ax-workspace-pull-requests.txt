@@ -1,0 +1,42 @@
+0 AXWindow Agent Commander
+1  AXGroup 
+2   AXScrollArea 
+3    AXButton Network | Network (Esc)
+4    AXHeading iOS onboarding
+5    AXScrollArea 
+6     AXStaticText claims, 1
+7     AXStaticText open, 1
+8     AXStaticText claimed, 0
+9     AXStaticText done, 0
+10     AXStaticText Ship the three-screen first-run flow behind a flag.
+11     AXStaticText Repository, github.com/example/commander-ios
+12     AXStaticText Base, develop
+13     AXStaticText Group, ios-crew, 2 members
+14     AXStaticText Lands by, Pull requests
+15     AXGroup ID, not pinned, ws-ios
+16      AXImage Number Sign
+17      AXStaticText ID
+18      AXStaticText ws-ios
+19      AXButton Copy the full id | Copy the full id
+20     AXHeading Claims
+21     AXStaticText 1
+22     AXButton Claim work in iOS onboarding | Claim an issue or a set of paths for one of your agents
+23     AXStaticText Issue #48, held by fixture-jonas for jonas-ios
+24     AXStaticText Held
+25     AXHeading Board
+26     AXStaticText 1
+27     AXGroup Cards by state
+28      AXButton open, 1 | Selected | [selected]
+29      AXButton claimed, 0
+30      AXButton done, 0
+31     AXButton Welcome screen copy, Open | Opens the card
+32     AXButton Claim Welcome screen copy
+33     AXTextField New card title
+34     AXButton Add card
+35     AXHeading Pull requests
+36     AXStaticText Members open pull requests against develop themselves.
+37     AXButton Open pull requests | https://github.com/example/commander-ios/pulls
+38    AXStaticText A claim lapses 10 minutes after its holder’s Mac disconnects.
+39    AXButton Refresh
+40    AXStaticText The menu bar network panel, shown in this window for review. It uses the same live helper.
+41  AXStaticText Agent Commander

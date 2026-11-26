@@ -1,0 +1,11 @@
+{"verb": "relay", "request": {"method":"POST","path":"/v1/workspaces/689fb5bb5cbbd4017cd8aa7bdc0c778140f2cff351454928/cards","body":{"title":"Demo card","body":"Check the board"}}, "response": {
+ "data": {
+  "assignee": "",
+  "body": "Check the board",
+  "id": "0d488b4abebbfc49fa0e5838f1929f095c804616a85766e1",
+  "result": "",
+  "state": "open",
+  "title": "Demo card"
+ },
+ "ok": true
+}}
