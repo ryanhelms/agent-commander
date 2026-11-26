@@ -10,7 +10,7 @@ PG_FORMULA ?= postgresql@17
 # Resolves the agent-acp SDK checkouts from any checkout or worktree.
 SDK_GOWORK := $(shell sh packaging/sdk-workspace.sh)
 
-.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-multiplayer-docker smoke run
+.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-multiplayer-docker smoke run reload dev
 
 app: cli network relay postgres
 	swift build -c $(CONFIG) --product AgentCommander
@@ -85,3 +85,11 @@ smoke:
 run:
 	@if [ ! -x "$(MACOS)/AgentCommander" ] || [ ! -f "$(APP)/Contents/Info.plist" ]; then $(MAKE) app; fi
 	open "$(APP)"
+
+# Hot reload: build, quit the running app, relaunch the new build. RELAY=1 also restarts the relay.
+reload:
+	MAKE="$(MAKE)" CONFIG="$(CONFIG)" bash packaging/dev-reload.sh reload $(if $(filter 1,$(RELAY)),--relay)
+
+# Rebuilds and relaunches on every source change until Ctrl-C. Relay changes restart the relay.
+dev:
+	MAKE="$(MAKE)" CONFIG="$(CONFIG)" bash packaging/dev-reload.sh watch

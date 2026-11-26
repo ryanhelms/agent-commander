@@ -26,7 +26,24 @@ make run
 
 **Agent Commander → Settings… → Allow only one instance** is on by default for each macOS user. Launching another copy brings the existing cockpit forward. To open a separate copy deliberately, turn the setting off and use `open -n "dist/Agent Commander.app"`. macOS remembers the preference between launches.
 
-To install source changes, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+### Reload after a change
+
+Two commands rebuild the app and reopen it, like hot reload for a web app.
+
+| Command | What it does |
+| --- | --- |
+| `make reload` | Builds once, quits the running app, then opens the new build. Add `RELAY=1` to restart the host-mode relay too. |
+| `make dev` | Watches the Swift and Go sources and runs a reload after every change, until you press Ctrl-C. A change under `multiplayer/` also restarts the relay. |
+
+- **A failed build leaves your app alone.** The build runs before the app quits. If it fails, the previous build keeps running and a notification says so.
+- **Running work is kept.** Quitting the app doesn't stop running assignments.
+- **The relay restarts only if it is installed.** That means you ran `commander-relay host install` on this Mac.
+- **Output is saved.** Each reload adds its build output to `dist/dev-reload.log`.
+- **Install `fswatch` for faster reloads.** `make dev` reacts at once with `brew install fswatch`. Without it, it checks for changes every second.
+
+You can also restart the running app yourself: **Agent Commander → Restart Agent Commander**, just above Quit.
+
+To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
 
 With `gh` authenticated to the private repository, fetch the exact Go modules required by `go.mod` and build a release configuration without sibling checkouts.
 

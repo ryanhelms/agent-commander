@@ -44,6 +44,8 @@ struct AgentCommander: App {
         .defaultSize(width: 1280, height: 800)
         // Unified (not compact) keeps the real title bar and traffic lights on the 52 pt chrome band.
         .windowToolbarStyle(.unified)
+        // Agent Commander > Restart Agent Commander, above Quit.
+        .commands { AppRestartCommands() }
 
         // Agent Commander > Settings… (⌘,) from the system command.
         Settings {
