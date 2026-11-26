@@ -97,9 +97,7 @@ enum MultiplayerTeamsFixture {
     @MainActor static func model(_ extra: @escaping @Sendable (RoutedMultiplayerHelper.Call) -> String? = { _ in nil }) async
         -> (MultiplayerModel, RoutedMultiplayerHelper) {
         let helper = RoutedMultiplayerHelper(route(extra))
-        let suite = "multiplayer-teams-tests"
-        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
-                                     defaults: UserDefaults(suiteName: suite)!)
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600))
         model.open()
         await model.settle()
         model.refresh()

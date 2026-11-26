@@ -171,41 +171,60 @@ struct MultiplayerWatchReply: Equatable, Sendable {
 
 /// A friend holding control of one of your workers: their prompts and suggestions run without asking.
 struct MultiplayerHandover: Equatable, Sendable, Identifiable {
-    /// The friend's handle when known; otherwise the account the device agent lists.
+    /// The friend's handle. Empty when the device agent names only the account.
     var handle: String
+    /// The friend's account on the relay. `handback` takes it as well as the handle.
     let user: String
     let resource: String
     let until: Date
+    /// The server the device agent says the hand-over is on.
+    var server: String = ""
     /// How long the hand-over was for, when this panel started it.
     var minutes: Int? = nil
 
     var id: String { "\(user.isEmpty ? handle : user)|\(resource)" }
 
-    init(handle: String, user: String = "", resource: String, until: Date, minutes: Int? = nil) {
+    init(handle: String, user: String = "", resource: String, until: Date, server: String = "", minutes: Int? = nil) {
         self.handle = handle
         self.user = user
         self.resource = resource
         self.until = until
+        self.server = server
         self.minutes = minutes
     }
 
     init?(_ json: MultiplayerJSON) {
         guard let resource = json.firstText("resource"), let until = json["until"]?.text.flatMap(MultiplayerTime.parse) else { return nil }
         user = json.firstText("user") ?? ""
-        handle = json.firstText("handle", "peer") ?? user
-        guard !handle.isEmpty else { return nil }
+        handle = json.firstText("handle", "peer") ?? ""
+        guard !handle.isEmpty || !user.isEmpty else { return nil }
         self.resource = resource
         self.until = until
+        server = json.firstText("server") ?? ""
     }
+
+    /// The holder as the tray names them: the handle, or "A friend" when only the account is known.
+    /// An account ID is never shown as a name.
+    var who: String { handle.isEmpty ? "A friend" : handle.multiplayerDisplay }
+
+    /// What `handback` is given: the account when the device listed one, since it always matches
+    /// the hand-over's own key; otherwise the handle.
+    var holderKey: String { user.isEmpty ? handle : user }
 
     func remaining(now: Date) -> TimeInterval { max(until.timeIntervalSince(now), 0) }
     func isLive(now: Date) -> Bool { until > now }
 
-    /// The share of the hand-over still to run, when its length is known.
-    func fraction(now: Date) -> Double? {
-        guard let minutes, minutes > 0 else { return nil }
-        return min(remaining(now: now) / (Double(minutes) * 60), 1)
+    /// The span the countdown's line drains over, in seconds: the hand-over's length when this
+    /// panel started it, otherwise the shortest length the tray offers that still holds what is left.
+    func span(now: Date) -> TimeInterval {
+        if let minutes, minutes > 0 { return Double(minutes) * 60 }
+        let left = remaining(now: now)
+        let fits = MultiplayerHandoverLength.allCases.map { Double($0.rawValue) * 60 }.first { $0 >= left }
+        return fits ?? max(left, 1)
     }
+
+    /// The share of the hand-over still to run.
+    func fraction(now: Date) -> Double { min(remaining(now: now) / span(now: now), 1) }
 
     /// "24:13", or "1:02:13" past the hour.
     static func clock(_ seconds: TimeInterval) -> String {
@@ -440,21 +459,56 @@ struct MultiplayerFanoutDraft: Equatable {
     var title: String { MultiplayerText.clean(trimmedPrompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? "", limit: 80) }
 }
 
-/// The winner the person chose for each fan-out. Kept on this Mac only.
-struct MultiplayerWinnerStore: @unchecked Sendable {
+/// The winner the person chose for each fan-out. Kept on this Mac only, in Commander's own folder:
+/// one JSON file holding a `multiplayer.fanout.winners` dictionary keyed by server and request.
+/// It never touches the app's preferences, so a fixture or debug run can't write into the live app's.
+struct MultiplayerWinnerStore: Sendable {
     static let key = "multiplayer.fanout.winners"
+    static let limit = 200
 
-    let defaults: UserDefaults
+    let file: URL
 
-    var all: [String: String] { defaults.dictionary(forKey: Self.key) as? [String: String] ?? [:] }
+    /// "s-home/rq-1": a request ID is only unique on its own server.
+    static func key(_ request: String, on server: String) -> String { "\(server)/\(request)" }
+
+    /// Where the live app keeps it: under AGENT_COMMANDER_HOME, or Application Support. A fixture
+    /// run with no home of its own writes to the temporary folder instead.
+    static func location(isFixture: Bool, environment: [String: String] = ProcessInfo.processInfo.environment,
+                         support: URL = FileManager.default.homeDirectoryForCurrentUser
+                            .appending(path: "Library/Application Support/Agent Commander"),
+                         temporary: URL = FileManager.default.temporaryDirectory) -> URL {
+        if let home = environment["AGENT_COMMANDER_HOME"], !home.isEmpty {
+            return URL(filePath: home, directoryHint: .isDirectory).appending(path: "network/fanout-winners.json")
+        }
+        return (isFixture ? temporary.appending(path: "agent-commander-fixture") : support)
+            .appending(path: "network/fanout-winners.json")
+    }
+
+    /// A store nothing else reads: the default for a model built outside the app.
+    static func scratch() -> MultiplayerWinnerStore {
+        MultiplayerWinnerStore(file: FileManager.default.temporaryDirectory
+            .appending(path: "agent-commander-scratch/fanout-winners-\(UUID().uuidString).json"))
+    }
+
+    var all: [String: String] {
+        guard let data = try? Data(contentsOf: file),
+              let root = try? JSONDecoder().decode([String: [String: String]].self, from: data) else { return [:] }
+        return root[Self.key] ?? [:]
+    }
+
+    func winner(of request: String, on server: String) -> String? { all[Self.key(request, on: server)] }
 
     /// Records the child chosen for a fan-out, or clears the choice.
-    func choose(_ child: String?, for request: String) {
+    func choose(_ child: String?, for request: String, on server: String) {
         var winners = all
-        winners[request] = child
-        // Old choices leave first, so the list stays small.
-        if winners.count > 200 { winners.keys.sorted().prefix(winners.count - 200).forEach { winners[$0] = nil } }
-        defaults.set(winners, forKey: Self.key)
+        winners[Self.key(request, on: server)] = child
+        // Old choices leave first, so the file stays small.
+        if winners.count > Self.limit { winners.keys.sorted().prefix(winners.count - Self.limit).forEach { winners[$0] = nil } }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode([Self.key: winners]) else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
     }
 }
 
@@ -481,8 +535,10 @@ extension MultiplayerClient {
         return handover
     }
 
-    func handback(resource: String, handle: String) async throws {
-        _ = try await fetch(.handback, ["resource": .string(resource), "handle": .string(handle)], as: MultiplayerIgnored.self,
+    /// Takes control back. `holder` is the friend's handle or the account `handovers` listed;
+    /// the device agent takes either under `handle`.
+    func handback(resource: String, holder: String) async throws {
+        _ = try await fetch(.handback, ["resource": .string(resource), "handle": .string(holder)], as: MultiplayerIgnored.self,
                             allowsEmpty: true)
     }
 

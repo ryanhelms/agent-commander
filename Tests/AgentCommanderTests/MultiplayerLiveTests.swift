@@ -35,22 +35,18 @@ enum MultiplayerLiveFixture {
     static let review = #"{"summary":"Bound the wait.","findings":[{"file":"Tests/A.swift","line":43,"severity":"important","text":"No deadline."},{"file":"B.swift","line":0,"severity":"nit","text":"Unused helper."},{"file":"C.swift"}]}"#
 
     @MainActor static func model(_ replies: [MultiplayerVerb: [MultiplayerHelperOutput]],
-                                 defaults: UserDefaults = .standard) -> (MultiplayerModel, ScriptedMultiplayerHelper) {
+                                 winners: MultiplayerWinnerStore = .scratch()) -> (MultiplayerModel, ScriptedMultiplayerHelper) {
         var all = replies
         all[.servers] = all[.servers] ?? [MultiplayerServerFixture.servers(MultiplayerServerFixture.home)]
         all[.status] = all[.status] ?? [status]
         let helper = ScriptedMultiplayerHelper(all)
         let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
-                                     defaults: defaults, watchInterval: .milliseconds(15))
+                                     winners: winners, watchInterval: .milliseconds(15))
         return (model, helper)
     }
 
-    static func defaults(_ name: String = #function) -> UserDefaults {
-        let suite = "multiplayer-live-tests-\(name)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
-    }
+    /// A winners file of this test's own, empty.
+    static func winners() -> MultiplayerWinnerStore { .scratch() }
 
     /// Waits for something a background poll brings, without sleeping longer than it takes.
     @MainActor static func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
@@ -108,16 +104,23 @@ enum MultiplayerLiveFixture {
         #expect(event.text == "export [redacted] next")
     }
 
-    @Test func aHandoverCountsDownAndIsNamedByHandleOrAccount() throws {
+    @MainActor @Test func aHandoverCountsDownAndIsNamedByHandleOrAccount() throws {
         let now = MultiplayerFixtureClock.start
         let listed = try #require(MultiplayerHandover(try MultiplayerLiveFixture.json(
             #"{"user":"u-bo","resource":"res-9","until":"2026-11-23T12:24:13Z"}"#)))
-        #expect(listed.handle == "u-bo" && listed.id == "u-bo|res-9")
+        // An account alone is never shown as a name, and is what `handback` is given.
+        #expect(listed.handle.isEmpty && listed.who == "A friend" && listed.holderKey == "u-bo" && listed.id == "u-bo|res-9")
         #expect(listed.remaining(now: now) == 24 * 60 + 13 && listed.isLive(now: now))
-        #expect(listed.fraction(now: now) == nil)
+        // With no length known, the line drains over the shortest length that holds what is left.
+        #expect(listed.span(now: now) == 1800 && abs(listed.fraction(now: now) - (1453.0 / 1800)) < 0.0001)
         var mine = listed
-        mine.minutes = 30
-        #expect(abs((mine.fraction(now: now) ?? 0) - (1453.0 / 1800)) < 0.0001)
+        mine.minutes = 60
+        #expect(mine.span(now: now) == 3600 && abs(mine.fraction(now: now) - (1453.0 / 3600)) < 0.0001)
+        // The device agent names the friend and the server.
+        let named = try #require(MultiplayerHandover(try MultiplayerLiveFixture.json(
+            #"{"user":"u-bo","handle":"fixture-bo","server":"s-home","resource":"res-9","until":"2026-11-23T12:24:13Z"}"#)))
+        #expect(named.handle == "fixture-bo" && named.who == "fixture-bo" && named.server == "s-home" && named.holderKey == "u-bo")
+        #expect(MultiplayerCountdown.fraction(left: 300, span: 600) == 0.5 && MultiplayerCountdown.fraction(left: 5, span: 0) == 0)
         #expect(!listed.isLive(now: now.addingTimeInterval(3600)) && listed.remaining(now: now.addingTimeInterval(3600)) == 0)
         // A row with no end is not a hand-over.
         #expect(MultiplayerHandover(try MultiplayerLiveFixture.json(#"{"user":"u-bo","resource":"res-9"}"#)) == nil)
@@ -180,14 +183,37 @@ enum MultiplayerLiveFixture {
         #expect(!draft.canSend)
     }
 
-    @Test func theWinnerIsKeptOnThisMacAndCanBeCleared() {
-        let store = MultiplayerWinnerStore(defaults: MultiplayerLiveFixture.defaults())
+    @Test func theWinnerIsKeptOnThisMacAndCanBeCleared() throws {
+        let store = MultiplayerLiveFixture.winners()
+        defer { try? FileManager.default.removeItem(at: store.file) }
         #expect(store.all.isEmpty)
-        store.choose("c-2", for: "rq-1")
-        store.choose("c-9", for: "rq-2")
-        #expect(MultiplayerWinnerStore(defaults: store.defaults).all == ["rq-1": "c-2", "rq-2": "c-9"])
-        store.choose(nil, for: "rq-1")
-        #expect(store.all == ["rq-2": "c-9"])
+        store.choose("c-2", for: "rq-1", on: "s-a")
+        store.choose("c-9", for: "rq-2", on: "s-a")
+        // The same request ID on another server is another fan-out.
+        store.choose("c-5", for: "rq-1", on: "s-b")
+        #expect(MultiplayerWinnerStore(file: store.file).all == ["s-a/rq-1": "c-2", "s-a/rq-2": "c-9", "s-b/rq-1": "c-5"])
+        #expect(store.winner(of: "rq-1", on: "s-a") == "c-2" && store.winner(of: "rq-1", on: "s-b") == "c-5")
+        store.choose(nil, for: "rq-1", on: "s-a")
+        #expect(store.all == ["s-a/rq-2": "c-9", "s-b/rq-1": "c-5"])
+        // The file holds one dictionary under the store's key, and nothing is written to preferences.
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: store.file)) as? [String: [String: String]]
+        #expect(root?.keys.map { $0 } == [MultiplayerWinnerStore.key])
+        #expect(UserDefaults.standard.object(forKey: MultiplayerWinnerStore.key) == nil)
+    }
+
+    @Test func theWinnersFileIsNeverInTheLiveAppsFolderForAFixtureRun() {
+        let support = URL(filePath: "/Users/someone/Library/Application Support/Agent Commander", directoryHint: .isDirectory)
+        let temporary = URL(filePath: "/tmp/scratch", directoryHint: .isDirectory)
+        let live = MultiplayerWinnerStore.location(isFixture: false, environment: [:], support: support, temporary: temporary)
+        #expect(live.path == "/Users/someone/Library/Application Support/Agent Commander/network/fanout-winners.json")
+        let fixture = MultiplayerWinnerStore.location(isFixture: true, environment: [:], support: support, temporary: temporary)
+        #expect(fixture.path == "/tmp/scratch/agent-commander-fixture/network/fanout-winners.json")
+        // A run with its own home keeps everything there.
+        for isFixture in [true, false] {
+            let own = MultiplayerWinnerStore.location(isFixture: isFixture, environment: ["AGENT_COMMANDER_HOME": "/tmp/home"],
+                                                      support: support, temporary: temporary)
+            #expect(own.path == "/tmp/home/network/fanout-winners.json")
+        }
     }
 
     @Test func aSuggestionIsNamedForWhoSentIt() {
@@ -316,7 +342,8 @@ enum MultiplayerLiveFixture {
         #expect(model.notice == "fixture-bo has control of tests for 30 minutes. Their prompts and suggestions run without asking.")
 
         await live.takeBack(active.item, on: Self.home)?.value
-        #expect(helper.lastInput(.handback) == ["handle": "fixture-bo", "resource": "res-9", "server": Self.home])
+        // Take back names the holder by the account the device listed, which always matches.
+        #expect(helper.lastInput(.handback) == ["handle": "u-bo", "resource": "res-9", "server": Self.home])
         model.close()
     }
 
@@ -388,12 +415,13 @@ enum MultiplayerLiveFixture {
     }
 
     @Test func aFanoutSendsOnePromptToEachChosenWorkerAndTheWinnerStaysLocal() async throws {
-        let defaults = MultiplayerLiveFixture.defaults()
+        let winners = MultiplayerLiveFixture.winners()
+        defer { try? FileManager.default.removeItem(at: winners.file) }
         let reply = #"{"request":"rq-3","children":{"id":"rq-3","children":[{"id":"c-1","resource":"dir-1","action":"agent.ask","status":"ok","result":{"text":"Client."}},{"id":"c-2","resource":"dir-2","action":"agent.ask","status":"pending"}]}}"#
         // `sent` reports the first target only; the second keeps what the panel last knew.
         let sent = #"{"sent":[{"request":"rq-3","child":"","resource":"dir-1","action":"fanout:agent.ask","title":"Where?","at":"2026-11-25T12:00:00Z","status":"ok","value":{"text":"Client, still."}}]}"#
         let (model, helper) = MultiplayerLiveFixture.model([.fanout: [MultiplayerLiveFixture.ok(reply)], .sent: [MultiplayerLiveFixture.ok(sent)]],
-                                                           defaults: defaults)
+                                                           winners: winners)
         model.open()
         await model.settle()
         let live = model.share.live
@@ -413,13 +441,14 @@ enum MultiplayerLiveFixture {
         #expect(fanout.children.map(\.id) == ["c-1", "c-2"] && fanout.children[0].answer == "Client, still.")
         #expect(fanout.children[1].status == "pending" && fanout.progress == "1 of 2 answered")
 
-        live.chooseWinner("c-1", of: "rq-3")
-        #expect(live.winners["rq-3"] == "c-1" && MultiplayerWinnerStore(defaults: defaults).all == ["rq-3": "c-1"])
+        live.chooseWinner("c-1", of: "rq-3", on: Self.home)
+        #expect(live.winner(of: "rq-3", on: Self.home) == "c-1" && live.winner(of: "rq-3", on: "s-other") == nil)
+        #expect(MultiplayerWinnerStore(file: winners.file).all == ["\(Self.home)/rq-3": "c-1"])
         #expect(live.remoteWork.first { $0.kind == .fanout }?.state == "Winner chosen")
         // Nothing about the choice is sent.
-        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me, .queue].contains($0) }.isEmpty)
-        live.chooseWinner("c-1", of: "rq-3")
-        #expect(live.winners["rq-3"] == nil)
+        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me, .queue, .remoteDevices].contains($0) }.isEmpty)
+        live.chooseWinner("c-1", of: "rq-3", on: Self.home)
+        #expect(live.winner(of: "rq-3", on: Self.home) == nil)
         model.close()
     }
 

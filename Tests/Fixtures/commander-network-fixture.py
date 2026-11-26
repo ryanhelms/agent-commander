@@ -29,7 +29,14 @@ trace starts with a few lines and gains one on each `watch` call. "Live remote w
 finished review (two findings; `review-post` checks the URL and posts nothing) and a fan-out to
 sam-agent and mei-agent with both answers in. A suggestion stays pending unless its text contains
 "approve"; a review whose title contains "wait" stays pending; a fan-out prompt containing "wait"
-leaves its last worker pending. `sent` rows of a fan-out carry `children` here.
+leaves its last worker pending. `sent` rows of a fan-out carry `children` here. `handovers` rows carry
+`handle` and `server` beside `user`, as the device agent sends them, and `handback` takes the friend's
+handle or that account ID under `handle`.
+
+Increment 6: Remote starts off with two paired devices. `remote-enable` serves nothing: it answers a
+tailnet-shaped address with a new eight-character code that lasts ten minutes. `remote-devices`,
+`remote-revoke` and `remote-disable` keep their state in the scratch file. These verbs name no
+server and refuse any field they don't know, as the device agent does.
 
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
 (Relay reconnect on a merge queue with claims, a board and three queued branches; iOS onboarding on
@@ -188,7 +195,11 @@ def seed():
              "maxUses": 10, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 200000, "attribution": "owner"},
             {"id": "g-4", "handle": "fixture-jonas", "kind": "agent", "resource": "res-2", "capability": "agent.ask",
              "maxUses": 5, "expiresAt": now(60 * 20), "approval": "ask", "budgetTokens": 50000, "attribution": "owner"}]},
-        "handovers": {"s-fixture-home": [{"user": "u-sam", "resource": "res-2", "until": now(24)}]},
+        "handovers": {"s-fixture-home": [{"user": "u-sam", "handle": "fixture-sam", "server": "s-fixture-home",
+                                          "resource": "res-2", "until": now(24)}]},
+        "remote": {"running": False, "url": "", "code": "", "devices": [
+            {"id": "RD7K2MQA", "name": "Ryan’s iPhone", "paired": now(-60 * 24 * 3), "expires": now(60 * 24 * 27)},
+            {"id": "RD3XW9PT", "name": "iPad mini", "paired": now(-60 * 24 * 21), "expires": now(60 * 24 * 9)}]},
         "approvals": {"s-fixture-home": [
             {"id": "ap-3", "peer": "fixture-sam", "resource": "res-2", "action": "agent.suggest",
              "summary": json.dumps({"text": "Pin the lease clock in the test instead of sleeping for the renewal."}),
@@ -453,9 +464,11 @@ def live(state, verb, request):
         return {"handovers": held}
     if verb in ("handover", "handback"):
         handle, resource = request.get("handle") or "", request.get("resource") or ""
-        if not any(friend[1] == handle for friend in FRIENDS.get(server, [])):
+        # The tray may name the holder by handle or, for handback, by the account ID `handovers` lists.
+        by_id = verb == "handback" and any(row["user"] == handle and row["resource"] == resource for row in held)
+        if not by_id and not any(friend[1] == handle for friend in FRIENDS.get(server, [])):
             raise ValueError("unknown friend")
-        user = "u-" + handle.split("-", 1)[-1]
+        user = handle if by_id else "u-" + handle.split("-", 1)[-1]
         held[:] = [row for row in held if not (row["user"] == user and row["resource"] == resource)]
         if verb == "handback":
             save(state)
@@ -463,7 +476,7 @@ def live(state, verb, request):
         minutes = request.get("minutes") or 0
         if not resource or not 1 <= minutes <= 240:
             raise ValueError("handover needs a friend, a resource and 1–240 minutes")
-        held.append({"user": user, "resource": resource, "until": now(minutes)})
+        held.append({"user": user, "handle": handle, "server": server, "resource": resource, "until": now(minutes)})
         save(state)
         return {"handle": handle, "resource": resource, "until": now(minutes)}
     if verb == "watch":
@@ -506,6 +519,37 @@ def live(state, verb, request):
             raise ValueError("that request has no review result yet")
         return {"posted": request["pr"]}
     raise ValueError("unknown tray operation")
+
+
+REMOTE_URL = "http://100.64.0.7:8780"
+
+
+def remote(state, verb, request):
+    """Increment 6: the web view's switch, pairing code and paired devices. Nothing is served."""
+    allowed = {"remote-enable": {"listen"}, "remote-revoke": {"device"}}.get(verb, set())
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    if "remote" not in state:
+        state["remote"] = seed()["remote"]
+    held = state["remote"]
+    if verb == "remote-enable":
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+        code = "".join(alphabet[byte % 32] for byte in os.urandom(8))
+        held.update(running=True, url=REMOTE_URL, code=code)
+        save(state)
+        return {"url": REMOTE_URL, "code": code, "expiresAt": now(10), "pairURL": "%s/pair?code=%s" % (REMOTE_URL, code)}
+    if verb == "remote-disable":
+        held.update(running=False, url="", code="")
+        save(state)
+        return {}
+    if verb == "remote-revoke":
+        kept = [row for row in held["devices"] if row["id"] != request.get("device")]
+        if len(kept) == len(held["devices"]):
+            raise ValueError("unknown device")
+        held["devices"] = kept
+        save(state)
+        return {}
+    return {"devices": held["devices"], "url": held["url"], "running": held["running"]}
 
 
 def sharing(state, verb, request):
@@ -961,6 +1005,8 @@ def probe(request):
 
 def run(verb, request):
     state = load()
+    if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke"):
+        return remote(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
         favorites = sorted([s for s in ordered if s["favorite"]], key=lambda s: s.get("lastUsedAt") or "", reverse=True)

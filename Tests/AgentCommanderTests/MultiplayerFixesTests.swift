@@ -73,12 +73,11 @@ struct MultiplayerAXNode: CustomStringConvertible {
     static func fixtureModel(_ name: String) async throws -> (MultiplayerModel, UserDefaults, String) {
         let state = FileManager.default.temporaryDirectory.appendingPathComponent("multiplayer-fixes-\(name)-\(UUID().uuidString).json")
         setenv("COMMANDER_NETWORK_FIXTURE_STATE", state.path, 1)
+        // Kept for its callers. Nothing is written to preferences: the model's winners go to a scratch file.
         let suite = "multiplayer-fixes-\(name)"
         let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
         let model = MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: MultiplayerRenderTests.fixture)),
-                                     usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
-                                     defaults: defaults)
+                                     usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600))
         model.open()
         await model.settle()
         model.refresh()

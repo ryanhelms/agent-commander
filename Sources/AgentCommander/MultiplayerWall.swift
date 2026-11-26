@@ -4,15 +4,22 @@ import SwiftUI
 // A hand-off runs on a friend's Mac, so it has no terminal here. The wall shows it as a remote
 // worker: the same console title bar, harness surface and status label as a local worker tile,
 // named for the friend's agent and labelled with the friend and the server it went through.
-// Opening one opens the tray on that hand-off. Nothing here sends anything.
+// Opening one zooms it: the cockpit's zoom view shows the worker's output as a read-only trace,
+// labelled with its owner and server, read through `watch` while the view is open. Nothing here
+// sends anything to the worker.
 //   Values:    MultiplayerRemoteWorker
 //   Molecule:  RemoteWorkerTile
-//   Organism:  RemoteWorkerGroup, MultiplayerRemoteWorkerBand (reads the tray's model)
+//   Organism:  RemoteWorkerGroup, RemoteWorkerZoom
+//   Hosts:     MultiplayerRemoteWorkerBand, MultiplayerRemoteWorkerZoomHost (read the tray's model)
 
 /// One hand-off you sent, as the wall shows it.
 struct MultiplayerRemoteWorker: Identifiable, Equatable {
     let server: String
     let request: String
+    /// The friend's worker the hand-off runs on. `watch` reads it.
+    var resource: String = ""
+    /// True when the friend shared Watch on that worker with you.
+    var canWatch: Bool = false
     /// What was handed off.
     let task: String
     /// The friend's agent, or the resource's name when the directory doesn't list it.
@@ -52,7 +59,7 @@ extension MultiplayerShareModel {
             let state = handoffState(row)
             let raw = reports[row.request]?.state ?? ""
             let worker = MultiplayerRemoteWorker(
-                server: pending.server, request: row.request,
+                server: pending.server, request: row.request, resource: row.resource, canWatch: entry?.canWatch == true,
                 task: row.title.isEmpty ? "Untitled hand-off" : row.title.multiplayerDisplay,
                 agent: (entry?.name ?? resourceName(row.resource, on: pending.server)).multiplayerDisplay,
                 friend: entry?.owner.multiplayerDisplay ?? "",
@@ -111,11 +118,11 @@ struct RemoteWorkerTile: View {
         .overlay { Rectangle().fill(Term.bright.opacity(hovering && onOpen != nil ? 0.04 : 0)).allowsHitTesting(false) }
         .onHover { hovering = $0 }
         .animation(reduceMotion ? nil : MultiplayerTheme.Motion.ease(MultiplayerTheme.Motion.fast), value: hovering)
-        .help(onOpen == nil ? worker.spoken : "Open this hand-off in the network tray")
+        .help(onOpen == nil ? worker.spoken : "Zoom this remote worker to read its output")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(worker.spoken)
         .accessibilityAddTraits(onOpen == nil ? .isStaticText : .isButton)
-        .accessibilityHint(onOpen == nil ? "" : "Opens the hand-off in the network tray")
+        .accessibilityHint(onOpen == nil ? "" : "Shows its output, read-only")
     }
 
     private func line(_ key: String, _ value: String, color: Color) -> some View {
@@ -138,19 +145,23 @@ struct RemoteWorkerGroup: View {
     var onOpenAll: (() -> Void)? = nil
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+        // Hard lines (DESIGN.md): the band is a network surface, so its corner is the 2 pt tile radius
+        // and its heading is a mono band heading with the count in full ink.
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
         let shown = Array(workers.prefix(Self.limit))
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 11))
-                Text("Remote workers").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.foreground)
-                Text(workers.count == 1 ? "1 hand-off on a friend’s Mac" : "\(workers.count) hand-offs on friends’ Macs")
-                    .font(.system(size: 10.5))
+                Text("Remote workers").font(MultiplayerTheme.heading).accessibilityAddTraits(.isHeader)
+                Text("\(workers.count)").font(MultiplayerTheme.heading.monospacedDigit()).foregroundStyle(Palette.foreground)
+                    .multiplayerTicking(workers.count)
+                Text(workers.count == 1 ? "hand-off on a friend’s Mac" : "hand-offs on friends’ Macs")
+                    .font(MultiplayerTheme.sub)
                 Spacer(minLength: 8)
                 if workers.count > shown.count, let onOpenAll {
                     Button("\(workers.count - shown.count) more…", action: onOpenAll)
                         .buttonStyle(.plain)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(MultiplayerTheme.state)
                         .accessibilityLabel("Show \(workers.count - shown.count) more hand-offs in the network tray")
                 }
             }
@@ -172,22 +183,104 @@ struct RemoteWorkerGroup: View {
         .padding(.horizontal, 9)
         .padding(.bottom, 9)
         .background(Palette.groupFill, in: shape)
-        .overlay { shape.strokeBorder(Palette.groupEdge) }
+        .overlay { shape.strokeBorder(MultiplayerTheme.hair) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Remote workers")
+    }
+}
+
+/// A remote worker in the cockpit's zoom view: what was handed off, then the worker's output as a
+/// read-only trace, labelled with its owner and server. The trace is the tray's watch view.
+struct RemoteWorkerZoom: View {
+    let worker: MultiplayerRemoteWorker
+    let watch: MultiplayerWatchState
+    let entry: MultiplayerDirectoryEntry?
+    let color: Color
+    let interval: Int
+    let now: Date
+    let onRetry: () -> Void
+    let onOpenTray: () -> Void
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: MultiplayerTheme.tileRadius)
+        VStack(spacing: 0) {
+            MultiplayerBand {
+                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.inkSecondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(worker.task)
+                            .font(MultiplayerTheme.name)
+                            .foregroundStyle(MultiplayerTheme.foreground)
+                            .lineLimit(2)
+                        Text("Hand-off to \(worker.origin)\(worker.at.map { ", sent \(MultiplayerActivityRow.time($0, now: now))" } ?? "")")
+                            .font(MultiplayerTheme.fingerprint)
+                            .foregroundStyle(.inkSecondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    Text(worker.state)
+                        .font(MultiplayerTheme.state)
+                        .foregroundStyle(worker.tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(worker.tone.color))
+                        .lineLimit(1)
+                        .accessibilityLabel("Hand-off state, \(worker.state)")
+                }
+            }
+            ScrollView(.vertical) {
+                VStack(spacing: 0) {
+                    if worker.canWatch {
+                        MultiplayerWatchView(watch: watch, entry: entry, serverName: worker.serverName, color: color,
+                                             interval: interval, suggestion: .constant(""), reply: nil,
+                                             allowsSuggestion: false, onRetry: onRetry)
+                    } else {
+                        MultiplayerBand {
+                            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                                MultiplayerLamp(kind: .off)
+                                Text("\(worker.friend.isEmpty ? "The owner" : worker.friend) hasn’t shared Watch on \(worker.agent), so its output can’t be read here. The hand-off’s report and thread are in the network tray.")
+                                    .font(MultiplayerTheme.sub)
+                                    .foregroundStyle(.inkSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background { MultiplayerScrollerSilencer().accessibilityHidden(true) }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: .infinity)
+            MultiplayerTrayFooter(note: worker.canWatch ? "Read-only. Reads while this view is open." : nil) {
+                Button("Open in tray", action: onOpenTray)
+                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .help("Open this hand-off’s report and thread in the network tray")
+            }
+        }
+        .background(MultiplayerTheme.panel)
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(MultiplayerTheme.hair) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Remote worker \(worker.agent), \(worker.origin), read-only")
     }
 }
 
 /// The cockpit's view of the tray's hand-offs. Draws nothing until there is one.
 struct MultiplayerRemoteWorkerBand: View {
     var model: MultiplayerModel
+    /// Zooms a remote worker in the cockpit. Without it, a tile opens the tray.
+    var onZoom: ((MultiplayerRemoteWorker) -> Void)? = nil
 
     var body: some View {
         let workers = model.share.remoteWorkers
         Group {
             if !workers.isEmpty {
                 RemoteWorkerGroup(workers: workers, now: model.currentDate(),
-                                  onOpen: { MultiplayerRemoteWorkerLauncher.open($0, in: model) },
+                                  onOpen: { worker in
+                                      if let onZoom { onZoom(worker) } else { MultiplayerRemoteWorkerLauncher.open(worker, in: model) }
+                                  },
                                   onOpenAll: workers.first.map { first in
                                       { MultiplayerRemoteWorkerLauncher.openList(on: first.server, in: model) }
                                   })
@@ -198,6 +291,39 @@ struct MultiplayerRemoteWorkerBand: View {
         .animation(MultiplayerTheme.Motion.ease(), value: workers.isEmpty)
         .onAppear { model.share.wallAppeared() }
         .onDisappear { model.share.wallDisappeared() }
+    }
+}
+
+/// The cockpit's zoom view for one remote worker. It reads the worker's output while it is on
+/// screen and stops when it leaves. Calls `onGone` when the hand-off is no longer listed.
+struct MultiplayerRemoteWorkerZoomHost: View {
+    var model: MultiplayerModel
+    let workerID: String
+    let onGone: () -> Void
+
+    var body: some View {
+        let live = model.share.live
+        let worker = model.share.remoteWorkers.first { $0.id == workerID }
+        Group {
+            if let worker {
+                RemoteWorkerZoom(worker: worker, watch: live.zoomWatch,
+                                 entry: model.share.entry(worker.resource, on: worker.server),
+                                 color: MultiplayerTheme.swatch(for: worker.server), interval: 2, now: model.currentDate(),
+                                 onRetry: { live.beginZoomWatch(worker.resource, on: worker.server) },
+                                 onOpenTray: { MultiplayerRemoteWorkerLauncher.open(worker, in: model) })
+                    .onAppear { if worker.canWatch { live.beginZoomWatch(worker.resource, on: worker.server) } }
+                    .onChange(of: worker.canWatch) { _, can in
+                        if can { live.beginZoomWatch(worker.resource, on: worker.server) } else { live.endZoomWatch() }
+                    }
+            } else {
+                Color.clear.onAppear(perform: onGone)
+            }
+        }
+        .onAppear { model.share.wallAppeared() }
+        .onDisappear {
+            live.endZoomWatch()
+            model.share.wallDisappeared()
+        }
     }
 }
 

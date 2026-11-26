@@ -173,11 +173,11 @@ final class MultiplayerShareModel {
     @ObservationIgnored private(set) var pageTask: Task<Void, Never>?
     @ObservationIgnored private var pageToken = 0
 
-    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, defaults: UserDefaults = .standard,
+    init(client: MultiplayerClient?, now: @escaping () -> Date = { Date() }, winners: MultiplayerWinnerStore = .scratch(),
          watchInterval: Duration = .seconds(2)) {
         self.client = client
         self.clock = now
-        self.live = MultiplayerLiveModel(client: client, now: now, winners: MultiplayerWinnerStore(defaults: defaults),
+        self.live = MultiplayerLiveModel(client: client, now: now, winners: winners,
                                          watchInterval: watchInterval)
         self.teams = MultiplayerTeamsModel(client: client, now: now)
         self.live.share = self

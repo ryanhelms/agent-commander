@@ -13,6 +13,9 @@ Sources of truth in code:
 | Skin atoms, molecules, motion | `MultiplayerSkin.swift` |
 | Tray layout constants | `MultiplayerLayout` in `MultiplayerComponents.swift` |
 | Reference mockup | `design/mockups/commander-network-tray.html` |
+| Teams components (increment 5) | `MultiplayerTeamsViews.swift`, `MultiplayerMarkdown.swift` |
+| Cockpit wall and zoom for remote workers | `MultiplayerWall.swift` |
+| Remote band (increment 6) | `MultiplayerRemote.swift` |
 | Reference renders | `design/demos/increment-2/`, `design/demos/increment-3/`, `design/demos/increment-4/` (after its demo) |
 
 ## 1. Direction
@@ -127,17 +130,18 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Mark | Square icon tile for a non-person thing: agent, repository, resource. Well fill, border edge, optional tone. |
 | Avatar | Round picture, or the initial on the well when there is no picture. |
 | Swatch | 4 × 12 pt colour bar. |
-| Meter | 16 cells of 5 × 9 pt. Fill is `working`, `attention` at 80% and `failure` at 100%. |
+| Meter | 16 cells of 5 × 9 pt. Fill is `working`, `attention` at 80% and `failure` at 100%. With `isGood` the bar counts something wanted, such as accepted results, and stays `working` when full. |
 | Field box | Sunken well with a 2 pt-radius edge that turns `focus` when focused. |
 | Badge | Small outlined label. Tinted when it has a tone. |
 | Signed badge | Marks a result sealed by a pinned device key. |
 | Grant badge | An agent row's grant status: Granted is `working` with a check; Offered is outlined. |
-| Holder badge | "<handle> has control", `attention` tone with a hand icon. |
+| Holder badge | "<handle> has control", `attention` tone with a hand icon. It names the friend's handle, never an account ID; with no handle it says "A friend". |
 | Read-only badge | Marks a watch view the viewer cannot steer. |
 | Step mark | Health-check step: round tick, square cross, or its number. |
 | Button style | Rectangular and monospaced. `standard` is outlined, `primary` is filled `focus` with `onAccent` ink, `danger` uses failure ink and edge. There is one primary action per region; in a verb strip, one per row. |
 | Switch style | Square track: filled `working` when on, outlined when off. |
 | Row button style | A plain row with hover tint (6%) and press tint (10%). |
+| QR code | Modules drawn on whole points (2 pt or more each), `window` ink on a `foreground` tile with a four-module quiet zone and a hairline frame. It prints top-down once (`slow`); with Reduce Motion it fades in. |
 
 ### Molecules
 
@@ -155,7 +159,7 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Band heading | Mono section name, its count, and one trailing action. |
 | Band | Padded region with a hairline under it. This is how the tray is divided. |
 | Trace row | Time (`HH:MM:SS`), a kind tag and text, with a 2 pt left rule coloured by kind: message `foreground`, tool `focus`, status `attention`. Hairline under each line. |
-| Countdown | Time left, ticking each second, over a line that drains. |
+| Countdown | Time left as a mono figure, ticking each second, over a 56 × 2 pt line that drains linearly. `working`, then `attention` under five minutes. When the full length isn't known, the line drains over the shortest offered length that holds what is left. With Reduce Motion the line steps. |
 | Decision row | A request with Deny and Approve (or Decline and Review). The text opens the full review. |
 | Link row | Opens a page: what is there, how many, and a chevron. |
 | Setting row | Label at a fixed measure, then the control. |
@@ -163,12 +167,25 @@ Apply Atomic Design strictly. Components take values and emit targeted actions. 
 | Alert band | Full-width band under the status strip: `failure` at 12% fill with a 45% lower edge, an error lamp and one sentence, such as "Can't reach your Mac". |
 | Load note | A lamp and one sentence in a hairline-topped row. The lamp is `waiting` while reading, `error` when the read failed, `off` when empty, and `on` for "Nothing is waiting for you". |
 | Outcome well | A well holding a state label ("Approved", "Denied") that replaces a verb strip once its action is done, then fades out. |
+| Inline confirm | The second press before something that can't be undone: a well with a `failure` edge, one sentence saying what goes with it, then a keep button and a `danger` button. It arrives under the row it belongs to. The review page's "Post this review" confirmation is the same pattern with an `attention` edge and a primary button, and scrolls into view when it opens. |
+| State tally | Counts by state as joined cells that also filter: "open 3, claimed 1, done 4". The chosen cell is filled `focus`; elsewhere a count above zero takes its state's tone. |
+| Claim row | Who holds what: a kind badge, the key as mono data, the holder as person and agent, when it lapses, and Release for your own. |
+| Card row | One card of a board: its state as a lamp and a word, its title, who has it, and the one step that moves it on. The text opens the card. |
+| Queue row | A branch's place in the merge queue as a mono number, the branch, its state, and what stopped it when something did. |
+| Output well | The end of a command's or test run's output in mono on a well, selectable, with its exit state. |
+| Endorsement chips | Skills people vouch for as `working` badges with a seal, each with "×n" when more than one person did. The first four show, then "+n". |
+| Group row | A group: its name, its member count, the first few avatars, and an Owner (`focus`) or Member badge. |
+| Markdown block | Text an agent or friend wrote in Markdown, in the tray's type: headings, paragraphs, lists, fenced code on a well, and rules, with bold, italic, inline code and links. Nothing is fetched; an image stays as its source text. |
+| Copy chip | A value as data with a copy action: a label cell on the well, the value in mono, and a copy cell that shows a tick once copied. Joined cells on one frame. |
+| Device row | A paired device: a mark, its name, "paired … , ends …" in mono, and Revoke (`danger`), which opens an inline confirm. |
 
 ### Organisms (in the tray today)
 
-Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, and certificate notice.
+Need row, server row, friend row, activity row, holder row, finding row, control band, remote-work band, sharing band, agent roster, certificate notice, workspaces band, groups band, server teams band, and Remote band.
 
 The pages are watch view, compare (fan-out columns), consult, hand-off composer, hand-off list, hand-off detail, thread, audit, directory, access requests, approval and grant sheet.
+
+A decision row for an approval names the worker and its server ("relay-worker on ryan-mac"). A holder row is the Holder badge over the metadata line, then the countdown, then Take back.
 
 Increment 4 (merged at `341215d`) adds:
 - **Control band:** a holder row, a countdown, and Take back.
@@ -176,6 +193,18 @@ Increment 4 (merged at `341215d`) adds:
 - **Review:** a summary, then finding rows with important or nit severity. "Post to PR" has an inline confirmation. A review-request composer.
 - **Fan-out:** a composer, and compare columns. "Choose winner" is a standard button; the chosen one shows "Winner" as primary. A footer note says the choice is local only.
 - **Live remote work rows:** a leading kind glyph (hand-off ↗, fan-out fork, review list) and a right-aligned state in tone, such as "2 of 2 answered" or "2 important, 1 nit".
+
+Increment 5 (teams) adds:
+- **Workspaces band** (Agents tab): the workspaces you work in, each with its goal and a claim count in tone, then link rows to hosts and the knowledge library.
+- **Groups band** (People tab): group rows, and one action to manage groups.
+- **Server teams band** (server page): link rows into that server's groups, workspaces, hosts, knowledge and, for an admin, policy.
+- **Pages:** groups, group, workspaces, new workspace, workspace (goal, claims, board with a state tally, merge queue), claim, card, queue a branch, hosts, run on host (output well), knowledge library, share knowledge, knowledge item (Markdown block and versions), reputation (meter with `isGood`, endorsement chips), directory search and relay policy. Deleting a group, releasing a claim, suspending a member and the like use the inline confirm.
+- **Remote workers on the cockpit wall:** a hand-off runs on a friend's Mac, so the wall shows it as a remote worker tile: the console title bar and harness surface of a local tile, the friend and server as its host, and task, from, via and sent as mono lines in place of a terminal. Up to three tiles sit in a Remote workers band under the local workers: a hairline frame with the 2 pt tile radius and a mono band heading with its count. The band draws nothing until there is a hand-off.
+- **Remote worker zoom:** choosing a tile zooms it in the cockpit. The zoom view is a panel with the hand-off's task, target and state, then the tray's watch view (owner and server, Read-only and Signed badges, readouts, trace rows) and a footer with "Open in tray". It reads while it is on screen and never sends. Without a Watch grant it says so in a load note.
+
+Increment 6 (the tray's Remote band, on the Network tab) adds:
+- **Remote band:** a band heading with the paired-device count and a switch. Under it a state label (Serving or Off) and one sentence. While serving: the address as a copy chip; the pairing block (QR code of the pairing link beside the code as a copy chip in `figure` type, a countdown over ten minutes, the link as a copy chip, and New code); then device rows. With no code on show, a state label ("No code" or "Code expired") and one primary action, Pair a device.
+- **Motion:** the QR code prints once, the block and rows arrive, the countdown drains, and a copy cell ticks. A device that pairs ends the code and the block leaves.
 
 Increment 6 (the Remote web page) adds:
 - **Touch scale:** controls are 44 px high, type about 15% larger (body 15, name 15, sub 13.5, heading 13, state 12, figure 17, trace 12.5), and the header icon action is a 52 px full-height cell split off by a hairline.
@@ -209,12 +238,19 @@ The tray keeps its own versions of these:
 
 ## 5. Behaviour
 
-- **Accessibility.** Every lamp and chip has a spoken label. Readouts speak as one element ("approvals, 2"). Selected tabs and segments carry `.isSelected`. Headings carry `.isHeader`.
+- **Accessibility.** Every lamp and chip has a spoken label. Readouts speak as one element ("approvals, 2"). Headings carry `.isHeader`.
+  - The tab bar is a tab group (`AXTabGroup`, "Sections"). Selected tabs and segments carry `.isSelected` and report the value "Selected".
+  - Nothing is offered without a role. A trace row, a finding row and a countdown are each one static text with a full label. A menu field or the presence menu is one element with its value.
+  - The page's scroll bar is taken out of the accessibility tree (it is four unnamed buttons otherwise). The scroll area still scrolls for VoiceOver and the keyboard.
+  - A code is spoken letter by letter. A QR code is an image with a label; its link is also there as text.
 - **Keyboard.** Places switch with ⌘1, ⌘2, ⌘3 and so on. Every custom control is reachable by Tab.
 - **Copy.** Hashes, IDs and trace text can be selected or copied.
 - **Empty and loading.** Use a load note: what is being read, or why it couldn't be. Don't leave a blank region.
+- **Revealing.** Something that opens below the fold in answer to a press (an inline confirm) scrolls into view, eased, or at once with Reduce Motion.
+- **Local notes.** A note kept on this Mac only (a fan-out's winner) lives in Commander's own folder, keyed by server and request. It is never written to the app's preferences, and a fixture run never writes into the live app's folder.
 
 ## 6. Open work
 
 - **Unify the token layers.** `MultiplayerTheme` holds the tray's roles, radii, type and motion. `design/system/tokens.json` and `DesignTokens.swift` hold the base palette. Move the theme's roles, type, radii and motion into the shared token layer. Rename the components from `Multiplayer*` to app-wide names once they are shared. The design must stay pluggable and themeable: a skin redefines one token layer.
 - **Coordinate the files.** `MultiplayerTray.swift` (1,522 lines) and `MultiplayerShareViews.swift` (1,355 lines) need splitting. The tray session is still changing every `Sources/AgentCommander/Multiplayer*.swift` file. Promote shared components only by agreement with that session. Increment 5 also edits `CockpitView.swift`, `Organisms.swift` and `Molecules.swift` to put hand-off cards on the cockpit wall (D8).
+- **Bring the wall's own groups to hard lines.** The Remote workers band uses the 2 pt tile radius. The local worker groups beside it still use the main window's older `Radius.group` (15 pt) and `Radius.tile` (13 pt), as do the console tiles inside the band. Restyle them together when the main window adopts this language.
