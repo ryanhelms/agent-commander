@@ -1,0 +1,10 @@
+version: 1
+existing:
+    - .claude
+    - .claude/settings.json
+    - .codex
+    - .codex/config.toml
+    - .github
+    - .github/workflows
+    - AGENTS.md
+agent_separator: 1
