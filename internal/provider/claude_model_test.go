@@ -19,6 +19,7 @@ func TestManagedClaudeModelNegotiation(t *testing.T) {
 		wantErr string
 	}{
 		{"config-option", ""},
+		{"already-opus", ""},
 		{"legacy-method", ""},
 		{"unsupported-option", "model unavailable"},
 		{"missing-both-methods", "method unavailable"},
@@ -72,8 +73,11 @@ func TestClaudeModelWirePeer(t *testing.T) {
 			response["result"] = map[string]any{"protocolVersion": 1, "agentCapabilities": map[string]any{}}
 		case "session/new":
 			result := map[string]any{"sessionId": "selected"}
-			if mode == "config-option" || mode == "unsupported-option" {
-				result["configOptions"] = []map[string]string{{"id": "provider-model", "type": "select", "category": "model", "currentValue": "other"}}
+			switch mode {
+			case "config-option", "unsupported-option":
+				result["configOptions"] = claudeFixtureOptions("other")
+			case "already-opus":
+				result["configOptions"] = claudeFixtureOptions("opus")
 			}
 			response["result"] = result
 		case "session/set_config_option":
@@ -83,7 +87,7 @@ func TestClaudeModelWirePeer(t *testing.T) {
 			if mode == "unsupported-option" {
 				response["error"] = map[string]any{"code": -32602, "message": "model unavailable"}
 			} else {
-				response["result"] = map[string]any{}
+				response["result"] = map[string]any{"configOptions": claudeFixtureOptions("opus")}
 			}
 		case "session/set_model":
 			if mode != "legacy-method" && mode != "missing-both-methods" || req.Params["modelId"] != "opus" || req.Params["sessionId"] != "selected" {
@@ -101,4 +105,12 @@ func TestClaudeModelWirePeer(t *testing.T) {
 			os.Exit(0)
 		}
 	}
+}
+
+func claudeFixtureOptions(current string) []map[string]any {
+	return []map[string]any{{
+		"id": "provider-model", "name": "Model", "type": "select",
+		"category": "model", "currentValue": current,
+		"options": []map[string]string{{"value": "other", "name": "Other"}, {"value": "opus", "name": "Opus"}},
+	}}
 }

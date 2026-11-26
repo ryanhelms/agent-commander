@@ -13,6 +13,37 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestScopedChildAndCompactionPreviewsKeepOriginalsPrivate(t *testing.T) {
+	for _, fixture := range []struct {
+		kind, original, visible string
+	}{
+		{runtime.ACPChildUpdateSource, `{"sessionId":"private-child-id","update":{"private":"private marker"}}`, "Provider child session activity"},
+		{runtime.ACPChildPermissionSource, `{"title":"private marker","options":[{"optionId":"approved"}]}`, "Provider child permission declined"},
+		{runtime.ACPCompactionStateSource, `{"compactionId":"private-id","status":"completed","summary":[{"type":"text","text":"private marker"}]}`, "Provider context compaction completed"},
+	} {
+		obs := &model.Observation{
+			Session: &model.SessionRef{SessionId: "root"}, Cursor: "cursor", SourceCursor: proto.String("cursor"),
+			Event: &model.Observation_Extension{Extension: &model.Extension{Type: fixture.kind, MediaType: "application/json", Data: []byte(fixture.original)}},
+		}
+		event := acpExtensionEvent(obs, "live")
+		idle := idleSourcedEvent(obs, acpprocessor.Reference("live", obs.Cursor, "source", ""))
+		for _, preview := range []service.ConsoleEvent{event, idle} {
+			if preview.Kind != "output" || !strings.HasPrefix(preview.Text, fixture.visible) ||
+				strings.Contains(preview.Text, "private") || preview.ACP.Cursor != obs.Cursor {
+				t.Fatalf("preview leaked or lost its source: %+v", preview)
+			}
+		}
+		if fixture.kind == runtime.ACPCompactionStateSource {
+			replacement := proto.Clone(obs).(*model.Observation)
+			replacement.GetExtension().Data = []byte(`{"compactionId":"private-id","status":"in_progress"}`)
+			first := acpExtensionEvent(replacement, "live")
+			if first.ACP.MessageID == "" || first.ACP.MessageID != event.ACP.MessageID || first.ACP.MessageOp != "replace" || event.ACP.MessageOp != "replace" {
+				t.Fatal("a compaction update moved away from its original activity")
+			}
+		}
+	}
+}
+
 func TestLiveWireRetentionAccountsForEnvelopeAndOriginalIndependently(t *testing.T) {
 	peerError := []byte(`{"code":-32603,"vendor":"original"}`)
 	for _, tc := range []struct {

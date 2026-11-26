@@ -23,34 +23,6 @@ var acpHistoryReaders = map[string]func(directory, cwd string) historyReader{
 	"pi-jsonl-v3": piHistoryReader,
 }
 
-func (l *Local) replayProfile(native service.NativeSession) (acpProfile, bool) {
-	name, external := strings.CutPrefix(native.HarnessInstance, "local-profile-")
-	id, _, bound := strings.Cut(name, ":history-")
-	profile := l.acpProfiles[id]
-	return profile, external && bound && profile.History != nil &&
-		profile.History.Format == acpReplayHistory && profile.instance(id) == native.HarnessInstance
-}
-
-func (l *Local) RequiresStoppedHistory(native service.NativeSession) bool {
-	_, replay := l.replayProfile(native)
-	return replay
-}
-
-func (l *Local) beginReplay(ctx context.Context, native service.NativeSession) (func(), error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if !l.RequiresStoppedHistory(native) {
-		return func() {}, nil
-	}
-	select {
-	case l.replaySlot <- struct{}{}:
-		return func() { <-l.replaySlot }, nil
-	case <-ctx.Done():
-		return func() {}, ctx.Err()
-	}
-}
-
 func (l *Local) openNativeHistory(native service.NativeSession, cwd string) (*runtime.Runtime, *model.ReadHistoryRequest, error) {
 	config := runtime.Config{HarnessInstance: native.HarnessInstance, WorkingDirectory: cwd}
 	name, local := strings.CutPrefix(native.HarnessInstance, "local-")
@@ -61,8 +33,6 @@ func (l *Local) openNativeHistory(native service.NativeSession, cwd string) (*ru
 			return nil, nil, err
 		}
 		reader = builtinHistory(adapter, cwd)
-	} else if profile, ok := l.replayProfile(native); ok {
-		config.Command, config.Args, config.ReplayHistory = profile.Command, profile.Args, true
 	} else if profileName, external := strings.CutPrefix(name, "profile-"); local && external {
 		id, _, _ := strings.Cut(profileName, ":history-")
 		profile := l.acpProfiles[id]
@@ -84,7 +54,7 @@ func (l *Local) openNativeHistory(native service.NativeSession, cwd string) (*ru
 		}
 		reader = p.readHistory(cwd)
 	}
-	if reader == nil && !config.ReplayHistory {
+	if reader == nil {
 		return nil, nil, errors.New("native history is unavailable for this harness")
 	}
 	config.ReadHistory = reader
@@ -106,11 +76,16 @@ func (l *Local) ReadNativeHistoryPage(ctx context.Context, native service.Native
 }
 
 func (l *Local) readHistoryPage(ctx context.Context, native service.NativeSession, cwd, cursor string, limit uint32) (*model.ReadHistoryResponse, error) {
-	release, err := l.beginReplay(ctx, native)
-	if err != nil {
-		return nil, err
+	if l.RequiresStoppedHistory(native) {
+		snapshot, err := l.loadReplaySnapshot(ctx, native, cwd)
+		if errors.Is(err, runtime.ErrReplaySnapshotLimit) {
+			return replayLimitPage(native), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return snapshot.Page(cursor, limit)
 	}
-	defer release()
 	rt, request, err := l.openNativeHistory(native, cwd)
 	if err != nil {
 		return nil, err
@@ -126,6 +101,20 @@ const providerProjectionPageSize = 128
 // preview and serializes only the selected record. The page hint conveys
 // neither session authority nor the identity of a neighboring record.
 func (l *Local) ReadNativeHistoryRecord(ctx context.Context, native service.NativeSession, cwd, pageCursor, recordCursor string) (json.RawMessage, error) {
+	if l.RequiresStoppedHistory(native) {
+		snapshot, err := l.loadReplaySnapshot(ctx, native, cwd)
+		if errors.Is(err, runtime.ErrReplaySnapshotLimit) {
+			return marshalHistoryPage(replayLimitPage(native))
+		}
+		if err != nil {
+			return nil, err
+		}
+		record, err := snapshot.Record(recordCursor)
+		if err != nil {
+			record = missingHistoryRecord(native)
+		}
+		return marshalHistoryPage(&model.ReadHistoryResponse{Observations: []*model.Observation{record}})
+	}
 	page, err := l.readHistoryPage(ctx, native, cwd, pageCursor, providerProjectionPageSize)
 	if err != nil {
 		return nil, err
@@ -156,20 +145,34 @@ func selectHistoryRecord(page *model.ReadHistoryResponse, native service.NativeS
 		match = gap
 	}
 	if match == nil {
-		match = &model.Observation{
-			Session: &model.SessionRef{HarnessInstance: native.HarnessInstance, SessionId: native.SessionID},
-			Event:   &model.Observation_Gap{Gap: &model.HistoryGap{Reason: "The selected record is no longer available on this provider history page."}},
-		}
+		match = missingHistoryRecord(native)
 	}
 	return &model.ReadHistoryResponse{Observations: []*model.Observation{match}}
 }
 
-func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSession, cwd string) ([]service.ConsoleEvent, error) {
-	release, err := l.beginReplay(ctx, native)
-	if err != nil {
-		return nil, err
+func missingHistoryRecord(native service.NativeSession) *model.Observation {
+	return &model.Observation{
+		Session: &model.SessionRef{HarnessInstance: native.HarnessInstance, SessionId: native.SessionID},
+		Event:   &model.Observation_Gap{Gap: &model.HistoryGap{Reason: "The selected record is no longer available on this provider history page."}},
 	}
-	defer release()
+}
+
+func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSession, cwd string) ([]service.ConsoleEvent, error) {
+	if l.RequiresStoppedHistory(native) {
+		snapshot, err := l.loadReplaySnapshot(ctx, native, cwd)
+		if errors.Is(err, runtime.ErrReplaySnapshotLimit) {
+			return []service.ConsoleEvent{{Kind: "output", Text: replayLimitReason, Sequence: 1}}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return projectConsoleHistory(func(cursor string) (*model.ReadHistoryResponse, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return snapshot.Page(cursor, providerProjectionPageSize)
+		})
+	}
 	rt, request, err := l.openNativeHistory(native, cwd)
 	if err != nil {
 		return nil, err
@@ -177,8 +180,19 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 	defer rt.Close()
 	sessions := agentacp.New(rt)
 	request.Limit = providerProjectionPageSize
+	return projectConsoleHistory(func(cursor string) (*model.ReadHistoryResponse, error) {
+		request.Cursor = cursor
+		return sessions.ReadHistory(ctx, request)
+	})
+}
+
+func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse, error)) ([]service.ConsoleEvent, error) {
+	var pageCursor string
 	var events []service.ConsoleEvent
 	var prompt historyPrompt
+	// An unsourced typed record is followed by its replay original. The
+	// original replaces the typed row, so the row keeps the original's cursor.
+	var typedTail bool
 	sequence, bytes := 0, 0
 	appendEvent := func(event service.ConsoleEvent) {
 		event = previewConsoleEvent(event)
@@ -193,12 +207,14 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 		}
 	}
 	for {
-		page, err := sessions.ReadHistory(ctx, request)
+		page, err := read(pageCursor)
 		if err != nil {
 			return nil, err
 		}
 		for _, obs := range page.Observations {
-			if row, handled := prompt.observe(obs, request.Cursor); handled {
+			typedRow := typedTail
+			typedTail = false
+			if row, handled := prompt.observe(obs, pageCursor); handled {
 				if row.ACP != nil {
 					appendEvent(row)
 				}
@@ -227,9 +243,20 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 				}
 			case obs.GetGap() != nil:
 				event.Kind, event.Text = "output", obs.GetGap().Reason
+			case typedObservation(obs):
+				event = acpExtensionEvent(obs, "provider")
+				typedTail = obs.GetSourceCursor() == ""
 			case obs.GetExtension() != nil:
 				if obs.GetExtension().GetType() == runtime.ACPReplaySource {
 					update, _ := acpprocessor.ExtensionUpdate(obs.GetExtension())
+					if typedRow && len(events) > 0 {
+						last := &events[len(events)-1]
+						replacement := previewConsoleEvent(acpActivityEvent(&update, "provider", obs.Cursor))
+						replacement.Sequence = last.Sequence
+						bytes += len(replacement.Text) - len(last.Text)
+						*last = replacement
+						continue
+					}
 					// The replay adapter follows a portable text/tool observation
 					// with its source record, including across page boundaries.
 					// Attach its identity once, preserving the existing preview row.
@@ -247,7 +274,9 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 				continue
 			}
 			if cursor := obs.GetSourceCursor(); cursor != "" {
-				if ext := paramsSource(obs); ext.GetType() == runtime.ACPUpdateParamsSource {
+				if event.ACP != nil && event.ACP.MessageOp != "" {
+					event.ACP.Cursor = cursor
+				} else if ext := paramsSource(obs); ext.GetType() == runtime.ACPUpdateParamsSource {
 					inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())
 					if err != nil {
 						return nil, err
@@ -262,7 +291,7 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 				// Some adapters retain the original as the extension itself. A
 				// bounded preview still opens that row's exact SDK observation.
 				event.ACP = acpprocessor.Reference("provider", obs.Cursor, "provider_record", "")
-				event.ACP.PageCursor, event.ACP.TurnID = request.Cursor, obs.GetTurnId()
+				event.ACP.PageCursor, event.ACP.TurnID = pageCursor, obs.GetTurnId()
 			}
 			if call, ok := retainedCodexCall(obs, &event); ok {
 				appendEvent(call)
@@ -272,10 +301,10 @@ func (l *Local) ReadConsoleHistory(ctx context.Context, native service.NativeSes
 		if page.NextCursor == "" {
 			return events, nil
 		}
-		if page.NextCursor == request.Cursor {
+		if page.NextCursor == pageCursor {
 			return nil, errors.New("native history cursor did not advance")
 		}
-		request.Cursor = page.NextCursor
+		pageCursor = page.NextCursor
 	}
 }
 

@@ -1,0 +1,30 @@
+goos: darwin
+goarch: arm64
+pkg: agentcommander/internal/sshlink
+cpu: Apple M5
+BenchmarkPersistentACPLink/1ms/window=false-10         	       1	 190080458 ns/op	   2.76 MB/s	 3441408 B/op	     525 allocs/op
+BenchmarkPersistentACPLink/1ms/window=false-10         	       1	  67088834 ns/op	   7.81 MB/s	 3318784 B/op	     351 allocs/op
+BenchmarkPersistentACPLink/1ms/window=false-10         	       1	 101729167 ns/op	   5.15 MB/s	 3365536 B/op	     331 allocs/op
+BenchmarkPersistentACPLink/1ms/window=true-10          	       1	  35764250 ns/op	  14.66 MB/s	 3072712 B/op	     305 allocs/op
+BenchmarkPersistentACPLink/1ms/window=true-10          	       1	  19927250 ns/op	  26.31 MB/s	 3122440 B/op	     307 allocs/op
+BenchmarkPersistentACPLink/1ms/window=true-10          	       1	  17451666 ns/op	  30.04 MB/s	 3187024 B/op	     324 allocs/op
+BenchmarkPersistentACPLink/10ms/window=false-10        	       1	 258576625 ns/op	   2.03 MB/s	 3367408 B/op	     357 allocs/op
+BenchmarkPersistentACPLink/10ms/window=false-10        	       1	 301143917 ns/op	   1.74 MB/s	 3215472 B/op	     299 allocs/op
+BenchmarkPersistentACPLink/10ms/window=false-10        	       1	 230924125 ns/op	   2.27 MB/s	 3216880 B/op	     308 allocs/op
+BenchmarkPersistentACPLink/10ms/window=true-10         	       1	  33354291 ns/op	  15.72 MB/s	 3121976 B/op	     284 allocs/op
+BenchmarkPersistentACPLink/10ms/window=true-10         	       1	  34133709 ns/op	  15.36 MB/s	 3121016 B/op	     286 allocs/op
+BenchmarkPersistentACPLink/10ms/window=true-10         	       1	  41635458 ns/op	  12.59 MB/s	 3120696 B/op	     291 allocs/op
+BenchmarkPersistentACPLink/50ms/window=false-10        	       1	 912016083 ns/op	   0.57 MB/s	 3166496 B/op	     295 allocs/op
+BenchmarkPersistentACPLink/50ms/window=false-10        	       1	 902422834 ns/op	   0.58 MB/s	 3215408 B/op	     298 allocs/op
+BenchmarkPersistentACPLink/50ms/window=false-10        	       1	 913938709 ns/op	   0.57 MB/s	 3066352 B/op	     276 allocs/op
+BenchmarkPersistentACPLink/50ms/window=true-10         	       1	 140334083 ns/op	   3.74 MB/s	 3121144 B/op	     295 allocs/op
+BenchmarkPersistentACPLink/50ms/window=true-10         	       1	 106919792 ns/op	   4.90 MB/s	 3118776 B/op	     270 allocs/op
+BenchmarkPersistentACPLink/50ms/window=true-10         	       1	 105868583 ns/op	   4.95 MB/s	 3123208 B/op	     312 allocs/op
+BenchmarkPersistentACPLink/100ms/window=false-10       	       1	1766770667 ns/op	   0.30 MB/s	 3217216 B/op	     311 allocs/op
+BenchmarkPersistentACPLink/100ms/window=false-10       	       1	1768843583 ns/op	   0.30 MB/s	 3166016 B/op	     294 allocs/op
+BenchmarkPersistentACPLink/100ms/window=false-10       	       1	1764071084 ns/op	   0.30 MB/s	 3215216 B/op	     298 allocs/op
+BenchmarkPersistentACPLink/100ms/window=true-10        	       1	 205629750 ns/op	   2.55 MB/s	 3123720 B/op	     340 allocs/op
+BenchmarkPersistentACPLink/100ms/window=true-10        	       1	 205621792 ns/op	   2.55 MB/s	 3124152 B/op	     328 allocs/op
+BenchmarkPersistentACPLink/100ms/window=true-10        	       1	 219155708 ns/op	   2.39 MB/s	 3122088 B/op	     299 allocs/op
+PASS
+ok  	agentcommander/internal/sshlink	11.610s

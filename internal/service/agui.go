@@ -110,8 +110,34 @@ func aguiMessages(workerID string, events []ConsoleEvent) []aguiMessage {
 		arguments, output string
 	}
 	tools := make(map[string]*toolProjection)
+	type messageIdentity struct{ role, kind, id string }
+	addressed := make(map[messageIdentity]int)
 	for _, item := range events {
 		message := aguiMessage{sequence: item.Sequence, ID: fmt.Sprintf("%s:%d", workerID, item.Sequence), Role: "assistant"}
+		if activity := item.ACP; activity != nil && activity.MessageOp != "" && activity.MessageID != "" {
+			switch item.Kind {
+			case "user":
+				message.Role = "user"
+			case "output", "thinking":
+				message.Role = "system"
+			}
+			identity := messageIdentity{message.Role, activity.Kind, activity.MessageID}
+			if index, exists := addressed[identity]; exists {
+				previous := &messages[index]
+				content := item.Text
+				if activity.MessageOp == "append" && previous.Content != nil {
+					content = *previous.Content + content
+				}
+				previous.Content = &content
+				previous.recordSource(activity)
+			} else {
+				message.Content = &item.Text
+				message.recordSource(activity)
+				addressed[identity] = len(messages)
+				messages = append(messages, message)
+			}
+			continue
+		}
 		var tool *toolProjection
 		var callID string
 		if item.ToolID != "" && (item.Kind == "tool_call" || item.Kind == "tool_update" || item.Kind == "tool_result") {

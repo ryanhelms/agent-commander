@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // ATOMIC LEVEL: Molecules.
 // Each molecule combines atoms for one understandable interaction and keeps its target, disabled
@@ -608,34 +609,61 @@ struct TerminalComposer: View {
     var outlined = true
     /// Returns true when the message was accepted.
     let send: (String) async -> Bool
+    /// File context for the follow-up: a link to a file in the worker's checkout or a snapshot of
+    /// a file. Nil where the session accepts neither, and the line is as before. A draft without
+    /// files always goes through `send`.
+    var context: FollowUpContextAccess? = nil
     @State private var text = ""
     @State private var isSending = false
+    /// Files attached to this draft, in the order they are sent.
+    @State private var files: [FollowUpContextItem] = []
+    /// The file chooser is open.
+    @State private var isChoosing = false
+    /// The kind of file the chooser is for. Kept until the chooser reports.
+    @State private var chosenKind: FollowUpContextKind?
+    /// Why the last chosen file could not be attached.
+    @State private var fileError: String?
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty
         let title = prompt ?? "Follow up with \(workerName)"
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text("❯").font(Term.font(12, weight: .semibold))
-                .foregroundStyle(isSending ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.cyan))
-                .accessibilityHidden(true)
-            TextField(title, text: $text, prompt: Text(title.lowercased()), axis: .vertical)
-                .textFieldStyle(.plain).font(Term.font(12))
-                .foregroundStyle(Term.bright)
-                .lineLimit(1...5)
-                .focused($isFocused)
-                .disabled(isSending)
-                .onSubmit(submit)
-                .accessibilityLabel(prompt ?? "Follow-up message for \(workerName)")
-            if isSending {
-                Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.cyan)
-                    .accessibilityLabel("Sending to \(workerName)")
-            } else {
-                Button(isFocused ? "send ↩" : "send", action: submit)
-                    .buttonStyle(TermButtonStyle(ink: Term.cyan))
-                    .disabled(isEmpty)
-                    .help("Send to \(workerName) (↩; ⌥↩ for a new line)")
-                    .accessibilityLabel("Send to \(workerName)")
+        VStack(alignment: .leading, spacing: 5) {
+            if context != nil, !files.isEmpty || fileError != nil {
+                attachments
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("❯").font(Term.font(12, weight: .semibold))
+                    .foregroundStyle(isSending ? AnyShapeStyle(.inkTermDim) : AnyShapeStyle(Term.cyan))
+                    .accessibilityHidden(true)
+                TextField(title, text: $text, prompt: Text(title.lowercased()), axis: .vertical)
+                    .textFieldStyle(.plain).font(Term.font(12))
+                    .foregroundStyle(Term.bright)
+                    .lineLimit(1...5)
+                    .focused($isFocused)
+                    .disabled(isSending)
+                    .onSubmit(submit)
+                    .accessibilityLabel(prompt ?? "Follow-up message for \(workerName)")
+                if let context {
+                    FollowUpContextMenu(linkUnavailable: context.linkUnavailable,
+                                        snapshotUnavailable: context.snapshotUnavailable,
+                                        isEnabled: !isSending) { kind in
+                        fileError = nil
+                        chosenKind = kind
+                        isChoosing = true
+                    }
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                }
+                if isSending {
+                    Text("sending…").font(Term.font(11.5)).foregroundStyle(Term.cyan)
+                        .accessibilityLabel("Sending to \(workerName)")
+                } else {
+                    Button(isFocused ? "send ↩" : "send", action: submit)
+                        .buttonStyle(TermButtonStyle(ink: Term.cyan))
+                        .disabled(isEmpty)
+                        .help("Send to \(workerName) (↩; ⌥↩ for a new line)")
+                        .accessibilityLabel("Send to \(workerName)")
+                }
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
@@ -647,18 +675,86 @@ struct TerminalComposer: View {
                 Rectangle().strokeBorder(isFocused ? Term.cyan : Term.promptEdge, lineWidth: 1)
             }
         }
+        .fileImporter(isPresented: $isChoosing, allowedContentTypes: [.item],
+                      allowsMultipleSelection: false) { result in
+            attach(result)
+        }
+    }
+
+    /// The selected files above the field, each removable, and why the last choice failed.
+    private var attachments: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !files.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(files) { file in
+                            FollowUpContextChip(item: file, isEnabled: !isSending) {
+                                files.removeAll { $0.id == file.id }
+                            }
+                        }
+                    }
+                }
+                .padding(.leading, 19)
+            }
+            if let fileError {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(verbatim: "! " + fileError).foregroundStyle(Term.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button("dismiss") { self.fileError = nil }
+                        .buttonStyle(TermButtonStyle(ink: Term.text, size: 10))
+                }
+                .font(Term.font(10.75))
+                .padding(.leading, 19)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("File not attached: \(fileError)")
+            }
+        }
+    }
+
+    private func attach(_ result: Result<[URL], Error>) {
+        // The chooser clears its presentation before it reports, so the kind is kept apart.
+        guard let kind = chosenKind, let context else { return }
+        chosenKind = nil
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            switch context.prepare(url, kind) {
+            case .success(let item):
+                files.append(item)
+                fileError = nil
+            case .failure(let error):
+                fileError = error.localizedDescription
+            }
+        case .failure(let error):
+            fileError = error.localizedDescription
+        }
+        isFocused = true
     }
 
     private func submit() {
         // Emptiness is judged without whitespace, but the text that goes out is the literal draft.
-        guard !isSending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !isSending, hasText || !files.isEmpty else { return }
         let message = text
+        let attached = files
         isSending = true
         Task {
-            let accepted = await send(message)
+            // A draft without files keeps the original text request.
+            let accepted: Bool
+            if let context, !attached.isEmpty {
+                accepted = await context.send(message, attached)
+            } else {
+                accepted = await send(message)
+            }
             isSending = false
             // Cleared only on acceptance, and only if the developer has not edited it meanwhile.
-            if accepted, text == message { text = "" }
+            if accepted, text == message, files == attached {
+                text = ""
+                files = []
+                fileError = nil
+            }
         }
     }
 }

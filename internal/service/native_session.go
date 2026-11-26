@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -110,7 +111,23 @@ func (s *service) serveNativeHistoryPage(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	ref, cwd, workerID := *worker.NativeSession, worker.Worktree, worker.ID
-	replayNotReady := source == "" && s.requiresStoppedHistory(ref) && worker.State != "stopped"
+	stoppedReplay := source == "" && s.requiresStoppedHistory(ref)
+	replayNotReady := stoppedReplay && worker.State != "stopped"
+	if stoppedReplay && !replayNotReady {
+		if s.stoppedHistoryReads == nil {
+			s.stoppedHistoryReads = make(map[string]int)
+		}
+		s.stoppedHistoryReads[workerID]++
+		defer func() {
+			s.mu.Lock()
+			if s.stoppedHistoryReads[workerID] == 1 {
+				delete(s.stoppedHistoryReads, workerID)
+			} else {
+				s.stoppedHistoryReads[workerID]--
+			}
+			s.mu.Unlock()
+		}()
+	}
 	s.mu.Unlock()
 
 	var read func(context.Context, NativeSession, string, string, uint32) (json.RawMessage, error)
@@ -221,9 +238,20 @@ func (s *service) bindNativeSession(req *http.Request, actor string) (outcome, e
 	if w == nil {
 		return outcome{}, missing("worker")
 	}
-	var ref NativeSession
-	if err := decode(req, &ref); err != nil {
+	var input struct {
+		NativeSession
+		ProviderBinding  string               `json:"provider_binding"`
+		PeerCapabilities *SessionCapabilities `json:"peer_capabilities"`
+	}
+	if err := decode(req, &input); err != nil {
 		return outcome{}, err
+	}
+	ref := input.NativeSession
+	if input.ProviderBinding != "" {
+		decoded, err := hex.DecodeString(input.ProviderBinding)
+		if err != nil || len(decoded) != 32 {
+			return outcome{}, bad("invalid provider binding fingerprint")
+		}
 	}
 	if ref.HarnessInstance == "" || len(ref.HarnessInstance) > 256 || ref.SessionID == "" || len(ref.SessionID) > 512 || strings.IndexFunc(ref.SessionID, unicode.IsControl) >= 0 {
 		return outcome{}, bad("a native harness and session ID are required")
@@ -245,6 +273,7 @@ func (s *service) bindNativeSession(req *http.Request, actor string) (outcome, e
 		}
 	}
 	w.NativeSession = &ref
+	w.ProviderBinding, w.PeerCapabilities = input.ProviderBinding, input.PeerCapabilities
 	return changed(ref), nil
 }
 
@@ -315,7 +344,7 @@ func (s *service) restoreNativeHistories(ctx context.Context) {
 	var targets []historyTarget
 	for _, run := range s.state.Runs {
 		for _, w := range run.Workers {
-			if w.NativeSession == nil || s.readingHistory[w.ID] || len(w.Console) != 0 {
+			if w.NativeSession == nil || s.readingHistory[w.ID] || len(w.Console) != 0 || w.ProviderAvailability == providerReattaching {
 				continue
 			}
 			if s.requiresStoppedHistory(*w.NativeSession) && w.State != "stopped" {

@@ -1,0 +1,72 @@
+goos: darwin
+goarch: arm64
+pkg: agent-acp.local/transport
+cpu: Apple M5
+BenchmarkIdleReceiveBuffer-10    	2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+      20	     29788 ns/op	   95822 B/op	      28 allocs/op
+BenchmarkIdleReceiveBuffer-10    	2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+      20	     24408 ns/op	   94434 B/op	      24 allocs/op
+BenchmarkIdleReceiveBuffer-10    	2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+2026/11/25 00:18:32 INFO connection closed
+      20	     16665 ns/op	   94694 B/op	      24 allocs/op
+PASS
+ok  	agent-acp.local/transport	0.676s

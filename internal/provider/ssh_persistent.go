@@ -52,7 +52,13 @@ func RunPersistentACP(ctx context.Context, args []string, input io.Reader, outpu
 			!filepath.IsAbs(cfg.OwnerSocket) || !sshAlias.MatchString(cfg.Profile.Host) || !filepath.IsAbs(cfg.Profile.Agentctl) {
 			return errors.New("invalid persistent ACP proxy target")
 		}
-		return sshlink.Run(ctx, input, output, cfg.connect, cfg.reportConnection)
+		link := os.Getenv("AGENT_COMMANDER_SSH_LINK")
+		if link != "" && link != "auto" && link != "legacy" {
+			return errors.New("AGENT_COMMANDER_SSH_LINK must be auto or legacy")
+		}
+		return sshlink.RunWithOptions(ctx, input, output, cfg.connect, cfg.reportConnection, sshlink.Options{
+			PreferWindow: link != "legacy",
+		})
 	}
 	if len(args) < 2 || !validID.MatchString(args[1]) {
 		return errors.New("invalid persistent ACP worker")

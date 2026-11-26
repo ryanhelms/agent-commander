@@ -23,20 +23,25 @@ type packet struct {
 }
 
 type request struct {
-	OutputAck uint64  `json:"output_ack"`
-	Input     *packet `json:"input,omitempty"`
+	OutputAck     uint64  `json:"output_ack"`
+	WindowVersion int     `json:"window_version,omitempty"`
+	Input         *packet `json:"input,omitempty"`
 }
 
 type response struct {
-	InputAck uint64  `json:"input_ack"`
-	Output   *packet `json:"output,omitempty"`
-	Ended    bool    `json:"ended,omitempty"`
-	Error    string  `json:"error,omitempty"`
+	InputAck      uint64  `json:"input_ack"`
+	WindowVersion int     `json:"window_version,omitempty"`
+	Output        *packet `json:"output,omitempty"`
+	Ended         bool    `json:"ended,omitempty"`
+	Error         string  `json:"error,omitempty"`
 }
 
 // Host owns the original adapter streams. Serve may be called again for a
 // replacement connection. It never calls an adapter launcher.
 type Host struct {
+	ctx    context.Context
+	window *windowEndpoint
+	legacy bool
 	input  io.Writer
 	output <-chan []byte
 
@@ -52,7 +57,7 @@ type Host struct {
 }
 
 func NewHost(ctx context.Context, input io.Writer, output io.Reader) *Host {
-	return &Host{input: input, output: readChunks(ctx, output)}
+	return &Host{ctx: ctx, input: input, output: readChunks(ctx, output)}
 }
 
 func readChunks(ctx context.Context, stream io.Reader) <-chan []byte {
@@ -87,11 +92,18 @@ func newScanner(stream io.Reader) *bufio.Scanner {
 // cursors so a replacement link can resolve an incomplete exchange.
 func (h *Host) Serve(stream io.ReadWriter) error {
 	in, out := newScanner(stream), json.NewEncoder(stream)
-	for in.Scan() {
+	for first := true; in.Scan(); first = false {
 		var req request
 		if err := json.Unmarshal(in.Bytes(), &req); err != nil {
 			return fmt.Errorf("invalid SSH link frame: %w", err)
 		}
+		if first && req.WindowVersion == windowVersion && !h.legacy {
+			return h.serveWindow(stream, in, out, req)
+		}
+		if h.window != nil {
+			return out.Encode(response{Error: "persistent ACP link version changed"})
+		}
+		h.legacy = true
 		reply := h.exchange(req)
 		if err := out.Encode(reply); err != nil {
 			return err
@@ -169,9 +181,20 @@ type Dial func(context.Context) (io.ReadWriteCloser, error)
 // local adapter input ends the relay. Dial must only attach to the original
 // Host. changed reports a transition after a successful exchange or link loss.
 func Run(ctx context.Context, input io.Reader, output io.Writer, dial Dial, changed func(bool)) error {
+	return RunWithOptions(ctx, input, output, dial, changed, Options{})
+}
+
+// Options controls the protocol offered on the first successful connection.
+type Options struct {
+	PreferWindow bool
+}
+
+func RunWithOptions(ctx context.Context, input io.Reader, output io.Writer, dial Dial, changed func(bool), options Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	local := readChunks(ctx, input)
+	var window *windowEndpoint
+	offerWindow := options.PreferWindow
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	var req request
@@ -196,8 +219,14 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, dial Dial, chan
 			unblock := context.AfterFunc(ctx, func() { _ = stream.Close() })
 			defer unblock()
 			in, out := newScanner(stream), json.NewEncoder(stream)
+			if window != nil {
+				return attachWindow(ctx, stream, in, out, window, setConnected)
+			}
 			for ctx.Err() == nil {
-				if req.Input == nil {
+				if offerWindow {
+					req.WindowVersion = windowVersion
+				}
+				if req.Input == nil && !offerWindow {
 					select {
 					case b, ok := <-local:
 						if !ok {
@@ -218,6 +247,16 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, dial Dial, chan
 					return errors.New(reply.Error)
 				}
 				setConnected(true)
+				if offerWindow {
+					offerWindow, req.WindowVersion = false, 0
+					if reply.WindowVersion == windowVersion {
+						if reply.InputAck != 0 || reply.Output != nil || reply.Ended {
+							return errors.New("invalid persistent ACP window negotiation")
+						}
+						window = newWindowEndpoint(local, output)
+						return window.run(ctx, stream, in, out, false)
+					}
+				}
 				switch {
 				case req.Input != nil && reply.InputAck == req.Input.Sequence:
 					inputAck, req.Input = reply.InputAck, nil

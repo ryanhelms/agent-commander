@@ -22,15 +22,21 @@ type Local struct {
 	stateDir, socket, executable, label string
 	acpProfiles                         map[string]acpProfile
 	replaySlot                          chan struct{}
+	replayCache                         replayCache
+	acpBroker                           *acpBrokerService
 	tools                               *toolregistry.Registry
 }
 
 type job struct {
 	Worker                            service.LaunchSpec
 	Socket, Executable, Claude, Label string
-	Adapter, Harness, NodePath        string `json:",omitempty"`
-	BuiltinInstance                   string `json:",omitempty"`
-	FocusedProof                      bool   `json:",omitempty"`
+	Adapter, Harness, NodePath        string          `json:",omitempty"`
+	BuiltinInstance                   string          `json:",omitempty"`
+	ProviderBinding                   string          `json:",omitempty"`
+	ACPBroker                         *acpBrokerLease `json:",omitempty"`
+	FocusedProof                      bool            `json:",omitempty"`
+	MCPOverACP                        bool            `json:",omitempty"`
+	ACPElicitation                    bool            `json:",omitempty"`
 	Companions                        []toolregistry.CompanionBinding
 	DevflowUI                         string            `json:",omitempty"` // pending launch records from before the registry
 	SSH                               *sshProfile       `json:",omitempty"`
@@ -162,7 +168,7 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if !validID.MatchString(w.ID) {
 		return errors.New("invalid worker ID")
 	}
-	if w.CodingSource != nil {
+	if w.CodingSource != nil && w.Reattach == nil {
 		if err := l.CheckCodingClient(w.Client); err != nil {
 			return err
 		}
@@ -179,6 +185,26 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		}
 		w.Path = assigned.Path
 	}
+	launch, err := l.prepareLaunch(w)
+	if err != nil {
+		return err
+	}
+	if launch.localACP() {
+		launch.ProviderBinding, err = providerBindingFingerprint(launch)
+		if err != nil {
+			return err
+		}
+	}
+	if w.Reattach != nil {
+		if err := verifyProviderBinding(launch, w.Reattach.Ref, w.Reattach.ProviderBinding); err != nil {
+			return err
+		}
+		l.replayCache.invalidate(w.Reattach.Ref)
+	}
+	return l.startLaunch(ctx, launch)
+}
+
+func (l *Local) prepareLaunch(w service.LaunchSpec) (job, error) {
 	focused := os.Getenv("AGENT_COMMANDER_FOCUSED_PROOF") == "1"
 	var useACP bool
 	var remote *sshProfile
@@ -190,33 +216,33 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if w.Host != "" && w.Host != "localhost" {
 		checkout, checkErr := l.WorkerCheckout(w.Host, w.Path, w.Client)
 		if checkErr != nil {
-			return checkErr
+			return job{}, checkErr
 		}
 		if checkout != w.Worktree {
-			return errors.New("SSH checkout changed after worker reservation")
+			return job{}, errors.New("SSH checkout changed after worker reservation")
 		}
 		profile, profileErr := configuredSSHProfile()
 		if profileErr != nil {
-			return profileErr
+			return job{}, profileErr
 		}
 		remote = &profile
 		useACP, focused = true, false
 		executable = "/usr/bin/ssh"
 	} else if adapter, selected, err := selectedBuiltin(w.Client); selected {
 		if err != nil {
-			return err
+			return job{}, err
 		}
 		builtinInstance, builtinID = adapter.Instance(), adapter.ID
 		useACP, focused = true, false
 	} else {
 		id, profile, ok, err := l.registeredACP(w.Client)
 		if err != nil {
-			return err
+			return job{}, err
 		}
 		if ok {
 			executable, err = profile.executable()
 			if err != nil {
-				return fmt.Errorf("ACP profile %q executable is unavailable: %w", id, err)
+				return job{}, fmt.Errorf("ACP profile %q executable is unavailable: %w", id, err)
 			}
 			profile.Command = executable
 			registered, registeredID, registeredEnv = &profile, id, profile.Env
@@ -224,13 +250,9 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		} else {
 			executable, useACP, err = localRunner(w.Client)
 			if err != nil {
-				return err
+				return job{}, err
 			}
 		}
-	}
-	tmux, err := TmuxExecutable()
-	if err != nil {
-		return err
 	}
 	var claude, adapter, harness, nodePath string
 	var codex *managedCodex
@@ -243,7 +265,7 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		} else if remote == nil && strings.EqualFold(strings.TrimSpace(w.Client), "codex") {
 			managed, err := configuredManagedCodex()
 			if err != nil {
-				return err
+				return job{}, err
 			}
 			harness, codex = "codex", &managed
 		}
@@ -254,18 +276,33 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	} else {
 		claude = executable
 	}
-	dir := filepath.Join(l.stateDir, "jobs", w.ID)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	jobPath := filepath.Join(dir, "launch.json")
 	launch := job{
 		Worker: w, Socket: l.socket, Executable: l.executable, Claude: claude, Label: l.label,
 		FocusedProof: focused, Adapter: adapter, Harness: harness, NodePath: nodePath, SSH: remote,
 		RegisteredACP: registered, RegisteredEnv: registeredEnv, Codex: codex,
 		BuiltinInstance: builtinInstance,
+		MCPOverACP:      os.Getenv("AGENT_COMMANDER_MCP_OVER_ACP") == "1",
+		ACPElicitation:  os.Getenv("AGENT_COMMANDER_ACP_ELICITATION") == "1",
 	}
+	return launch, nil
+}
+
+func (l *Local) startLaunch(ctx context.Context, launch job) error {
+	w, remote := launch.Worker, launch.SSH
+	tmux, err := TmuxExecutable()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(l.stateDir, "jobs", w.ID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	jobPath := filepath.Join(dir, "launch.json")
 	launch.Companions = l.tools.BindCompanions(ctx, launch.companionScope())
+	launch.ACPBroker, err = l.acpBroker.register(launch)
+	if err != nil {
+		return fmt.Errorf("register ACP adapter launch: %w", err)
+	}
 	// The prompt and scoped credential stay in a private file, outside shell argv.
 	contents, err := json.Marshal(launch)
 	if err != nil {
@@ -282,6 +319,24 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 		if err := os.WriteFile(filepath.Join(dir, "persistent-ssh.json"), profile, 0600); err != nil {
 			return err
 		}
+	}
+	if w.Reattach != nil {
+		panes, err := exec.CommandContext(ctx, tmux, "-L", l.label, "list-panes", "-t", "="+w.ID, "-F", "#{pane_id} #{pane_dead}").Output()
+		if err == nil {
+			fields := strings.Fields(string(panes))
+			if len(fields) != 2 || !strings.HasPrefix(fields[0], "%") || fields[1] != "1" {
+				return errors.New("the original tmux worker still has an active pane")
+			}
+			// Without -k, tmux refuses to replace a pane that became active.
+			out, err := exec.CommandContext(ctx, tmux, "-L", l.label, "respawn-pane", "-t", fields[0],
+				"-c", w.Path, "--", l.executable, "runner", jobPath).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("reattach tmux worker: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}
+		// Creating by the original worker ID still fails if an existing
+		// session could not be inspected.
 	}
 	// tmux executes multi-argument commands directly. None of its arguments are prompt text.
 	args := []string{"-L", l.label, "-f", "/dev/null", "new-session", "-d", "-s", w.ID, "-x", "120", "-y", "38", "-c", w.Path, "--", l.executable, "runner", jobPath, ";", "set-option", "-w", "-t", "=" + w.ID + ":", "remain-on-exit", "on"}

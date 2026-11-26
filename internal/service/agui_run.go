@@ -114,6 +114,10 @@ func (s *service) streamWorkerRun(w http.ResponseWriter, r *http.Request) {
 		respondError(w, err)
 		return
 	}
+	if err := s.checkPromptResourceScope(r, parts); err != nil {
+		respondError(w, err)
+		return
+	}
 	body, _ := json.Marshal(struct {
 		Text       string
 		Generation int

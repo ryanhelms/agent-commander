@@ -41,13 +41,16 @@ struct WorkerControl: Decodable, Equatable, Sendable {
     let activeTurnID: String?
     /// The receipt of the latest interrupt, kept after its outcome. Nil from an older service.
     let interrupt: WorkerInterruptReceipt?
+    /// The prompt content the session accepts beyond text. Nil from an older service or a
+    /// session that has not reported it; a follow-up then offers no file context.
+    let promptCapabilities: WorkerPromptCapabilities?
 
     /// False only when the service says this session cannot be interrupted.
     var sessionCanInterrupt: Bool { sessionCapabilities?.canInterrupt != false }
 
     init(held: Bool, generation: Int, interruptRequested: Bool?, messages: [WorkerFollowUp]?,
          sessionCapabilities: WorkerSessionCapabilities? = nil, activeTurnID: String? = nil,
-         interrupt: WorkerInterruptReceipt? = nil) {
+         interrupt: WorkerInterruptReceipt? = nil, promptCapabilities: WorkerPromptCapabilities? = nil) {
         self.held = held
         self.generation = generation
         self.interruptRequested = interruptRequested
@@ -55,12 +58,14 @@ struct WorkerControl: Decodable, Equatable, Sendable {
         self.sessionCapabilities = sessionCapabilities
         self.activeTurnID = activeTurnID
         self.interrupt = interrupt
+        self.promptCapabilities = promptCapabilities
     }
 
     private enum CodingKeys: String, CodingKey {
         case held, generation, interruptRequested = "interrupt_requested", messages
         case sessionCapabilities = "session_capabilities"
         case activeTurnID = "active_turn_id", interrupt
+        case promptCapabilities = "prompt_capabilities"
     }
 }
 
@@ -96,7 +101,10 @@ extension WorkerControl {
                   activeTurnID: try fields.optionalString("active_turn_id"),
                   interrupt: try fields["interrupt"].flatMap {
                       $0.isNull ? nil : try WorkerInterruptReceipt(projection: $0)
-                  })
+                  },
+                  // Never throws: an unreadable set reads as not reported, so it cannot cost the
+                  // worker its control record.
+                  promptCapabilities: fields["prompt_capabilities"].flatMap(WorkerPromptCapabilities.init(projection:)))
     }
 }
 
@@ -556,6 +564,17 @@ enum ServiceError: LocalizedError {
     }
 }
 
+/// A refusal with its HTTP status, for a caller that acts on the status itself.
+struct ServiceStatusError: LocalizedError, Equatable {
+    let status: Int
+    let message: String
+
+    var errorDescription: String? { message }
+
+    /// The service no longer holds the addressed item in a state that takes this request.
+    var isWithdrawn: Bool { status == 404 || status == 409 }
+}
+
 // All GUI operations use the local HTTP API. The serialized client keeps short
 // requests off the UI thread and sends project paths and prompt text as JSON data.
 actor ServiceClient {
@@ -611,6 +630,93 @@ actor ServiceClient {
         struct FollowUp: Encodable { let text: String; let generation: Int }
         _ = try request("/v1/workers/\(workerID)/messages",
                         fields: FollowUp(text: text, generation: generation), operationID: operationID)
+    }
+
+    /// Sends a follow-up whose content carries file context: `body` is the whole JSON request,
+    /// `{ "generation": N, "content": [...] }`, already encoded and checked against the service's
+    /// request bound by `FollowUpContent.requestBody`. The same route and idempotency header as text.
+    func sendFollowUp(to workerID: String, body: Data, operationID: String) throws {
+        _ = try Self.send(socket: socket, path: "/v1/workers/\(workerID)/messages", body: body,
+                          operationID: operationID)
+    }
+
+    // MARK: Provider session
+
+    /// What the service knows about the worker's provider session. Not queued behind this
+    /// client's other requests, and cancellable.
+    nonisolated func providerSessionStatus(_ workerID: String) async throws -> ProviderSessionStatus {
+        try ProviderSessionStatus(json: await read(Self.providerSessionPath(workerID), timeout: 6))
+    }
+
+    /// One page of the sessions the worker's provider lists in its scope. `cursor` is the
+    /// `next_cursor` of an earlier page of the same worker. The service gives a provider up to 20
+    /// seconds to answer.
+    nonisolated func providerSessions(_ workerID: String, cursor: String? = nil,
+                                      limit: Int = ProviderSessionPage.limit) async throws -> ProviderSessionPage {
+        try ProviderSessionPage(json: await read(Self.providerSessionsPath(workerID, cursor: cursor, limit: limit),
+                                                 timeout: 25))
+    }
+
+    /// Reattaches the worker to its own bound provider session under `request.generation`. The
+    /// same `operationID` is sent for a retry of the same request, so the service applies it once.
+    func reattachWorker(_ workerID: String, request body: ProviderReattachRequest, operationID: String) throws {
+        _ = try request("/v1/workers/\(Self.percentEncoded(workerID))/reattach", fields: body,
+                        operationID: operationID)
+    }
+
+    nonisolated static func providerSessionPath(_ workerID: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/session"
+    }
+
+    /// The path and query of one page of provider sessions. Every value is percent-encoded.
+    nonisolated static func providerSessionsPath(_ workerID: String, cursor: String? = nil,
+                                                 limit: Int = ProviderSessionPage.limit) -> String {
+        var query = "limit=\(min(max(limit, 1), 128))"
+        if let cursor, !cursor.isEmpty { query += "&cursor=\(percentEncoded(cursor))" }
+        return "/v1/workers/\(percentEncoded(workerID))/provider-sessions?\(query)"
+    }
+
+    // MARK: Elicitation
+
+    /// The structured requests the worker's agent has put to its owner. Not queued behind this
+    /// client's other requests, and cancellable.
+    nonisolated func elicitations(_ workerID: String) async throws -> [Elicitation] {
+        try Elicitation.list(json: await read(Self.elicitationsPath(workerID), timeout: 6))
+    }
+
+    /// Sends the owner's decision on one request. `body` is the whole JSON request from
+    /// `ElicitationReply.body`. A refusal carries its status, so a 404 or 409 reads as withdrawn.
+    /// Off the request queue and off the main actor; it is not cancelled with the panel.
+    nonisolated func replyToElicitation(_ workerID: String, id: String, body: Data) async throws {
+        let socket = socket
+        let path = Self.elicitationReplyPath(workerID, id: id)
+        _ = try await Task.detached(priority: .userInitiated) {
+            try Self.send(socket: socket, path: path, body: body, operationID: nil, reportsStatus: true)
+        }.value
+    }
+
+    nonisolated static func elicitationsPath(_ workerID: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/elicitations"
+    }
+
+    nonisolated static func elicitationReplyPath(_ workerID: String, id: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/elicitations/\(percentEncoded(id))/reply"
+    }
+
+    /// Reads one GET answer at `path`, off the request queue and cancellable.
+    private nonisolated func read(_ path: String, timeout: Int) async throws -> Data {
+        let socket = socket
+        let transfer = Transfer()
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                let data = try Self.send(socket: socket, path: path, body: nil, operationID: nil,
+                                         timeout: timeout, transfer: transfer)
+                try Task.checkCancellation()
+                return data
+            }.value
+        } onCancel: {
+            transfer.cancel()
+        }
     }
 
     /// Interrupts the worker's current turn. With a `target`, the request names the observed turn
@@ -743,8 +849,9 @@ actor ServiceClient {
     }
 
     /// One request over the owner socket. `transfer`, when given, lets the caller end it early.
+    /// With `reportsStatus`, a refusal is a `ServiceStatusError` carrying its HTTP status.
     private static func send(socket: String, path: String, body: Data?, operationID: String?,
-                             timeout: Int = 6, transfer: Transfer? = nil) throws -> Data {
+                             timeout: Int = 6, transfer: Transfer? = nil, reportsStatus: Bool = false) throws -> Data {
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/curl")
         var args = ["--disable", "--silent", "--show-error", "--max-time", String(timeout), "--noproxy", "*",
@@ -777,6 +884,7 @@ actor ServiceClient {
         guard (200..<300).contains(status) else {
             let info = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
             let message = info?["error"] as? String ?? info?["message"] as? String ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            if reportsStatus { throw ServiceStatusError(status: status, message: message) }
             throw ServiceError.rejected(message)
         }
         return Data(payload)
