@@ -271,11 +271,11 @@ func run() error {
 	if len(os.Args) != 3 || os.Args[1] != "tray" {
 		return errors.New("usage: commander-network serve | commander-network tray VERB < request.json")
 	}
-	raw, e := io.ReadAll(io.LimitReader(os.Stdin, 32769))
+	raw, e := io.ReadAll(io.LimitReader(os.Stdin, 98305))
 	if e != nil {
 		return e
 	}
-	if len(raw) > 32768 {
+	if len(raw) > 98304 {
 		return errors.New("tray input too large")
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
