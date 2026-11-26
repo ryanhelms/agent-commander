@@ -337,6 +337,8 @@ import Testing
                                      answeredHold: hold)
         model.open()
         await model.settle()
+        // The first approvals read lands on a background poll; wait for it rather than assume it.
+        #expect(await MultiplayerLiveFixture.eventually { !model.share.pendingApprovals.isEmpty })
         let pending = try #require(model.share.pendingApprovals.first)
         let server = pending.server
         func listed() -> Bool { model.share.approvals[server]?.contains { $0.id == pending.item.id } == true }
