@@ -115,6 +115,8 @@ func (s *sessions) open(ctx context.Context, e Entry, purpose string, argv []str
 	if out, err := exec.CommandContext(ctx, tmux, args...).CombinedOutput(); err != nil {
 		return Attachment{}, fmt.Errorf("could not start the %s session: %s", purpose, strings.TrimSpace(string(out)))
 	}
+	// The cockpit's sheet already names the command, so tmux's own status bar stays off.
+	_ = exec.CommandContext(ctx, tmux, "-N", "-L", s.label, "set-option", "-t", "="+name+":", "status", "off").Run()
 	raw, err := exec.CommandContext(ctx, tmux, "-N", "-L", s.label, "display-message", "-p", "-t", "="+name+":", "#{session_id} #{socket_path}").Output()
 	if err != nil {
 		return Attachment{}, fmt.Errorf("could not read the %s session: %w", purpose, err)
