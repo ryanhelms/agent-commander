@@ -195,10 +195,16 @@ func TestTrayResourceAndGrantRoundTrip(t *testing.T) {
 }
 
 func TestTrayHostPublishesEnrolledCapabilities(t *testing.T) {
-	var got control.Resource
+	type publication struct {
+		Capabilities *struct {
+			Tools, Environments []string
+			Commands            []map[string]any
+		}
+	}
+	var got publication
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/resources/mac", func(w http.ResponseWriter, r *http.Request) {
-		got = control.Resource{}
+		got = publication{}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Error(err)
 		}
@@ -212,7 +218,7 @@ func TestTrayHostPublishesEnrolledCapabilities(t *testing.T) {
 		}
 	}
 	first := actions.HostCommand{Name: "lint", Args: []string{"check"}, Dir: dir, Environment: "ios"}
-	second := actions.HostCommand{Name: "test", Args: []string{"test"}, Dir: dir, Environment: "ios"}
+	second := actions.HostCommand{Name: "test", Args: []string{"test"}, Dir: dir, Environment: "ios", AllowArgs: true}
 	write(first, second)
 	s := identity.Session{User: "alice", Device: "mac", ExpiresAt: time.Now().Add(time.Hour)}
 	a := &Agent{cfg: Config{Dir: dir, Relay: testRelayURL}, http: &http.Client{Transport: relayTransport{mux}}, creds: credentials{Session: s}}
@@ -221,11 +227,22 @@ func TestTrayHostPublishesEnrolledCapabilities(t *testing.T) {
 	if why != "" || got.Capabilities == nil || !slices.Equal(got.Capabilities.Tools, []string{"lint", "test"}) || !slices.Equal(got.Capabilities.Environments, []string{"ios"}) {
 		t.Fatalf("host enrollment: %+v, %s", got.Capabilities, why)
 	}
+	wantCommands := []map[string]any{
+		{"name": "lint", "allowArgs": false, "environment": "ios"},
+		{"name": "test", "allowArgs": true, "environment": "ios"},
+	}
+	if !reflect.DeepEqual(got.Capabilities.Commands, wantCommands) {
+		t.Fatalf("published commands: %+v, want %+v", got.Capabilities.Commands, wantCommands)
+	}
 	second.Environment = ""
+	second.AllowArgs = false
 	write(second)
 	_, why = call(t, h, "resource-update", input{Resource: "mac", Name: "Build Mac"})
 	if why != "" || got.Capabilities == nil || !slices.Equal(got.Capabilities.Tools, []string{"test"}) || len(got.Capabilities.Environments) != 0 {
 		t.Fatalf("host update retained withdrawn capabilities: %+v, %s", got.Capabilities, why)
+	}
+	if !reflect.DeepEqual(got.Capabilities.Commands, []map[string]any{{"name": "test", "allowArgs": false}}) {
+		t.Fatalf("updated commands: %+v", got.Capabilities.Commands)
 	}
 }
 

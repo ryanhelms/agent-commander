@@ -24,6 +24,7 @@ type input struct {
 	Group         string                `json:"group"`
 	Resource      string                `json:"resource"`
 	Capability    string                `json:"capability"`
+	Actions       []string              `json:"actions,omitempty"`
 	Capabilities  *control.Capabilities `json:"capabilities,omitempty"`
 	Name          string                `json:"name"`
 	Kind          string                `json:"kind"`
@@ -332,8 +333,17 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	p := a.policy
 	a.mu.Unlock()
 	i := slices.IndexFunc(p.Resources, func(r actions.Resource) bool { return r.ID == resource })
-	if i < 0 || !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
-		return errors.New("unsupported local resource or capability")
+	if resource == "" {
+		return errors.New("provide a resource for the grant")
+	}
+	if i < 0 {
+		return fmt.Errorf("no resource %s", resource)
+	}
+	if action == "" {
+		return errors.New("provide a capability for the grant")
+	}
+	if !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
+		return fmt.Errorf("resource %s does not support %s", resource, action)
 	}
 	// The other user can end the friendship from a different device. Reconcile
 	// with the relay before carrying any previously granted capability forward.
@@ -529,6 +539,17 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 }
 
 func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
+	if in.Actions != nil {
+		// Grant callers can also use the relay's actions array. The tray
+		// edits one capability and its limits at a time.
+		if verb != "grant" {
+			return nil, errors.New("the actions field is only accepted for a grant")
+		}
+		if len(in.Actions) != 1 || in.Actions[0] == "" || in.Capability != "" {
+			return nil, errors.New("provide one grant action using either capability or actions")
+		}
+		in.Capability = in.Actions[0]
+	}
 	switch verb {
 	case "status":
 		return a.status(ctx)
@@ -565,7 +586,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 			return nil, errors.New("nothing to change")
 		}
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
-	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge":
+	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove":
 		return a.teamVerb(ctx, s, verb, in)
 	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "claim", "release", "knowledge":
 		return a.namedTeamRelay(ctx, s, verb, in)
@@ -606,7 +627,11 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 	case "resource-add", "resource-update":
 		return a.publishResource(ctx, s, in, verb == "resource-update")
 	case "grant", "revoke":
-		return nil, a.grant(ctx, s, in, verb == "revoke")
+		err := a.grant(ctx, s, in, verb == "revoke")
+		if in.Group != "" {
+			err = teamRefusal(err)
+		}
+		return nil, err
 	case "repo-credential":
 		a.mu.Lock()
 		defer a.mu.Unlock()

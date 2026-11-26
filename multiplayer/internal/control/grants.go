@@ -148,12 +148,12 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 		}
 		var caps []string
 		if err := tx.QueryRow(ctx, `SELECT actions FROM mp_resources WHERE id=$1 AND owner_id=$2 AND device=$3 FOR UPDATE`, res, p.User, p.Device).Scan(&caps); err != nil {
-			return err
+			return missingRow(err, "no resource "+res)
 		}
 		if policy != nil {
 			for _, action := range policy.Actions {
 				if !slices.Contains(caps, action) {
-					return bad("grant contains unsupported action")
+					return bad("resource " + res + " does not support " + action)
 				}
 			}
 			if err := checkGrantPolicy(ctx, tx, *policy); err != nil {
@@ -165,7 +165,7 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 		}
 		var peer string
 		if err := tx.QueryRow(ctx, "SELECT user_id FROM mp_profiles WHERE handle=$1", strings.ToLower(target)).Scan(&peer); err != nil {
-			return err
+			return missingRow(err, "no user "+target)
 		}
 		if peer == p.User {
 			return bad("choose a friend")
@@ -173,7 +173,7 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 		if policy == nil {
 			return revokeGrant(ctx, tx, res, peer, p.User, "")
 		}
-		if err := requireFriend(ctx, tx, p.User, peer); err != nil {
+		if err := requireFriend(ctx, tx, p.User, peer, target); err != nil {
 			return err
 		}
 		return policy.apply(ctx, tx, res, peer, p.User, "")
@@ -181,12 +181,12 @@ func (s *Service) changeGrant(ctx context.Context, p Principal, r *http.Request)
 	return nil, err
 }
 
-func requireFriend(ctx context.Context, tx pgx.Tx, owner, peer string) error {
+func requireFriend(ctx context.Context, tx pgx.Tx, owner, peer, handle string) error {
 	a, b := ownerPair(owner, peer)
 	var accepted bool
 	err := tx.QueryRow(ctx, "SELECT accepted FROM mp_friends WHERE a=$1 AND b=$2 FOR SHARE", a, b).Scan(&accepted)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && !accepted {
-		return forbidden()
+		return &fault{http.StatusForbidden, handle + " is not your friend"}
 	}
 	return err
 }

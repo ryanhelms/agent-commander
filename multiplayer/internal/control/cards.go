@@ -40,7 +40,7 @@ func (s *Service) cards(ctx context.Context, p Principal, r *http.Request) (any,
 		'id',id,'title',title,'body',body,'state',state,'assignee',assignee,'result',result) ORDER BY created_at,id)
 		FROM mp_workspace_board b WHERE workspace_id=w.id),'[]'::jsonb)
 		FROM mp_workspaces w JOIN mp_group_members m ON m.group_id=w.group_id WHERE w.id=$1 AND m.user_id=$2`, r.PathValue("id"), p.User).Scan(&cards)
-	return map[string]any{"cards": cards}, err
+	return map[string]any{"cards": cards}, missingRow(err, "no workspace "+r.PathValue("id")+" in your groups")
 }
 
 func readCard(ctx context.Context, db membershipReader, p Principal, id, card string) (workspaceCard, error) {
@@ -48,7 +48,7 @@ func readCard(ctx context.Context, db membershipReader, p Principal, id, card st
 	err := db.QueryRow(ctx, `SELECT b.id,b.title,b.body,b.state,b.assignee,b.result
 		FROM mp_workspace_board b JOIN mp_workspaces w ON w.id=b.workspace_id JOIN mp_group_members m ON m.group_id=w.group_id
 		WHERE w.id=$1 AND b.id=$2 AND m.user_id=$3`, id, card, p.User).Scan(&b.ID, &b.Title, &b.Body, &b.State, &b.Assignee, &b.Result)
-	return b, err
+	return b, missingRow(err, "no card "+card+" available to you in workspace "+id)
 }
 
 func (s *Service) card(ctx context.Context, p Principal, r *http.Request) (any, error) {

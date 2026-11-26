@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
+
+	"agentcommander.network/pilot/internal/identity"
 )
 
 const queueFile = "merge-queue.json"
@@ -73,8 +76,28 @@ func migrateQueue(dir, firstServer string) error {
 	return os.Remove(legacy)
 }
 
+// The relay lists only workspaces visible to this session on this server.
+type queueWorkspaces struct {
+	Workspaces []struct{ ID, Integration, Base string }
+}
+
+func (w queueWorkspaces) base(id string) (string, error) {
+	for _, workspace := range w.Workspaces {
+		if workspace.ID == id {
+			if workspace.Integration != "queue" {
+				return "", fmt.Errorf("workspace %s uses %s integration", id, workspace.Integration)
+			}
+			if workspace.Base == "" {
+				return "", fmt.Errorf("workspace %s has no base branch", id)
+			}
+			return workspace.Base, nil
+		}
+	}
+	return "", fmt.Errorf("unknown workspace %s", id)
+}
+
 // The manager selects the server's agent and tray serializes its mutations.
-func (a *Agent) queueVerb(ctx context.Context, verb string, in input) (any, error) {
+func (a *Agent) queueVerb(ctx context.Context, session identity.Session, verb string, in input) (any, error) {
 	path := filepath.Join(a.cfg.Dir, queueFile)
 	q, err := readQueue(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -89,11 +112,44 @@ func (a *Agent) queueVerb(ctx context.Context, verb string, in input) (any, erro
 		if !filepath.IsAbs(in.Checkout) || in.Branch == "" || in.Workspace == "" {
 			return nil, errors.New("queue-add needs a workspace, a branch and the absolute checkout path")
 		}
+		var workspaces queueWorkspaces
+		if err := a.remote(ctx, session, "GET", "/v1/workspaces", nil, &workspaces); err != nil {
+			return nil, err
+		}
+		if _, err := workspaces.base(in.Workspace); err != nil {
+			return nil, err
+		}
+		if err := checkQueueCheckout(ctx, in.Checkout); err != nil {
+			return nil, err
+		}
 		q = append(q, queueEntry{Workspace: in.Workspace, Branch: in.Branch, Checkout: in.Checkout, Test: in.TestCommand, Added: time.Now().UTC(), State: "queued"})
+	case "queue-remove":
+		if in.Workspace == "" || in.Branch == "" {
+			return nil, errors.New("queue-remove needs a workspace and a branch")
+		}
+		q = slices.DeleteFunc(q, func(entry queueEntry) bool {
+			return entry.Workspace == in.Workspace && entry.Branch == in.Branch
+		})
 	case "queue-merge":
+		selected := func(e queueEntry) bool {
+			return e.State == "queued" && (in.Workspace == "" || e.Workspace == in.Workspace)
+		}
+		if !slices.ContainsFunc(q, selected) {
+			return map[string]any{"queue": q}, nil
+		}
+		var workspaces queueWorkspaces
+		if err := a.remote(ctx, session, "GET", "/v1/workspaces", nil, &workspaces); err != nil {
+			return nil, err
+		}
 		for i := range q {
-			if q[i].State == "queued" && (in.Workspace == "" || q[i].Workspace == in.Workspace) {
-				q[i].State, q[i].Output = mergeBranch(ctx, q[i])
+			if !selected(q[i]) {
+				continue
+			}
+			base, err := workspaces.base(q[i].Workspace)
+			if err != nil {
+				q[i].State, q[i].Output = "failed", err.Error()
+			} else {
+				q[i].State, q[i].Output = mergeBranch(ctx, q[i], base)
 			}
 		}
 	}

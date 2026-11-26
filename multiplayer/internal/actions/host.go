@@ -58,9 +58,15 @@ func prepareHost(r Resource) (Resource, error) {
 		caps = *r.Capabilities
 	}
 	caps.Tools, caps.Environments = []string{}, []string{}
+	caps.Commands = make([]sharing.Command, 0, len(commands))
 	for _, command := range commands {
-		if !slices.Contains(caps.Tools, command.Name) {
+		public := sharing.Command{Name: command.Name, AllowArgs: command.AllowArgs, Environment: command.Environment}
+		if i := slices.Index(caps.Tools, command.Name); i >= 0 {
+			// Execution uses the last enrollment with this name.
+			caps.Commands[i] = public
+		} else {
 			caps.Tools = append(caps.Tools, command.Name)
+			caps.Commands = append(caps.Commands, public)
 		}
 		if command.Environment != "" && !slices.Contains(caps.Environments, command.Environment) {
 			caps.Environments = append(caps.Environments, command.Environment)
@@ -88,8 +94,11 @@ func hostHandler(ctx context.Context, _ Config, r Resource, req Request, _ strin
 			cmd = &cmds[i]
 		}
 	}
-	if cmd == nil || (len(in.Args) > 0 && !cmd.AllowArgs) {
-		return nil, ErrDenied
+	if cmd == nil {
+		return nil, requestRefusal(in.Command + " is not an enrolled command")
+	}
+	if len(in.Args) > 0 && !cmd.AllowArgs {
+		return nil, requestRefusal(in.Command + " does not accept extra arguments")
 	}
 	timeout := time.Duration(cmd.TimeoutSec) * time.Second
 	if timeout <= 0 || timeout > 30*time.Minute {
