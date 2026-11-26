@@ -85,15 +85,17 @@ struct ShellNetwork: Equatable {
     }
 }
 
-/// The network model's intents the shell can ask for. Each returns whether the model took it: it
-/// takes one action at a time.
+/// The network model's intents the shell can ask for. Answers go through `answers`, the same
+/// boundary the network pages use, and each comes back for its own request.
 struct ShellNetworkActions {
     var setPresence: @MainActor (MultiplayerPresenceChoice) -> Void = { _ in }
-    var decideApproval: @MainActor (MultiplayerPending<MultiplayerApproval>, _ approve: Bool) -> Bool = { _, _ in false }
-    var declineAccess: @MainActor (MultiplayerPending<MultiplayerAccessRequest>) -> Bool = { _ in false }
-    var acceptFriend: @MainActor (ShellNetwork.FriendRequest) -> Bool = { _ in false }
+    var answers = NetworkPageActions()
     /// Shows the network panel in its own window. Nil where there is no network helper.
     var openNetworkPanel: (@MainActor () -> Void)? = nil
+    /// Opens a network request in the model, so its page shows it: an approval's review.
+    var openLink: @MainActor (NetworkDeepLink) -> Void = { _ in }
+    /// Fills the grant sheet from a friend's access request. False when the server can't take it.
+    var reviewAccess: @MainActor (MultiplayerPending<MultiplayerAccessRequest>) -> Bool = { _ in false }
 }
 
 /// What the live page hands the cockpit so it draws the redesigned shell.
@@ -104,6 +106,9 @@ struct ShellContext {
     var chrome = ShellChrome.hosted
     /// A fixed time for a render or a test. Nil reads the clock each second.
     var now: Date? = nil
+    /// The page for a network place. `go` takes the window to another place. Nil leaves the
+    /// placeholder.
+    var networkPage: (@MainActor (_ place: String, _ go: @escaping (String) -> Void) -> AnyView)? = nil
 }
 
 enum LiveShell {
@@ -144,7 +149,7 @@ enum LiveShell {
     /// `place` is where the window is; on the wall the selected row is the open run's project, and
     /// the new-run form selects New run.
     static func navigation(runs: [RunSummary], openRunPath: String?, composing: Bool, place: String,
-                           needsYou: Int, network: ShellNetwork) -> CommanderNavigation {
+                           needsYou: Int, network: ShellNetwork, isOnline: Bool = true) -> CommanderNavigation {
         func row(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                  hot: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -158,7 +163,7 @@ enum LiveShell {
         let teams = network.workspaces.map { pending in
             CommanderPlace(id: team(pending), title: pending.item.name.multiplayerDisplay,
                            mark: .letter(String(pending.item.name.prefix(1)).uppercased()),
-                           count: pending.item.claims.count, countNoun: "claims")
+                           count: pending.item.claims.count, countNoun: pending.item.claims.count == 1 ? "claim" : "claims")
         }
         let health = network.health
         let networkPlaces = [
@@ -174,7 +179,8 @@ enum LiveShell {
         let places = [
             CommanderPlace(id: Self.needsYou, title: "Needs you", mark: .symbol("tray"), count: needsYou, isHot: needsYou > 0),
             CommanderPlace(id: wall, title: "Runs", mark: .symbol("rectangle.split.2x1"), count: runs.count, countNoun: "runs"),
-            CommanderPlace(id: newRun, title: "New run", mark: .symbol("plus"))
+            // A run can't start while the local service is offline, so the row is off like ⌘N.
+            CommanderPlace(id: newRun, title: "New run", mark: .symbol("plus"), isDisabled: !isOnline)
         ] + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
         ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + [
@@ -242,11 +248,13 @@ enum LiveShell {
     ///   pending   the cockpit's pending requests, oldest first. Each offers Reply alone, because
     ///             the answer is written in the Attention surfaces.
     ///   network   approvals (Deny, Approve), access requests (Decline, Review) and friend
-    ///             requests (Accept alone: the network model has no decline).
+    ///             requests (Decline, Accept).
     ///   decided   requests answered a moment ago. Each replaces its waiting form, so the outcome
     ///             shows even after the source has dropped the request.
+    ///   failures  why the last answer to a request didn't go through, by request. The row says so
+    ///             and keeps its answers.
     static func inbox(pending: [RequestPresentation], network: ShellNetwork, now: Date,
-                      decided: [NeedsYouItem] = []) -> NeedsYouInbox {
+                      decided: [NeedsYouItem] = [], failures: [String: String] = [:]) -> NeedsYouInbox {
         var items: [NeedsYouItem] = pending.map { request in
             let isApproval = !request.choices.isEmpty && request.awaitingApprovalToolID != nil
             let detail = request.isWorkerDisconnected
@@ -285,11 +293,17 @@ enum LiveShell {
                                 origin: .friend(handle: handle(friend.request.handle), server: server, serverID: friend.server),
                                 title: "\(handle(friend.request.handle)) sent a friend request",
                                 detail: "On \(server). Friends can see presence and ask for access.",
-                                waiting: nil, answers: [.accept])
+                                waiting: friend.request.requestedAt.map { max(0, now.timeIntervalSince($0)) })
         }
         let answered = Dictionary(decided.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let live = Set(items.map(\.id))
-        return NeedsYouInbox(items: items.map { answered[$0.id] ?? $0 } + decided.filter { !live.contains($0.id) })
+        let shown = items.map { item -> NeedsYouItem in
+            if let done = answered[item.id] { return done }
+            var item = item
+            item.failure = failures[item.id]
+            return item
+        }
+        return NeedsYouInbox(items: shown + decided.filter { !live.contains($0.id) })
     }
 
     private static func handle(_ raw: String) -> String { raw.isEmpty ? "A friend" : raw.multiplayerDisplay }
@@ -306,6 +320,7 @@ struct LiveNeedsYouPage: View {
     let pending: [RequestPresentation]
     let network: ShellNetwork
     let decided: [NeedsYouItem]
+    var failures: [String: String] = [:]
     var now: Date? = nil
     let decide: (NeedsYouInbox, String, NeedsYouDecision) -> Void
     let open: (String) -> Void
@@ -320,8 +335,8 @@ struct LiveNeedsYouPage: View {
     }
 
     private func page(at date: Date) -> some View {
-        let inbox = LiveShell.inbox(pending: pending, network: network, now: date, decided: decided)
+        let inbox = LiveShell.inbox(pending: pending, network: network, now: date, decided: decided, failures: failures)
         return NeedsYouPage(inbox: inbox, decide: { id, decision in decide(inbox, id, decision) }, open: open,
-                            reply: reply, notice: network.failure)
+                            reply: reply, notice: nil)
     }
 }

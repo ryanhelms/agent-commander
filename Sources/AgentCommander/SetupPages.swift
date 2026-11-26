@@ -1365,7 +1365,7 @@ struct PreferencesPage: View {
 
     var body: some View {
         WorkspacePage {
-            PageHeader(kicker: "Workspace / Settings", title: "Preferences",
+            PageHeader(kicker: "WORKSPACE / SETTINGS", title: "Preferences",
                        subtitle: showsRecording
                            ? "Set how Commander looks, presents pending decisions and records project activity."
                            : "Set how Commander looks and how it presents pending decisions.") {
@@ -1384,6 +1384,12 @@ struct PreferencesPage: View {
             }
             Label("Consoles, terminals and the pretty view look the same in every theme.", systemImage: "terminal")
                 .themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+            if ThemeChoice.isFixedByLaunchArgument {
+                Label("This run was launched with a theme argument, so the theme stays as it is until the app is opened without it.",
+                      systemImage: "lock")
+                    .themeType(theme.type.sub).foregroundStyle(.theme(\.color.attention))
+                    .accessibilityIdentifier("theme-fixed-note")
+            }
             heading("Attention", "When a worker needs you", note: "Workspace preference", symbol: "desktopcomputer")
             HStack(alignment: .top, spacing: 14) {
                 ForEach(presentations) { mode in

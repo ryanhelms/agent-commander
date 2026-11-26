@@ -229,6 +229,8 @@ struct ShellPlaceRow: View {
             .frame(maxWidth: .infinity, minHeight: theme.space.rowIcon, alignment: .leading)
         }
         .buttonStyle(ShellRowButtonStyle(isSelected: item.isSelected))
+        .disabled(item.place.isDisabled)
+        .opacity(item.place.isDisabled ? 0.45 : 1)
         .shellShortcut(item.shortcut)
         .help(item.shortcut.map { "\(item.place.title) (⌘\($0))" } ?? item.place.title)
         .accessibilityLabel(item.place.spoken)
@@ -246,7 +248,8 @@ extension View {
     /// something else passes other modifiers.
     @ViewBuilder func shellShortcut(_ number: Int?, modifiers: EventModifiers = .command) -> some View {
         if let number, let key = "\(number)".first {
-            keyboardShortcut(KeyEquivalent(key), modifiers: modifiers)
+            // The digit itself, on every keyboard layout: ⌥ must not be read as another key.
+            keyboardShortcut(KeyboardShortcut(KeyEquivalent(key), modifiers: modifiers, localization: .custom))
         } else {
             self
         }
@@ -308,6 +311,8 @@ struct ShellModeCell: View {
     let item: CommanderNavigation.ModeItem
     /// The keys held with the mode's number.
     var modifiers: EventModifiers = .command
+    /// The cell binds the shortcut itself. Off where the window binds every mode's keys in one place.
+    var bindsShortcut = true
     let select: (String) -> Void
 
     var body: some View {
@@ -326,7 +331,7 @@ struct ShellModeCell: View {
                     .allowsHitTesting(false)
             }
         }
-        .shellShortcut(item.shortcut, modifiers: modifiers)
+        .shellShortcut(bindsShortcut ? item.shortcut : nil, modifiers: modifiers)
         .help(item.shortcut.map { "\(item.mode.title) (\(modifiers.shellKeyCap)\($0))" } ?? item.mode.title)
         .accessibilityLabel(item.hotCount > 0 ? "\(item.mode.title), \(item.hotCount) waiting" : item.mode.title)
         .accessibilityValue(item.isSelected ? "Selected" : "")
@@ -402,6 +407,7 @@ struct ShellReadoutStrip<Trailing: View>: View {
                 if let open {
                     Button { open(cell.id) } label: { ShellReadoutCell(readout: cell, large: large) }
                         .buttonStyle(.plain)
+                        .help(cell.spoken ?? "\(cell.label), \(cell.value)")
                         .accessibilityLabel(cell.spoken ?? "\(cell.label), \(cell.value)")
                         .accessibilityIdentifier("shell-readout-\(cell.id)")
                 } else {
@@ -437,28 +443,24 @@ struct ShellPresenceMenu: View {
 
     var body: some View {
         Menu {
+            // A toggle is a menu item with a native check beside the choice in force.
             ForEach(MultiplayerPresenceChoice.allCases) { option in
-                Button { pick(option) } label: {
-                    if option == profile.choice {
-                        Label(option.title, systemImage: "checkmark")
-                    } else {
-                        Text(option.title)
-                    }
-                }
+                Toggle(option.title, isOn: Binding(get: { option == profile.choice }, set: { if $0 { pick(option) } }))
             }
         } label: {
-            ShellReadoutCell(readout: ShellReadout(id: "presence", label: "presence", value: profile.presenceTitle,
+            ShellReadoutCell(readout: ShellReadout(id: "presence", label: "presence", value: profile.spokenPresence,
                                                    lamp: profile.presence?.lamp ?? .off),
                              opensMenu: true)
+                .accessibilityHidden(true)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Choose the presence your friends see")
-        .accessibilityElement(children: .ignore)
+        // The menu stays one pressable element: its name, then the presence in force as its value.
         .accessibilityLabel("Your presence")
-        .accessibilityValue(profile.presenceTitle)
+        .accessibilityValue(profile.spokenPresence)
         .accessibilityHint("Opens a list to choose from")
         .accessibilityIdentifier("shell-presence")
     }
@@ -488,7 +490,6 @@ struct ShellToolbarReadouts: View {
         ShellReadoutStrip(cells: [cell], open: { _ in openServers() }) {
             if let profile { ShellPresenceMenu(profile: profile, pick: pickPresence) }
         }
-        .help("Servers: \(servers.spoken)")
     }
 }
 

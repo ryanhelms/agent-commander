@@ -30,6 +30,13 @@ enum ThemeChoice {
         id(for: defaults.string(forKey: key))
     }
 
+    /// The theme was named on the command line (`-appearance.theme console`). A launch argument
+    /// outranks the stored choice for the whole run, so choosing a theme changes nothing until
+    /// the app is opened without it.
+    static var isFixedByLaunchArgument: Bool {
+        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[key] != nil
+    }
+
     static func select(_ id: ThemeID, in defaults: UserDefaults = .standard) {
         defaults.set(id.rawValue, forKey: key)
     }

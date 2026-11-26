@@ -93,6 +93,7 @@ struct NeedsYouKindTag: View {
 /// How long the request has left, in tone, or how long it has waited.
 struct NeedsYouClockLabel: View {
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Nil when the request doesn't say when it arrived: the cell then stays empty.
     let waiting: TimeInterval?
     let expiresIn: TimeInterval?
@@ -103,7 +104,17 @@ struct NeedsYouClockLabel: View {
                 Text(NeedsYouClock.left(expiresIn))
                     .themeType(theme.type.data).monospacedDigit()
                     .foregroundStyle(.theme(expiresIn < NeedsYouInbox.closing ? \.color.attention : \.color.working))
-                Text("left").themeType(theme.type.fingerprint).foregroundStyle(.theme(\.color.secondary))
+                // The countdown's line: full at the start of the span, empty when the request lapses.
+                let tone: KeyPath<Theme, ThemeColor> & Sendable = expiresIn < NeedsYouInbox.closing ? \.color.attention : \.color.working
+                Rectangle().fill(.theme(\.color.hair))
+                    .frame(width: MultiplayerCountdown.lineWidth, height: 2)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(.theme(tone))
+                            .frame(width: MultiplayerCountdown.lineWidth * NeedsYouClock.fraction(left: expiresIn, waited: waiting), height: 2)
+                            // The line moves evenly through each second; it steps with Reduce Motion.
+                            .animation(reduceMotion ? nil : .linear(duration: 1), value: Int(expiresIn))
+                    }
+                    .accessibilityHidden(true)
             } else if let waiting {
                 Text(NeedsYouClock.age(waiting))
                     .themeType(theme.type.data).monospacedDigit()
@@ -240,7 +251,8 @@ struct NeedsYouRow: View {
                                 .lineLimit(1)
                             NeedsYouKindTag(kind: item.kind)
                         }
-                        Text(item.detail).themeType(theme.type.sub).foregroundStyle(.theme(\.color.secondary))
+                        Text(item.failure ?? item.detail).themeType(theme.type.sub)
+                            .foregroundStyle(.theme(item.failure == nil ? \.color.secondary : \.color.failure))
                             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
                     }
@@ -250,11 +262,13 @@ struct NeedsYouRow: View {
                 }
                 .buttonStyle(.plain)
                 .help("Open this request")
-                .accessibilityLabel("\(item.kind.tag): \(item.title). \(item.detail)")
+                .accessibilityLabel("\(item.kind.tag): \(item.title). \(item.failure ?? item.detail)")
                 .accessibilityHint("Opens the full request")
                 NeedsYouClockLabel(waiting: item.waiting, expiresIn: item.isPending ? item.expiresIn : nil)
                     .frame(width: NeedsYouLayout.clockWidth, alignment: .trailing)
                     .opacity(item.isPending ? 1 : 0)
+                    // An answered row keeps the cell's room but says nothing about waiting.
+                    .accessibilityHidden(!item.isPending)
                 Group {
                     if let decision = item.decision {
                         NeedsYouOutcomeWell(decision: decision).transition(.opacity)
