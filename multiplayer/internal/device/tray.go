@@ -19,56 +19,62 @@ import (
 )
 
 type input struct {
-	ID            string          `json:"id"`
-	Handle        string          `json:"handle"`
-	Resource      string          `json:"resource"`
-	Capability    string          `json:"capability"`
-	Name          string          `json:"name"`
-	Kind          string          `json:"kind"`
-	Target        string          `json:"target"`
-	MaxUses       int             `json:"maxUses"`
-	ExpiresAt     time.Time       `json:"expiresAt"`
-	Token         string          `json:"token"`
-	Server        string          `json:"server"`
-	DisplayName   *string         `json:"displayName"`
-	StatusMessage *string         `json:"statusMessage"`
-	Avatar        *string         `json:"avatar"`
-	Presence      string          `json:"presence"`
-	Mode          string          `json:"mode"`
-	AllowedEmails []string        `json:"allowedEmails"`
-	Admins        []string        `json:"admins"`
-	TTLHours      int             `json:"ttlHours"`
-	Invite        string          `json:"invite"`
-	Approval      string          `json:"approval"`
-	BudgetTokens  int             `json:"budgetTokens"`
-	Attribution   string          `json:"attribution"`
-	Reason        string          `json:"reason"`
-	Payload       json.RawMessage `json:"payload"`
-	Request       string          `json:"request"`
-	Text          string          `json:"text"`
-	Checkout      string          `json:"checkout"`
-	Artifact      int             `json:"artifact"`
-	Minutes       int             `json:"minutes"`
-	After         string          `json:"after"`
-	PR            string          `json:"pr"`
-	Targets       []Target        `json:"targets"`
-	Method        string          `json:"method"`
-	Path          string          `json:"path"`
-	Body          json.RawMessage `json:"body"`
-	Workspace     string          `json:"workspace"`
-	Branch        string          `json:"branch"`
-	TestCommand   []string        `json:"testCommand"`
-	Item          json.RawMessage `json:"item"`
-	Destination   string          `json:"destination"`
+	ID            string                `json:"id"`
+	Handle        string                `json:"handle"`
+	Resource      string                `json:"resource"`
+	Capability    string                `json:"capability"`
+	Capabilities  *control.Capabilities `json:"capabilities,omitempty"`
+	Name          string                `json:"name"`
+	Kind          string                `json:"kind"`
+	Target        string                `json:"target"`
+	MaxUses       int                   `json:"maxUses"`
+	ExpiresAt     time.Time             `json:"expiresAt"`
+	Token         string                `json:"token"`
+	Server        string                `json:"server"`
+	DisplayName   *string               `json:"displayName"`
+	StatusMessage *string               `json:"statusMessage"`
+	Avatar        *string               `json:"avatar"`
+	Presence      string                `json:"presence"`
+	Mode          string                `json:"mode"`
+	AllowedEmails []string              `json:"allowedEmails"`
+	Admins        []string              `json:"admins"`
+	TTLHours      int                   `json:"ttlHours"`
+	Invite        string                `json:"invite"`
+	Approval      string                `json:"approval"`
+	BudgetTokens  int                   `json:"budgetTokens"`
+	Attribution   string                `json:"attribution"`
+	Peer          string                `json:"peer"`
+	Reason        string                `json:"reason"`
+	Payload       json.RawMessage       `json:"payload"`
+	Request       string                `json:"request"`
+	Handoff       string                `json:"handoff"`
+	Text          string                `json:"text"`
+	Checkout      string                `json:"checkout"`
+	Artifact      int                   `json:"artifact"`
+	Minutes       int                   `json:"minutes"`
+	After         string                `json:"after"`
+	PR            string                `json:"pr"`
+	Targets       []Target              `json:"targets"`
+	Method        string                `json:"method"`
+	Path          string                `json:"path"`
+	Body          json.RawMessage       `json:"body"`
+	Workspace     string                `json:"workspace"`
+	Branch        string                `json:"branch"`
+	TestCommand   []string              `json:"testCommand"`
+	Item          json.RawMessage       `json:"item"`
+	Destination   string                `json:"destination"`
 }
 type trayGrant struct {
-	ID         string    `json:"id"`
-	Handle     string    `json:"handle"`
-	Kind       string    `json:"kind"`
-	Resource   string    `json:"resource"`
-	Capability string    `json:"capability"`
-	ExpiresAt  time.Time `json:"expiresAt"`
-	MaxUses    int       `json:"maxUses"`
+	ID           string    `json:"id"`
+	Handle       string    `json:"handle"`
+	Kind         string    `json:"kind"`
+	Resource     string    `json:"resource"`
+	Capability   string    `json:"capability"`
+	ExpiresAt    time.Time `json:"expiresAt"`
+	MaxUses      int       `json:"maxUses"`
+	Approval     string    `json:"approval"`
+	BudgetTokens int       `json:"budgetTokens"`
+	Attribution  string    `json:"attribution"`
 }
 
 func (a *Agent) status(ctx context.Context) (any, error) {
@@ -128,14 +134,20 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	a.friendsOn, a.incoming = on, len(incoming)
 	a.mu.Unlock()
-	rr, e := a.resources(ctx, s)
-	if e != nil {
+	var catalog struct {
+		Resources []control.Resource
+		Directory json.RawMessage
+	}
+	if e := a.remote(ctx, s, "GET", "/v1/resources", nil, &catalog); e != nil {
 		return nil, e
 	}
 	own, shared := []map[string]any{}, []map[string]any{}
 	kind := map[string]string{}
-	for _, r := range rr {
+	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device}
+		if r.Capabilities != nil {
+			row["capabilities"] = r.Capabilities
+		}
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
 			own = append(own, row)
@@ -144,38 +156,88 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		}
 	}
 	result["resources"], result["shared"] = own, shared
-	var dir struct {
-		Directory json.RawMessage `json:"directory"`
+	if len(catalog.Directory) > 0 {
+		result["directory"] = catalog.Directory
 	}
-	if a.remote(ctx, s, "GET", "/v1/resources", nil, &dir) == nil && len(dir.Directory) > 0 {
-		result["directory"] = dir.Directory
-	}
-	var grants struct{ Grants []control.Grant }
-	if e = a.remote(ctx, s, "GET", "/v1/grants", nil, &grants); e != nil {
+	grants, e := a.readGrants(ctx, s)
+	if e != nil {
 		return nil, e
 	}
-	local := []trayGrant{}
+	rows := slices.Clone(grants.rows)
+	for i := range rows {
+		rows[i].Kind = kind[rows[i].Resource]
+	}
+	result["grants"] = rows
+	return result, nil
+}
+
+type grantList struct {
+	Grants []control.Grant
+	rows   []trayGrant
+}
+
+func (a *Agent) readGrants(ctx context.Context, s identity.Session) (grantList, error) {
+	// A slower previous refresh must not replace a newer display snapshot.
+	a.grantReadMu.Lock()
+	defer a.grantReadMu.Unlock()
+	var grants grantList
+	if err := a.remote(ctx, s, "GET", "/v1/grants", nil, &grants); err != nil {
+		return grants, err
+	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.creds.Session.User != s.User {
+		return grants, errors.New("local identity changed")
+	}
 	byID := make(map[string]actions.Grant, len(a.policy.Grants))
 	for _, entry := range a.policy.Grants {
 		byID[entry.ID] = entry
 	}
-	a.mu.Unlock()
+	grants.rows = []trayGrant{}
 	for _, g := range grants.Grants {
 		if g.Owner != s.User || g.Device != s.Device {
 			continue
 		}
 		for _, cap := range g.Actions {
 			id := grantID(g.Resource, g.Grantee, cap)
-			limit, expiry := int(g.MaxUses), g.ExpiresAt
-			if entry, ok := byID[id]; ok {
-				limit, expiry = entry.MaxUses, entry.ExpiresAt
+			entry, ok := byID[id]
+			if !ok {
+				entry = actions.Grant{MaxUses: int(g.MaxUses), ExpiresAt: g.ExpiresAt}
 			}
-			local = append(local, trayGrant{id, g.Handle, kind[g.Resource], g.Resource, cap, expiry, limit})
+			for _, l := range g.Limits {
+				if l.Action != cap {
+					continue
+				}
+				entry.MaxUses, entry.ExpiresAt = int(l.MaxUses), l.ExpiresAt
+				// Relays that predate policy metadata omit both mode fields.
+				if l.Approval != "" || l.Attribution != "" || l.BudgetTokens != 0 {
+					entry.Approval, entry.BudgetTokens, entry.Attribution = l.Approval, int(l.BudgetTokens), l.Attribution
+				}
+				break
+			}
+			entry = grantDefaults(entry)
+			grants.rows = append(grants.rows, trayGrant{ID: id, Handle: g.Handle, Resource: g.Resource, Capability: cap,
+				ExpiresAt: entry.ExpiresAt.UTC(), MaxUses: entry.MaxUses, Approval: entry.Approval, BudgetTokens: entry.BudgetTokens, Attribution: entry.Attribution})
 		}
 	}
-	result["grants"] = local
-	return result, nil
+	if !slices.Equal(grants.rows, a.policy.Published) {
+		next := a.policy
+		next.Published = grants.rows
+		if err := save(a.policyPath(s.User), next); err != nil {
+			return grants, err
+		}
+		a.policy = next
+	}
+	return grants, nil
+}
+func grantDefaults(g actions.Grant) actions.Grant {
+	if g.Approval == "" {
+		g.Approval = "ask"
+	}
+	if g.Attribution == "" {
+		g.Attribution = "owner"
+	}
+	return g
 }
 func grantID(resource, user, action string) string { return key(resource + "|" + user + "|" + action) }
 func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke bool) error {
@@ -185,8 +247,8 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	p.Grants = slices.Clone(p.Grants)
 	a.mu.Unlock()
 	var peer control.User
-	var published struct{ Grants []control.Grant }
-	if err := a.remote(ctx, s, "GET", "/v1/grants", nil, &published); err != nil {
+	published, err := a.readGrants(ctx, s)
+	if err != nil {
 		return err
 	}
 	resource := in.Resource
@@ -221,18 +283,24 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	// with the relay before carrying any previously granted capability forward.
 	var current []string
 	for _, g := range published.Grants {
-		if g.Owner == s.User && g.Device == s.Device && g.Grantee == peer.User && g.Resource == resource && g.ExpiresAt.After(time.Now()) {
+		if g.Owner == s.User && g.Device == s.Device && g.Grantee == peer.User && g.Resource == resource {
 			current = g.Actions
 			break
 		}
 	}
 	next := []actions.Grant{}
+	var usageID string
 	for _, g := range p.Grants {
 		if g.Resource != resource || g.Peer != peer.User {
 			next = append(next, g)
 			continue
 		}
-		if g.Action != action && g.ExpiresAt.After(time.Now()) && slices.Contains(current, g.Action) {
+		if !slices.Contains(current, g.Action) {
+			continue
+		}
+		if g.Action == action {
+			usageID = g.ReceiptKey()
+		} else if g.ExpiresAt.After(time.Now()) {
 			next = append(next, g)
 		}
 	}
@@ -257,15 +325,20 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		if in.BudgetTokens < 0 {
 			return errors.New("invalid token budget")
 		}
-		next = append(next, actions.Grant{ID: grantID(resource, peer.User, action), Peer: peer.User, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit,
-			Approval: in.Approval, BudgetTokens: in.BudgetTokens, Attribution: in.Attribution})
+		if usageID == "" {
+			usageID = newID()
+		}
+		next = append(next, grantDefaults(actions.Grant{ID: grantID(resource, peer.User, action), UsageID: usageID, Peer: peer.User, Resource: resource, Action: action, ExpiresAt: expiry, MaxUses: limit,
+			Approval: in.Approval, BudgetTokens: in.BudgetTokens, Attribution: in.Attribution}))
 	}
 	// Both sides apply the same per-action policy. Updating a different action
 	// must preserve this capability's remaining uses and expiry.
-	limits := []map[string]any{}
+	var limits []control.Limit
 	for _, g := range next {
 		if g.Resource == resource && g.Peer == peer.User {
-			limits = append(limits, map[string]any{"action": g.Action, "expires_at": g.ExpiresAt, "max_uses": g.MaxUses})
+			g = grantDefaults(g)
+			limits = append(limits, control.Limit{Action: g.Action, ExpiresAt: g.ExpiresAt, MaxUses: int64(g.MaxUses),
+				Approval: g.Approval, BudgetTokens: int64(g.BudgetTokens), Attribution: g.Attribution})
 		}
 	}
 	path := "/v1/grants/" + url.PathEscape(resource) + "/" + url.PathEscape(peer.Handle)
@@ -294,6 +367,83 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	}
 	return persist()
 }
+
+func (a *Agent) publishResource(ctx context.Context, s identity.Session, in input, update bool) (any, error) {
+	id := in.ID
+	if update && id == "" {
+		id = in.Resource
+	}
+	if id == "" {
+		if update {
+			return nil, errors.New("resource id required")
+		}
+		id = newID()
+	}
+	a.mu.Lock()
+	resources := slices.Clone(a.policy.Resources)
+	a.mu.Unlock()
+	i := slices.IndexFunc(resources, func(v actions.Resource) bool { return v.ID == id })
+	r := actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target, Capabilities: in.Capabilities}
+	if update {
+		if i < 0 {
+			return nil, errors.New("unknown local resource")
+		}
+		r = resources[i]
+		if in.Target != "" && in.Target != r.Target || in.Kind != "" && in.Kind != r.Kind {
+			return nil, errors.New("resource id is already mapped to a different target")
+		}
+		if in.Name != "" {
+			r.Name = in.Name
+		}
+		r.Capabilities = in.Capabilities.WithDefaults(r.Capabilities)
+		if r.Kind == "agent" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
+			// An enrolled target can be edited even while Commander is offline.
+			if info, err := actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, r); err == nil {
+				r.Capabilities = info.Capabilities
+			}
+		}
+	} else {
+		if i >= 0 {
+			r.Capabilities = in.Capabilities.WithDefaults(resources[i].Capabilities)
+		}
+		var err error
+		if r, err = actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, r); err != nil {
+			return nil, err
+		}
+		if i >= 0 {
+			old := resources[i]
+			old.Capabilities = r.Capabilities
+			if r != old {
+				return nil, errors.New("resource id is already mapped to a different target")
+			}
+		}
+	}
+	if i < 0 {
+		resources = append(resources, r)
+	} else {
+		resources[i] = r
+	}
+	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": actions.ResourceCapabilities(r)}
+	if r.Capabilities != nil {
+		body["capabilities"] = r.Capabilities
+	}
+	if err := a.remote(ctx, s, "PUT", "/v1/resources/"+url.PathEscape(id), body, nil); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.creds.Session.User != s.User {
+		return nil, errors.New("local identity changed")
+	}
+	next := a.policy
+	next.Resources = resources
+	if err := save(a.policyPath(s.User), next); err != nil {
+		return nil, err
+	}
+	a.policy = next
+	return map[string]string{"id": id}, nil
+}
+
 func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 	switch verb {
 	case "status":
@@ -334,11 +484,17 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 	case "send", "sent", "handoffs", "thread", "comment", "apply-artifact":
 		return a.requesterVerb(ctx, s, verb, in)
 	case "approvals":
-		return a.approvals(), nil
-	case "approve", "deny":
-		return nil, a.decide(ctx, nil, in.ID, verb == "approve", in.Reason)
+		return a.approvals(ctx, s), nil
+	case "approve":
+		return nil, a.resolve(ctx, in.ID, "", "")
+	case "deny":
+		return nil, a.resolve(ctx, in.ID, "denied", in.Reason)
 	case "audit":
-		return a.audit(in.Resource, in.Handle)
+		peer := in.Peer
+		if peer == "" {
+			peer = in.Handle
+		}
+		return a.audit(ctx, s, in.Resource, peer)
 	case "avatar", "membership", "membership-set", "invite-create", "me":
 		return a.socialVerb(ctx, s, verb, in)
 	case "search", "request", "accept", "unfriend":
@@ -357,36 +513,8 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		}
 		method := map[string]string{"request": "POST", "accept": "PUT", "unfriend": "DELETE"}[verb]
 		return nil, a.remote(ctx, s, method, "/v1/friends/"+part, nil, nil)
-	case "resource-add":
-		id := in.ID
-		if id == "" {
-			id = newID()
-		}
-		r, e := actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target})
-		if e != nil {
-			return nil, e
-		}
-		a.mu.Lock()
-		old := slices.Clone(a.policy.Resources)
-		a.mu.Unlock()
-		i := slices.IndexFunc(old, func(v actions.Resource) bool { return v.ID == r.ID })
-		if i >= 0 && r != old[i] {
-			return nil, errors.New("resource id is already mapped to a different target")
-		}
-		if e = a.remote(ctx, s, "PUT", "/v1/resources/"+url.PathEscape(id), map[string]any{"kind": r.Kind, "name": r.Name, "actions": actions.ResourceCapabilities(r)}, nil); e != nil {
-			return nil, e
-		}
-		if i < 0 {
-			a.mu.Lock()
-			next := a.policy
-			next.Resources = append(slices.Clone(next.Resources), r)
-			e = save(a.policyPath(s.User), next)
-			if e == nil {
-				a.policy = next
-			}
-			a.mu.Unlock()
-		}
-		return map[string]string{"id": id}, e
+	case "resource-add", "resource-update":
+		return a.publishResource(ctx, s, in, verb == "resource-update")
 	case "grant", "revoke":
 		return nil, a.grant(ctx, s, in, verb == "revoke")
 	case "repo-credential":

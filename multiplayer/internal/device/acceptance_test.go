@@ -80,7 +80,14 @@ func startPeer(t *testing.T, ctx context.Context, p *testpilot.Pilot, edge int, 
 		w.Header().Set("Content-Type", "text/event-stream")
 		event := func(v any) { b, _ := json.Marshal(v); fmt.Fprintf(w, "data: %s\n\n", b) }
 		event(map[string]any{"type": "STATE_SNAPSHOT", "snapshot": map[string]any{"workerId": who.worker, "operationId": "local-" + in.RunID, "operationStatus": "completed"}})
-		event(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]string{{"role": "user", "content": in.Messages[0].Content}, {"role": "assistant", "content": "answer from " + handle}}})
+		event(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]any{
+			{"role": "user", "content": in.Messages[0].Content},
+			{"role": "assistant", "content": "answer from " + handle},
+			{"role": "system", "metadata": map[string]any{"acp": map[string]any{
+				"source": "live", "kind": "acp.prompt_result", "turnId": "local-" + in.RunID,
+				"turnTokens": map[string]int{"totalTokens": 7},
+			}}},
+		}})
 		event(map[string]any{"type": "RUN_FINISHED", "runId": in.RunID})
 	})
 	server := &http.Server{Handler: mux}
@@ -270,7 +277,7 @@ func runDevicePilot(t *testing.T, configureActions func(actions.Config) actions.
 		if action == "git.head" {
 			limit = 1
 		}
-		owner.must(t, ctx, "/tray/grant", input{Handle: guest.handle, Resource: id, Capability: action, ExpiresAt: time.Now().Add(time.Hour), MaxUses: limit}, nil)
+		owner.must(t, ctx, "/tray/grant", input{Approval: "auto", Handle: guest.handle, Resource: id, Capability: action, ExpiresAt: time.Now().Add(time.Hour), MaxUses: limit}, nil)
 	}
 	grant(alice, bob, "alice-agent", "agent.ask")
 	grant(bob, alice, "bob-agent", "agent.ask")

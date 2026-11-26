@@ -51,6 +51,7 @@ type outbound struct {
 type sendRecord struct {
 	Digest string
 	Wire   outbound
+	Audit  []AuditEntry `json:"audit,omitempty"`
 }
 
 func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any, error) {
@@ -85,7 +86,8 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 			return nil, e
 		}
 		record = sendRecord{Digest: digest, Wire: outbound{ID: in.ID}}
-		expiry := time.Now().UTC().Add(15 * time.Minute).Truncate(time.Microsecond)
+		started := time.Now().UTC()
+		expiry := started.Add(maxApprovalWait).Truncate(time.Microsecond)
 		for _, t := range in.Targets {
 			i := slices.IndexFunc(resources, func(r control.Resource) bool {
 				return r.ID == t.Resource && r.Owner != s.User && slices.Contains(r.Actions, t.Action)
@@ -104,6 +106,7 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 			if e != nil {
 				return nil, e
 			}
+			record.Audit = append(record.Audit, AuditEntry{Request: id, Peer: r.Owner, Resource: r.ID, Action: t.Action, Started: started, Outcome: "pending"})
 			record.Wire.Children = append(record.Wire.Children, control.Addressed{ID: id, Device: r.Device, Resource: r.ID, Action: t.Action, ExpiresAt: expiry, Envelope: env})
 		}
 		if e = save(path, record); e != nil {
@@ -112,11 +115,35 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 	default:
 		return nil, e
 	}
+	// A lost HTTP response can still mean the relay accepted these children.
+	if a.auditUser == s.User && record.pendingAudit() {
+		a.unsettled[in.ID] = true
+	}
 	var res control.Submission
 	if e = a.remote(ctx, s, "POST", "/v1/submissions", record.Wire, &res); e != nil {
+		var rejected statusError
+		if errors.As(e, &rejected) && rejected.code >= 400 && rejected.code < 500 {
+			for i := range record.Audit {
+				entry := &record.Audit[i]
+				if entry.Outcome != "pending" {
+					continue
+				}
+				entry.Outcome = "failed"
+				if rejected.code == http.StatusForbidden {
+					entry.Outcome = "denied"
+				}
+				entry.Ended, entry.Summary = time.Now().UTC(), rejected.message
+			}
+			if err := save(path, record); err != nil {
+				return nil, err
+			}
+			if a.auditUser == s.User {
+				delete(a.unsettled, in.ID)
+			}
+		}
 		return nil, e
 	}
-	return a.projectSubmission(ctx, s, record.Wire, res)
+	return a.projectSubmission(s, path, &record, res)
 }
 func header(c control.Child, kind string) devicekeys.Header {
 	h := devicekeys.Header{Sender: c.Sender, SenderDevice: c.SenderDevice, Recipient: c.Owner, RecipientDevice: c.Device, Operation: c.ID, Resource: c.Resource, Action: c.Action, Kind: kind, ExpiresAt: c.ExpiresAt}
@@ -126,7 +153,11 @@ func header(c control.Child, kind string) devicekeys.Header {
 	}
 	return h
 }
-func (a *Agent) projectSubmission(ctx context.Context, s identity.Session, sent outbound, sub control.Submission) (any, error) {
+func (a *Agent) projectSubmission(s identity.Session, path string, record *sendRecord, sub control.Submission) (any, error) {
+	sent := record.Wire
+	updated := *record
+	updated.Audit = slices.Clone(record.Audit)
+	var changed bool
 	if sub.ID != sent.ID || len(sub.Children) != len(sent.Children) {
 		return nil, errors.New("receipt recipient set changed")
 	}
@@ -143,14 +174,15 @@ func (a *Agent) projectSubmission(ctx context.Context, s identity.Session, sent 
 			return nil, errors.New("receipt does not match the original submission")
 		}
 		delete(expected, c.ID)
-		row := map[string]any{"id": c.ID, "resource": c.Resource, "action": c.Action, "status": c.Status}
+		a.mu.Lock()
+		peer, pinned := a.policy.Pins[c.Device]
+		a.mu.Unlock()
+		if !pinned || peer.User != c.Owner {
+			return nil, errors.New("receipt sender differs from the pinned device")
+		}
+		row := map[string]any{"id": c.ID, "peer": c.Owner, "resource": c.Resource, "action": c.Action, "status": c.Status}
+		var value json.RawMessage
 		if len(c.Result) > 0 {
-			a.mu.Lock()
-			peer, pinned := a.policy.Pins[c.Device]
-			a.mu.Unlock()
-			if !pinned || peer.User != c.Owner {
-				return nil, errors.New("receipt sender differs from the pinned device")
-			}
 			r, e := a.keys.Open(peer, header(c, "result"), c.Result)
 			if e != nil {
 				return nil, e
@@ -162,17 +194,32 @@ func (a *Agent) projectSubmission(ctx context.Context, s identity.Session, sent 
 			if e = json.Unmarshal(r, &signed); e != nil || signed.Status != c.Status {
 				return nil, errors.New("receipt status does not match signed outcome")
 			}
-			row["result"] = signed.Value
+			value = signed.Value
+			row["result"] = value
+		}
+		if updated.updateAudit(c, value) {
+			changed = true
 		}
 		out = append(out, row)
+	}
+	if changed {
+		if err := save(path, &updated); err != nil {
+			return nil, err
+		}
+		*record = updated
+	}
+	if a.auditUser == s.User {
+		if record.pendingAudit() {
+			a.unsettled[sub.ID] = true
+		} else {
+			delete(a.unsettled, sub.ID)
+		}
 	}
 	return map[string]any{"id": sub.ID, "children": out}, nil
 }
 func (a *Agent) receipt(ctx context.Context, s identity.Session, id string) (any, error) {
-	part, e := segment(id)
-	if e != nil {
-		return nil, e
-	}
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 	path := filepath.Join(a.cfg.Dir, key(s.User), "submissions", key(id)+".json")
 	data, e := os.ReadFile(path)
 	if errors.Is(e, os.ErrNotExist) {
@@ -185,11 +232,20 @@ func (a *Agent) receipt(ctx context.Context, s identity.Session, id string) (any
 	if e = json.Unmarshal(data, &record); e != nil {
 		return nil, e
 	}
+	return a.refreshSubmission(ctx, s, path, &record)
+}
+
+// Callers hold sendMu so an older receipt cannot replace a newer audit outcome.
+func (a *Agent) refreshSubmission(ctx context.Context, s identity.Session, path string, record *sendRecord) (any, error) {
+	part, e := segment(record.Wire.ID)
+	if e != nil {
+		return nil, e
+	}
 	var res control.Submission
 	if e = a.remote(ctx, s, "GET", "/v1/submissions/"+part, nil, &res); e != nil {
 		return nil, e
 	}
-	return a.projectSubmission(ctx, s, record.Wire, res)
+	return a.projectSubmission(s, path, record, res)
 }
 func wait(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
@@ -293,6 +349,8 @@ func (a *Agent) ackDir(user string) string {
 	return filepath.Join(a.cfg.Dir, key(user), "pending-receipts")
 }
 func (a *Agent) flushReceipts(ctx context.Context, s identity.Session, l control.Lease) error {
+	a.receiptMu.Lock()
+	defer a.receiptMu.Unlock()
 	dir := a.ackDir(s.User)
 	entries, e := os.ReadDir(dir)
 	if errors.Is(e, os.ErrNotExist) {
@@ -353,29 +411,38 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 	if !claim.Claimed {
 		return nil
 	}
+	p := claimedRequest{child: c, payload: payload, peer: peer, arrived: time.Now().UTC()}
 	if verify == nil && a.needsApproval(c) {
-		a.queueApproval(c, payload, peer)
+		req := actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: payload}
+		if errors.Is(actions.CheckBudget(a.localConfig(s), req), actions.ErrBudgetExhausted) {
+			return a.finish(ctx, s, l, p, nil, "budget_exhausted", "")
+		}
+		a.queueApproval(p)
 		return nil
 	}
-	return a.finish(ctx, s, l, c, payload, peer, verify, "")
+	return a.finish(ctx, s, l, p, verify, "", "")
 }
 
 // finish runs a claimed request (unless denial is set), seals the result and
 // queues its receipt.
-func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease, c control.Child, payload []byte, peer devicekeys.Public, verify error, denial string) error {
-	started := time.Now()
+func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease, p claimedRequest, verify error, denial, reason string) error {
+	c := p.child
 	actionErr := actions.ErrInvalid
 	var result json.RawMessage
 	var e error
 	if verify == nil && denial == "" {
 		task, cancel := context.WithDeadline(ctx, c.ExpiresAt)
-		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: payload})
+		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Payload: p.payload})
 		cancel()
 	}
 	status := "completed"
 	if denial != "" {
 		status = "declined"
-		result, e = json.Marshal(map[string]string{"code": denial})
+		failure := map[string]string{"code": denial}
+		if reason != "" {
+			failure["reason"] = reason
+		}
+		result, e = json.Marshal(failure)
 		if e != nil {
 			return e
 		}
@@ -391,12 +458,16 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 	} else if len(result) == 0 {
 		result = json.RawMessage("null")
 	}
-	a.record(AuditEntry{Request: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Started: started, Ended: time.Now(), Outcome: status, Summary: summarize(result)})
+	entry := AuditEntry{Recipient: s.User, Unverified: verify != nil, Request: c.ID, Peer: c.Sender, Resource: c.Resource, Action: c.Action, Started: p.arrived, Ended: time.Now().UTC(),
+		Outcome: auditOutcome(status, result), Tokens: actions.ResultTokens(result), Summary: summarize(result)}
+	if e := a.record(entry); e != nil {
+		return e
+	}
 	signed, e := json.Marshal(map[string]any{"status": status, "value": result})
 	if e != nil {
 		return e
 	}
-	sealed, e := a.keys.Seal(peer, header(c, "result"), signed)
+	sealed, e := a.keys.Seal(p.peer, header(c, "result"), signed)
 	if e != nil {
 		return e
 	}

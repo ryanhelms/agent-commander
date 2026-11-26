@@ -76,10 +76,15 @@ func reviewHandler(ctx context.Context, cfg Config, r Resource, req Request, id 
 		return nil, e
 	}
 	var answered struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		Tokens *int   `json:"tokens"`
 	}
 	_ = json.Unmarshal(raw, &answered)
-	return answer(parseReview(answered.Text))
+	result := parseReview(answered.Text)
+	if answered.Tokens != nil {
+		result["tokens"] = *answered.Tokens
+	}
+	return answer(result)
 }
 
 // ReviewFinding is one finding in a review result.

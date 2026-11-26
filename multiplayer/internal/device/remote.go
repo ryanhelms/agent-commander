@@ -213,9 +213,11 @@ func (m *Manager) remoteHandler() http.Handler {
 		})
 	}
 	api("GET /api/overview", func(r *http.Request) (any, error) {
-		return map[string]any{"servers": m.Summaries(), "approvals": m.allApprovals(), "activity": m.activity()}, nil
+		return map[string]any{"servers": m.Summaries(), "approvals": m.allApprovals(r.Context()), "activity": m.activity()}, nil
 	})
-	api("GET /api/approvals", func(r *http.Request) (any, error) { return map[string]any{"approvals": m.allApprovals()}, nil })
+	api("GET /api/approvals", func(r *http.Request) (any, error) {
+		return map[string]any{"approvals": m.allApprovals(r.Context())}, nil
+	})
 	api("POST /api/approvals/{server}/{id}/{decision}", func(r *http.Request) (any, error) {
 		a, e := m.agentUse(r.PathValue("server"), false)
 		if e != nil {
@@ -225,7 +227,7 @@ func (m *Manager) remoteHandler() http.Handler {
 		if d != "approve" && d != "deny" {
 			return nil, errors.New("unknown decision")
 		}
-		return struct{}{}, a.decide(r.Context(), nil, r.PathValue("id"), d == "approve", "")
+		return a.tray(r.Context(), d, input{ID: r.PathValue("id")})
 	})
 	api("GET /api/activity", func(r *http.Request) (any, error) { return m.activity(), nil })
 	api("GET /api/handoffs", func(r *http.Request) (any, error) { return m.perServer(r.Context(), "handoffs", input{}) })
@@ -244,7 +246,7 @@ func (m *Manager) remoteHandler() http.Handler {
 }
 
 // allApprovals lists pending approvals on every server.
-func (m *Manager) allApprovals() []map[string]any {
+func (m *Manager) allApprovals(ctx context.Context) []map[string]any {
 	m.mu.Lock()
 	agents := map[string]*Agent{}
 	for id, a := range m.agents {
@@ -253,7 +255,11 @@ func (m *Manager) allApprovals() []map[string]any {
 	m.mu.Unlock()
 	out := []map[string]any{}
 	for id, a := range agents {
-		list, _ := a.approvals()["approvals"].([]Approval)
+		s, err := a.getSession(ctx)
+		if err != nil {
+			continue
+		}
+		list, _ := a.approvals(ctx, s)["approvals"].([]Approval)
 		for _, ap := range list {
 			out = append(out, map[string]any{"server": id, "approval": ap})
 		}

@@ -210,7 +210,7 @@ func TestMacOSKeychainSessionRestart(t *testing.T) {
 	alice.must(t, ctx, "/tray/request", input{Handle: bob.handle}, nil)
 	bob.must(t, ctx, "/tray/accept", input{Handle: alice.handle}, nil)
 	bob.must(t, ctx, "/tray/resource-add", input{ID: "worker", Name: "Peer worker", Kind: "agent", Target: bob.worker}, nil)
-	bob.must(t, ctx, "/tray/grant", input{Handle: alice.handle, Resource: "worker", Capability: "agent.ask", MaxUses: 1}, nil)
+	bob.must(t, ctx, "/tray/grant", input{Approval: "auto", Handle: alice.handle, Resource: "worker", Capability: "agent.ask", MaxUses: 1}, nil)
 
 	pool, err := pgxpool.New(ctx, p.DatabaseURL)
 	if err != nil {

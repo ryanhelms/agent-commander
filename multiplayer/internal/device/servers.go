@@ -208,7 +208,7 @@ func (m *Manager) start(s Server) {
 	}
 	id := s.ID
 	a, e := New(m.ctx, Config{
-		Relay: s.URL, Dir: dir, CommanderSocket: m.cfg.CommanderSocket, Secrets: secrets, Roots: m.cfg.Roots,
+		ServerID: s.ID, Relay: s.URL, Dir: dir, CommanderSocket: m.cfg.CommanderSocket, Secrets: secrets, Roots: m.cfg.Roots,
 		OIDCHTTP: m.cfg.OIDCHTTP, OpenBrowser: m.cfg.OpenBrowser, Pin: s.Pin,
 		GoogleDesktopConfig: filepath.Join(m.cfg.Dir, "google-desktop-client.json"),
 		OnPinMismatch: func() {

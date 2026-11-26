@@ -16,27 +16,32 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"agentcommander.network/pilot/internal/sharing"
 )
 
 type Resource struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	Target      string `json:"target"`
-	Branch      string `json:"branch,omitempty"`
-	Repository  string `json:"repository,omitempty"`
-	Base        string `json:"base,omitempty"`
-	Run         string `json:"run,omitempty"`
-	Coordinator bool   `json:"coordinator,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Kind         string                `json:"kind"`
+	Target       string                `json:"target"`
+	Branch       string                `json:"branch,omitempty"`
+	Repository   string                `json:"repository,omitempty"`
+	Base         string                `json:"base,omitempty"`
+	Run          string                `json:"run,omitempty"`
+	Coordinator  bool                  `json:"coordinator,omitempty"`
+	Capabilities *sharing.Capabilities `json:"capabilities,omitempty"`
 }
 type Grant struct {
-	ID        string    `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
+	// UsageID identifies this issuance across policy edits. Revocation retires it.
+	UsageID   string    `json:"usageId,omitempty"`
 	Peer      string    `json:"peer"`
 	Resource  string    `json:"resource"`
 	Action    string    `json:"action"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	MaxUses   int       `json:"maxUses,omitempty"`
-	// Approval is "ask" (each use waits for the owner) or "auto"/empty (runs within limits).
+	// Approval defaults to "ask". "auto" runs initiating actions within limits.
 	Approval     string `json:"approval,omitempty"`
 	BudgetTokens int    `json:"budgetTokens,omitempty"`
 	Attribution  string `json:"attribution,omitempty"`
@@ -52,6 +57,8 @@ type Config struct {
 	StateDir, CommanderSocket string
 	Resources                 []Resource
 	Grants                    []Grant
+	// ReceivedRequest also recognizes initiating requests still awaiting a decision.
+	ReceivedRequest func(peer, resource, request string) bool
 	// GitHubToken selects a credential for this specific resource ID and capability.
 	GitHubToken func(context.Context, string, string) (string, error)
 	testGitHub  string
@@ -59,13 +66,14 @@ type Config struct {
 }
 
 var (
-	identifier       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
-	ErrDenied        = errors.New("action is outside the current local grant")
-	ErrInvalid       = errors.New("invalid action or target")
-	ErrUncertain     = errors.New("outcome uncertain; reconcile the original operation")
-	ErrConflict      = errors.New("operation identity or expected revision conflicts")
-	ErrStaleRevision = fmt.Errorf("shared revision changed: %w", ErrConflict)
-	ErrUnavailable   = errors.New("owner-local resource or credential unavailable")
+	identifier         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
+	ErrDenied          = errors.New("action is outside the current local grant")
+	ErrBudgetExhausted = errors.New("grant token budget exhausted")
+	ErrInvalid         = errors.New("invalid action or target")
+	ErrUncertain       = errors.New("outcome uncertain; reconcile the original operation")
+	ErrConflict        = errors.New("operation identity or expected revision conflicts")
+	ErrStaleRevision   = fmt.Errorf("shared revision changed: %w", ErrConflict)
+	ErrUnavailable     = errors.New("owner-local resource or credential unavailable")
 )
 
 var actionFailures = [...]struct {
@@ -75,6 +83,7 @@ var actionFailures = [...]struct {
 	{ErrStaleRevision, "stale_revision"},
 	{ErrConflict, "conflict"},
 	{ErrDenied, "access_denied"},
+	{ErrBudgetExhausted, "budget_exhausted"},
 	{ErrInvalid, "invalid_request"},
 	{ErrUnavailable, "resource_unavailable"},
 	{ErrUncertain, "outcome_uncertain"},
@@ -166,11 +175,13 @@ func strict(raw []byte, v any) error {
 func answer(v any) (json.RawMessage, error) { b, e := json.Marshal(v); return b, e }
 
 type receipt struct {
-	Digest  string          `json:"digest"`
-	Grant   string          `json:"grant"`
-	Status  string          `json:"status"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Failure string          `json:"failure,omitempty"`
+	Digest   string          `json:"digest"`
+	Grant    string          `json:"grant"`
+	Resource string          `json:"resource,omitempty"`
+	Action   string          `json:"action,omitempty"`
+	Status   string          `json:"status"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Failure  string          `json:"failure,omitempty"`
 }
 
 func privateDir(path string) error {
@@ -226,7 +237,7 @@ func load(path string) (receipt, error) {
 
 // reserve serializes admissions only. A process death after reservation never causes
 // another mutating call. Completed results remain retrievable while access is authorized.
-func reserve(dir, path, digest, grant string, maxUses int) (receipt, bool, error) {
+func reserve(dir, path, digest string, grant Grant) (receipt, bool, error) {
 	lock, e := os.OpenFile(filepath.Join(dir, ".lock"), os.O_RDWR|os.O_CREATE, 0600)
 	if e != nil {
 		return receipt{}, false, e
@@ -245,29 +256,121 @@ func reserve(dir, path, digest, grant string, maxUses int) (receipt, bool, error
 	if !errors.Is(e, os.ErrNotExist) {
 		return receipt{}, false, e
 	}
-	if maxUses > 0 {
-		entries, e := os.ReadDir(dir)
-		if e != nil {
-			return receipt{}, false, e
+	if err := checkLimits(dir, grant); err != nil {
+		return receipt{}, false, err
+	}
+	r = receipt{Digest: digest, Grant: grant.ReceiptKey(), Resource: grant.Resource, Action: grant.Action, Status: "started"}
+	return r, true, save(path, r)
+}
+
+// IsFollowUp identifies actions whose handler must verify the initiating request.
+func IsFollowUp(action string) bool {
+	switch action {
+	case "agent.status", "agent.result", "thread.read", "thread.comment":
+		return true
+	}
+	return false
+}
+
+// ReceiptKey preserves existing receipts for grants issued by older devices.
+func (g Grant) ReceiptKey() string {
+	if g.UsageID != "" {
+		return g.UsageID
+	}
+	key, _ := json.Marshal([]any{g.ID, g.Peer, g.Resource, g.Action, g.ExpiresAt.UTC()})
+	return hash(key)
+}
+
+func activeGrant(cfg Config, req Request) (Grant, bool) {
+	for _, g := range cfg.Grants {
+		if g.Peer == req.Peer && g.Resource == req.Resource && g.Action == req.Action && g.ExpiresAt.After(time.Now()) && g.MaxUses >= 0 && g.BudgetTokens >= 0 {
+			return g, true
 		}
-		for _, entry := range entries {
-			if filepath.Ext(entry.Name()) != ".json" {
-				continue
-			}
-			stored, e := load(filepath.Join(dir, entry.Name()))
-			if e != nil {
-				return receipt{}, false, e
-			}
-			if stored.Grant == grant {
-				maxUses--
-				if maxUses == 0 {
-					return receipt{}, false, ErrDenied
+	}
+	return Grant{}, false
+}
+
+func receiptDir(cfg Config) string { return filepath.Join(cfg.StateDir, "device-action-receipts") }
+
+func receiptID(peer, request string) string { return hash([]byte(peer + "\x00" + request)) }
+
+// HasRequestReceipt checks the original peer, resource and initiating action.
+func HasRequestReceipt(cfg Config, peer, resource, request string) bool {
+	r, err := load(filepath.Join(receiptDir(cfg), receiptID(peer, request)+".json"))
+	if err != nil {
+		return false
+	}
+	if r.Action != "" {
+		return !IsFollowUp(r.Action) && r.Resource == resource
+	}
+	// Older receipts store the grant fingerprint without separate policy fields.
+	for _, g := range cfg.Grants {
+		if g.Peer == peer && g.Resource == resource && !IsFollowUp(g.Action) && g.ReceiptKey() == r.Grant {
+			return true
+		}
+	}
+	return false
+}
+
+// ResultTokens returns provider usage included in an action answer.
+func ResultTokens(result json.RawMessage) int {
+	var value struct{ Tokens int }
+	if json.Unmarshal(result, &value) == nil && value.Tokens > 0 {
+		return value.Tokens
+	}
+	return 0
+}
+
+func checkLimits(dir string, grant Grant) error {
+	if IsFollowUp(grant.Action) || grant.MaxUses == 0 && grant.BudgetTokens == 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	key := grant.ReceiptKey()
+	uses, remaining := 0, grant.BudgetTokens
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		r, err := load(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return err
+		}
+		if r.Grant == key && !IsFollowUp(r.Action) {
+			uses++
+			if grant.BudgetTokens > 0 {
+				remaining -= ResultTokens(r.Result)
+				if remaining <= 0 {
+					return ErrBudgetExhausted
 				}
 			}
 		}
 	}
-	r = receipt{Digest: digest, Grant: grant, Status: "started"}
-	return r, true, save(path, r)
+	if grant.MaxUses > 0 && uses >= grant.MaxUses {
+		return ErrDenied
+	}
+	return nil
+}
+
+// CheckBudget lets the device refuse a spent budget before asking for approval.
+// Execute rechecks the limits under the admission lock before reserving a use.
+func CheckBudget(cfg Config, req Request) error {
+	g, ok := activeGrant(cfg, req)
+	if !ok || g.BudgetTokens == 0 || IsFollowUp(req.Action) {
+		return nil
+	}
+	dir := receiptDir(cfg)
+	if _, err := os.Stat(filepath.Join(dir, receiptID(req.Peer, req.ID)+".json")); err == nil {
+		return nil // Execute checks the existing operation's digest on replay.
+	}
+	g.MaxUses = 0
+	return checkLimits(dir, g)
 }
 
 func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, error) {
@@ -287,21 +390,15 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 	if !known || resource.ID == "" || implementation.kind != registeredKind(resource) {
 		return nil, ErrDenied
 	}
-	var grant Grant
-	for _, g := range cfg.Grants {
-		if g.Peer == req.Peer && g.Resource == req.Resource && g.Action == req.Action && g.ExpiresAt.After(time.Now()) && g.MaxUses >= 0 {
-			grant = g
-			break
-		}
-	}
-	if grant.Peer == "" {
+	grant, ok := activeGrant(cfg, req)
+	if !ok {
 		return nil, ErrDenied
 	}
-	dir := filepath.Join(cfg.StateDir, "device-action-receipts")
+	dir := receiptDir(cfg)
 	if e := privateDir(dir); e != nil {
 		return nil, ErrUnavailable
 	}
-	identity := hash([]byte(req.Peer + "\x00" + req.ID))
+	identity := receiptID(req.Peer, req.ID)
 	path := filepath.Join(dir, identity+".json")
 	var canonical map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(req.Payload))
@@ -313,10 +410,9 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 	// An owner may remove and later reuse a display ID. Old receipts belong
 	// only to the original target. Display names and refreshed grants may change.
 	raw, _ := json.Marshal([]any{req, resource.Kind, resource.Target, resource.Repository, resource.Branch, resource.Base, resource.Run, resource.Coordinator})
-	key, _ := json.Marshal([]any{grant.ID, grant.Peer, grant.Resource, grant.Action, grant.ExpiresAt.UTC()})
-	r, fresh, e := reserve(dir, path, hash(raw), hash(key), grant.MaxUses)
+	r, fresh, e := reserve(dir, path, hash(raw), grant)
 	if e != nil {
-		if errors.Is(e, ErrConflict) || errors.Is(e, ErrDenied) {
+		if errors.Is(e, ErrConflict) || errors.Is(e, ErrDenied) || errors.Is(e, ErrBudgetExhausted) {
 			return nil, e
 		}
 		return nil, ErrUnavailable

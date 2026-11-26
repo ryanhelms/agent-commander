@@ -30,6 +30,7 @@ import (
 const DefaultRelay = "https://srv01.agentmux.bytedesk.ai"
 
 type Config struct {
+	ServerID                    string
 	Relay, Dir, CommanderSocket string
 	Secrets                     devicekeys.Store
 	Roots                       *x509.CertPool
@@ -51,16 +52,23 @@ type localPolicy struct {
 	Resources []actions.Resource
 	Grants    []actions.Grant
 	Pins      map[string]devicekeys.Public
+	// Published is the relay's display mirror. Only Grants authorizes execution.
+	Published []trayGrant `json:"publishedGrants,omitempty"`
 }
 type Agent struct {
-	cfg          Config
-	http         *http.Client
-	identity     identity.Client
-	keys         *devicekeys.Keys
-	mu           sync.Mutex
-	authMu       sync.Mutex
-	edit         sync.Mutex
-	sendMu       sync.Mutex
+	cfg         Config
+	http        *http.Client
+	identity    identity.Client
+	keys        *devicekeys.Keys
+	mu          sync.Mutex
+	authMu      sync.Mutex
+	edit        sync.Mutex
+	grantReadMu sync.Mutex
+	sendMu      sync.Mutex
+	receiptMu   sync.Mutex
+	// sendMu guards the current account's outstanding requester audits.
+	auditUser    string
+	unsettled    map[string]bool
 	creds        credentials
 	policy       localPolicy
 	lease        control.Lease
@@ -71,7 +79,7 @@ type Agent struct {
 	incoming     int
 	lastOnline   time.Time
 	social       socialState
-	pending      map[string]pendingApproval
+	pending      map[string]claimedRequest
 	handovers    map[string]time.Time
 	ctx          context.Context
 	stop         context.CancelFunc
@@ -417,6 +425,9 @@ func (a *Agent) localConfig(s identity.Session) actions.Config {
 		}
 		return t, nil
 	}}
+	cfg.ReceivedRequest = func(peer, resource, request string) bool {
+		return a.receivedRequest(s.User, peer, resource, request)
+	}
 	if a.cfg.configureActions != nil {
 		return a.cfg.configureActions(cfg)
 	}

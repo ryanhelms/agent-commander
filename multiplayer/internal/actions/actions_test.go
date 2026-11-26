@@ -327,12 +327,25 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: "+`{"type":"STATE_SNAPSHOT","snapshot":{"workerId":"worker","operationId":"op-1","operationStatus":"completed"}}`+"\n\n")
-		msgs, _ := json.Marshal(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]string{{"role": "assistant", "content": "older private turn"}, {"role": "user", "content": prompt}, {"role": "tool", "content": "private trace"}, {"role": "assistant", "content": "scoped answer"}}})
+		usage := func(turn string, counts map[string]int) map[string]any {
+			return map[string]any{"role": "system", "metadata": map[string]any{"acp": map[string]any{
+				"source": "live", "kind": "acp.prompt_result", "turnId": turn, "turnTokens": counts,
+			}}}
+		}
+		counts := map[string]int{"inputTokens": 2, "outputTokens": 1, "cachedReadTokens": 4}
+		if req.Method == http.MethodPost {
+			counts["totalTokens"] = 7
+		}
+		msgs, _ := json.Marshal(map[string]any{"type": "MESSAGES_SNAPSHOT", "messages": []map[string]any{
+			{"role": "assistant", "content": "older private turn"}, usage("earlier", map[string]int{"totalTokens": 100}),
+			{"role": "user", "content": prompt}, {"role": "tool", "content": "private trace"}, {"role": "assistant", "content": "scoped answer"},
+			usage("op-1", counts),
+		}})
 		fmt.Fprintf(w, "data: %s\n\ndata: {\"type\":\"RUN_FINISHED\",\"runId\":%q}\n\n", msgs, runID)
 	})}
 	go srv.Serve(l)
 	defer srv.Close()
-	cfg := Config{StateDir: dir, CommanderSocket: socket, Resources: []Resource{{ID: "coach", Kind: "agent", Target: "worker"}}, Grants: []Grant{{ID: "allow", Peer: "alice", Resource: "coach", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute)}}}
+	cfg := Config{StateDir: dir, CommanderSocket: socket, Resources: []Resource{{ID: "coach", Kind: "agent", Target: "worker"}}, Grants: []Grant{{ID: "allow", Peer: "alice", Resource: "coach", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute), BudgetTokens: 14}}}
 	if _, err := PrepareLocalResource(context.Background(), socket, cfg.Resources[0]); err != nil {
 		t.Fatal("existing worker must be enrollable before input is held", err)
 	}
@@ -343,7 +356,7 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 	ready.Store(true)
 	for i := 0; i < 2; i++ {
 		r, e := action(t, cfg, "ask", "alice", "coach", "agent.ask", msg)
-		if e != nil || r["text"] != "scoped answer" || r["operationId"] != "op-1" {
+		if e != nil || r["text"] != "scoped answer" || r["operationId"] != "op-1" || r["tokens"] != float64(7) {
 			t.Fatal(r, e)
 		}
 	}
@@ -358,7 +371,20 @@ func TestAgentAskRequiresControlAndReturnsOnlyAddressedTurn(t *testing.T) {
 	if e != nil || result["text"] != "scoped answer" || calls.Load() != 2 {
 		t.Fatal(result, e, calls.Load())
 	}
-
+	// Upgrade an existing grant using its legacy fingerprint when editing
+	// its expiration. Both previously completed turns remain chargeable.
+	cfg.Grants[0].UsageID = cfg.Grants[0].ReceiptKey()
+	cfg.Grants[0].ExpiresAt = time.Now().Add(time.Hour)
+	req := Request{ID: "over", Peer: "alice", Resource: "coach", Action: "agent.ask"}
+	if e := CheckBudget(cfg, req); !errors.Is(e, ErrBudgetExhausted) {
+		t.Fatalf("approval preflight should refuse a spent budget: %v", e)
+	}
+	if _, e := action(t, cfg, "over", "alice", "coach", "agent.ask", msg); FailureCode(e) != "budget_exhausted" || calls.Load() != 2 {
+		t.Fatalf("spent budget sent another prompt: %v, %d calls", e, calls.Load())
+	}
+	if _, e := action(t, cfg, "ask", "alice", "coach", "agent.ask", msg); e != nil || calls.Load() != 2 {
+		t.Fatalf("replaying an answer should succeed after the budget is spent: %v", e)
+	}
 }
 
 func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {

@@ -38,9 +38,8 @@ type Submission struct {
 
 const childFields = `id,device,resource,action,envelope,expires_at,parent,sender,sender_device,owner_id,CASE WHEN status='pending' AND expires_at<=now() THEN 'expired' ELSE status END,result`
 
-const activeChildGrant = `EXISTS(SELECT FROM mp_effective_actions g
-	WHERE g.resource=c.resource AND g.grantee=c.sender AND g.action=c.action
-	AND g.used<g.max_uses AND g.expires_at>statement_timestamp())`
+const activeChildGrant = `EXISTS(SELECT FROM mp_available_actions g
+	WHERE g.resource=c.resource AND g.grantee=c.sender AND g.action=c.action)`
 
 const denyUnavailableChildren = `UPDATE mp_children c SET status='denied'
 	WHERE c.status='pending' AND c.expires_at>statement_timestamp() AND NOT ` + activeChildGrant
@@ -141,8 +140,8 @@ func (s *Service) submit(ctx context.Context, p Principal, r *http.Request) (any
 			if c.ExpiresAt.IsZero() || !c.ExpiresAt.After(time.Now()) || time.Until(c.ExpiresAt) > 7*24*time.Hour {
 				return bad("child expiry must be within seven days")
 			}
-			err = tx.QueryRow(ctx, `SELECT r.owner_id FROM mp_resources r JOIN mp_effective_actions g ON g.resource=r.id AND g.grantee=$1
-			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) AND g.expires_at>now() AND g.used<g.max_uses FOR SHARE OF r`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
+			err = tx.QueryRow(ctx, `SELECT r.owner_id FROM mp_resources r JOIN mp_available_actions g ON g.resource=r.id AND g.grantee=$1
+			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) FOR SHARE OF r`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return forbidden()
 			}
