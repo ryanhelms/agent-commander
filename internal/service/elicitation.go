@@ -17,6 +17,8 @@ const (
 	elicitationPayloadLimit = 32 << 10
 	elicitationWait         = 5 * time.Minute
 	elicitationRetention    = 15 * time.Minute
+	formOutcomeKind         = "form_outcome"
+	formOutcomeKeyPrefix    = "form-outcome:"
 )
 
 // Elicitation is visible only through the local owner API. User form values are
@@ -299,6 +301,14 @@ func (s *service) answerElicitation(req *http.Request, actor string) (outcome, e
 		return outcome{}, bad("elicitation action must be accept, decline or cancel")
 	}
 	item.response, item.view.Status = answer, answer.Action
+	if item.view.Mode == "form" {
+		// Keep only the addressed owner's decision. The answer payload still
+		// belongs to the waiting provider and never enters transcript retention.
+		s.details.add(worker.ID, []ToolDetail{{
+			Kind: formOutcomeKind, Key: formOutcomeKeyPrefix + item.view.ID,
+			Sequence: lastSequence(worker), Name: answer.Action,
+		}})
+	}
 	if item.view.Mode == "url" && answer.Action == "accept" {
 		item.expires = time.Now().Add(elicitationRetention)
 	}

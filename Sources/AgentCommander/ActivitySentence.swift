@@ -440,6 +440,8 @@ enum PrettyItem: Identifiable, Equatable {
     case card(PrettyToolCard)
     /// The end-of-turn line, from the turn's `turn_end` records. Never folded.
     case turnEnd(PrettyTurnEnd)
+    /// The line after the owner's reply to a form request, from its `form_outcome` record.
+    case formOutcome(PrettyFormOutcome)
 
     var id: String {
         switch self {
@@ -451,6 +453,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .approval(let step): step.id + "#approval"
         case .card(let card): card.id
         case .turnEnd(let end): end.id + "#turn-end"
+        case .formOutcome(let outcome): outcome.id + "#form-outcome"
         }
     }
 
@@ -462,7 +465,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .plan(let plan): plan.entries
         case .live(let step), .approval(let step): step.entries
         case .card(let card): card.step.entries
-        case .turnEnd: []
+        case .turnEnd, .formOutcome: []
         }
     }
 }
@@ -1373,7 +1376,7 @@ enum ActivityConversation {
                 shown.append(item)
             case .report:
                 if index == earlierReport { shown.append(item) }
-            case .entry, .plan, .approval, .card, .turnEnd:
+            case .entry, .plan, .approval, .card, .turnEnd, .formOutcome:
                 break
             }
         }
