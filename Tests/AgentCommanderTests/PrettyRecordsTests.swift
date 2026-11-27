@@ -151,6 +151,206 @@ import Testing
         #expect(ProviderJobs.jobs(summaries: [], entries: wire.entries, worker: "w").isEmpty)
     }
 
+    // MARK: Hidden secrets in a job's texts (issue #73)
+
+    static let bearer = "abcdefghijklmnop", key = "sk-abcdefghijklmnopqrstuv", jwt = "eyJhbGciOi.eyJzdWIiOi.signature"
+
+    @Test func proseHidesEverySecretShapeAndKeepsTheRest() {
+        func masked(_ text: String) -> String { SecretValues.masked(prose: text).text }
+        // The known forms, with the punctuation, quotes and line ends prose puts around them.
+        #expect(masked("Refused: Authorization: Bearer \(Self.bearer).") == "Refused: Authorization: Bearer Hidden, 16 characters.")
+        #expect(masked("used \(Self.key)\nthen stopped") == "used Hidden, 25 characters\nthen stopped")
+        #expect(masked("The token \"\(Self.jwt)\". Retry.") == "The token \"Hidden, 31 characters\". Retry.")
+        // A value joined to a secret-looking key.
+        #expect(masked("API_TOKEN=abc123 make deploy") == "API_TOKEN=Hidden, 6 characters make deploy")
+        #expect(masked("login --password='hunter2' failed") == "login --password='Hidden, 7 characters' failed")
+        #expect(masked("GET https://x.test/y?token=abc1234 gave 403") == "GET https://x.test/y?token=Hidden, 7 characters gave 403")
+        #expect(masked(#"sent {"cookie":"sid=1","n":1}"#).contains("sid=1") == false)
+        // Whole JSON is masked as Source masks it.
+        let json = SecretValues.masked(prose: #"{"password":"hunter2","path":"/x"}"#)
+        #expect(json.count == 1 && !json.text.contains("hunter2") && json.text.contains("path"))
+        let several = SecretValues.masked(prose: "Bearer \(Self.bearer) and \(Self.key) and SECRET=x1")
+        #expect(several.count == 3)
+        // Ordinary words stay: a key with no joined value, an idempotency key, plain prose.
+        for plain in ["Invalid token: expired", "idempotency_key=k1 was reused", "nothing here", "exit code 1: skip this"] {
+            let result = SecretValues.masked(prose: plain)
+            #expect(result.text == plain && result.count == 0, "\(plain)")
+        }
+    }
+
+    /// One job from one `job` record and its full copy.
+    private static func job(state: String, title: String = "Deploy the build", result: String, open: String = "",
+                            hidesSecrets: Bool) throws -> (job: BackgroundJob, full: ToolDetailRecord) {
+        var wire = Wire()
+        wire.user("Go.")
+        let call = wire.call("Bash", detail: "make deploy", result: "started")
+        let records = try summaries(#"{"kind":"job","key":"j","sequence":2,"tool_use_id":"\#(call)","job_kind":"command","title":"\#(title)","state":"\#(state)","result_bytes":64\#(open)}"#)
+        let full = ToolDetailRecord(key: "j", kind: "job", result: result)
+        let jobs = ProviderJobs.jobs(summaries: records, record: { _ in full }, entries: wire.entries, worker: "w",
+                                     hidesSecrets: hidesSecrets)
+        return (try #require(jobs.first), full)
+    }
+
+    @Test func aFailedJobsSentenceIsCutFromTheMaskedSummary() throws {
+        let summary = "Upload refused for Bearer \(Self.bearer) with API_TOKEN=abc123 and \(Self.jwt). Retry later.\n\(Self.key)"
+        let (job, full) = try Self.job(state: "failed", result: summary, hidesSecrets: true)
+        let line = job.line(connected: true)
+        // Masked whole, then cut at the first sentence's own end.
+        #expect(line.reason == "Upload refused for Bearer Hidden, 16 characters with API_TOKEN=Hidden, 6 characters and Hidden, 31 characters.")
+        // The line, the VoiceOver label and the announcement are all built from these.
+        for text in [line.reason ?? "", line.spoken, line.sentence.plain, job.error ?? "", job.hiddenResult ?? ""] {
+            for secret in [Self.bearer, "abc123", Self.jwt, Self.key] { #expect(!text.contains(secret), "\(text)") }
+        }
+        #expect(line.isFailure && line.tag == .failed && job.hiddenCount == 4)
+        // The summary as stored is kept, on the job and in the record.
+        #expect(job.result == summary && full.result == summary)
+    }
+
+    @Test func aFinishedJobsSummaryIsHiddenUntilReveal() throws {
+        let summary = "Background command \"Deploy the build\" completed (exit code 0)\nexport API_KEY=\(Self.key)"
+        let (job, _) = try Self.job(state: "completed", result: summary, hidesSecrets: true)
+        // What the opened line draws, and what Reveal shows.
+        #expect(job.hiddenResult == "Background command \"Deploy the build\" completed (exit code 0)\nexport API_KEY=Hidden, 25 characters")
+        #expect(job.hiddenCount == 1 && job.result == summary && job.error == nil)
+        #expect(job.line(connected: true).sentence.plain == "\u{201C}Deploy the build\u{201D} finished")
+        // A summary with nothing to hide offers no Reveal.
+        let clean = try Self.job(state: "completed", result: "completed (exit code 0)", hidesSecrets: true).job
+        #expect(clean.hiddenResult == nil && clean.hiddenCount == 0 && clean.result == "completed (exit code 0)")
+        // The description and the child's open call are masked in the sentence too.
+        let running = try Self.job(state: "running", title: "Deploy with API_TOKEN=abc123", result: "",
+                                   open: #","open_tool_name":"Bash","open_tool_arg":"curl -H Authorization: Bearer \#(Self.bearer) https://x.test""#,
+                                   hidesSecrets: true).job
+        let spoken = running.line(connected: true).spoken
+        #expect(!spoken.contains("abc123") && !spoken.contains(Self.bearer) && spoken.contains("Hidden, 16 characters"))
+        // A long call is masked before the sentence cuts it in the middle: no part of the key is left.
+        let long = "sk-" + String(repeating: "abcdefgh", count: 12)
+        let cut = try Self.job(state: "running", result: "",
+                               open: #","open_tool_name":"Bash","open_tool_arg":"deploy --region eu-west-1 --key \#(long) --wait""#,
+                               hidesSecrets: true).job.line(connected: true).spoken
+        #expect(!cut.contains("sk-") && !cut.contains("abcdefgh") && cut.contains("Hidden, 99 characters"))
+    }
+
+    @Test func withTheSettingOffAJobsTextsAreAsStored() throws {
+        let summary = "Upload refused for Bearer \(Self.bearer). Retry later."
+        let failed = try Self.job(state: "failed", title: "Deploy with API_TOKEN=abc123", result: summary, hidesSecrets: false).job
+        #expect(failed.result == summary && failed.hiddenResult == nil && failed.hiddenCount == 0)
+        #expect(failed.line(connected: true).reason == "Upload refused for Bearer \(Self.bearer).")
+        #expect(failed.line(connected: true).sentence.plain == "\u{201C}Deploy with API_TOKEN=abc123\u{201D} failed")
+        let done = try Self.job(state: "completed", result: "export API_KEY=\(Self.key)", hidesSecrets: false).job
+        #expect(done.result == "export API_KEY=\(Self.key)" && done.hiddenResult == nil)
+        // The default is off, as before.
+        var wire = Wire()
+        wire.user("Go.")
+        let call = wire.call("Bash", detail: "make deploy", result: "started")
+        let records = try Self.summaries(#"{"kind":"job","key":"j","sequence":2,"tool_use_id":"\#(call)","job_kind":"command","title":"Deploy","state":"failed","result_bytes":9}"#)
+        let byDefault = ProviderJobs.jobs(summaries: records, record: { _ in ToolDetailRecord(key: "j", kind: "job", result: summary) },
+                                          entries: wire.entries, worker: "w")
+        #expect(byDefault.first?.error == "Upload refused for Bearer \(Self.bearer)." && byDefault.first?.hiddenResult == nil)
+    }
+
+    /// A store whose service answers the setting read with `answer`, or fails it while nil.
+    private final class SettingsService: @unchecked Sendable {
+        var answer: TranscriptSettings?
+        var reads = 0
+    }
+
+    @MainActor private static func liveStore(_ service: SettingsService) -> ToolDetailStore {
+        ToolDetailStore(source: ToolDetailSource(
+            page: { _, _ in ToolDetailPage(revision: 0, records: []) },
+            record: { _, key in ToolDetailRecord(key: key, kind: "job") },
+            readSettings: {
+                service.reads += 1
+                guard let answer = service.answer else { throw ServiceError.offline("starting") }
+                return answer
+            },
+            writeSettings: { $0 }))
+    }
+
+    @Test @MainActor func aJobsTextsAreHiddenUntilTheServiceSaysWhatWasSaved() async throws {
+        let service = SettingsService()
+        let store = Self.liveStore(service)
+        let summary = "export API_KEY=\(Self.key)"
+        // At launch nothing is known, so the transcript masks as if the setting were on.
+        #expect(store.hidesSecrets && !store.settingsLoaded && !store.settings.hideSecrets)
+        let early = try Self.job(state: "completed", result: summary, hidesSecrets: store.hidesSecrets).job
+        #expect(early.hiddenResult == "export API_KEY=Hidden, 25 characters" && early.hiddenCount == 1)
+        // A read the service fails leaves it hidden, and the next one asks again.
+        await store.loadSettingsIfNeeded()
+        #expect(store.hidesSecrets && service.reads == 1)
+        // The service holds "keep everything": the texts are as stored from then on.
+        service.answer = TranscriptSettings()
+        await store.loadSettingsIfNeeded()
+        #expect(!store.hidesSecrets && store.settingsLoaded && service.reads == 2)
+        #expect(try Self.job(state: "completed", result: summary, hidesSecrets: store.hidesSecrets).job.hiddenResult == nil)
+        // Known once per service: it is not read again.
+        await store.loadSettingsIfNeeded()
+        #expect(service.reads == 2)
+        // A store of fixed values reads nothing, and keeps the setting it was given.
+        #expect(!ToolDetailStore().hidesSecrets && !Self.store([]).hidesSecrets)
+        #expect(ToolDetailStore(summaries: [:], settings: TranscriptSettings(hideSecrets: true)).hidesSecrets)
+    }
+
+    @Test @MainActor func aChangeOfServiceHidesAgainAndDropsTheLastServicesAnswer() async {
+        let service = SettingsService()
+        service.answer = TranscriptSettings()
+        let store = Self.liveStore(service)
+        await store.loadSettingsIfNeeded()
+        #expect(!store.hidesSecrets)
+        // Another host: its setting is unknown, so values are hidden until it answers.
+        store.serviceChanged()
+        #expect(store.hidesSecrets && !store.settingsLoaded)
+        service.answer = TranscriptSettings(hideSecrets: true)
+        await store.loadSettingsIfNeeded()
+        #expect(store.hidesSecrets && store.settingsLoaded && store.settings.hideSecrets)
+
+        // An answer still on its way from the service just left is not applied to the new one.
+        let (started, didStart) = AsyncStream<Void>.makeStream()
+        let (release, doRelease) = AsyncStream<Void>.makeStream()
+        let slow = ToolDetailStore(source: ToolDetailSource(
+            page: { _, _ in ToolDetailPage(revision: 0, records: []) },
+            record: { _, key in ToolDetailRecord(key: key, kind: "job") },
+            readSettings: {
+                didStart.yield()
+                for await _ in release { break }
+                return TranscriptSettings()
+            },
+            writeSettings: { $0 }))
+        let read = Task { await slow.loadSettingsIfNeeded() }
+        for await _ in started { break }
+        slow.serviceChanged()
+        doRelease.yield()
+        await read.value
+        #expect(slow.hidesSecrets && !slow.settingsLoaded)
+    }
+
+    @Test func revealShowsOnlyTheTextItWasPressedOn() {
+        let stored = "export API_KEY=\(Self.key)", hidden = "export API_KEY=Hidden, 25 characters"
+        let pressed = SecretText.Reveal(text: stored, hidden: hidden)
+        #expect(SecretText.shown(text: stored, hidden: hidden, revealed: nil) == hidden)
+        #expect(SecretText.shown(text: stored, hidden: hidden, revealed: pressed) == stored)
+        // The job's summary changed under an open line: the new one is drawn hidden.
+        let next = "export API_KEY=sk-another-key-entirely-000", nextHidden = "export API_KEY=Hidden, 26 characters"
+        #expect(SecretText.shown(text: next, hidden: nextHidden, revealed: pressed) == nextHidden)
+        // The same text masked differently is not what was revealed either.
+        #expect(SecretText.shown(text: stored, hidden: "export Hidden, 34 characters", revealed: pressed) == "export Hidden, 34 characters")
+        // With nothing hidden the text is plain.
+        #expect(SecretText.shown(text: "completed (exit code 0)", hidden: nil, revealed: pressed) == "completed (exit code 0)")
+    }
+
+    @Test func aFailedJobsOpenedLineNeverHoldsTheStoredSummary() throws {
+        // The failure line draws `line.reason` and nothing else from the record: the stack's
+        // detail leaves the exit summary out of a failed line, so it has no Reveal.
+        let summary = "Upload refused for Bearer \(Self.bearer) with API_TOKEN=abc123. Retry later."
+        let job = try Self.job(state: "failed", result: summary, hidesSecrets: true).job
+        let layout = BackgroundStackLayout(jobs: [job], density: .regular, connected: true)
+        let row = try #require((layout.rows + layout.folded).first)
+        #expect(row.line.isFailure && BackgroundStack.exitSummary(row) == nil)
+        let done = try Self.job(state: "completed", result: summary, hidesSecrets: true).job
+        let doneLayout = BackgroundStackLayout(jobs: [done], density: .regular, connected: true)
+        let doneRow = try #require((doneLayout.rows + doneLayout.folded).first)
+        #expect(BackgroundStack.exitSummary(doneRow) == summary)
+    }
+
     // MARK: The end-of-turn line
 
     @Test func aTurnHasOneEndLineHoweverManyResultsArrive() throws {
@@ -381,5 +581,44 @@ import Testing
         try await write(console(.compact, size: tile), "records-wall-tile", tile)
         try await write(console(.pip, size: pip), "records-pip", pip)
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("records-regular-console.png").path))
+    }
+
+    /// A finished job opened to its exit summary and a failed job, with the setting on and off.
+    @Test(.enabled(if: prettyRenderDirectory != nil)) func drawsAJobsHiddenSecrets() async throws {
+        let folder = URL(fileURLWithPath: try #require(prettyRenderDirectory), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        _ = NSApplication.shared
+        var wire = Wire()
+        wire.user("Deploy the build and publish the notes.")
+        let deploy = wire.call("Bash", detail: "make deploy", result: "started")
+        let publish = wire.call("Bash", detail: "make publish", result: "started")
+        let records = try Self.summaries([
+            Self.tool(deploy, 2, fields: #"{"command":"make deploy","description":"Deploy the build"}"#),
+            Self.tool(publish, 4, fields: #"{"command":"make publish","description":"Publish the notes"}"#),
+            #"{"kind":"job","key":"job-deploy","sequence":2,"tool_use_id":"\#(deploy)","job_kind":"command","title":"Deploy the build","state":"completed","result_bytes":90}"#,
+            #"{"kind":"job","key":"job-publish","sequence":4,"tool_use_id":"\#(publish)","job_kind":"command","title":"Publish the notes","state":"failed","result_bytes":90}"#,
+        ].joined(separator: ","))
+        let full = [
+            ToolDetailRecord(key: "job-deploy", kind: "job",
+                             result: "Background command \"Deploy the build\" completed (exit code 0)\nexport API_KEY=\(Self.key)\nAuthorization: Bearer \(Self.bearer)"),
+            ToolDetailRecord(key: "job-publish", kind: "job",
+                             result: "Upload refused for Bearer \(Self.bearer) with API_TOKEN=abc123. Retry later."),
+        ]
+        func console(hidesSecrets: Bool, size: CGSize) -> some View {
+            let modes = ConsoleModeStore()
+            modes.toggleTool(console: "w", entry: "command:" + deploy)
+            return PrettyConsoleView(consoleID: "w", entries: wire.entries, rawOutput: "", density: .regular,
+                                     live: PrettyLive(state: .working, workerName: "Coordinator"), reportsAsCoordinator: true)
+                .frame(width: size.width, height: size.height)
+                .background(Palette.panel)
+                .environment(modes)
+                .environment(ToolDetailStore(summaries: ["w": records], records: ["w": full],
+                                             settings: TranscriptSettings(hideSecrets: hidesSecrets)))
+                .environment(\.backgroundWork, BackgroundWorkAccess(isConnected: true))
+        }
+        let size = CGSize(width: 800, height: 460)
+        try await ShellRenderTests.write(console(hidesSecrets: true, size: size), "records-secrets-hidden", theme: .console, to: folder, size: size)
+        try await ShellRenderTests.write(console(hidesSecrets: false, size: size), "records-secrets-shown", theme: .console, to: folder, size: size)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("records-secrets-hidden-console.png").path))
     }
 }

@@ -14,6 +14,7 @@ import SwiftUI
 //              ResultEmptyState         the sentence an empty result reads as
 //              ResultTruncationBanner   a result the service cut short
 //              SecretValue              "Hidden, N characters" with Reveal
+//              SecretText               prose with its secret-looking values hidden, with Reveal
 //              ResultDisclosure         a quiet nested disclosure ("3 more fields, 1 empty")
 //              ResultSourceDisclosure   wire name, tool ID, call and result text; Copy is exact
 //   Organism   ActivityResultView       selects the renderer, then adds More fields and Source
@@ -252,6 +253,51 @@ struct SecretValue: View {
             Button(isRevealed ? "Hide" : "Reveal") { isRevealed.toggle() }
                 .buttonStyle(.plain).font(.system(size: metrics.detailSize)).foregroundStyle(Palette.focus)
                 .accessibilityLabel(isRevealed ? "Hide this value" : "Reveal this value")
+        }
+    }
+}
+
+/// Prose that may hold secret-looking values, such as a job's exit summary. With `hidden` (the
+/// text as `SecretValues.masked(prose:)` gives it) it draws that, then "N values hidden" and
+/// Reveal, as Source does. The text as stored is drawn, and read to VoiceOver, only after Reveal.
+/// With no `hidden` it is the plain text.
+struct SecretText: View {
+    let text: String
+    var hidden: String? = nil
+    var count = 0
+    let metrics: PrettyMetrics
+    /// What Reveal was pressed on. A changed summary, or a changed masking of it, is not that
+    /// text, so it draws hidden from its first frame.
+    @State private var revealed: Reveal?
+
+    struct Reveal: Equatable {
+        let text: String
+        let hidden: String?
+    }
+
+    /// The text drawn: the stored text only when Reveal was pressed on exactly this text and
+    /// masking, or when nothing in it is hidden.
+    static func shown(text: String, hidden: String?, revealed: Reveal?) -> String {
+        guard let hidden else { return text }
+        return revealed == Reveal(text: text, hidden: hidden) ? text : hidden
+    }
+
+    var body: some View {
+        let isRevealed = hidden != nil && revealed == Reveal(text: text, hidden: hidden)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(verbatim: Self.shown(text: text, hidden: hidden, revealed: revealed))
+                .font(metrics.body).foregroundStyle(.inkSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if hidden != nil {
+                HStack(spacing: 12) {
+                    Text(count == 1 ? "1 value hidden" : "\(count) values hidden").foregroundStyle(.inkSecondary)
+                    Button(isRevealed ? "Hide" : "Reveal") { revealed = isRevealed ? nil : Reveal(text: text, hidden: hidden) }
+                        .buttonStyle(.plain).foregroundStyle(Palette.focus)
+                        .accessibilityLabel(isRevealed ? "Hide the values" : "Reveal the hidden values")
+                }
+                .font(.system(size: metrics.detailSize))
+                .textSelection(.disabled)
+            }
         }
     }
 }

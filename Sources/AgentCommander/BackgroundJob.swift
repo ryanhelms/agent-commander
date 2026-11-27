@@ -65,6 +65,11 @@ struct BackgroundJob: Identifiable, Equatable {
     /// A provider job's own record key, for its full copy, and the exit summary that copy holds.
     var detailKey: String? = nil
     var result: String? = nil
+    /// The exit summary with its secret-looking values hidden, and how many were. Set only under
+    /// "Hide values that look like secrets", when the summary holds one: the opened line draws
+    /// this, and `result` only after Reveal.
+    var hiddenResult: String? = nil
+    var hiddenCount = 0
     /// The child's latest turn, drawn when the line opens.
     var console: [TranscriptEntry] = []
     /// Its call came after this console's last prompt. An ended job shows only while this holds.

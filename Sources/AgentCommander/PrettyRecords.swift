@@ -23,8 +23,18 @@ enum ProviderJobs {
     /// The jobs the `job` records describe, in the order of the calls that started them. Each is
     /// joined to its console call by the record's exact `tool_use_id`. A record of a kind other
     /// than `command` or `agent`, or with no state, gives no job.
+    ///
+    /// With `hidesSecrets` (the transcript setting), every text a record gives a line is masked
+    /// before anything is derived from it: the description, the child's open call, and the exit
+    /// summary a failure's first sentence is cut from. The line, its VoiceOver label and its
+    /// announcement are built from the masked text. The exit summary as stored stays in `result`,
+    /// which the opened line shows only after Reveal.
     static func jobs(summaries: [ToolDetailSummary], record: (String) -> ToolDetailRecord? = { _ in nil },
-                     entries: [TranscriptEntry], worker: String) -> [BackgroundJob] {
+                     entries: [TranscriptEntry], worker: String, hidesSecrets: Bool = false) -> [BackgroundJob] {
+        func shown(_ text: String?) -> String? {
+            guard hidesSecrets, let text else { return text }
+            return SecretValues.masked(prose: text).text
+        }
         let lastPrompt = entries.lastIndex(where: \.isFromUser) ?? -1
         var calls: [String: Int] = [:]
         for (index, entry) in entries.enumerated() {
@@ -43,18 +53,21 @@ enum ProviderJobs {
                   seen.insert(callID).inserted else { continue }
             var job = BackgroundJob(kind: kind, recordID: callID, state: state)
             job.detailKey = summary.key
-            job.text = summary.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            job.text = shown(summary.title?.trimmingCharacters(in: .whitespacesAndNewlines))
             let word = state.lowercased()
             // The runner's observation time, shown only while the record says running.
             if word == "running" { job.startedAt = summary.started }
             if word == "running", let tool = summary.openToolName, !tool.isEmpty {
-                job.liveSentence = ActivityWords.provider(name: tool, detail: summary.openToolArg).running
+                job.liveSentence = ActivityWords.provider(name: tool, detail: shown(summary.openToolArg)).running
             }
             // The exit summary is in the full record, read when the line opens or the job fails.
             let result = record(summary.key)?.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !result.isEmpty {
                 job.result = result
-                if word == "failed" { job.error = ActivityFailureWords.firstSentence(result).first }
+                // Masked whole, then cut: a secret the sentence's end falls inside stays hidden.
+                let masked = hidesSecrets ? SecretValues.masked(prose: result) : (text: result, count: 0)
+                if masked.count > 0 { (job.hiddenResult, job.hiddenCount) = (masked.text, masked.count) }
+                if word == "failed" { job.error = ActivityFailureWords.firstSentence(masked.text).first }
             }
             // A job whose call this console no longer holds is kept only while it has not ended.
             job.isSinceLastPrompt = calls[callID].map { $0 > lastPrompt } ?? false
