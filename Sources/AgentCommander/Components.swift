@@ -357,9 +357,15 @@ struct RequestPresentation: Identifiable, Equatable {
     /// The asking worker's reported provider usage, as on its tile. Nil without a session.
     var workerTelemetry: ProviderTelemetry? = nil
     /// The asking worker's one tool call that is awaiting this request's approval, resolved from
-    /// its whole transcript before `contextEntries` is cut to a recent window. Nil unless the
-    /// request offers choices and exactly one call is open; see `PrettyRunStatus.awaitingToolID`.
+    /// its whole transcript before `contextEntries` is cut to a recent window. A request whose
+    /// permission names its call marks that call alone, or none when the ID matches no single
+    /// open call. A request that names none marks a call only when it offers choices and exactly
+    /// one call is open; see `PrettyRunStatus.awaitingToolID`.
     var awaitingApprovalToolID: String? = nil
+    /// The same call, set only when the permission named it by exact ID
+    /// (`PrettyRunStatus.approvalToolID`). Never set from the one-open-call rule, so a proposed
+    /// plan is shown only for the call its permission names.
+    var exactApprovalToolID: String? = nil
     /// This request's Commander workflow (its ask, waits and linked result), linked over the
     /// asking worker's whole transcript before `contextEntries` is cut to a recent window, so the
     /// PiP reads the request as one story with its Ask. Nil when no Commander call names it.
@@ -1058,8 +1064,15 @@ extension RunContent {
             }
             let requests = questions.map { question in
                 // From the full transcript: the PiP's window could hide a competing open call.
-                let awaitingToolID = PrettyRunStatus(state: state, entries: transcript)
-                    .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty)
+                let status = PrettyRunStatus(state: state, entries: transcript)
+                let offersChoices = !(question.choices ?? []).isEmpty
+                // A permission that names its call marks that call or none: the one-open-call
+                // rule is only for a request that names none.
+                let exactToolID = offersChoices ? question.providerToolCallID.flatMap {
+                    status.approvalToolID(worker: worker.id, providerToolCallID: $0)
+                } : nil
+                let awaitingToolID = question.providerToolCallID == nil
+                    ? status.awaitingToolID(choiceRequestPending: offersChoices) : exactToolID
                 return RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
                     workerID: worker.id, workerName: worker.name, workerIsCoordinator: isCoordinator,
@@ -1076,6 +1089,7 @@ extension RunContent {
                     choices: question.choices ?? [],
                     workerTelemetry: telemetry,
                     awaitingApprovalToolID: awaitingToolID,
+                    exactApprovalToolID: exactToolID,
                     // Also from the full transcript: the window could cut off the request's Ask.
                     requestWorkflow: CommanderActivity.workflow(request: question.id, in: transcript,
                                                                 awaitingToolID: awaitingToolID))

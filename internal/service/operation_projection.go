@@ -34,7 +34,8 @@ func operationStateDelta(old, next aguiRunState) []aguiPatch {
 
 func equalQuestion(a, b Question) bool {
 	return a.ID == b.ID && a.WorkerID == b.WorkerID && a.Question == b.Question && a.Status == b.Status &&
-		a.Answer == b.Answer && a.Delivery == b.Delivery && slices.Equal(a.Choices, b.Choices)
+		a.Answer == b.Answer && a.Delivery == b.Delivery && a.ProviderToolCallID == b.ProviderToolCallID &&
+		slices.Equal(a.Choices, b.Choices)
 }
 
 func questionChanges(changes []aguiPatch, path string, old, next []Question) []aguiPatch {

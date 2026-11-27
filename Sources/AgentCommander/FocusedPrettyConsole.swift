@@ -75,6 +75,16 @@ struct PrettyRunStatus: Equatable {
         return openToolIDs.first
     }
 
+    /// The open call a provider permission names: the one transcript entry whose ID is
+    /// `<worker ID>:<provider tool ID>`, however many other calls are open. Nil when the worker
+    /// is not waiting, when no open call has that ID (a stale ID, or another worker's call with
+    /// the same provider ID), and when more than one does.
+    func approvalToolID(worker: String, providerToolCallID: String) -> String? {
+        let id = worker + ":" + providerToolCallID
+        guard phase == .waiting, openToolIDs.filter({ $0 == id }).count == 1 else { return nil }
+        return id
+    }
+
     /// `reportsProgress` is set for a worker whose service reports its phase (a tracked local
     /// Claude worker). Its active phase is then the service's state alone: no Responding or
     /// Running tool is inferred from the transcript, so the status never contradicts the reported
@@ -226,6 +236,9 @@ struct PrettyACPConsole: View {
     /// Where the call awaiting approval comes from. A surface holding the whole transcript
     /// derives it; the PiP, which holds a window, takes the one its request resolved.
     var awaitingApproval: AwaitingApproval = .derived
+    /// The call the request's permission names by exact ID (`RequestPresentation.exactApprovalToolID`).
+    /// Only this call shows its proposed plan before the decision.
+    var exactApprovalToolID: String? = nil
     /// The requests this surface can act on for activity story actions: its own form's request,
     /// or the requests it routes to where they are answered. Empty offers no request action.
     var stories = ActivityStoryContext()
@@ -273,7 +286,8 @@ struct PrettyACPConsole: View {
         if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
-                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
+                              awaitingToolID: awaitingToolID(status), exactApprovalToolID: exactApprovalToolID,
+                              stories: stories, anchor: anchor,
                               showsRecent: showsRecent,
                               live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
                                                reportedPhase: reportedPhase, turnIsRunning: turnIsRunning),
@@ -305,6 +319,10 @@ extension PrettyACPConsole {
                   reportsProgress: worker.claudeProgress != nil,
                   reportedPhase: worker.claudeProgress?.evidence?.phase,
                   isCoordinator: worker.isCoordinator,
+                  // The request's own resolution over this same transcript: the call its
+                  // permission names, or for a request that names none, the one open call.
+                  awaitingApproval: .resolved(worker.request?.awaitingApprovalToolID),
+                  exactApprovalToolID: worker.request?.exactApprovalToolID,
                   stories: stories ?? .form(for: worker.request, reply: reply),
                   background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning)
     }
@@ -322,6 +340,7 @@ extension PrettyACPConsole {
                   // The PiP holds one turn, which cannot rule out an older open call, so it
                   // shows the call its request resolved from the whole transcript.
                   awaitingApproval: .resolved(request.awaitingApprovalToolID),
+                  exactApprovalToolID: request.exactApprovalToolID,
                   stories: .form(for: request, reply: reply),
                   anchor: request.requestWorkflow, showsRecent: true,
                   background: request.workerBackgroundJobs, turnIsRunning: request.workerTurnIsRunning)

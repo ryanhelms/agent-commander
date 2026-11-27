@@ -675,10 +675,11 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, err
 	}
 	var in struct {
-		Question        string
-		Choices         []QuestionChoice `json:",omitempty"`
-		ProviderTurn    string           `json:"provider_turn,omitempty"`
-		ProviderRequest string           `json:"provider_request,omitempty"`
+		Question           string
+		Choices            []QuestionChoice `json:",omitempty"`
+		ProviderTurn       string           `json:"provider_turn,omitempty"`
+		ProviderRequest    string           `json:"provider_request,omitempty"`
+		ProviderToolCallID string           `json:"provider_tool_call_id,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -717,6 +718,9 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	}
 	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: formatQuestion(in.Question, in.Choices), Status: "pending", Choices: in.Choices}
 	if in.ProviderTurn != "" {
+		if len(in.ProviderToolCallID) <= 256 {
+			q.ProviderToolCallID = in.ProviderToolCallID
+		}
 		if s.state.Permissions == nil {
 			s.state.Permissions = make(map[string]providerPermission)
 		}

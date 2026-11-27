@@ -371,4 +371,25 @@ enum PrettyToolInput {
         let text = (object(input)?["plan"] as? String) ?? summary?.field("plan")
         return text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
     }
+
+    /// The plan a held `ExitPlanMode` call proposes, drawn before its decision. `exactToolID` is
+    /// the call the pending permission names (`RequestPresentation.exactApprovalToolID`), and the
+    /// held call must be that one: a call marked only because it is the one open call shows no
+    /// plan. `summary` and `record` read one console's stored details, so the plan is the one
+    /// kept by this worker under this call's own ID: never another worker's call with the same
+    /// ID, another call, or the latest plan. Nil for any other call, and when no usable plan is
+    /// stored: the approval line and the request form then stand alone.
+    static func pendingPlan(for step: ActivityStep, exactToolID: String?, summary: (String) -> ToolDetailSummary?,
+                            record: (String) -> ToolDetailRecord?) -> String? {
+        guard let exactToolID, step.state == .awaitingApproval, step.entries.count == 1,
+              let entry = step.entries.first, entry.id == exactToolID,
+              case .tool(let name, _, nil) = entry.kind, CommanderTool(name: name) == nil,
+              PrettyToolCard.kind(name: name, result: nil, summary: nil) == .plan else { return nil }
+        let stored = record(entry.detailKey), brief = summary(entry.detailKey)
+        // A record kept under this ID for a different tool is not this call's plan.
+        for kept in [stored?.name, brief?.name] {
+            if let kept, kept.caseInsensitiveCompare(name) != .orderedSame { return nil }
+        }
+        return plan(input: stored?.input, summary: brief)
+    }
 }
