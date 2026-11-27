@@ -9,7 +9,7 @@ const (
 )
 
 func (w *Worker) isLocalClaudeWorker() bool {
-	return w.Role == "worker" && w.NativeSession != nil && w.NativeSession.HarnessInstance == LocalClaudeHarness
+	return (w.Role == "worker" || w.Role == "coordinator" && w.Control != nil) && w.NativeSession != nil && w.NativeSession.HarnessInstance == LocalClaudeHarness
 }
 
 func (s *service) reportWorkerProviderExit(req *http.Request, actor string) (outcome, error) {
@@ -31,7 +31,7 @@ func (s *service) reportWorkerProviderExit(req *http.Request, actor string) (out
 	if report.Reason != "" && report.Reason != "observation_gap" {
 		return outcome{}, bad("invalid provider exit reason")
 	}
-	if w.Role != "worker" || w.NativeSession == nil || *w.NativeSession != report.NativeSession || w.Control == nil ||
+	if (w.Role != "worker" && w.ID != r.CoordinatorID) || w.NativeSession == nil || *w.NativeSession != report.NativeSession || w.Control == nil ||
 		(report.Reason == "" && !w.isLocalClaudeWorker()) {
 		return outcome{}, conflict("provider exit does not match the original managed session")
 	}

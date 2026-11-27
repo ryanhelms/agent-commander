@@ -131,7 +131,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	path := "/v1/workers/" + j.Worker.ID
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
-	managed := j.Worker.Role == "worker"
+	managed := j.Worker.Role == "worker" || j.Worker.Reattach != nil
 	capabilities := session.GetCapabilities()
 	protocolVersion := 1
 	if negotiated, ok := rt.(interface {
