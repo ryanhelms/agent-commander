@@ -44,6 +44,8 @@ type wireActivity struct {
 	*acpprocessor.Activity
 	toolCallID     string
 	commanderInput string
+	// detail is for the local app only and never joins the console reference.
+	detail *service.ToolDetail
 }
 
 // A compiler-provided ACP runtime can offer both a wire callback and an idle
@@ -284,7 +286,7 @@ func (p *acpSourcePublisher) capture(source runtime.ACPUpdate) {
 			case "user_message_chunk", "agent_message_chunk", "tool_call", "tool_call_update":
 				ref := acpprocessor.Reference("live", source.Cursor, header.SessionUpdate, header.MessageID)
 				ref.TurnID = source.TurnID
-				wire := wireActivity{Activity: ref}
+				wire := wireActivity{Activity: ref, detail: wireToolDetail(source.Body)}
 				if header.ToolCallID != "" && len(header.RawInput) != 0 {
 					name := header.Title
 					if name == "" {

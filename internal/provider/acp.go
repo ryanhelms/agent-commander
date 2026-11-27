@@ -708,7 +708,19 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				}
 				event.ACP = sourceReference(wire.Activity, portableRef)
 				s.line(previewText(event.TerminalText()))
-				s.recordEvent(event)
+				values := wire.detail
+				if values == nil || values.Key != e.GetTool().GetCallId() {
+					values = observedToolDetail(e)
+				}
+				if event.Kind == "tool_result" {
+					if values == nil {
+						values = &service.ToolDetail{Kind: "tool"}
+					}
+					if values.Result == "" {
+						values.Result = e.GetTool().GetSummary()
+					}
+				}
+				s.recordDetailed(event, values)
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_USER:
 				// Actual peer chunks have a wire identity. The SDK's local prompt echo is
 				// already recorded for the initial assignment or accepted follow-up.
@@ -734,7 +746,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					event.ACP.TurnID = e.TurnId
 				}
 				s.line(event.TerminalText())
-				s.recordEvent(event)
+				s.recordDetailed(event, planDetail(e))
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_SYSTEM:
 				flushText()
 				value := consoleText(e.GetText().Text)

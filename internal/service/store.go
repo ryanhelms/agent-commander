@@ -146,6 +146,7 @@ type service struct {
 	frontendRounds      map[string][]*frontendRound
 	liveSource          liveSourceStore
 	elicitations        map[string]*activeElicitation
+	details             toolDetailStore
 }
 
 func randomID(prefix string) string {
