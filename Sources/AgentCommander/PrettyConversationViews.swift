@@ -234,8 +234,7 @@ struct ActivityLine: View {
                 .buttonStyle(ActivityRowButtonStyle())
                 .textSelection(.disabled)
                 .help(step.help ?? step.sentence.plain)
-                .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-                .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+                .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
                 .accessibilityLabel(step.accessibilityLabel)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         } else {
@@ -282,6 +281,30 @@ struct ActivityRowButtonStyle: ButtonStyle {
     }
 }
 
+/// Keyboard focus for a Pretty line that opens: an activity line, a group's summary, a failure
+/// line and Thinking with its thought text. The button is one stop in the Tab order under macOS
+/// Keyboard navigation, with the system focus ring. Space or Return presses it as any button,
+/// Right opens it and Left closes it. Focus is set before the arrow keys are heard: a key press
+/// goes to the focused view, and with the arrow handlers alone Tab passed the line over.
+private struct PrettyDisclosureKeys: ViewModifier {
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .focusable(true, interactions: .activate)
+            .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
+            .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+    }
+}
+
+extension View {
+    /// Apply to the button itself, after its style, and only on a line that opens.
+    func prettyDisclosureKeys(isExpanded: Bool, toggle: @escaping () -> Void) -> some View {
+        modifier(PrettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle))
+    }
+}
+
 /// The secondary-ink line that stands for a run of finished calls. It never animates.
 struct ActivityGroupSummary: View {
     let summary: ActivityGroup.Summary
@@ -306,8 +329,7 @@ struct ActivityGroupSummary: View {
         }
         .buttonStyle(ActivityRowButtonStyle())
         .textSelection(.disabled)
-        .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-        .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+        .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
         .help("Option-click opens every step")
         .accessibilityLabel(summary.accessibilityLabel)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
@@ -350,8 +372,7 @@ struct ActivityFailureLine<Detail: View>: View {
             .buttonStyle(ActivityRowButtonStyle())
             .textSelection(.disabled)
             .help(step.help ?? step.sentence.plain)
-            .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-            .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+            .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
             .accessibilityLabel(step.sentence.plain + ", " + (step.failure?.outcome == .blocked ? "blocked" : "failed")
                                 + (step.failure.map { ", " + $0.reason } ?? ""))
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
@@ -530,8 +551,7 @@ struct PrettyLiveLine: View {
                 Button(action: toggle) { row }
                     .buttonStyle(ActivityRowButtonStyle())
                     .textSelection(.disabled)
-                    .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-                    .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+                    .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
                     .accessibilityLabel(spoken)
                     .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             } else {
