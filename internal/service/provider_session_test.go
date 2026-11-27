@@ -108,3 +108,93 @@ func TestProviderSessionReattachKeepsUncertainDeliveryAndScopesDiscovery(t *test
 	}
 	t.Fatal("reattached worker disappeared")
 }
+
+type legacyCoordinatorLauncher struct {
+	discoveringLauncher
+	ref NativeSession
+}
+
+func (l legacyCoordinatorLauncher) RecoverLegacyCoordinator(_ context.Context, spec LaunchSpec, _ string) (NativeSession, string, error) {
+	return l.ref, strings.Repeat("ab", 32), nil
+}
+
+func TestCoordinatorReattachesOriginalRunWithoutReplayingAssignment(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "bound ACP"
+		if legacy {
+			name = "recovered Claude CLI"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			launcher := discoveringLauncher{f.p, make(chan ProviderSessionScope, 1)}
+			ref := NativeSession{HarnessInstance: "fixture", SessionID: "original"}
+			var err error
+			if legacy {
+				ref.HarnessInstance = LegacyClaudeHarness
+				f.api, err = New(f.dir, legacyCoordinatorLauncher{launcher, ref})
+			} else {
+				f.api, err = New(f.dir, launcher)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.call("POST", "/v1/runs", "", map[string]string{"path": f.dir, "client": "claude", "task": "resume this coordinator"}, 201, "")
+			coordinator := f.launched()
+			path := "/v1/workers/" + coordinator.ID
+			status := func() providerSessionStatus {
+				var current providerSessionStatus
+				if err := json.Unmarshal(f.call("GET", path+"/session", "", nil, 200, ""), &current); err != nil {
+					t.Fatal(err)
+				}
+				return current
+			}
+			f.call("POST", path+"/state", coordinator.Token, map[string]string{"state": "working"}, 200, "")
+			if !legacy {
+				f.call("POST", path+"/native-session", "", map[string]any{
+					"harness_instance": ref.HarnessInstance, "session_id": ref.SessionID,
+					"provider_binding": strings.Repeat("ab", 32), "peer_capabilities": SessionCapabilities{CanResume: true},
+				}, 200, "")
+			}
+			if got := status(); got.CanReattach || got.NativeSession == nil || *got.NativeSession != ref {
+				t.Fatalf("active coordinator must expose identity without allowing resume: %+v", got)
+			}
+			f.call("POST", path+"/reattach", coordinator.Token, reattachRequest{Generation: 1}, 403, "agent")
+			f.call("POST", path+"/reattach", "", reattachRequest{Generation: 1}, 409, "while-active")
+			f.call("POST", path+"/state", coordinator.Token, map[string]string{"state": "completed"}, 200, "")
+			if got := status(); !got.CanReattach || got.Generation != 1 {
+				t.Fatalf("inactive coordinator should be resumable: %+v", got)
+			}
+			f.call("POST", path+"/reattach", "", reattachRequest{Generation: 1}, 202, "reattach-original")
+			resumed := f.launched()
+			if resumed.ID != coordinator.ID || resumed.RunID != coordinator.RunID || resumed.Role != "coordinator" ||
+				resumed.Token == coordinator.Token || resumed.Reattach == nil || resumed.Reattach.Ref != ref {
+				t.Fatalf("unexpected resume reservation: %+v", resumed.Reattach)
+			}
+			f.call("POST", path+"/reattach", "", reattachRequest{Generation: 1}, 200, "reattach-original")
+			f.call("POST", path+"/messages", "", map[string]any{"generation": 2, "text": "blocked before confirmation"}, 409, "")
+			binding := struct {
+				ReattachSpec
+				SessionCapabilities SessionCapabilities `json:"session_capabilities"`
+			}{*resumed.Reattach, SessionCapabilities{CanResume: true}}
+			f.call("POST", path+"/control/reattached", coordinator.Token, binding, 401, "")
+			binding.Ref.SessionID = "wrong"
+			f.call("POST", path+"/control/reattached", resumed.Token, binding, 409, "")
+			binding.Ref = ref
+			f.call("POST", path+"/control/reattached", resumed.Token, binding, 200, "")
+			var feed workerControlFeed
+			if err := json.Unmarshal(f.call("GET", path+"/control", resumed.Token, nil, 200, ""), &feed); err != nil {
+				t.Fatal(err)
+			}
+			if !feed.Live || feed.State != "idle" || feed.NextMessageID != "" {
+				t.Fatalf("resumed coordinator should await explicit follow-up: %+v", feed)
+			}
+			var queued WorkerFollowUp
+			message := f.call("POST", path+"/messages", "", map[string]any{"generation": 2, "text": "continue"}, 202, "")
+			if err := json.Unmarshal(message, &queued); err != nil {
+				t.Fatal(err)
+			}
+			f.call("POST", path+"/messages/"+queued.ID+"/claim", resumed.Token, struct{}{}, 200, "")
+			f.call("POST", path+"/control/finish", resumed.Token, map[string]string{"state": "completed", "message_id": queued.ID}, 200, "")
+		})
+	}
+}

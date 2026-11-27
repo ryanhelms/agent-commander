@@ -600,6 +600,10 @@ struct CockpitActions {
     var canControlWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
     var canInterruptWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
     var canStopWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
+    /// Whether the owner's text may go to this coordinator through `sendFollowUp` right now. The
+    /// feature model owns every condition. Unlike the queries above, nil means no: the fixtures
+    /// leave it out and keep `messageCoordinator`.
+    var canSendCoordinatorFollowUp: (@MainActor (_ workerID: String) -> Bool)? = nil
     /// True while a control, interrupt or stop request for the worker is still in flight.
     var workerIsBusy: (@MainActor (_ workerID: String) -> Bool)? = nil
     /// Reads a worker's provider source. Nil where no source can be read, and then no console

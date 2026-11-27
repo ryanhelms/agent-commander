@@ -15,6 +15,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ### Fixed
 
+- Reattach a stopped coordinator to its original local provider session. Commander keeps the same run and inbox and uses ACP session load or Claude Code’s native resume.
 - Coordinator discovery identifies ended inboxes separately. An authorized message to an ended run gets a specific receipt, and reopening that run restores discovery under its existing grant.
 - Switching a relay to Invite membership no longer locks out the people who joined while it was Open. Invite now decides only who may join; Allowlist and suspension still remove access.
 - Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.

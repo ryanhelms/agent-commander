@@ -551,7 +551,7 @@ func resultText(raw json.RawMessage) string {
 	return strings.Join(lines, "\n")
 }
 
-func render(reader io.Reader, s *screen) error {
+func render(reader io.Reader, s *screen, verify ...func(streamEvent) error) error {
 	scan := bufio.NewScanner(reader)
 	scan.Buffer(make([]byte, 32*1024), 32*1024*1024)
 	questionCalls := map[string]bool{}
@@ -574,6 +574,11 @@ func render(reader io.Reader, s *screen) error {
 		if err := json.Unmarshal(scan.Bytes(), &e); err != nil {
 			partials.finishAll(showText)
 			return fmt.Errorf("invalid Claude stream record: %w", err)
+		}
+		for _, check := range verify {
+			if err := check(e); err != nil {
+				return err
+			}
 		}
 		switch e.Type {
 		case "system":
@@ -719,7 +724,7 @@ func Runner(jobPath string) error {
 		return a.request("POST", statePath, map[string]string{"state": status, "error": detail}, nil)
 	}
 	useSessions := (j.Adapter != "" || j.BuiltinInstance != "") && !j.FocusedProof
-	if !useSessions {
+	if !useSessions && j.Worker.Reattach == nil {
 		showAssignment(s, j)
 	}
 	if j.Worker.Reattach == nil {
@@ -727,9 +732,9 @@ func Runner(jobPath string) error {
 			s.close()
 			return fmt.Errorf("register worker: %w", err)
 		}
-	} else if !useSessions {
+	} else if !useSessions && !legacyCoordinatorJob(j) {
 		s.close()
-		return errors.New("reattachment requires the original ACP runner")
+		return errors.New("reattachment requires the original provider runner")
 	}
 	if useSessions {
 		err := runACP(ctx, j, a, s)
@@ -740,19 +745,33 @@ func Runner(jobPath string) error {
 			return err
 		}
 		s.close()
-		if ctx.Err() == nil && j.Worker.Role != "worker" {
+		if ctx.Err() == nil && j.Worker.Role != "worker" && j.Worker.Reattach == nil {
 			return state("completed", "")
 		}
 		return nil
 	}
 	go terminalInput(j, a, s)
+	if j.Worker.Reattach != nil {
+		defer s.close()
+		if err := resumeLegacyCoordinator(ctx, j, filepath.Dir(jobPath), a, s); err != nil && ctx.Err() == nil {
+			s.line("Reattachment ended: " + err.Error())
+			s.flush()
+			_ = state("failed", err.Error())
+			return err
+		}
+		return nil
+	}
 	if j.Worker.Role == "worker" && !j.FocusedProof {
 		defer s.close()
 		return runManagedWorker(ctx, j, filepath.Dir(jobPath), a, s)
 	}
 	cmd, err := agentCommand(ctx, j, filepath.Dir(jobPath))
 	if err == nil {
-		err = runClaude(cmd, s)
+		if legacyCoordinatorJob(j) && j.ProviderBinding != "" {
+			err = runClaude(cmd, s, bindLegacyCoordinator(j, s))
+		} else {
+			err = runClaude(cmd, s)
+		}
 	}
 	if err != nil {
 		s.line("Worker ended: " + err.Error())
@@ -772,7 +791,7 @@ func showAssignment(s *screen, j job) {
 	s.line("Assignment: " + j.Worker.Task)
 }
 
-func runClaude(cmd *exec.Cmd, s *screen) error {
+func runClaude(cmd *exec.Cmd, s *screen, verify ...func(streamEvent) error) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -783,7 +802,7 @@ func runClaude(cmd *exec.Cmd, s *screen) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	err = render(stdout, s)
+	err = render(stdout, s, verify...)
 	if err != nil && cmd.Process != nil {
 		// A malformed provider stream must not leave a child blocked on stdout.
 		_ = cmd.Process.Kill()

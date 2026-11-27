@@ -19,6 +19,8 @@ type launchPreparation struct {
 	id, checkout, branch string
 	source, isolated     *worktrees.Checkout
 	err                  error
+	legacy               *legacySessionProof
+	legacySpec           LaunchSpec
 }
 
 type launchCheck struct {

@@ -56,6 +56,21 @@ private func request(question: String, choices: [QuestionChoice]) -> RequestPres
     #expect(!PrettyACPScope.applies(mode: .pretty, session: NativeSession(harnessInstance: "x", sessionID: "")))
 }
 
+@Test func harnessChipNamesClaudeCLIOnlyForItsExactBinding() {
+    let cli = PrettyRunStatusBar.claudeCLIHarness
+    #expect(cli == "local-claude-cli")
+    #expect(PrettyRunStatusBar.harnessLabel(client: .claude, harnessInstance: cli) == "Harness Claude CLI")
+    #expect(PrettyRunStatusBar.harnessHelp(harnessInstance: cli)
+        == "Structured transcript from the provider session through Claude CLI.")
+    // An ACP binding and an unbound session keep the ACP wording.
+    for instance in ["claude-acp", ""] {
+        #expect(PrettyRunStatusBar.harnessLabel(client: .claude, harnessInstance: instance)
+            == "Harness \(AgentClient.claude.displayName), over ACP")
+        #expect(PrettyRunStatusBar.harnessHelp(harnessInstance: instance)
+            == "Structured transcript from the provider session over ACP.")
+    }
+}
+
 @Test func runStatusReadsTheOpenToolAndCounts() {
     let failed = ToolResult(output: "", error: "exit 1")
     let entries = [

@@ -15,6 +15,10 @@ import (
 
 const providerReattaching = "reattaching"
 
+// LegacyClaudeHarness identifies the original Claude CLI runner, whose native
+// session is a local journal UUID rather than an ACP adapter binding.
+const LegacyClaudeHarness = "local-claude-cli"
+
 // ProviderSessionScope is the frozen worker identity used for discovery and
 // reattachment. Service callers select a worker rather than supplying a path
 // or an arbitrary native session ID.
@@ -39,6 +43,51 @@ type providerSessionLauncher interface {
 	ProviderHistoryAvailability(NativeSession) string
 }
 
+type legacyProviderSessionLauncher interface {
+	RecoverLegacyCoordinator(context.Context, LaunchSpec, string) (NativeSession, string, error)
+}
+
+type legacySessionProof struct {
+	ref     NativeSession
+	binding string
+}
+
+// Legacy recovery verifies native evidence outside the service lock and
+// rechecks that the original identity is still selected on redispatch.
+func (s *service) legacyCoordinator(req *http.Request, r *Run, w *Worker) (*legacySessionProof, error) {
+	resolver, supported := s.launcher.(legacyProviderSessionLauncher)
+	if !supported || w.NativeSession != nil || w.ID != r.CoordinatorID || w.Role != "coordinator" ||
+		(w.Host != "" && w.Host != "localhost") ||
+		(!strings.EqualFold(w.Client, "claude") && !strings.EqualFold(w.Client, "claude code")) {
+		return nil, nil
+	}
+	spec, created := sessionLaunchSpec(r, w), w.CreatedAt
+	if prepared, ok := req.Context().Value(launchCheckKey{}).(launchPreparation); ok {
+		if prepared.legacySpec != spec {
+			return nil, conflict("coordinator changed during native session verification")
+		}
+		return prepared.legacy, nil
+	}
+	return nil, &launchCheck{prepare: func(ctx context.Context) launchPreparation {
+		out := launchPreparation{legacySpec: spec}
+		ref, binding, err := resolver.RecoverLegacyCoordinator(ctx, spec, created)
+		if err == nil && ref.HarnessInstance == LegacyClaudeHarness && ref.SessionID != "" && binding != "" {
+			out.legacy = &legacySessionProof{ref, binding}
+		}
+		return out
+	}}
+}
+
+func withLegacySession(w *Worker, proof *legacySessionProof) *Worker {
+	if proof == nil {
+		return w
+	}
+	candidate := *w
+	candidate.NativeSession, candidate.ProviderBinding = &proof.ref, proof.binding
+	candidate.PeerCapabilities = &SessionCapabilities{CanResume: true, CanInterrupt: true}
+	return &candidate
+}
+
 type reattachRequest struct {
 	Generation                 int  `json:"generation"`
 	AcknowledgeDeliveryUnknown bool `json:"acknowledge_delivery_unknown"`
@@ -53,6 +102,7 @@ type ReattachSpec struct {
 
 type providerSessionStatus struct {
 	PeerCapabilities *SessionCapabilities `json:"peer_capabilities,omitempty"`
+	NativeSession    *NativeSession       `json:"native_session,omitempty"`
 	CanDiscover      bool                 `json:"can_discover"`
 	CanReattach      bool                 `json:"can_reattach"`
 	History          string               `json:"history"`
@@ -73,7 +123,7 @@ func sessionLaunchSpec(r *Run, w *Worker) LaunchSpec {
 }
 
 func (s *service) sessionStatus(r *Run, w *Worker) providerSessionStatus {
-	status := providerSessionStatus{PeerCapabilities: w.PeerCapabilities, History: "unavailable"}
+	status := providerSessionStatus{PeerCapabilities: w.PeerCapabilities, NativeSession: w.NativeSession, History: "unavailable"}
 	if w.Control != nil {
 		status.Generation = w.Control.Generation
 		if status.PeerCapabilities == nil {
@@ -100,15 +150,25 @@ func (s *service) sessionStatus(r *Run, w *Worker) providerSessionStatus {
 		return status
 	}
 	status.CanDiscover = status.PeerCapabilities.CanListSessions
-	activeOtherWorkers := r.activeWorkers()
-	if !ended(w.State) {
-		activeOtherWorkers--
+	coordinator := w.Role == "coordinator" && w.ID == r.CoordinatorID
+	controlAvailable := w.Control != nil && !w.Control.Held && !w.Control.hasProcessingMessage() && w.Control.next() == nil
+	inactive := w.State == "stopped" || w.ProviderAvailability == providerExited && !turnActive(w.State)
+	hasSlot := r.activeWorkers() < r.WorkerLimit
+	if w.Role == "worker" && !ended(w.State) {
+		hasSlot = r.activeWorkers()-1 < r.WorkerLimit
 	}
-	status.CanReattach = status.PeerCapabilities.CanResume && w.Role == "worker" && w.Control != nil &&
-		!w.Control.Held && !w.Control.hasProcessingMessage() && w.Control.next() == nil &&
-		(w.State == "stopped" || w.ProviderAvailability == providerExited && !turnActive(w.State)) &&
+	if coordinator {
+		controlAvailable = w.Control == nil || controlAvailable
+		inactive = inactive || w.State == "completed"
+		hasSlot = true
+		if status.Generation == 0 {
+			status.Generation = 1
+		}
+	}
+	status.CanReattach = status.PeerCapabilities.CanResume && (w.Role == "worker" || coordinator) &&
+		controlAvailable && inactive && hasSlot &&
 		(r.Status == "running" || r.Status == "completed" || r.Status == "stopped") &&
-		activeOtherWorkers < r.WorkerLimit && !s.readingHistory[w.ID] && s.stoppedHistoryReads[w.ID] == 0
+		!s.readingHistory[w.ID] && s.stoppedHistoryReads[w.ID] == 0
 	return status
 }
 
@@ -120,7 +180,11 @@ func (s *service) getProviderSessionStatus(req *http.Request, _ string) (outcome
 	if w == nil {
 		return outcome{}, missing("worker")
 	}
-	return read(s.sessionStatus(r, w)), nil
+	proof, err := s.legacyCoordinator(req, r, w)
+	if err != nil {
+		return outcome{}, err
+	}
+	return read(s.sessionStatus(r, withLegacySession(w, proof))), nil
 }
 
 func (s *service) listProviderSessions(w http.ResponseWriter, req *http.Request) {
@@ -173,9 +237,9 @@ func (s *service) reattachWorker(req *http.Request, actor string) (outcome, erro
 	if !localSessionOwner(req) {
 		return outcome{}, denied()
 	}
-	r, w, err := s.controlTarget(req, actor)
-	if err != nil {
-		return outcome{}, err
+	r, w := s.worker(req.PathValue("worker"))
+	if w == nil {
+		return outcome{}, missing("worker")
 	}
 	var input reattachRequest
 	if err := decode(req, &input); err != nil {
@@ -191,7 +255,12 @@ func (s *service) reattachWorker(req *http.Request, actor string) (outcome, erro
 	if target == w.ID {
 		return read(w), nil
 	}
-	status := s.sessionStatus(r, w)
+	proof, err := s.legacyCoordinator(req, r, w)
+	if err != nil {
+		return outcome{}, err
+	}
+	candidate := withLegacySession(w, proof)
+	status := s.sessionStatus(r, candidate)
 	if !status.CanReattach || status.Generation != input.Generation {
 		return outcome{}, conflict("the provider binding or control lease is no longer available for reattachment")
 	}
@@ -199,7 +268,20 @@ func (s *service) reattachWorker(req *http.Request, actor string) (outcome, erro
 		return outcome{}, conflict("acknowledge the unresolved delivery before reattaching")
 	}
 
+	if proof != nil {
+		for _, run := range s.state.Runs {
+			for _, other := range run.Workers {
+				if other.NativeSession != nil && *other.NativeSession == proof.ref {
+					return outcome{}, conflict("native session is already bound")
+				}
+			}
+		}
+		w.NativeSession, w.ProviderBinding, w.PeerCapabilities = candidate.NativeSession, candidate.ProviderBinding, candidate.PeerCapabilities
+	}
 	spec := sessionLaunchSpec(r, w)
+	if w.Control == nil {
+		w.Control = &WorkerControl{Generation: status.Generation}
+	}
 	w.Control.Generation++
 	w.Control.Held = true
 	w.Control.ActiveTurnID = ""

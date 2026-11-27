@@ -102,6 +102,10 @@ private func model(_ service: ScriptedService) -> ProviderSessionModel {
         #expect(noResume.reattachUnavailableReason == "This provider cannot resume a session.")
         let busy = try status(#"{"peer_capabilities":{"can_resume":true},"can_reattach":false,"generation":3}"#)
         #expect(busy.reattachUnavailableReason?.hasPrefix("Reattach is offered for a stopped") == true)
+        // A coordinator is not told about the worker limit, and keeps every other reason.
+        let coordinator = busy.reattachUnavailableReason(isCoordinator: true)
+        #expect(coordinator == "The coordinator’s provider session must be inactive before reattach is available.")
+        #expect(noResume.reattachUnavailableReason(isCoordinator: true) == "This provider cannot resume a session.")
         // The service may allow it, but without a generation there is nothing to send.
         let noGeneration = try status(#"{"peer_capabilities":{"can_resume":true},"can_reattach":true}"#)
         #expect(!noGeneration.reattachIsOffered)
@@ -109,6 +113,43 @@ private func model(_ service: ScriptedService) -> ProviderSessionModel {
 
     @Test func rejectsAnUnreadableStatus() {
         #expect(throws: ServiceError.self) { try status("[]") }
+    }
+
+    @Test func readsTheBoundSessionTheStatusReports() throws {
+        let value = try status(#"{"generation":5,"native_session":{"harness_instance":"local-claude","session_id":"s-9"}}"#)
+        #expect(value.nativeSession == NativeSession(harnessInstance: "local-claude", sessionID: "s-9"))
+        // The harness may be unreported; the session ID is what names the binding.
+        #expect(try status(#"{"native_session":{"session_id":"s-9"}}"#).nativeSession
+                == NativeSession(harnessInstance: "", sessionID: "s-9"))
+        // An older service sends no binding.
+        #expect(try status(reattachable).nativeSession == nil)
+    }
+
+    @Test func readsAnEmptyOrMalformedBindingAsUnbound() throws {
+        for binding in ["null", "{}", #"{"session_id":""}"#, #"{"harness_instance":"local-claude"}"#,
+                        #"{"harness_instance":"local-claude","session_id":""}"#, #""s-9""#, "[]", #"{"session_id":7}"#] {
+            let value = try status(#"{"can_reattach":true,"generation":5,"native_session":\#(binding)}"#)
+            #expect(value.nativeSession == nil, "\(binding)")
+            // The rest of the status is still read.
+            #expect(value.reattachIsOffered, "\(binding)")
+        }
+        #expect(ProviderSessionStatus(nativeSession: NativeSession(harnessInstance: "h", sessionID: "")).nativeSession == nil)
+    }
+
+    @Test func namesTheStatusSessionBeforeTheProjectedOne() {
+        let projected = NativeSession(harnessInstance: "local-claude", sessionID: "s-old")
+        let recovered = NativeSession(harnessInstance: "local-claude", sessionID: "s-new")
+        let reported = ProviderSessionStatus(nativeSession: recovered)
+        #expect(ProviderSessionStatus.identity(status: reported, projected: projected) == recovered)
+        // A coordinator with nothing projected is named from the status alone.
+        #expect(ProviderSessionStatus.identity(status: reported, projected: nil) == recovered)
+        // No status yet, or one without a binding: the projected session stands.
+        #expect(ProviderSessionStatus.identity(status: nil, projected: projected) == projected)
+        #expect(ProviderSessionStatus.identity(status: ProviderSessionStatus(), projected: projected) == projected)
+        // Neither names a session: the panel names none.
+        #expect(ProviderSessionStatus.identity(status: ProviderSessionStatus(), projected: nil) == nil)
+        #expect(ProviderSessionStatus.identity(status: nil,
+                                               projected: NativeSession(harnessInstance: "h", sessionID: "")) == nil)
     }
 
     @Test func readsAPageWithAndWithoutSessions() throws {
@@ -316,5 +357,38 @@ private func model(_ service: ScriptedService) -> ProviderSessionModel {
         model.reattach("w-1", acknowledgeDeliveryUnknown: true)
         #expect(model.reattachTask == nil)
         #expect(await service.reattaches.isEmpty)
+    }
+}
+
+/// Which consoles offer the provider-session action. The coordinator is offered it like a worker.
+@Suite struct ProviderSessionOfferTests {
+    private func worker(isCoordinator: Bool, client: AgentClient = .claude,
+                        host: String = HostPlatform.serviceLocalMarker,
+                        session: NativeSession? = nil) -> WorkerPresentation {
+        WorkerPresentation(
+            id: "w-1", shortID: "w-1", name: isCoordinator ? "Coordinator" : "worker", client: client,
+            host: host, platform: HostPlatform(serviceHost: host), location: "main", locationIsBranch: true,
+            task: "", output: "", error: nil, state: .stopped, isCoordinator: isCoordinator, lineage: ["run"],
+            control: .observing(holder: "run"), request: nil, startedAt: nil, session: session)
+    }
+
+    private let bound = NativeSession(harnessInstance: "local-claude", sessionID: "s-1")
+
+    @Test func offersABoundCoordinatorTheActionLikeABoundWorker() {
+        #expect(ProviderSessionAccess.isOffered(to: worker(isCoordinator: false, session: bound)))
+        #expect(ProviderSessionAccess.isOffered(to: worker(isCoordinator: true, session: bound)))
+        // Bound is enough, whatever the provider or host: the service's status decides the rest.
+        #expect(ProviderSessionAccess.isOffered(to: worker(isCoordinator: true, client: .codex,
+                                                           host: "studio", session: bound)))
+    }
+
+    @Test func offersAnUnboundLocalClaudeCoordinatorTheStatus() {
+        #expect(ProviderSessionAccess.isOffered(to: worker(isCoordinator: true)))
+    }
+
+    @Test func offersNoOtherUnboundConsoleTheAction() {
+        #expect(!ProviderSessionAccess.isOffered(to: worker(isCoordinator: false)))
+        #expect(!ProviderSessionAccess.isOffered(to: worker(isCoordinator: true, client: .codex)))
+        #expect(!ProviderSessionAccess.isOffered(to: worker(isCoordinator: true, host: "studio")))
     }
 }

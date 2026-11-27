@@ -26,6 +26,9 @@ var acpHistoryReaders = map[string]func(directory, cwd string) historyReader{
 func (l *Local) openNativeHistory(native service.NativeSession, cwd string) (*runtime.Runtime, *model.ReadHistoryRequest, error) {
 	config := runtime.Config{HarnessInstance: native.HarnessInstance, WorkingDirectory: cwd}
 	name, local := strings.CutPrefix(native.HarnessInstance, "local-")
+	if native.HarnessInstance == service.LegacyClaudeHarness {
+		name = "claude"
+	}
 	reader := nativehistory.ForHarness(name, cwd)
 	if strings.HasPrefix(native.HarnessInstance, "local-builtin:") {
 		adapter, err := boundBuiltin(native.HarnessInstance)

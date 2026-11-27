@@ -113,7 +113,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	for _, run := range s.state.Runs {
 		if run.Status != "stopping" && run.Status != "stopped" {
 			for _, w := range run.Workers {
-				if w.Role == "worker" && w.State == "stopping" {
+				if w.State == "stopping" {
 					individualStops = append(individualStops, w.ID)
 				}
 			}
