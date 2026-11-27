@@ -288,7 +288,7 @@ I did not find a view named `TerminalComposer` by search; the composer view to r
 |---|---|
 | Where | Settings › Transcript, stored with the service so every client sees the same records. |
 | Heading | Tool calls in the transcript |
-| Option 1 (default) | **Keep everything as sent.** Full arguments and results, with no size limit. |
+| Option 1 (default) | **Keep everything as sent.** Full arguments and results. A single argument, result or content value is capped at 512 KB, and each worker keeps its latest 256 records or 16 MB; older records are dropped. |
 | Option 2 | **Hide values that look like secrets.** Tokens, passwords and keys show as "Hidden" with Reveal. |
 | Option 3 | **Limit large values** to a size the user sets (16 KB offered). Longer values are shortened and marked. |
 | Warning line, always visible under option 1 | With "Keep everything as sent", secrets an agent passes to a tool are stored and shown on every surface, including the PiP. |

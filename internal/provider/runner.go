@@ -233,6 +233,12 @@ func (s *screen) publish(ctx context.Context, a *api, path string) {
 			const notice = "[Some console output could not be synchronized.]"
 			batch.Text = notice + "\n" + batch.Text
 			batch.Events = append([]service.ConsoleEvent{{Kind: "output", Text: notice}}, batch.Events...)
+			// Details stay beside the events the notice moved.
+			for _, detail := range batch.Details {
+				if detail.Event != nil && *detail.Event >= 0 {
+					*detail.Event++
+				}
+			}
 		}
 		if len(batch.Events) != 0 || batch.Text != "" || batch.ClaudeProgress != nil || len(batch.Details) != 0 {
 			sequence++
