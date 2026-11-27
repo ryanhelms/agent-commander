@@ -995,16 +995,32 @@ struct MultiplayerPanelStage: View {
     }
 }
 
-/// The menu bar item: the network's state as a symbol with a spoken name.
+/// The menu bar item: the network's state as a symbol with a spoken name. A dot follows the
+/// symbol while there is a relay nearby the person hasn't seen, ahead of the unseen activity count.
 struct MultiplayerMenuBarLabel: View {
     let model: MultiplayerModel
 
     var body: some View {
+        let relays = model.discovery.newCount
         HStack(spacing: 3) {
             Image(systemName: model.menuSymbol)
-            if model.unseen > 0 { Text("\(model.unseen)").monospacedDigit() }
+            if let badge = Self.badge(unseen: model.unseen, newRelays: relays) { Text(badge).monospacedDigit() }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Commander network, \(model.menuTitle)\(model.unseen > 0 ? ", \(model.unseen) new in activity" : "")")
+        .accessibilityLabel(Self.spoken(title: model.menuTitle, unseen: model.unseen, newRelays: relays))
+    }
+
+    /// The text beside the symbol: "•" for new relays, "3" for unseen activity, "• 3" for both.
+    /// A menu bar label draws one symbol and one text, so the dot is a character, not a shape.
+    static func badge(unseen: Int, newRelays: Int) -> String? {
+        let parts = (newRelays > 0 ? ["•"] : []) + (unseen > 0 ? ["\(unseen)"] : [])
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    static func spoken(title: String, unseen: Int, newRelays: Int) -> String {
+        var text = "Commander network, \(title)"
+        if newRelays > 0 { text += newRelays == 1 ? ", 1 new relay nearby" : ", \(newRelays) new relays nearby" }
+        if unseen > 0 { text += ", \(unseen) new in activity" }
+        return text
     }
 }

@@ -27,6 +27,11 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case tailnetStatus = "tailnet-status"
     case tailnetJoin = "tailnet-join"
     case tailnetRelays = "tailnet-relays"
+    /// Relay discovery: the relays found on the tailnet and the local network, marking them seen,
+    /// and adding one to the server list (MultiplayerDiscovery.swift). These name no server.
+    case relayDiscover = "relay-discover"
+    case relayDiscoverSeen = "relay-discover-seen"
+    case relayJoin = "relay-join"
     /// Social (increment 2). `contacts`, `activity`, `activity-seen` and `join` name no server.
     case presence, contacts, activity, avatar, membership, join, me
     case activitySeen = "activity-seen"
