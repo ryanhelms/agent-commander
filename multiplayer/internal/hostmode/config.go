@@ -27,6 +27,11 @@ type Config struct {
 	Admins        []string `json:"admins"`
 	// NoAdvertise stops the relay advertising itself over Bonjour.
 	NoAdvertise bool `json:"no_advertise,omitempty"`
+	// PublicListing is the public https origin under which the relay lists
+	// itself in the directory; empty keeps it unlisted (the default).
+	PublicListing string `json:"public_listing,omitempty"`
+	// DirectoryURL overrides the public directory's origin.
+	DirectoryURL string `json:"directory_url,omitempty"`
 }
 
 // DefaultDir is the host state directory: Application Support on macOS,

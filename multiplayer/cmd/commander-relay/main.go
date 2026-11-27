@@ -2,6 +2,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"agentcommander.network/pilot/internal/control"
+	"agentcommander.network/pilot/internal/directory"
 	"agentcommander.network/pilot/internal/dispatch"
 	"agentcommander.network/pilot/internal/identity"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,9 +45,13 @@ type config struct {
 	Replicas           int      `json:"replicas"`
 	Issuer             string   `json:"issuer"`
 	ClientID           string   `json:"client_id"`
-	AllowedEmails      []string `json:"allowed_emails"`
-	Admins             []string `json:"admins"`
-	IssuerCA           string   `json:"issuer_ca"`
+	// PublicURL lists the relay in the public directory while it runs; empty
+	// keeps it unlisted. DirectoryURL defaults to the bytedesk.ai directory.
+	PublicURL     string   `json:"public_url"`
+	DirectoryURL  string   `json:"directory_url"`
+	AllowedEmails []string `json:"allowed_emails"`
+	Admins        []string `json:"admins"`
+	IssuerCA      string   `json:"issuer_ca"`
 	// Only explicit IP loopback dependencies can use plaintext in an isolated rehearsal.
 	LoopbackTest bool `json:"loopback_test"`
 }
@@ -206,7 +212,8 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 	defer httpClient.CloseIdleConnections()
 	return serveRelay(ctx, listen, cert, pool, nc, relaySettings{
 		edge: cfg.Edge, replicas: cfg.Replicas, mode: "edge", name: cfg.Edge,
-		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
+		identity:  identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
+		publicURL: cfg.PublicURL, directoryURL: cfg.DirectoryURL,
 	})
 }
 
@@ -220,6 +227,9 @@ type relaySettings struct {
 	edge, mode, name string
 	replicas         int
 	identity         identity.Config
+	// publicURL, when set, lists the relay in the public directory at
+	// directoryURL (directory.DefaultURL when empty) while it runs.
+	publicURL, directoryURL string
 }
 
 func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, pool *pgxpool.Pool, nc *nats.Conn, cfg relaySettings) error {
@@ -275,6 +285,15 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 		done <- dispatch.Run(runCtx, nc, store, cfg.edge, cfg.replicas, func() { brokerReady.Store(true) })
 	}()
 	go func() { done <- srv.ServeTLS(listen, "", "") }()
+	listed := make(chan struct{})
+	if cfg.publicURL != "" {
+		go func() {
+			defer close(listed)
+			directory.Registrar{Directory: cmp.Or(cfg.directoryURL, directory.DefaultURL), PublicURL: cfg.publicURL, Cert: cert, Log: log.Printf}.Run(runCtx)
+		}()
+	} else {
+		close(listed)
+	}
 	var first error
 	received := 0
 	select {
@@ -284,6 +303,7 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 	}
 	stop()
 	<-pruned
+	<-listed
 	shutdown, finish := context.WithTimeout(context.Background(), 5*time.Second)
 	defer finish()
 	_ = srv.Shutdown(shutdown)
