@@ -121,6 +121,31 @@ private let receiptID = "q-83202cb42d449a0f52b7981d56ac896a"
         #expect(longer.milestones.map(\.label) == complete.milestones.map(\.label))
     }
 
+    @Test func aWithdrawalIsOneClosingMilestoneFromItsOwnRecord() throws {
+        var wire = Wire()
+        wire.call("commander_ask", detail: #"{"question":"Ship it?"}"#, result: record("req-1", "pending", text: "Ship it?"))
+        wire.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, result: record("req-1", "cancelled", text: "Ship it?"))
+        let story = try #require(stories(wire).first)
+        #expect(story.milestones.map(\.label) == ["Asked", "Question withdrawn"])
+        // The run's cancelled record repeats nothing the withdrawal said.
+        let cancelled = Question(id: "req-1", workerID: "w", question: "Ship it?", status: "cancelled", answer: "")
+        let live = try #require(stories(wire, requests: [cancelled]).first)
+        #expect(live.milestones.map(\.label) == ["Asked", "Question withdrawn"])
+        // An idempotent retry returns the same cancelled record and adds no second milestone.
+        var retried = wire
+        retried.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, result: record("req-1", "cancelled", text: "Ship it?"))
+        for requests in [[], [cancelled]] {
+            let again = try #require(stories(retried, requests: requests).first)
+            #expect(again.milestones.map(\.label) == ["Asked", "Question withdrawn"])
+            #expect(again.milestones[1].id == story.milestones[1].id)
+        }
+        // An unproven withdrawal states no milestone.
+        var unproven = Wire()
+        unproven.call("commander_ask", detail: #"{"question":"Ship it?"}"#, result: record("req-1", "pending", text: "Ship it?"))
+        unproven.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, result: "{}")
+        #expect(try #require(stories(unproven).first).milestones.allSatisfy { $0.label != "Question withdrawn" })
+    }
+
     @Test func unknownHistoryAndFailedProbesAreTruthful() throws {
         var wire = Wire()
         // The ask is not in this transcript; two probes failed the same way, one succeeded.

@@ -26,13 +26,14 @@ Marks used below:
 | Counts | A count is stated only when the result holds exactly one list to count. Otherwise the fallback. |
 | Repeats | Identical consecutive calls with identical outcome merge into one line with a count tag (`7 checks`). Each call stays inside it. |
 
-### Commander tools (23)
+### Commander tools (24)
 
 | Tool | Current card | Running | Succeeded | Failed | Fallback without the value | Summary phrase |
 |---|---|---|---|---|---|---|
 | `commander_delegate` | "Delegate worker", name, Accepted | Starting a worker | Delegated to a new worker, *name* `tag` (name from result `name`) | Couldn't start a worker | Delegated to a new worker | delegated to *name* / delegated to N workers |
 | `commander_ask` | "Question" card with timeline | Asking | Asked: "*question*" (call text, or `run.requests` by ID) | Couldn't send the question | Asked a question (request *short ID*) | asked a question |
 | `commander_wait` | Milestone "Waiting for reply" | Waiting for a reply | Got the answer: "*answer*"; still pending: Waited for a reply `N checks` | Couldn't wait for the reply | Waited for a reply | waited for a reply; with its ask and answer: asked a question and got an answer |
+| `commander_withdraw_question` | Milestone "Question withdrawn" | Withdrawing the question | Withdrew the question: "*question*" (from the returned record of the same request ID, status `cancelled`); not confirmed: Asked to withdraw a question `uncertain` | Couldn't withdraw the question | Withdrew a question (request *short ID*) | withdrew a question; with its ask: asked a question and withdrew it |
 | `commander_reply` | "Reply" card | Replying | Replied to *worker*: "*answer*" (both from `run.requests` by ID); not confirmed: Sent a reply `uncertain` | Couldn't send the reply | Replied to a question (request *short ID*) | replied to a question |
 | `commander_reconcile_reply` | Milestone "Delivery reconciled" | Checking whether the reply arrived | Checked the reply: delivery *delivery* | Couldn't check the reply | Checked a reply's delivery | checked a reply |
 | `commander_result` | "Report result", Complete, no text | Reporting | **Prose block**, not a line. Heading "Reported to the coordinator" (worker) or "Reported the run result" (coordinator); body is result `result` as Markdown. Revision and tests under it when the run record has them | Couldn't report the result (always visible) | Line "Reported a result" when no text is found | none: never in a group |
