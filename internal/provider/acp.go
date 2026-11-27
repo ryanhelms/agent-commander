@@ -782,15 +782,8 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			case e.GetTurnEnded() != nil:
 				source.activeTurn.Store(false)
 				flushText()
-				if portableRef != nil {
-					if original := e.GetSourceRecord(); original.GetType() == "acp.prompt_result" {
-						portableRef.TurnTokens = acpprocessor.PromptResultTokens(original.GetData())
-					}
-					s.recordEvent(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: portableRef})
-				}
+				observedTurnEnd := recordACPTurnEnd(s, e, portableRef)
 				reason := e.GetTurnEnded().Reason
-				observedTurnEnd := e.GetSourceRecord().GetType() == "acp.prompt_result" ||
-					e.GetSourceRecord().GetType() == runtime.ACPV2TurnResultSource
 				if acpDisconnected(reason) {
 					return "failed", false, errACPDisconnected
 				}
@@ -810,6 +803,35 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 			}
 		}
 	}
+}
+
+// recordACPTurnEnd keeps a genuine peer result for the local transcript. The
+// existing console event remains the anchor when it has a source reference.
+func recordACPTurnEnd(s *screen, event *model.Observation, ref *acpprocessor.Activity) bool {
+	original := event.GetSourceRecord()
+	sourceType := original.GetType()
+	observed := sourceType == "acp.prompt_result" || sourceType == runtime.ACPV2TurnResultSource
+	reason := event.GetTurnEnded().GetReason()
+	var detail *service.ToolDetail
+	if observed && event.GetTurnId() != "" && reason != "" && !acpDisconnected(reason) {
+		detail = &service.ToolDetail{
+			Kind:          "turn_end",
+			Key:           "turn-end-" + event.GetTurnId(),
+			TurnEndDetail: &service.TurnEndDetail{StopReason: previewPrefix(reason, 256)},
+		}
+	}
+	if ref != nil {
+		if detail != nil {
+			detail.Key = consoleToolID(detail.Key)
+		}
+		if sourceType == "acp.prompt_result" {
+			ref.TurnTokens = acpprocessor.PromptResultTokens(original.GetData())
+		}
+		s.recordDetailed(service.ConsoleEvent{Kind: "output", Text: "[Provider event: Turn ended]", ACP: ref}, detail)
+	} else if detail != nil {
+		s.recordDetail(*detail)
+	}
+	return observed
 }
 
 func runACPControl(ctx context.Context, client *agentacp.Sessions, a *api, s *screen, path string,
