@@ -631,7 +631,8 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         // The raw tail the PiP used to group: two usage rows, one read and the open call.
         let tail = TranscriptEntry.recent(wire.entries)
         #expect(tail.count == 4)
-        let tailGroups = groups(prettyItems(Wire(messages: Array(wire.messages.suffix(5)))))
+        let tailGroups = groups(ActivityConversation.items(
+            ConversationActivity.items(TranscriptEntry.displayed(tail, mode: .pretty))))
         #expect(tailGroups.allSatisfy { $0.failures.isEmpty })
 
         let full = prettyItems(wire)
