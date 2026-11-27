@@ -77,8 +77,10 @@ class Rehearsal:
                     f"{a} did not see online friend {b}")
 
     def grant(self, owner, guest, resource, action, limit=6, **kwargs):
+        # This unattended rehearsal exercises grants that the owner configured for automatic execution.
         return self.call(owner, "/tray/grant", {"handle": guest, "resource": resource,
-                         "capability": action, "expiresAt": self.expiry, "maxUses": limit}, **kwargs)
+                         "capability": action, "expiresAt": self.expiry, "maxUses": limit,
+                         "approval": "auto"}, **kwargs)
 
     def queue(self, who, submission, targets, **kwargs):
         return self.call(who, "/coordinator/submit", {"id": submission, "targets": targets}, **kwargs)
