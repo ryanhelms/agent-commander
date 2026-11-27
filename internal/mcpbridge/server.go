@@ -242,6 +242,9 @@ func projectStatus(full json.RawMessage) (json.RawMessage, error) {
 			Result     string          `json:"result,omitempty"`
 			Error      string          `json:"error,omitempty"`
 			Handoff    json.RawMessage `json:"handoff,omitempty"`
+			Control    *struct {
+				Held bool `json:"held"`
+			} `json:"control,omitempty"`
 		} `json:"workers"`
 		Requests []struct {
 			ID       string `json:"id"`
@@ -250,6 +253,10 @@ func projectStatus(full json.RawMessage) (json.RawMessage, error) {
 			Status   string `json:"status"`
 			Answer   string `json:"answer,omitempty"`
 			Delivery string `json:"delivery,omitempty"`
+			Choices  []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			} `json:"choices,omitempty"`
 		} `json:"requests"`
 	}
 	if err := json.Unmarshal(full, &status); err != nil {

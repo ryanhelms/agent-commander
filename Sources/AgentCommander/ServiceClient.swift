@@ -747,8 +747,18 @@ actor ServiceClient {
         return try Run(projection: AGUIValue(json: request("/v1/runs", fields: fields, operationID: operationID)))
     }
 
-    func reply(to requestID: String, answer: String, operationID: String) throws {
-        _ = try request("/v1/requests/\(requestID)/reply", fields: ["answer": answer], operationID: operationID)
+    /// `generation` is the worker-control generation the developer answers a delegated worker's
+    /// request under; the service refuses the reply once control has changed. Nil sends the
+    /// request exactly as before: a coordinator's own request, and the legacy owner reply.
+    func reply(to requestID: String, answer: String, operationID: String, generation: Int? = nil) throws {
+        _ = try Self.send(socket: socket, path: "/v1/requests/\(requestID)/reply",
+                          body: Self.replyBody(answer: answer, generation: generation), operationID: operationID)
+    }
+
+    /// The reply request's JSON. `generation` is left out when nil, never sent as null.
+    static func replyBody(answer: String, generation: Int?) throws -> Data {
+        struct Reply: Encodable { let answer: String; let generation: Int? }
+        return try JSONEncoder().encode(Reply(answer: answer, generation: generation))
     }
 
     func stop(runID: String) throws {

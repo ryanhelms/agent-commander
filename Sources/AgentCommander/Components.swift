@@ -467,6 +467,27 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// asked the developer a question and waits for the reply inside its turn reads needs-input,
     /// and its turn is still running: the live line spins and the message box queues.
     var turnIsRunning = false
+    /// Pending requests of this delegated worker that its coordinator or parent answers, because
+    /// the developer does not control it (`WorkerInputRoute`). They are shown as status only:
+    /// never in `request`, `pendingRequests` or Attention, and no surface offers a reply to them.
+    /// Taking control moves them to `pendingRequests` by the same IDs; handing back moves them here.
+    var observedRequests: [RequestPresentation] = []
+    /// Who answers this delegated worker's input while the developer does not. Nil for a
+    /// coordinator, and while the developer answers.
+    var inputOwner: WorkerInputOwner? = nil
+
+    /// The owner this worker waits for: it needs input, and none of it is the developer's to give.
+    var waitsOnOwner: WorkerInputOwner? {
+        state == .needsInput && request == nil ? inputOwner : nil
+    }
+
+    /// The status word every surface of this worker reads: "Waiting for coordinator" while its
+    /// owner answers, otherwise the task state's own label.
+    var statusLabel: String { waitsOnOwner?.waitingLabel ?? state.label }
+
+    /// The request this worker's open approval call is anchored to: the developer's when there is
+    /// one, otherwise the first its owner answers. The call reads the same whoever answers.
+    var anchoringRequest: RequestPresentation? { request ?? observedRequests.first }
 
     var isDisconnected: Bool { state == .disconnected }
     /// A turn is in progress: the message box queues and offers Stop. A disconnected or finished
@@ -535,6 +556,8 @@ struct RunContent: Identifiable, Equatable {
     let canStop: Bool
     let coordinator: WorkerPresentation?
     let wall: WallLayout
+    /// The run's pending requests the developer answers. A delegated worker's request its
+    /// coordinator or parent answers is on that worker's `observedRequests`, never here.
     let awaiting: [RequestPresentation]
 }
 
@@ -1029,8 +1052,13 @@ extension RunContent {
             transcripts[worker.id] = built
             return built
         }
+        // Who answers each worker's pending input, by the one rule `CockpitModel.pending` reads.
+        let routes = Dictionary(workers.map { ($0.id, run.inputRoute(of: $0)) }, uniquingKeysWith: { first, _ in first })
         let records = BackgroundJobs.Records(workers: byID, requests: run.requests ?? [], integrations: live.integrations,
-                                             transcript: { transcript(of: $0) })
+                                             transcript: { transcript(of: $0) },
+                                             questionOwner: { worker in
+                                                 routes[worker.id]?.isDeveloper == false ? run.inputOwner(of: worker) : nil
+                                             })
 
         func present(_ worker: Worker) -> WorkerPresentation {
             let isCoordinator = worker.id == coordinatorID
@@ -1056,7 +1084,7 @@ extension RunContent {
             let telemetry = worker.boundSession.map { _ in
                 ProviderTelemetry.reported(fields: worker.allFields, messages: worker.messages ?? [])
             }
-            let requests = questions.map { question in
+            let asked = questions.map { question in
                 // From the full transcript: the PiP's window could hide a competing open call.
                 let awaitingToolID = PrettyRunStatus(state: state, entries: transcript)
                     .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty)
@@ -1080,6 +1108,11 @@ extension RunContent {
                     requestWorkflow: CommanderActivity.workflow(request: question.id, in: transcript,
                                                                 awaitingToolID: awaitingToolID))
             }
+            // The developer's requests are the worker's actionable ones. The rest stay with the
+            // worker as observed status, by the same IDs, until the developer takes control.
+            let developerAnswers = routes[worker.id]?.isDeveloper ?? true
+            let observed = developerAnswers ? [] : asked
+            let requests = developerAnswers ? asked : []
             let request = requests.first
             let claudeProgress = ClaudeProgressTrack.eligible(worker, isCoordinator: isCoordinator)
             return WorkerPresentation(
@@ -1121,7 +1154,9 @@ extension RunContent {
                 checkout: worker.worktree,
                 promptCapabilities: isCoordinator ? nil : worker.control?.promptCapabilities,
                 backgroundJobs: background,
-                turnIsRunning: TaskState(api: worker.state).isActiveTurn)
+                turnIsRunning: TaskState(api: worker.state).isActiveTurn,
+                observedRequests: observed,
+                inputOwner: developerAnswers || isCoordinator ? nil : run.inputOwner(of: worker))
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

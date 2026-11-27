@@ -261,7 +261,7 @@ The owner API resolves the runner independently of the harness execution host. A
 
 ## Focused Pretty console
 
-The focused Pretty console reads the worker’s ACP-backed AG-UI projection. Its native approval controls carry the request ID and the offered choice ID to the existing reply command. The service retains ownership of validation and delivery to the original ACP peer. Tool disclosures keep their existing correlation to the source record and follow-ups use the worker’s existing input grant.
+The focused Pretty console reads the worker’s ACP-backed AG-UI projection. Its native approval controls carry the request ID and the offered choice ID to the existing reply command. The service retains ownership of validation and delivery to the original ACP peer. Native replies to delegated workers include the active developer control generation, which the service validates against the current input grant. Agent-owned requests remain in coordinator status, including the offered choice IDs. Handback changes that status even when the pending request itself has not changed. Tool disclosures keep their existing correlation to the source record and follow-ups use the worker’s existing input grant.
 
 The ACP Adapter carries reported thinking as a distinct console event. The live workspace keeps the latest reported context window and prompt-result usage as independent readings so transcript rotation leaves the footer intact. Missing token counts stay absent. The original ACP records remain accessible through their scoped source references, and the footer snapshot stays out of the durable store.
 

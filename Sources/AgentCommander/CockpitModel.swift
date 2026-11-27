@@ -18,7 +18,7 @@ final class CockpitModel {
     var isStopping = false
     var sending: Set<String> = []
     private(set) var workerActions: Set<String> = []
-    private var replyAttempts: [String: (text: String, id: String)] = [:]
+    private var replyAttempts: [String: (text: String, generation: Int?, id: String)] = [:]
     private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
     private var receivedStreamState = false
     private var usingLegacyService = false
@@ -119,15 +119,59 @@ final class CockpitModel {
 
     var selected: Run? { runs.first { $0.id == selectedID } }
 
+    /// The pending requests the developer answers, by the shared rule (`WorkerInputRoute`): a
+    /// coordinator's own, and a delegated worker's only while the developer controls that worker.
     var pending: [PendingDecision] {
         runs.flatMap { run in
             (run.requests ?? []).compactMap { request in
                 guard request.status == "pending",
-                      let worker = run.workers?.first(where: { $0.id == request.workerID })
+                      let worker = run.workers?.first(where: { $0.id == request.workerID }),
+                      run.inputRoute(of: worker).isDeveloper
                 else { return nil }
                 return PendingDecision(run: run, worker: worker, request: request)
             }
         }
+    }
+
+    /// What a reply to a request would do right now, read from the current runs.
+    enum ReplyTarget: Equatable {
+        /// Send it, under this worker-control generation. Nil for a coordinator's own request
+        /// and a worker with no control record.
+        case send(generation: Int?)
+        /// The request is its owner's again: the developer handed the worker back, or never held it.
+        case owner(worker: String, owner: WorkerInputOwner)
+        /// No pending request with this ID is in the current runs.
+        case gone
+    }
+
+    /// Checks a request against the authoritative state at the moment of sending, so a reply
+    /// control drawn before a hand-back cannot answer for the developer.
+    func replyTarget(requestID: String) -> ReplyTarget {
+        for run in runs {
+            guard let request = run.requests?.first(where: { $0.id == requestID }) else { continue }
+            guard request.status == "pending",
+                  let worker = run.workers?.first(where: { $0.id == request.workerID }) else { return .gone }
+            switch run.inputRoute(of: worker) {
+            case .developer(let generation): return .send(generation: generation)
+            case .owner: return .owner(worker: worker.name, owner: run.inputOwner(of: worker))
+            }
+        }
+        return .gone
+    }
+
+    /// Answers a request by its exact ID from a reply surface. A request that is no longer the
+    /// developer's is not sent, and the notice says who answers it.
+    func reply(requestID: String, text: String) async -> Bool {
+        if let item = pending.first(where: { $0.id == requestID }) { return await reply(to: item, text: text) }
+        if case .owner(let worker, let owner) = replyTarget(requestID: requestID) {
+            notice = Self.returnedToOwner(worker: worker, owner: owner, request: requestID)
+        }
+        return false
+    }
+
+    static func returnedToOwner(worker: String, owner: WorkerInputOwner, request: String) -> String {
+        "Reply to \(worker): request \(Identifier.short(request)) is with \(owner.phrase) again. "
+            + "Take control of \(worker) to answer it."
     }
 
     func select(_ id: String?) {
@@ -205,13 +249,26 @@ final class CockpitModel {
             notice = "Reply to \(worker.name): the worker is disconnected. The request stays pending until it is reconciled."
             return false
         }
+        // The route as it is now, not as it was when the surface was drawn. A request the current
+        // runs do not hold keeps the item's own route, as before.
+        let generation: Int?
+        switch replyTarget(requestID: item.id) {
+        case .send(let current): generation = current
+        case .owner(let name, let owner):
+            notice = Self.returnedToOwner(worker: name, owner: owner, request: item.id)
+            return false
+        case .gone:
+            guard case .developer(let own) = item.run.inputRoute(of: item.worker) else { return false }
+            generation = own
+        }
+        // The same answer retried under the same generation keeps its idempotency key.
         let prior = replyAttempts[item.id]
-        let key = prior?.text == text ? prior!.id : UUID().uuidString
-        replyAttempts[item.id] = (text, key)
+        let key = prior.flatMap { $0.text == text && $0.generation == generation ? $0.id : nil } ?? UUID().uuidString
+        replyAttempts[item.id] = (text, generation, key)
         sending.insert(item.id)
         defer { sending.remove(item.id) }
         do {
-            try await api.reply(to: item.id, answer: text, operationID: key)
+            try await api.reply(to: item.id, answer: text, operationID: key, generation: generation)
             replyAttempts.removeValue(forKey: item.id)
             if usingLegacyService { await refresh() }
             return true

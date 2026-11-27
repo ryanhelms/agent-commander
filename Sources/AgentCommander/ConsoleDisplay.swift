@@ -354,6 +354,9 @@ struct PrettyConsoleView: View {
     /// The open tool call of a worker waiting for the developer's reply, which reads as awaiting
     /// approval. Nil everywhere else, so every call keeps the status its result gives it.
     var awaitingToolID: String? = nil
+    /// Who approves that call when it is not the developer: the coordinator or parent that
+    /// answers a delegated worker's request. Nil reads "Needs your approval".
+    var approvalOwner: WorkerInputOwner? = nil
     /// The requests the parent surface can act on and how, for a line's targeted actions.
     var stories = ActivityStoryContext()
     /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
@@ -388,6 +391,7 @@ struct PrettyConsoleView: View {
         var facts = ActivityFacts(summaries: summaries, worker: worker)
         facts.summary = { key in store?.summary(worker: worker, key: key) }
         facts.record = { key in store?.record(worker: worker, key: key) }
+        facts.approvalOwner = approvalOwner
         // The older runner sends no console event for a thought: its record is placed by sequence.
         let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
         let records = Array(summaries.values)

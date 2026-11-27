@@ -1917,10 +1917,8 @@ struct CockpitView: View {
     private var actions: CockpitActions {
         CockpitActions(
             selectRun: { id in model.select(id) },
-            reply: { requestID, answer in
-                guard let item = model.pending.first(where: { $0.id == requestID }) else { return false }
-                return await model.reply(to: item, text: answer)
-            },
+            // By exact ID. The model checks who answers the request now, at the moment of sending.
+            reply: { requestID, answer in await model.reply(requestID: requestID, text: answer) },
             stopRun: { runID in
                 guard let run = model.runs.first(where: { $0.id == runID }) else { return }
                 Task { await model.stop(run) }

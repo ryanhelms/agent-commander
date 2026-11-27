@@ -361,7 +361,8 @@ struct WorkerTile: View {
                                   inset: isFocusedVariant ? 21 : Metric.tileInset,
                                   request: worker.request,
                                   openRequest: isFocusedVariant ? nil : actions.openRequest,
-                                  reconnectingHost: worker.hostIsReconnecting ? worker.host : nil) {
+                                  reconnectingHost: worker.hostIsReconnecting ? worker.host : nil,
+                                  statusLabel: worker.statusLabel) {
             if isFocusedVariant, let request = worker.request, !request.isWorkerDisconnected, reply != nil,
                request.choices.isEmpty {
                 TermHint(keys: "↩", action: "send", size: size - 1)
@@ -472,7 +473,7 @@ struct WorkerTile: View {
 
     private var summary: String {
         var parts = [worker.name, worker.client.displayName, "host \(worker.host), \(worker.platform.label)",
-                     worker.state.label]
+                     worker.statusLabel]
         if worker.hostIsReconnecting { parts.append("host reconnecting") }
         if let availability = worker.availabilityStatement { parts.append(availability.summary) }
         // The phase only: the advancing age and freshness are read from the footer cue itself.
@@ -505,6 +506,12 @@ struct WorkerTile: View {
                 : request.hostIsReconnecting
                 ? "request \(request.shortID) waiting, a reply is held until the host reconnects"
                 : "request \(request.shortID) waiting")
+        }
+        // A request its owner answers is named, and never as something the developer can do.
+        if let owner = worker.inputOwner {
+            for request in worker.observedRequests {
+                parts.append("request \(request.shortID) waiting for \(owner.phrase)")
+            }
         }
         if let unconfirmed = worker.unconfirmedReply { parts.append("reply to request \(unconfirmed) delivery unknown") }
         return parts.joined(separator: ", ")

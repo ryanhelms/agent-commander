@@ -74,6 +74,9 @@ struct BackgroundJob: Identifiable, Equatable {
     var console: [TranscriptEntry] = []
     /// Its call came after this console's last prompt. An ended job shows only while this holds.
     var isSinceLastPrompt = true
+    /// A question's owner when it is not the reader: the coordinator or parent that answers a
+    /// delegated worker's request while the developer does not control it. Nil waits on the reader.
+    var questionOwner: WorkerInputOwner? = nil
 
     var id: String { kind.rawValue + ":" + recordID }
 
@@ -136,7 +139,10 @@ struct BackgroundJob: Identifiable, Equatable {
             case "running": "working"
             default: Self.plain(state)
             }
-        case .question: state.lowercased() == "pending" ? "waiting for your answer" : Self.plain(state)
+        case .question:
+            state.lowercased() == "pending"
+                ? (questionOwner.map { "waiting for \($0.phrase)'s answer" } ?? "waiting for your answer")
+                : Self.plain(state)
         case .followUp, .integration, .providerChild, .command: Self.plain(state)
         }
     }
@@ -179,6 +185,12 @@ struct BackgroundJob: Identifiable, Equatable {
                 return Line(rank: .finished, mark: .solid, sentence: sentence(" is " + Self.plain(state)))
             }
         case .question:
+            if word == "pending", let questionOwner {
+                // Its owner answers it: stated, with the attention dot, and never counted as
+                // needing the reader.
+                return Line(rank: .finished, mark: .attention,
+                            sentence: sentence(" is waiting for \(questionOwner.phrase)'s answer"))
+            }
             if word == "pending" {
                 return Line(rank: .needsYou, mark: .attention, sentence: sentence(" is waiting for your answer"))
             }
@@ -343,6 +355,9 @@ enum BackgroundJobs {
         var integrations: [String: String] = [:]
         /// A worker's displayed transcript, for its open call and its latest turn.
         var transcript: (Worker) -> [TranscriptEntry] = { _ in [] }
+        /// Who answers a worker's pending question when it is not the developer
+        /// (`WorkerInputRoute`). Nil: the developer answers.
+        var questionOwner: (Worker) -> WorkerInputOwner? = { _ in nil }
     }
 
     /// The jobs the calls in `entries` started, in the order of those calls. A call that names no
@@ -399,13 +414,17 @@ enum BackgroundJobs {
             guard delegated.contains(request.workerID), let worker = records.workers[request.workerID] else { continue }
             let pending = request.status.lowercased() == "pending"
             guard pending || BackgroundJob.deliveryUnknown.contains(request.delivery?.lowercased() ?? "") else { continue }
+            // A question its owner answers offers no "Go to the question": the reader cannot answer it.
+            let owner = pending ? records.questionOwner(worker) : nil
             var job = BackgroundJob(kind: .question, recordID: request.id, state: request.status, name: worker.name,
-                                    workerID: worker.id, requestID: pending ? request.id : nil, text: request.delivery)
+                                    workerID: worker.id, requestID: pending && owner == nil ? request.id : nil,
+                                    text: request.delivery)
+            job.questionOwner = owner
             job.isSinceLastPrompt = jobs.first { $0.kind != .question && $0.workerID == worker.id }?.isSinceLastPrompt ?? true
             add(job)
         }
         // A worker waiting on its pending question has the question's line, not a second one.
-        let asking = Set(jobs.filter { $0.kind == .question && $0.requestID != nil }.compactMap(\.workerID))
+        let asking = Set(jobs.filter { $0.kind == .question && $0.state.lowercased() == "pending" }.compactMap(\.workerID))
         return jobs.filter { !(($0.kind == .worker || $0.kind == .stop) && $0.state.lowercased() == "waiting" && asking.contains($0.recordID)) }
     }
 

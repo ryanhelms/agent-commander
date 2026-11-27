@@ -251,18 +251,22 @@ struct Hairline: View {
 struct TerminalStatus: View {
     let state: TaskState
     var size: CGFloat = 11.5
+    /// The word in place of the state's own label, when the surface knows more: a delegated
+    /// worker whose owner answers its request reads "Waiting for coordinator", not "Needs input".
+    var label: String? = nil
 
     var body: some View {
+        let word = label ?? state.label
         HStack(spacing: size * 0.5) {
             Text(state.glyph)
-            Text(state.label.lowercased())
+            Text(word.lowercased())
         }
         .font(Term.font(size))
         .foregroundStyle(state.ink)
         .lineLimit(1)
         .fixedSize()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(state.label)
+        .accessibilityLabel(word)
     }
 }
 

@@ -65,6 +65,10 @@ struct PrettyRunStatus: Equatable {
     let ranAndFailedTools: Int
     /// Every tool call in the transcript that has no result yet, oldest first.
     let openToolIDs: [String]
+    /// Who a waiting worker waits for when that is not the developer: the coordinator or parent
+    /// that answers a delegated worker's request while the developer does not control it. Nil
+    /// reads "Waiting for you".
+    var waitingOwner: WorkerInputOwner? = nil
 
     /// The call to show as awaiting approval, only when it is identified without doubt: the
     /// worker is waiting on a request that offers ACP choices, and exactly one call is open. The
@@ -80,7 +84,9 @@ struct PrettyRunStatus: Equatable {
     /// Running tool is inferred from the transcript, so the status never contradicts the reported
     /// phase or claims work without evidence, and an explicit Unknown state is kept, not read as
     /// Idle. A waiting worker and its approvals are unchanged.
-    init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false) {
+    init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false,
+         waitingOwner: WorkerInputOwner? = nil) {
+        self.waitingOwner = waitingOwner
         var prompts = 0, tools = 0, failed = 0, blocked = 0, ranAndFailed = 0
         func count(_ result: ToolResult) {
             let status = ToolStatus(result: result)
@@ -139,7 +145,8 @@ struct PrettyRunStatus: Equatable {
         case .runningTool: "Running tool"
         case .responding: "Responding"
         case .active(let state): state.label
-        case .waiting: "Waiting for you"
+        // The current owner of the answer: the developer, or the worker's coordinator or parent.
+        case .waiting: waitingOwner?.waitingLabel ?? "Waiting for you"
         case .idle: "Idle"
         case .disconnected: "Disconnected"
         case .ended(let state): state.label
@@ -237,6 +244,8 @@ struct PrettyACPConsole: View {
     var background: [BackgroundJob] = []
     /// The service says the turn is still running (`WorkerPresentation.turnIsRunning`).
     var turnIsRunning = false
+    /// Who the worker waits for when that is not the developer (`WorkerPresentation.waitsOnOwner`).
+    var waitingOwner: WorkerInputOwner? = nil
 
     enum AwaitingApproval {
         /// From `entries` and `choiceRequestPending`, through `PrettyRunStatus.awaitingToolID`.
@@ -247,7 +256,8 @@ struct PrettyACPConsole: View {
 
     var body: some View {
         let metrics = PrettyACPMetrics(density, inset: inset)
-        let status = PrettyRunStatus(state: state, entries: entries, reportsProgress: reportsProgress)
+        let status = PrettyRunStatus(state: state, entries: entries, reportsProgress: reportsProgress,
+                                     waitingOwner: waitingOwner)
         VStack(alignment: .leading, spacing: 0) {
             PrettyRunStatusBar(status: status, session: session, client: client, metrics: metrics)
             conversation(status: status, metrics: metrics)
@@ -273,8 +283,10 @@ struct PrettyACPConsole: View {
         if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
-                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
-                              showsRecent: showsRecent,
+                              // The held call by its exact ID, and who approves it when that is
+                              // not the developer. The PiP also cuts its current turn to the recent view.
+                              awaitingToolID: awaitingToolID(status), approvalOwner: waitingOwner,
+                              stories: stories, anchor: anchor, showsRecent: showsRecent,
                               live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
                                                reportedPhase: reportedPhase, turnIsRunning: turnIsRunning),
                               reportsAsCoordinator: isCoordinator, background: background)
@@ -301,12 +313,15 @@ extension PrettyACPConsole {
         self.init(consoleID: worker.id, name: worker.name, client: worker.client, state: worker.state,
                   entries: worker.transcript, session: session,
                   request: reply == nil ? nil : worker.request, reply: reply, density: density, inset: inset,
-                  choiceRequestPending: !(worker.request?.choices.isEmpty ?? true),
+                  // The open call's approval anchor holds whoever answers: the developer's request,
+                  // or the one the worker's owner answers. Only the form and the actions differ.
+                  choiceRequestPending: !(worker.anchoringRequest?.choices.isEmpty ?? true),
                   reportsProgress: worker.claudeProgress != nil,
                   reportedPhase: worker.claudeProgress?.evidence?.phase,
                   isCoordinator: worker.isCoordinator,
                   stories: stories ?? .form(for: worker.request, reply: reply),
-                  background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning)
+                  background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning,
+                  waitingOwner: worker.waitsOnOwner)
     }
 
     /// The asking worker's console in the PiP: its current turn, grouped as on the focused worker
