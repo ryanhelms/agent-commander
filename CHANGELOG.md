@@ -15,6 +15,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ### Fixed
 
+- Switching a relay to Invite membership no longer locks out the people who joined while it was Open. Invite now decides only who may join; Allowlist and suspension still remove access.
 - Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.
 
 ### Removed
