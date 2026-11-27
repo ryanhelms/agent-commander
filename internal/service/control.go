@@ -231,6 +231,35 @@ func (s *service) sendWorkerMessage(req *http.Request, actor string) (outcome, e
 	return outcome{m, 202, true, nil}, nil
 }
 
+// cancelWorkerMessage removes the developer's queued follow-up. A claimed
+// message is already with the provider; interrupt the turn instead.
+func (s *service) cancelWorkerMessage(req *http.Request, actor string) (outcome, error) {
+	if !localOwner(req, actor) {
+		return outcome{}, denied()
+	}
+	r, w, err := s.controlTarget(req, actor)
+	if err != nil {
+		return outcome{}, err
+	}
+	if w.Control == nil {
+		return outcome{}, missing("follow-up")
+	}
+	m := w.Control.message(req.PathValue("message"))
+	if m == nil {
+		return outcome{}, missing("follow-up")
+	}
+	if m.Status == "cancelled" {
+		return read(*m), nil
+	}
+	if m.Status != "queued" {
+		return outcome{}, conflict("this follow-up is no longer queued")
+	}
+	m.Status = "cancelled"
+	s.markOperationEnd(r, w, m)
+	r.refreshOutcome()
+	return changed(*m), nil
+}
+
 type workerControlFeed struct {
 	Revision             string                `json:"revision,omitempty"`
 	Answers              []workerControlAnswer `json:"answers,omitempty"`

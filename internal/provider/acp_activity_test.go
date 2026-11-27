@@ -200,6 +200,9 @@ func TestCommanderInputIsLinkedFromTheNativeACPWire(t *testing.T) {
 	if wire.Activity == nil || wire.toolCallID != "poll" || wire.commanderInput != `{"request_id":"`+id+`"}` {
 		t.Fatalf("wire correlation was not retained: %+v", wire)
 	}
+	if wire.detail == nil || wire.detail.Key != "poll" || !strings.Contains(wire.detail.Input, "private original field") {
+		t.Fatalf("wire values were not kept for the local app: %+v", wire.detail)
+	}
 	if p.takeWire("cursor").Activity != nil {
 		t.Fatal("wire reference was consumed twice")
 	}

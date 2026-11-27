@@ -54,6 +54,9 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	if err := s.load(stateDir); err != nil {
 		return nil, err
 	}
+	if err := s.details.open(stateDir); err != nil {
+		return nil, fmt.Errorf("read transcript settings: %w", err)
+	}
 	// Agents reattach using their existing credentials. An uncertain launch never
 	// creates a second tmux session. Fresh authenticated worker events restore state.
 	dirty := false
@@ -136,7 +139,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("GET /v1/workers/{worker}/history", s.serveNativeHistoryPage)
 	mux.HandleFunc("GET /v1/workers/{worker}/provider-sessions", s.listProviderSessions)
 	mux.HandleFunc("GET /v1/workers/{worker}/terminal", s.serveTerminalAttachment)
-	mux.HandleFunc("POST /v1/workers/{worker}/output", s.handleJSON(s.output))
+	mux.HandleFunc("POST /v1/workers/{worker}/output", s.handleJSONLimit(s.output, 16<<20))
 	mux.HandleFunc("GET /v1/workers/{worker}/output", s.handleJSON(s.outputStream))
 	mux.HandleFunc("GET /v1/workers/{worker}/live-source/events", s.streamLiveSource)
 	mux.HandleFunc("POST /v1/workers/{worker}/live-source", s.handleJSONLimit(s.recordLiveSource, 2<<20))
@@ -185,6 +188,10 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"POST /v1/workers/{worker}/control/interrupt/report":                         s.reportWorkerInterrupt,
 		"POST /v1/workers/{worker}/messages/{message}/claim":                         s.claimWorkerMessage,
 		"POST /v1/workers/{worker}/interrupt":                                        s.interruptWorker,
+		"POST /v1/workers/{worker}/messages/{message}/cancel":                        s.cancelWorkerMessage,
+		"GET /v1/workers/{worker}/tool-details":                                      s.readToolDetails,
+		"GET /v1/settings/transcript":                                                s.readTranscriptSettings,
+		"POST /v1/settings/transcript":                                               s.setTranscriptSettings,
 		"POST /v1/workers/{worker}/stop":                                             s.stopWorker,
 	} {
 		mux.HandleFunc(pattern, s.handle(op))
@@ -599,7 +606,9 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	durable := w.NativeSession == nil || restoreFromOutput
 	before := *w
 	w.observeClaudeProgress(in.ClaudeProgress)
+	inserted := 0
 	if in.Batch > 1 && previous.Stream == "" {
+		inserted = 1
 		in.Events = append([]ConsoleEvent{{Kind: "output", Text: "Earlier runner output is unavailable after service restart."}}, in.Events...)
 	}
 	const maxOutput = 64 << 10
@@ -651,6 +660,7 @@ func (s *service) output(req *http.Request, actor string) (outcome, error) {
 	} else {
 		s.notifyConsoleOutput(w, in.Text, in.Events)
 	}
+	s.details.add(w.ID, s.details.prepare(in.Details, in.Events, inserted, lastSequence(w)))
 	if w.NativeSession != nil && receipt.Stream != "" {
 		if s.liveOutputBatches == nil {
 			s.liveOutputBatches = make(map[string]outputReceipt)

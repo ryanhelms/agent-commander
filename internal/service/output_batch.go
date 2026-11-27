@@ -13,6 +13,8 @@ type workerOutput struct {
 	Text           string          `json:"text"`
 	Events         []ConsoleEvent  `json:"events"`
 	ClaudeProgress *ClaudeProgress `json:"claude_progress,omitempty"`
+	// Details never enter the console; see tool_details.go.
+	Details []ToolDetail `json:"details,omitempty"`
 }
 
 type outputReceipt struct {

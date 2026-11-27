@@ -184,6 +184,36 @@ func paramsSource(obs *model.Observation) *model.Extension {
 	return nil
 }
 
+// observedToolDetail covers adapters without a wire peer.
+func observedToolDetail(obs *model.Observation) *service.ToolDetail {
+	ext := paramsSource(obs)
+	if ext.GetType() != runtime.ACPUpdateParamsSource {
+		return nil
+	}
+	inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())
+	if err != nil {
+		return nil
+	}
+	d := wireToolDetail(inner)
+	if d == nil || d.Key != obs.GetTool().GetCallId() {
+		return nil
+	}
+	return d
+}
+
+// planDetail keeps a plan's entries; the console event only counts them.
+func planDetail(obs *model.Observation) *service.ToolDetail {
+	update, ok := typedUpdate(obs)
+	if !ok || update.Value.Plan == nil {
+		return nil
+	}
+	entries, err := json.Marshal(update.Value.Plan.Entries)
+	if err != nil {
+		return nil
+	}
+	return &service.ToolDetail{Kind: "plan", Plan: entries}
+}
+
 // The SDK's readable preview can omit rawInput. Retain the one safe ID needed
 // to link an in-flight Commander call while its MCP result is still pending.
 func commanderInputFromACP(obs *model.Observation, name string) string {

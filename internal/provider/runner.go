@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,6 +52,8 @@ type screen struct {
 	events         []service.ConsoleEvent
 	claudeProgress *service.ClaudeProgress
 	eventBytes     int
+	details        []service.ToolDetail
+	detailBytes    int
 	batches        chan outputBatch
 	closed         bool
 	stop, done     chan struct{}
@@ -63,6 +66,7 @@ type outputBatch struct {
 	Text             string                  `json:"text"`
 	Events           []service.ConsoleEvent  `json:"events,omitempty"`
 	ClaudeProgress   *service.ClaudeProgress `json:"claude_progress,omitempty"`
+	Details          []service.ToolDetail    `json:"details,omitempty"`
 	done             chan struct{}
 }
 
@@ -134,7 +138,10 @@ func (s *screen) event(kind, toolID, name, value string) {
 	s.recordEvent(service.ConsoleEvent{Kind: kind, ToolID: toolID, Name: name, Text: value})
 }
 
-func (s *screen) recordEvent(event service.ConsoleEvent) {
+func (s *screen) recordEvent(event service.ConsoleEvent) { s.recordDetailed(event, nil) }
+
+// recordDetailed records a console event and the full values behind it.
+func (s *screen) recordDetailed(event service.ConsoleEvent, values *service.ToolDetail) {
 	event = previewConsoleEvent(event)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,6 +150,9 @@ func (s *screen) recordEvent(event service.ConsoleEvent) {
 	}
 	s.events = append(s.events, event)
 	s.eventBytes += len(event.Text) + len(event.ToolID) + len(event.Name) + len(event.Phase) + len(event.CommanderInput)
+	if detail := mergeDetail(eventTiming(event), values); detail != nil {
+		s.addDetailLocked(*detail)
+	}
 	// Leave room below the endpoint's 1 MiB request limit for worst-case
 	// JSON escaping, per-event structured metadata and a recovery notice.
 	if s.batches != nil && (len(s.events) >= 16 || s.eventBytes >= 48<<10) {
@@ -203,11 +213,12 @@ func (s *screen) publishAvailable() {
 }
 
 func (s *screen) queueLocked(done chan struct{}) {
-	if len(s.pending) == 0 && len(s.events) == 0 && s.claudeProgress == nil && done == nil {
+	if len(s.pending) == 0 && len(s.events) == 0 && len(s.details) == 0 && s.claudeProgress == nil && done == nil {
 		return
 	}
-	s.batches <- outputBatch{Text: string(s.pending), Events: s.events, ClaudeProgress: s.claudeProgress, done: done}
+	s.batches <- outputBatch{Text: string(s.pending), Events: s.events, ClaudeProgress: s.claudeProgress, Details: s.details, done: done}
 	s.pending, s.events, s.eventBytes = s.pending[:0], nil, 0
+	s.details, s.detailBytes = nil, 0
 	s.claudeProgress = nil
 }
 
@@ -222,8 +233,14 @@ func (s *screen) publish(ctx context.Context, a *api, path string) {
 			const notice = "[Some console output could not be synchronized.]"
 			batch.Text = notice + "\n" + batch.Text
 			batch.Events = append([]service.ConsoleEvent{{Kind: "output", Text: notice}}, batch.Events...)
+			// Details stay beside the events the notice moved.
+			for _, detail := range batch.Details {
+				if detail.Event != nil && *detail.Event >= 0 {
+					*detail.Event++
+				}
+			}
 		}
-		if len(batch.Events) != 0 || batch.Text != "" || batch.ClaudeProgress != nil {
+		if len(batch.Events) != 0 || batch.Text != "" || batch.ClaudeProgress != nil || len(batch.Details) != 0 {
 			sequence++
 			batch.StreamID, batch.Batch = stream, sequence
 			gap = sendOutputBatch(ctx, a, path, &batch, &receipts) != nil
@@ -269,10 +286,18 @@ func sendOutputBatch(ctx context.Context, a *api, path string, batch *outputBatc
 			return err
 		}
 	}
-	return retryOutput(ctx, *receipts, func(call context.Context) error {
+	post := func(call context.Context) error {
 		_, err := a.client.Do(call, "POST", path, batch)
 		return err
-	})
+	}
+	err := retryOutput(ctx, *receipts, post)
+	// A service that cannot take the details still gets the console output.
+	var refused *localapi.ResponseError
+	if errors.As(err, &refused) && refused.StatusCode == 400 && len(batch.Details) != 0 {
+		batch.Details = nil
+		return retryOutput(ctx, *receipts, post)
+	}
+	return err
 }
 
 func retryOutput(ctx context.Context, retry bool, send func(context.Context) error) error {
@@ -415,15 +440,31 @@ type contentBlock struct {
 		MediaType string `json:"media_type"`
 		URL       string `json:"url"`
 	} `json:"source"`
-	Input struct {
-		Question string `json:"question"`
-		Name     string `json:"name"`
-		Result   string `json:"result"`
-		FilePath string `json:"file_path"`
-		Pattern  string `json:"pattern"`
-	} `json:"input"`
-	Content json.RawMessage `json:"content"`
+	Thinking string          `json:"thinking"`
+	Input    toolInput       `json:"input"`
+	Content  json.RawMessage `json:"content"`
 }
+
+// toolInput reads the fields the terminal pane labels and keeps the whole
+// value for the call's details.
+type toolInput struct {
+	Question string `json:"question"`
+	Name     string `json:"name"`
+	Result   string `json:"result"`
+	FilePath string `json:"file_path"`
+	Pattern  string `json:"pattern"`
+	raw      json.RawMessage
+}
+
+func (in *toolInput) UnmarshalJSON(data []byte) error {
+	type fields toolInput
+	if err := json.Unmarshal(data, (*fields)(in)); err != nil {
+		return err
+	}
+	in.raw = slices.Clone(data)
+	return nil
+}
+
 type streamEvent struct {
 	Type    string          `json:"type"`
 	Subtype string          `json:"subtype"`
@@ -535,9 +576,17 @@ func render(reader io.Reader, s *screen) error {
 				switch b.Type {
 				case "text":
 					showText(b.Text)
+				case "thinking":
+					// No console event, and no time: this stream does not say when
+					// the thought began.
+					if b.Thinking != "" {
+						s.recordDetail(service.ToolDetail{Kind: "thought", Key: "thought-" + newSessionID(), Result: b.Thinking})
+					}
 				case "tool_use":
 					if b.Name == "mcp__commander__commander_status" {
 						statusCalls[b.ID] = true
+						s.recordDetail(service.ToolDetail{Kind: "tool", Key: b.ID, Name: "commander_status",
+							Input: string(b.Input.raw), StartedAt: detailNow()})
 						if !checkingWorkerStatus {
 							s.line("Checking worker progress…")
 						}
@@ -565,7 +614,8 @@ func render(reader io.Reader, s *screen) error {
 					if detail == "" {
 						detail = b.Input.Pattern
 					}
-					s.event("tool_call", b.ID, strings.TrimPrefix(b.Name, "mcp__commander__"), detail)
+					s.recordDetailed(service.ConsoleEvent{Kind: "tool_call", ToolID: b.ID, Name: strings.TrimPrefix(b.Name, "mcp__commander__"), Text: detail},
+						&service.ToolDetail{Kind: "tool", Input: string(b.Input.raw)})
 				}
 			}
 		case "user":
@@ -577,15 +627,18 @@ func render(reader io.Reader, s *screen) error {
 					continue
 				}
 				result := &model.ToolActivity{CallId: b.ToolUseID, Phase: claudeResultPhase(b.IsError), Summary: resultText(b.Content)}
+				values := &service.ToolDetail{Kind: "tool", Result: result.Summary}
 				if statusCalls[b.ToolUseID] {
 					delete(statusCalls, b.ToolUseID)
-					s.recordEvent(consoleTool(result))
+					s.recordDetailed(consoleTool(result), values)
 				} else if questionCalls[b.ToolUseID] {
 					showQuestionResult(b.Content, s)
 					delete(questionCalls, b.ToolUseID)
-					s.recordEvent(consoleTool(result))
+					s.recordDetailed(consoleTool(result), values)
 				} else {
-					s.recordTool(result)
+					event := consoleTool(result)
+					s.line(previewText(event.TerminalText()))
+					s.recordDetailed(event, values)
 				}
 			}
 		case "result":
