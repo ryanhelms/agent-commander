@@ -230,6 +230,10 @@ type relaySettings struct {
 	// publicURL, when set, lists the relay in the public directory at
 	// directoryURL (directory.DefaultURL when empty) while it runs.
 	publicURL, directoryURL string
+	// listing, when set, replaces publicURL and directoryURL with a target the
+	// registrar reads again on each check (host mode follows host.json).
+	listing       func() (publicURL, directoryURL string)
+	listingStatus func(directory.Status)
 }
 
 func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, pool *pgxpool.Pool, nc *nats.Conn, cfg relaySettings) error {
@@ -286,10 +290,11 @@ func serveRelay(ctx context.Context, listen net.Listener, cert tls.Certificate, 
 	}()
 	go func() { done <- srv.ServeTLS(listen, "", "") }()
 	listed := make(chan struct{})
-	if cfg.publicURL != "" {
+	if cfg.publicURL != "" || cfg.listing != nil {
 		go func() {
 			defer close(listed)
-			directory.Registrar{Directory: cmp.Or(cfg.directoryURL, directory.DefaultURL), PublicURL: cfg.publicURL, Cert: cert, Log: log.Printf}.Run(runCtx)
+			directory.Registrar{Directory: cmp.Or(cfg.directoryURL, directory.DefaultURL), PublicURL: cfg.publicURL, Cert: cert, Log: log.Printf,
+				Target: cfg.listing, OnStatus: cfg.listingStatus}.Run(runCtx)
 		}()
 	} else {
 		close(listed)

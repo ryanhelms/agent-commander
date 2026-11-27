@@ -301,3 +301,54 @@ func TestRegistrarRunRegistersAndRemoves(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRegistrarFollowsItsTarget(t *testing.T) {
+	f := newFixture(t)
+	f.dir.Now = nil
+	var mu sync.Mutex
+	target := ""
+	var statuses []Status
+	r := f.registrar(f.cert)
+	r.Now, r.Check = nil, 100*time.Millisecond
+	r.Target = func() (string, string) { mu.Lock(); defer mu.Unlock(); return target, f.dirHTTP.URL }
+	r.OnStatus = func(s Status) { mu.Lock(); statuses = append(statuses, s); mu.Unlock() }
+	last := func() Status {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(statuses) == 0 {
+			return Status{}
+		}
+		return statuses[len(statuses)-1]
+	}
+	wait := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s; last status %+v", what, last())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+
+	// Unlisted to begin with: nothing is sent.
+	time.Sleep(300 * time.Millisecond)
+	if len(f.listed(t)) != 0 || last().Listed {
+		t.Fatalf("listed without a target: %+v", last())
+	}
+	// Turning listing on registers within a check.
+	mu.Lock()
+	target = f.origin
+	mu.Unlock()
+	wait("the listing", func() bool { return len(f.listed(t)) == 1 && last().Listed && last().URL == f.origin })
+	// Turning it off removes the listing, retrying past the per-client throttle.
+	mu.Lock()
+	target = ""
+	mu.Unlock()
+	wait("the removal", func() bool { return len(f.listed(t)) == 0 && last().URL == "" && !last().Listed })
+	cancel()
+	<-done
+}

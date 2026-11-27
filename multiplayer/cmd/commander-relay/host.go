@@ -86,15 +86,16 @@ func hostCommand(ctx context.Context, args []string) error {
 		switch action {
 		case "install", "uninstall", "status":
 			return hostJSON(os.Stdout, path, action, nil)
-		case "setup":
-			// One JSON setup on stdin: write host.json, then install as `install` does.
+		case "setup", "listing":
+			// One JSON object on stdin: a setup writes host.json and installs as `install`
+			// does; a listing turns the public directory listing on or off.
 			input, err := io.ReadAll(io.LimitReader(os.Stdin, 16<<10))
 			if err != nil {
 				return err
 			}
 			return hostJSON(os.Stdout, path, action, input)
 		default:
-			return fmt.Errorf("--json applies to setup, install, uninstall and status, not %q", action)
+			return fmt.Errorf("--json applies to setup, listing, install, uninstall and status, not %q", action)
 		}
 	}
 	switch action {
@@ -166,6 +167,11 @@ func hostJSON(output io.Writer, dir, action string, input []byte) error {
 		}
 		if err == nil {
 			err = hostmode.Install(dir)
+		}
+	case "listing":
+		var in hostmode.ListingInput
+		if in, err = hostmode.ReadListingInput(input); err == nil {
+			err = hostmode.SetPublicListing(dir, in.URL, in.Directory)
 		}
 	case "install":
 		err = hostmode.Install(dir)
@@ -241,8 +247,10 @@ func serveHost(ctx context.Context, dir string, client *http.Client) (err error)
 	}()
 	err = serveRelay(runCtx, ln, cert, pg.Pool, nc, relaySettings{
 		edge: "host", replicas: 1, mode: "host", name: cfg.Name,
-		identity:  identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client},
-		publicURL: cfg.PublicListing, directoryURL: cfg.DirectoryURL,
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client},
+		// The relay follows host.json, so the tray's switch needs no restart.
+		listing:       func() (string, string) { return hostmode.ListingTarget(dir) },
+		listingStatus: func(s directory.Status) { _ = hostmode.WriteListingStatus(dir, hostmode.ListingStatus(s)) },
 	})
 	if cause := context.Cause(runCtx); cause != nil && ctx.Err() == nil {
 		return errors.Join(err, cause)
