@@ -345,6 +345,9 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 	prepared := make([]ToolDetail, 0, len(details))
 	latest := time.Now().Add(5 * time.Minute)
 	for _, d := range details {
+		if strings.HasPrefix(d.Key, formOutcomeKeyPrefix) {
+			continue // Only the service writes in this namespace.
+		}
 		d.Sequence, d.Revision = last, 0
 		// A negative index means before the batch's first event.
 		if d.Event != nil && *d.Event >= 0 && *d.Event+offset < len(events) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -76,6 +77,7 @@ func TestACPElicitationOwnerAnswersAndScopesExternalCompletion(t *testing.T) {
 		RequestedSchema: json.RawMessage(`{"type":"object","properties":{"label":{"type":"string","minLength":2}},"required":["label"]}`)}
 	formDone := begin(ctx, form)
 	shown := waitFor(ctx, "form")
+	first := shown.ID
 	route := base + "/" + shown.ID + "/reply"
 	valid := runtime.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"label":"literal $HOME"}`)}
 	f.call("POST", route, other.Token, valid, 403, "")
@@ -88,16 +90,45 @@ func TestACPElicitationOwnerAnswersAndScopesExternalCompletion(t *testing.T) {
 	if len(list()) != 0 {
 		t.Fatal("resolved form data remained visible")
 	}
+	f.call("POST", route, "", valid, 404, "")
+
+	workerPath := "/v1/workers/" + worker.ID
+	f.call("POST", workerPath+"/output", worker.Token, map[string]any{
+		"events": []ConsoleEvent{{Kind: "text", Text: "Latest provider message"}},
+		"details": []ToolDetail{
+			{Key: formOutcomeKeyPrefix + first, Kind: "tool", Name: "runner replacement"},
+			{Key: "made-up-outcome", Kind: formOutcomeKind, Name: "accept"},
+		},
+	}, 200, "")
 	choiceForm := form
 	choiceForm.RequestedSchema = json.RawMessage(`{"type":"object","properties":{"colors":{"type":"array","minItems":1,"items":{"anyOf":[{"const":"#ff0000","title":"Red"},{"const":"#00ff00","title":"Green"}]}}},"required":["colors"]}`)
 	choiceDone := begin(ctx, choiceForm)
 	shown = waitFor(ctx, "form")
+	second := shown.ID
 	route = base + "/" + shown.ID + "/reply"
 	f.call("POST", route, "", runtime.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"colors":["Blue"]}`)}, 400, "")
 	selected := runtime.ElicitationResponse{Action: "accept", Content: json.RawMessage(`{"colors":["#ff0000","#00ff00"]}`)}
 	f.call("POST", route, "", selected, 200, "")
 	if got := replyFrom(ctx, choiceDone); got.Action != "accept" || !bytes.Equal(got.Content, selected.Content) {
 		t.Fatalf("titled choices changed: %+v", got)
+	}
+	want := []ToolDetail{
+		{Kind: formOutcomeKind, Key: formOutcomeKeyPrefix + first, Name: "accept", Revision: 1},
+		{Kind: formOutcomeKind, Key: formOutcomeKeyPrefix + second, Sequence: 1, Name: "accept", Revision: 2},
+	}
+	for _, action := range []string{"decline", "cancel"} {
+		done := begin(ctx, form)
+		pending := waitFor(ctx, "form")
+		f.call("POST", base+"/"+pending.ID+"/reply", "", runtime.ElicitationResponse{
+			Action: action, Content: valid.Content,
+		}, 200, "")
+		if got := replyFrom(ctx, done); got.Action != action || len(got.Content) != 0 {
+			t.Fatalf("owner %s changed: %+v", action, got)
+		}
+		want = append(want, ToolDetail{
+			Kind: formOutcomeKind, Key: formOutcomeKeyPrefix + pending.ID,
+			Sequence: 1, Name: action, Revision: uint64(len(want) + 1),
+		})
 	}
 	url := runtime.ElicitationRequest{SessionID: ref.SessionID, Mode: "url", Message: "Confirm the external destination",
 		ElicitationID: "opaque-id", URL: "https://example.test/confirm?a=%24literal"}
@@ -134,4 +165,29 @@ func TestACPElicitationOwnerAnswersAndScopesExternalCompletion(t *testing.T) {
 		t.Fatalf("worker stop left an elicitation pending: %+v", got)
 	}
 	f.call("POST", base+"/"+stopped.ID+"/reply", "", valid, 404, "")
+
+	detailPath := workerPath + "/tool-details"
+	f.call("GET", detailPath, worker.Token, nil, 403, "")
+	var details detailList
+	if err := json.Unmarshal(f.call("GET", detailPath, "", nil, 200, ""), &details); err != nil ||
+		len(details.Records) != len(want) || details.Revision != uint64(len(want)) {
+		t.Fatalf("expected only explicit owner form decisions, got %+v (%v)", details, err)
+	}
+	for i, expected := range want {
+		if !reflect.DeepEqual(details.Records[i].ToolDetail, expected) {
+			t.Fatalf("summary %d contained something other than the addressed outcome: %+v", i, details.Records[i])
+		}
+	}
+	restarted, err := New(f.dir, f.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.api = restarted
+	for _, expected := range want {
+		var retained ToolDetail
+		if err := json.Unmarshal(f.call("GET", detailPath+"?key="+expected.Key, "", nil, 200, ""), &retained); err != nil ||
+			!reflect.DeepEqual(retained, expected) {
+			t.Fatalf("persisted form outcome changed or leaked user data: %+v (%v)", retained, err)
+		}
+	}
 }

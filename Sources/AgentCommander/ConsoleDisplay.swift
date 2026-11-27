@@ -400,22 +400,26 @@ struct PrettyConsoleView: View {
         let conversation = ConversationActivity.items(displayed, awaitingToolID: awaitingToolID, anchor: anchor)
         let built = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
                                                reportsAsCoordinator: reportsAsCoordinator)
-        let placed = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        let ended = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        // A form reply's line follows the console event it was sent after, before the turn's end.
+        let placed = PrettyRecordPlacement.withFormOutcomes(ended, summaries: records, worker: worker, summary: lookup)
         // Chosen from the finished items, so a failure keeps its line and a group its count.
-        let items = showsRecent
+        let chosen = showsRecent
             ? ActivityConversation.recent(placed, keeping: Set(anchor?.entries.map(\.id) ?? [])) : placed
+        // What the turn is doing now is read from before the reply lines the conversation ends with.
+        let (items, outcomes) = PrettyRecordPlacement.beforeTrailingOutcomes(chosen)
         // The run's jobs, then the provider's own: background commands and child agents.
         let jobs = background + ProviderJobs.jobs(summaries: records, record: { key in store?.record(worker: worker, key: key) },
                                                   entries: entries, worker: worker,
                                                   hidesSecrets: store?.hidesSecrets ?? false)
         guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
-            return Layout(items: items, jobs: jobs)
+            return Layout(items: chosen, jobs: jobs)
         }
         let record = (thought.entries.first?.origin?.messageID).flatMap { store?.summary(worker: worker, key: $0) }
             ?? store?.summary(worker: worker, key: thought.id)
         // A thought whose record holds its end is over: it stays a line, and is not the live one.
-        if record?.ended != nil { return Layout(items: items, jobs: jobs) }
-        return Layout(items: ActivityConversation.withoutLiveThought(items), jobs: jobs, thinking: thought,
+        if record?.ended != nil { return Layout(items: chosen, jobs: jobs) }
+        return Layout(items: ActivityConversation.withoutLiveThought(items) + outcomes, jobs: jobs, thinking: thought,
                       thinkingStarted: record?.started)
     }
 
@@ -432,12 +436,15 @@ struct PrettyConsoleView: View {
         let scope = stories.scope(canOpenSource: access?.openSource != nil)
         let layout = layout()
         let shown = layout.items
+        // No entry and no line: the unformatted output. A form reply from before the worker's
+        // first event is a line, and is drawn as one.
+        let isUnformatted = entries.isEmpty && shown.isEmpty
         GeometryReader { column in
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
             LazyVStack(alignment: .leading, spacing: 0) {
-                if entries.isEmpty {
+                if isUnformatted {
                     PrettyRawBlock(text: rawOutput, metrics: metrics, caption: "Unformatted output")
                 } else {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
@@ -480,7 +487,7 @@ struct PrettyConsoleView: View {
         }
         // The unformatted output and the conversation are two scroll views. One kept across the
         // change holds the old offset, which lies past the end of a shorter conversation.
-        .id(entries.isEmpty)
+        .id(isUnformatted)
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
@@ -552,6 +559,8 @@ struct PrettyConsoleView: View {
                            callStarted: live?.callStart(record)) {}
         case .turnEnd(let end):
             PrettyTurnEndLine(end: end, metrics: metrics)
+        case .formOutcome(let outcome):
+            PrettyFormOutcomeLine(outcome: outcome, metrics: metrics)
         case .card(let card):
             let key = card.entry?.detailKey ?? card.step.id
             PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
@@ -603,7 +612,8 @@ struct PrettyConsoleView: View {
     }
 
     private func endsWithOpenCall(_ items: [PrettyItem]) -> Bool {
-        switch items.last {
+        // A form reply's line after the open call does not close it.
+        switch PrettyRecordPlacement.beforeTrailingOutcomes(items).items.last {
         case .live?, .approval?: true
         // A provider question that waits for its answer is the open call.
         case .card(let card)?: card.step.state == .running
