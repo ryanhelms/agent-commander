@@ -305,6 +305,60 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(clamped.closingMessageFollows && clamped.heading == "Reported the run result")
     }
 
+    /// The older runner keeps no arguments on a report's event: the service's response is then
+    /// the only copy of the text (runs r-c7085325 and r-30bb462d).
+    @Test func aReportWithoutArgumentsReadsTheTextTheServiceReturned() {
+        var wire = Wire()
+        wire.call("Read", detail: "/a/words.txt", result: "1\talpha")
+        wire.call("commander_result", commander: ["workerId": "w-1"], result: #"{"id":"w-1","result":"words.txt has 3 lines."}"# + "\n")
+        wire.say("I sent this to the coordinator.")
+        let items = prettyItems(wire)
+        #expect(groups(items).map(\.summary.text) == ["Read a file"])
+        guard case .report(let report) = items[1] else { Issue.record("no report"); return }
+        #expect(report.text == "words.txt has 3 lines." && report.closingMessageFollows)
+    }
+
+    @Test func aReportReadsItsArgumentsThenItsStoredRecordThenTheResponse() {
+        var wire = Wire()
+        let sent = wire.call("commander_result", detail: #"{"result":"As sent."}"#, result: #"{"id":"w-1","result":"Returned."}"#)
+        let bare = wire.call("commander_result", result: #"{"id":"w-1","result":"Returned."}"#)
+        let stored = #"{"result":"As stored, in full."}"#
+        var facts = ActivityFacts(summaries: [:], records: [
+            sent: ToolDetailRecord(key: sent, kind: "tool", input: stored),
+            bare: ToolDetailRecord(key: bare, kind: "tool", input: stored),
+        ])
+        func texts(_ facts: ActivityFacts) -> [String] {
+            prettyItems(wire, facts: facts).compactMap { if case .report(let report) = $0 { report.text } else { nil } }
+        }
+        #expect(texts(facts) == ["As sent.", "As stored, in full."])
+        // A short value is in the summary's fields; a stored input that was cut short is not the text.
+        facts = ActivityFacts(summaries: [bare: ToolDetailSummary(key: bare, kind: "tool", fields: ["result": .string("Short.")])],
+                              records: [bare: ToolDetailRecord(key: bare, kind: "tool", input: #"{"result":"As stor"#)])
+        #expect(texts(facts) == ["As sent.", "Short."])
+        #expect(texts(.none) == ["As sent.", "Returned."])
+        // Only a finished report whose call carries no text has its record read.
+        wire.call("commander_result", result: "", error: "Tool failed.\nexit status 1")
+        wire.call("commander_result")
+        #expect(ActivitySteps.reportsToRead(wire.entries) == [bare])
+    }
+
+    @Test func aReportWithNoTextStandsAloneAndAFailedOneKeepsItsError() {
+        var wire = Wire()
+        wire.call("Read", detail: "/a/words.txt", result: "1\talpha")
+        wire.call("commander_result", result: "{}")
+        var items = prettyItems(wire)
+        #expect(items.count == 2 && groups(items).map(\.summary.text) == ["Read a file", "Reported a result"])
+        #expect(groups(items)[1].isSingle)
+
+        wire = Wire()
+        wire.call("Read", detail: "/a/words.txt", result: "1\talpha")
+        wire.call("commander_result", result: #"{"id":"w-1","result":"not a report"}"#, error: "Tool failed.")
+        items = prettyItems(wire)
+        #expect(!items.contains { if case .report = $0 { true } else { false } })
+        #expect(groups(items).flatMap(\.failures).map(\.sentence.plain) == ["Couldn't report the result"])
+        #expect(!groups(items).flatMap(\.lines).contains { $0.sentence.plain == "Reported a result" })
+    }
+
     @Test func aQuestionWithItsAnswerIsOneLineAndAPendingOneStandsAlone() {
         let id = "q-83202cb42d449a0f52b7981d56ac896a"
         func record(_ status: String, _ answer: String = "") -> String {

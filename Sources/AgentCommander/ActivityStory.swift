@@ -717,10 +717,22 @@ extension CommanderCall {
 
     var delivery: String? { responseIsThisRequest ? field("delivery") : nil }
 
-    /// The text a result reported, exactly as sent.
-    var reportText: String? {
+    /// The text a result reported, exactly as sent: the call's own text, else the text the
+    /// service returned with the worker's record.
+    var reportText: String? { statedReport ?? returnedReport }
+
+    /// The report as the call itself carries it, in its arguments or its plain detail.
+    var statedReport: String? {
         guard tool == .result else { return nil }
         return argument("result") ?? plainDetail
+    }
+
+    /// The report as the service's response repeats it (`{"id":…,"result":…}`). The older runner
+    /// keeps no arguments on the event, so this is then the only copy. A failed call has no
+    /// response: its error text is never a report.
+    var returnedReport: String? {
+        guard tool == .result, toolStatus == .done else { return nil }
+        return field("result")
     }
 
     var tests: [(command: String, outcome: String?)] {

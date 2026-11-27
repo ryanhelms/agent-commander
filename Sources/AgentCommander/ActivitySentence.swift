@@ -793,6 +793,30 @@ enum ActivitySteps {
         return step
     }
 
+    /// A finished report's text, exactly as sent. The call's own arguments come first; then the
+    /// stored record's input, which keeps a long text the summary's fields leave out; then the
+    /// call's plain detail; then the copy the service returned. Nil when none holds it.
+    static func reportText(_ call: CommanderCall, facts: ActivityFacts) -> String? {
+        if let text = call.argument("result") { return text }
+        let key = call.entry.id
+        // A stored input that was cut short is not the exact text.
+        let stored = facts.record(key)?.input.flatMap { OrderedJSON.read($0) }
+            .flatMap { $0.isCut ? nil : $0.value["result"]?.string }
+            .flatMap { CommanderCall.text(.string($0)) }
+        return stored ?? facts.summary(key)?.field("result") ?? call.plainDetail ?? call.returnedReport
+    }
+
+    /// The finished reports in `entries` whose call carries no text. The stored record may hold
+    /// it, so the console reads that record once.
+    static func reportsToRead(_ entries: [TranscriptEntry]) -> [String] {
+        entries.compactMap { entry in
+            guard case .tool(let name, _, let result) = entry.kind, CommanderTool(name: name) == .result,
+                  ToolStatus(result: result) == .done, CommanderCall(entry: entry)?.argument("result") == nil
+            else { return nil }
+            return entry.id
+        }
+    }
+
     /// Commander calls linked by an exact ID, or one Commander call. `calls` leaves out a report
     /// the conversation draws as prose.
     static func step(workflow flow: CommanderWorkflow, calls: [CommanderCall], facts: ActivityFacts) -> ActivityStep {
@@ -997,14 +1021,20 @@ enum ActivityConversation {
                 activity.entries.forEach(classify)
             case .commander(let flow):
                 // A reported result is prose in the conversation, never a line in a group.
-                let report = flow.calls.last { $0.tool == .result && $0.toolStatus == .done && $0.reportText != nil }
+                let report = flow.calls.last { $0.tool == .result && $0.toolStatus == .done }
                 let calls = flow.calls.filter { $0.entry.id != report?.entry.id }
                 if !calls.isEmpty { route(ActivitySteps.step(workflow: flow, calls: calls, facts: facts)) }
-                if let report, let text = report.reportText {
+                if let report {
                     flush()
-                    out.append(.report(ActivityReport(
-                        id: report.entry.id + "#report", call: report, text: text,
-                        heading: reportsAsCoordinator ? "Reported the run result" : "Reported to the coordinator")))
+                    if let text = ActivitySteps.reportText(report, facts: facts) {
+                        out.append(.report(ActivityReport(
+                            id: report.entry.id + "#report", call: report, text: text,
+                            heading: reportsAsCoordinator ? "Reported the run result" : "Reported to the coordinator")))
+                    } else {
+                        // No copy of the text was kept: the line "Reported a result" stands alone.
+                        let line = ActivitySteps.step(workflow: flow, calls: [report], facts: facts)
+                        out.append(.group(ActivityGroup(id: report.entry.id + "#report#group", lines: [line])))
+                    }
                 }
             }
         }
