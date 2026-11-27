@@ -172,6 +172,40 @@ func TestHostJSONReportsStateAndFailure(t *testing.T) {
 	}
 }
 
+func TestHostConfigureClientSecret(t *testing.T) {
+	dir := t.TempDir()
+	if err := hostmode.InitConfig(dir, hostmode.Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: hostmode.GoogleIssuer, ClientID: "desktop", Admins: []string{"admin@example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "client.json")
+	if err := os.WriteFile(file, []byte(`{"installed":{"client_id":"desktop","client_secret":"GOCSPX-x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--client-secret-file", file}); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostmode.ClientSecret(dir); got != "GOCSPX-x" {
+		t.Fatalf("secret %q", got)
+	}
+	cfg, err := hostmode.ReadConfig(dir)
+	if err != nil || cfg.Listen != ":8443" {
+		t.Fatalf("setting the secret changed the configuration: %+v %v", cfg, err)
+	}
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--client-secret-file", file, "--clear-client-secret"}); err == nil {
+		t.Fatal("accepted both flags")
+	}
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--clear-client-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if hostmode.ClientSecret(dir) != "" {
+		t.Fatal("secret not cleared")
+	}
+}
+
 func TestHostJSONListing(t *testing.T) {
 	dir := t.TempDir()
 	if err := hostmode.InitConfig(dir, hostmode.Config{

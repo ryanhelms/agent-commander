@@ -605,6 +605,128 @@ private let denial = "Permission to use mcp__commander__commander_network_online
     }
 }
 
+/// The PiP's part of a Pretty conversation (section B, "PiP"): chosen from the grouped items of
+/// the current turn, never from a count of raw entries.
+@Suite struct PrettyRecentItemsTests {
+    private static func usage(_ id: String) throws -> AGUIMessage {
+        let row = #"{"id":"\#(id)","role":"system","content":"[ACP usage_update]","metadata":{"acp":{"kind":"usage_update","source":"live","usage":{"used":45200,"size":200000}}}}"#
+        return try JSONDecoder().decode(AGUIMessage.self, from: Data(row.utf8))
+    }
+
+    /// Two failed reads, eight reads, two usage rows and an open call: the reported conversation.
+    private static func failuresThenReads() throws -> Wire {
+        var wire = Wire()
+        wire.user("Read the files")
+        wire.call("Read", detail: "/a/missing-first.txt", error: "File does not exist.")
+        wire.call("Read", detail: "/a/missing-second.txt", error: "File does not exist.")
+        for index in 0..<8 { wire.call("Read", detail: "/a/f\(index).txt", result: "x") }
+        wire.messages.append(try usage("u1"))
+        wire.messages.append(try usage("u2"))
+        wire.call("Bash", detail: "sleep 60")
+        return wire
+    }
+
+    @Test func failuresOutsideTheFourEntryTailStayWithTheLatestGroup() throws {
+        let wire = try Self.failuresThenReads()
+        // The raw tail the PiP used to group: two usage rows, one read and the open call.
+        let tail = TranscriptEntry.recent(wire.entries)
+        #expect(tail.count == 4)
+        let tailGroups = groups(ActivityConversation.items(
+            ConversationActivity.items(TranscriptEntry.displayed(tail, mode: .pretty))))
+        #expect(tailGroups.allSatisfy { $0.failures.isEmpty })
+
+        let full = prettyItems(wire)
+        let shown = ActivityConversation.recent(full)
+        #expect(shown.count == 3)
+        // The earlier group's failures, by name, without finished calls and under the same ID.
+        guard case .group(let failed) = shown[0], case .group(let original) = full[1] else {
+            Issue.record("the failures were dropped"); return
+        }
+        #expect(failed.id == original.id && failed.lines.isEmpty)
+        #expect(failed.failures == original.failures && failed.failures.count == 2)
+        #expect(failed.failures[0].sentence.plain.contains("missing-first.txt"))
+        #expect(failed.failures[1].sentence.plain.contains("missing-second.txt"))
+        // The latest group exactly as the focused worker draws it, then the live line.
+        #expect(shown[1] == full[2])
+        guard case .group(let latest) = shown[1], case .live(let live) = shown[2] else {
+            Issue.record("the latest group or the live line was dropped"); return
+        }
+        #expect(latest.lines.filter { $0.kind == .call }.count == 8)
+        #expect(latest.summary.text == "Read 8 files")
+        #expect(live.state == .running)
+        // The prompt is not part of the PiP's contract once the turn has a group.
+        #expect(!shown.contains { if case .entry(let entry) = $0 { entry.isFromUser } else { false } })
+    }
+
+    @Test func theLatestGroupOpensToItsFirstAndLatestThreeLines() throws {
+        let full = prettyItems(try Self.failuresThenReads())
+        guard case .group(let latest) = ActivityConversation.recent(full)[1] else { Issue.record("no group"); return }
+        // Ten lines: eight reads and two session rows. The PiP shows four, then "Show all 10".
+        #expect(latest.lines.count == 10)
+        let bounded = latest.shownLines(limit: 4)
+        #expect(bounded.hidden == 6 && bounded.lines.count == 4)
+        #expect(bounded.lines[0].sentence.plain == "Read f0.txt")
+        #expect(bounded.lines.dropFirst().map(\.id) == latest.lines.suffix(3).map(\.id))
+        // "Show all" and every other surface keep every line.
+        #expect(latest.shownLines(limit: nil).lines == latest.lines)
+    }
+
+    @Test func anEarlierTurnNeverCrowdsTheLatest() {
+        var wire = Wire()
+        wire.user("First")
+        wire.call("Read", detail: "/a/gone.txt", error: "File does not exist.")
+        wire.call("Read", detail: "/a/old.txt", result: "x")
+        wire.say("Done.")
+        wire.user("Second")
+        wire.call("Read", detail: "/a/new.txt", result: "x")
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.say("Checking.")
+        let full = prettyItems(wire)
+        let shown = ActivityConversation.recent(full)
+        // The second turn's group and the reply after it; the first turn's failure is closed.
+        #expect(shown == Array(full.suffix(2)))
+        #expect(groups(shown).count == 1 && groups(shown)[0].failures.isEmpty)
+        #expect(groups(shown)[0].summary.text == "Read a file, ran a command")
+    }
+
+    @Test func theRequestsOwnItemsAreKeptWhole() {
+        var wire = Wire()
+        wire.user("Go")
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.call("Bash", detail: "pwd", result: "b")
+        wire.say("Now the files.")
+        wire.call("Read", detail: "/a/one.txt", result: "x")
+        wire.call("Read", detail: "/a/two.txt", result: "x")
+        let full = prettyItems(wire)
+        #expect(ActivityConversation.recent(full) == [full[3]])
+        let anchored = groups(full)[0].lines[0].entries[0].id
+        #expect(ActivityConversation.recent(full, keeping: [anchored]) == [full[1], full[3]])
+    }
+
+    @Test func aTurnWithNoGroupShowsItsLatestItems() {
+        var wire = Wire()
+        wire.user("Old")
+        wire.say("Old answer.")
+        wire.user("Go")
+        wire.say("On it.")
+        let full = prettyItems(wire)
+        #expect(ActivityConversation.recent(full) == Array(full.suffix(2)))
+        #expect(ActivityConversation.recent([]).isEmpty)
+    }
+
+    @Test func theCurrentTurnStartsAtTheLatestPrompt() {
+        var wire = Wire()
+        wire.user("First")
+        wire.say("Done.")
+        wire.user("Second")
+        wire.call("Read", detail: "/a/new.txt", result: "x")
+        let entries = wire.entries
+        #expect(TranscriptEntry.currentTurn(entries) == Array(entries.suffix(2)))
+        #expect(TranscriptEntry.currentTurn(Array(entries.dropFirst(3))) == Array(entries.dropFirst(3)))
+        #expect(TranscriptEntry.currentTurn([]).isEmpty)
+    }
+}
+
 @Suite struct ActivityResultTests {
     @Test func jsonIsIndentedTwoSpacesWithKeysInTheOrderSent() {
         let formatted = PrettyJSON.format(#"{"zeta":1,"alpha":{"b":[1,"two",null],"a":"{\"inner\":true}"},"empty":[]}"#)

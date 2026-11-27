@@ -34,7 +34,21 @@ type Config struct {
 	AllowedEmails, Admins []string
 	HTTPClient            *http.Client
 	AllowLoopbackHTTP     bool
+	// ClientSecret returns the OAuth installed-app client secret the relay
+	// hands to enrolling devices, or "". It is read on each challenge so the
+	// operator can set it without a restart. Only an installed-app secret,
+	// which the provider documents as non-confidential, belongs here.
+	ClientSecret func() string
 }
+
+// ProvidedClientSecret reports the installed-app secret this relay hands out, if any.
+func (c Config) ProvidedClientSecret() string {
+	if c.ClientSecret == nil {
+		return ""
+	}
+	return c.ClientSecret()
+}
+
 type Server struct {
 	pool         *pgxpool.Pool
 	config       Config
@@ -54,7 +68,10 @@ type challenge struct {
 	Nonce    string `json:"nonce"`
 	Issuer   string `json:"issuer"`
 	ClientID string `json:"client_id"`
-	Email    bool   `json:"request_verified_email,omitempty"`
+	// ClientSecret travels only in this response, which the device reads over
+	// the pinned connection that presents its device certificate.
+	ClientSecret string `json:"client_secret,omitempty"`
+	Email        bool   `json:"request_verified_email,omitempty"`
 }
 
 var denied = errors.New("invalid or expired device authorization")
@@ -405,7 +422,7 @@ func (s *Server) begin(w http.ResponseWriter, r *http.Request) {
 		failure(w, 503)
 		return
 	}
-	reply(w, 200, challenge{Nonce: n, Issuer: s.config.Issuer, ClientID: s.config.ClientID, Email: true})
+	reply(w, 200, challenge{Nonce: n, Issuer: s.config.Issuer, ClientID: s.config.ClientID, ClientSecret: s.config.ProvidedClientSecret(), Email: true})
 }
 func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	id, err := DeviceID(r.TLS)

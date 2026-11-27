@@ -1087,6 +1087,7 @@ enum DesignFixture {
         var state = state
         var pending = request.map { withSampleConnection($0) }
         pending?.contextEntries = TranscriptEntry.recent(ConversationFixture.transcript(workerID: id))
+        pending?.turnEntries = TranscriptEntry.currentTurn(ConversationFixture.transcript(workerID: id))
         var error: String? = nil
         if let asked = request, let answer = store.answers[asked.id] {
             pending = nil

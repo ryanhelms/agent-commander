@@ -132,6 +132,9 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     private let reportsAsCoordinator: Bool
     /// The jobs this console's calls started, for Pretty's background stack.
     private let background: [BackgroundJob]
+    /// On a bounded surface (the PiP), the turn Pretty reads in place of `entries`, shown as
+    /// `ActivityConversation.recent`. Nil everywhere else. Console and Terminal never read it.
+    private let recentTurn: [TranscriptEntry]?
     private let console: () -> ConsoleContent
 
     init(
@@ -144,8 +147,10 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         live: PrettyLive? = nil,
         reportsAsCoordinator: Bool = false,
         background: [BackgroundJob] = [],
+        recentTurn: [TranscriptEntry]? = nil,
         @ViewBuilder console: @escaping () -> ConsoleContent
     ) {
+        self.recentTurn = recentTurn
         self.background = background
         self.live = live
         self.reportsAsCoordinator = reportsAsCoordinator
@@ -163,7 +168,7 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         if mode == .terminal {
             NativeTerminalSlot(target: terminal, density: density, horizontalInset: horizontalInset, fallback: console)
         } else if mode == .pretty,
-           PrettyContent.isPresentable(entries: entries, rawOutput: rawOutput) {
+           PrettyContent.isPresentable(entries: recentTurn ?? entries, rawOutput: rawOutput) {
             pretty
         } else {
             console()
@@ -174,10 +179,11 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     var pretty: PrettyConsoleView {
         PrettyConsoleView(
             consoleID: consoleID,
-            entries: entries,
+            entries: recentTurn ?? entries,
             rawOutput: rawOutput,
             density: density,
             horizontalInset: horizontalInset,
+            showsRecent: recentTurn != nil,
             live: live,
             reportsAsCoordinator: reportsAsCoordinator,
             background: background
@@ -197,14 +203,16 @@ extension ConsoleScrollback {
                   reportsAsCoordinator: reportsAsCoordinator, background: worker.backgroundJobs, console: console)
     }
 
-    /// The asking worker's console in the PiP: its recent window and that worker's jobs.
+    /// The asking worker's console in the PiP: its recent window for Console and Terminal, its
+    /// current turn for Pretty, and that worker's jobs.
     init(request: RequestPresentation, density: PrettyDensity, horizontalInset: CGFloat = 12,
          terminal: NativeTerminalTarget? = nil, live: PrettyLive? = nil,
          @ViewBuilder console: @escaping () -> ConsoleContent) {
         self.init(consoleID: request.workerID, entries: request.contextEntries,
                   rawOutput: request.contextTail.joined(separator: "\n"), density: density,
                   horizontalInset: horizontalInset, terminal: terminal, live: live,
-                  background: request.workerBackgroundJobs, console: console)
+                  background: request.workerBackgroundJobs,
+                  recentTurn: request.contextEntries.isEmpty ? nil : request.prettyEntries, console: console)
     }
 }
 
@@ -350,6 +358,9 @@ struct PrettyConsoleView: View {
     var stories = ActivityStoryContext()
     /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
     var anchor: CommanderWorkflow? = nil
+    /// The surface is bounded (the PiP): of the grouped conversation it shows the latest group,
+    /// the turn's failures, the report and the live line (`ActivityConversation.recent`).
+    var showsRecent = false
     /// What the surface knows about the turn in progress. Nil draws no spinner and no last line.
     var live: PrettyLive? = nil
     /// The console is a coordinator's: its report is the run's result.
@@ -386,7 +397,10 @@ struct PrettyConsoleView: View {
         let conversation = ConversationActivity.items(displayed, awaitingToolID: awaitingToolID, anchor: anchor)
         let built = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
                                                reportsAsCoordinator: reportsAsCoordinator)
-        let items = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        let placed = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        // Chosen from the finished items, so a failure keeps its line and a group its count.
+        let items = showsRecent
+            ? ActivityConversation.recent(placed, keeping: Set(anchor?.entries.map(\.id) ?? [])) : placed
         // The run's jobs, then the provider's own: background commands and child agents.
         let jobs = background + ProviderJobs.jobs(summaries: records, record: { key in store?.record(worker: worker, key: key) },
                                                   entries: entries, worker: worker,

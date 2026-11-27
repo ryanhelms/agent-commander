@@ -66,7 +66,11 @@ type Options struct {
 	NoConnect      bool
 	ConnectAddress string
 	Tailnet        *Tailnet
-	Log            func(string)
+	// ClientSecretFile is a Google Desktop OAuth file or bare installed-app
+	// secret the relay hands to enrolling devices. It reaches the server on
+	// SSH standard input, never on a command line.
+	ClientSecretFile string
+	Log              func(string)
 }
 
 // Result is what deploy prints.
@@ -324,6 +328,9 @@ func deployDocker(ctx context.Context, o Options, r *remote) (string, *TailnetSt
 			return "", nil, err
 		}
 	}
+	if err := installClientSecret(ctx, o, r, dockerSecretCommand(docker)); err != nil {
+		return "", nil, err
+	}
 	o.log("Starting the relay container")
 	if _, err := r.run(ctx, docker+" run -d --name "+Container+" --restart unless-stopped "+network+
 		" -v "+Volume+":/data --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges "+
@@ -563,6 +570,9 @@ func deploySystemd(ctx context.Context, o Options, r *remote) (string, error) {
 	if _, err := r.Run(ctx, sudo+quoteAll(args)+" 1>&2", nil); err != nil {
 		return "", err
 	}
+	if err := installClientSecret(ctx, o, r, systemdSecretCommand(sudo)); err != nil {
+		return "", err
+	}
 	return waitStatus(ctx, func() string { s, _ := systemdStatus(ctx, r, sudo); return s })
 }
 
@@ -641,4 +651,49 @@ func Remove(ctx context.Context, mode string, t sshx.Target) (string, error) {
 		return "Removed " + Unit + ". " + hostmode.LinuxServiceDir + " keeps the relay's data and TLS identity.", nil
 	}
 	return "", fmt.Errorf("unknown mode %q", mode)
+}
+
+// ---- sign-in client secret ----
+
+// readClientSecret validates the local secret file before anything is sent.
+func readClientSecret(path, clientID string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("client secret file: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 16<<10+1))
+	if err != nil {
+		return "", err
+	}
+	secret, err := hostmode.ParseClientSecret(data, clientID)
+	if err != nil {
+		return "", fmt.Errorf("client secret file: %w", err)
+	}
+	return secret, nil
+}
+
+// dockerSecretCommand stores the secret in the relay volume as the image's user.
+func dockerSecretCommand(docker string) string {
+	return docker + " run --rm -i -v " + Volume + ":/data " + Image + ":current configure --client-secret-file=-"
+}
+
+// systemdSecretCommand stores the secret and gives it to the service account.
+func systemdSecretCommand(sudo string) string {
+	dir := hostmode.LinuxServiceDir
+	return sudo + "sh -c " + sshx.Quote(quoteAll([]string{hostmode.LinuxServiceBinary, "host", "--dir", dir, "configure", "--client-secret-file=-"})+
+		" && chown "+hostmode.LinuxServiceAccount+": "+sshx.Quote(dir+"/oauth-client-secret"))
+}
+
+func installClientSecret(ctx context.Context, o Options, r *remote, command string) error {
+	if o.ClientSecretFile == "" {
+		return nil
+	}
+	secret, err := readClientSecret(o.ClientSecretFile, o.Config.ClientID)
+	if err != nil {
+		return err
+	}
+	o.log("Storing the sign-in client secret on the relay")
+	_, err = r.Run(ctx, command, strings.NewReader(secret+"\n"))
+	return err
 }
