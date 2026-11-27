@@ -234,7 +234,7 @@ struct ActivityLine: View {
                 .buttonStyle(ActivityRowButtonStyle())
                 .textSelection(.disabled)
                 .help(step.help ?? step.sentence.plain)
-                .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
+                .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
                 .accessibilityLabel(step.accessibilityLabel)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         } else {
@@ -283,25 +283,48 @@ struct ActivityRowButtonStyle: ButtonStyle {
 
 /// Keyboard focus for a Pretty line that opens: an activity line, a group's summary, a failure
 /// line and Thinking with its thought text. The button is one stop in the Tab order under macOS
-/// Keyboard navigation, with the system focus ring. Space or Return presses it as any button,
-/// Right opens it and Left closes it. Focus is set before the arrow keys are heard: a key press
-/// goes to the focused view, and with the arrow handlers alone Tab passed the line over.
+/// Keyboard navigation, with the inset focus ring (DESIGN.md): 2 pt of `focus` inside the line's
+/// edge while it holds keyboard focus. Space or Return toggles it, Right opens it and Left
+/// closes it. Focus is set before the keys are heard: a key press goes to the focused
+/// view, and with the arrow handlers alone Tab passed the line over.
 private struct PrettyDisclosureKeys: ViewModifier {
     let isExpanded: Bool
+    /// The ring's corner: the line's own, from `PrettyMetrics`.
+    let radius: CGFloat
     let toggle: () -> Void
+    /// True only while this line's layer holds keyboard focus.
+    @FocusState private var isKeyboardFocused: Bool
 
     func body(content: Content) -> some View {
         content
+            // One stop, not two: the button gives up its own, and the layer round it takes the
+            // only one. The button still takes the pointer and the accessibility press.
+            .focusable(false)
             .focusable(true, interactions: .activate)
+            .focused($isKeyboardFocused)
+            // The inset ring below stands for the system's, which did not show round a line.
+            .focusEffectDisabled()
+            // The layer holds focus, so it presses for the button: once per key down, never on
+            // a repeat.
+            .onKeyPress(keys: [.space, .return], phases: .down) { _ in toggle(); return .handled }
             .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
             .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+            // Drawn over the line, inside its edge: no layout change, and no clipping in a list.
+            .overlay {
+                if isKeyboardFocused {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Palette.focus, lineWidth: 2)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 }
 
 extension View {
     /// Apply to the button itself, after its style, and only on a line that opens.
-    func prettyDisclosureKeys(isExpanded: Bool, toggle: @escaping () -> Void) -> some View {
-        modifier(PrettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle))
+    func prettyDisclosureKeys(isExpanded: Bool, radius: CGFloat, toggle: @escaping () -> Void) -> some View {
+        modifier(PrettyDisclosureKeys(isExpanded: isExpanded, radius: radius, toggle: toggle))
     }
 }
 
@@ -329,7 +352,7 @@ struct ActivityGroupSummary: View {
         }
         .buttonStyle(ActivityRowButtonStyle())
         .textSelection(.disabled)
-        .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
+        .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
         .help("Option-click opens every step")
         .accessibilityLabel(summary.accessibilityLabel)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
@@ -372,7 +395,8 @@ struct ActivityFailureLine<Detail: View>: View {
             .buttonStyle(ActivityRowButtonStyle())
             .textSelection(.disabled)
             .help(step.help ?? step.sentence.plain)
-            .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
+            // The failure line's button fills its bordered frame, so the ring takes that corner.
+            .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.listRadius, toggle: toggle)
             .accessibilityLabel(step.sentence.plain + ", " + (step.failure?.outcome == .blocked ? "blocked" : "failed")
                                 + (step.failure.map { ", " + $0.reason } ?? ""))
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
@@ -551,7 +575,7 @@ struct PrettyLiveLine: View {
                 Button(action: toggle) { row }
                     .buttonStyle(ActivityRowButtonStyle())
                     .textSelection(.disabled)
-                    .prettyDisclosureKeys(isExpanded: isExpanded, toggle: toggle)
+                    .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
                     .accessibilityLabel(spoken)
                     .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             } else {
