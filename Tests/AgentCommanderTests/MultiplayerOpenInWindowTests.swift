@@ -357,7 +357,7 @@ import Testing
         model.openServer(MultiplayerFixesTests.home)
         found = try await nodes()
         #expect(model.isAdmin(MultiplayerFixesTests.home))
-        #expect(found.contains { $0.role == "AXButton" && $0.label == "Open Admin in Agent Commander" }, "\(found.map(\.description))")
+        #expect(found.contains { $0.role == "AXButton" && $0.label.hasPrefix("Open Admin in Agent Commander") }, "\(found.map(\.description))")
         #expect(!found.contains { $0.label.hasPrefix("Relay policy") })
     }
 

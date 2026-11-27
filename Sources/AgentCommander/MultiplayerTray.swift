@@ -129,10 +129,17 @@ struct MultiplayerServerList: View {
     let servers: [MultiplayerServerSummary]
     let now: Date
     let isBusy: Bool
+    /// A server's request to join, once its relay turned the sign-in away; the relay's admin
+    /// contact; and the note that goes with Request access.
+    var request: (String) -> MultiplayerMembershipRequestStatus? = { _ in nil }
+    var contact: (String) -> String = { _ in "" }
+    var note: (String) -> Binding<String> = { _ in .constant("") }
+    var canRequest = false
     let onAdd: () -> Void
     let onOpen: (String) -> Void
     let onFavorite: (MultiplayerServerSummary) -> Void
     let onSignIn: (String) -> Void
+    var onRequestAccess: (String) -> Void = { _ in }
 
     var body: some View {
         MultiplayerBand {
@@ -143,11 +150,23 @@ struct MultiplayerServerList: View {
                         .help("Add a relay server by its address")
                 }
                 ForEach(servers) { server in
+                    let asked = server.state == .signedOut ? request(server.id) : nil
                     MultiplayerServerRow(server: server, now: now, isBusy: isBusy,
                                          hostedHere: MultiplayerServerAddress.isThisMac(server.url),
+                                         request: asked,
                                          onOpen: { onOpen(server.id) },
                                          onFavorite: { onFavorite(server) },
                                          onSignIn: { onSignIn(server.id) })
+                    if let asked {
+                        MultiplayerRequestAccess(status: asked, contact: contact(server.id), now: now, note: note(server.id),
+                                                 canAct: canRequest && !isBusy, isProminent: false,
+                                                 showsState: asked.offersSignIn,
+                                                 onRequest: { onRequestAccess(server.id) })
+                            .padding(.leading, 28)
+                            .padding(.bottom, Space.s)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("Request to join \(server.displayName)")
+                    }
                     if server.state == .certChanged {
                         MultiplayerCertificateNotice(serverName: server.displayName) { onOpen(server.id) }
                             .padding(.bottom, Space.xs)
@@ -952,6 +971,7 @@ private struct MultiplayerPanelContent: View {
         case .hosting:
             MultiplayerHostingPage(host: model.host.summary, setup: Bindable(model.host).setupDraft,
                                    savedServer: model.hostedServer?.displayName,
+                                   listing: MultiplayerHostListingBand(model: model.host, now: model.currentDate()),
                                    onDismissFailure: { model.host.dismissFailure() })
         case .server:
             if let server = routedServer { serverPage(server) }
@@ -1282,11 +1302,15 @@ private struct MultiplayerPanelContent: View {
         let discovery = model.discovery
         let relays = discovery.nearby
         if showsEmpty || !relays.isEmpty {
+            // Request access acts on the server the chosen relay became.
+            let asked = discovery.selectedRelay.flatMap { discovery.server(for: $0)?.id }
             MultiplayerRelaysNearbyBand(relays: relays, selected: discovery.selected,
                                         checklist: discovery.selectedRelay.map { discovery.checklist(for: $0) },
                                         hasLoaded: discovery.hasLoaded, isReading: discovery.isReading,
                                         failure: discovery.failure, canAct: discovery.canAct,
                                         notifies: notifies, isProminent: onHome,
+                                        note: requestNote(asked ?? ""), now: model.currentDate(),
+                                        request: { relay in discovery.server(for: relay).flatMap { model.requests.status(for: $0.id) } },
                                         onSelect: { discovery.select($0) },
                                         onConfirm: { discovery.confirmFingerprint($0) },
                                         onSignIn: { discovery.signIn($0) },
@@ -1294,20 +1318,34 @@ private struct MultiplayerPanelContent: View {
                                             discovery.select(nil)
                                             model.openServer(id)
                                         },
-                                        onJoinTailnet: onHome ? { model.startAddServer() } : nil)
+                                        onJoinTailnet: onHome ? { model.startAddServer() } : nil,
+                                        onRequestAccess: { relay in
+                                            if let id = discovery.server(for: relay)?.id { model.requests.request(on: id) }
+                                        })
                 .onAppear { discovery.listAppeared() }
                 .onDisappear { discovery.listDisappeared() }
         }
+    }
+
+    /// The note that goes with Request access on one server.
+    private func requestNote(_ server: String) -> Binding<String> {
+        let requests = model.requests
+        return Binding(get: { requests.notes[server] ?? "" }, set: { requests.notes[server] = $0 })
     }
 
     /// Network: the servers, their state and the keys they are known by.
     @ViewBuilder private var networkTab: some View {
         relaysNearby(showsEmpty: true, onHome: true, notifies: Bindable(model.discovery).notifies)
         MultiplayerServerList(servers: model.servers, now: model.currentDate(), isBusy: model.isBusy,
+                              request: { model.requests.status(for: $0) },
+                              contact: { model.discovery.contact(forServer: $0) },
+                              note: { requestNote($0) },
+                              canRequest: model.requests.canAct,
                               onAdd: { model.startAddServer() },
                               onOpen: { model.openServer($0) },
                               onFavorite: { model.toggleFavorite($0) },
-                              onSignIn: { model.signIn($0) })
+                              onSignIn: { model.signIn($0) },
+                              onRequestAccess: { model.requests.request(on: $0) })
         let remote = model.remote
         MultiplayerRemoteBand(status: remote.status, failure: remote.failure, pairing: remote.livePairing,
                               pairingExpired: remote.pairingExpired, confirmingRevoke: remote.confirmingRevoke,
@@ -1421,7 +1459,8 @@ private struct MultiplayerPanelContent: View {
                             on: server.id, groups: teams.groups[server.id]?.count ?? 0,
                             workspaces: teams.workspaces[server.id]?.count ?? 0,
                             hosts: teams.myHosts(on: server.id).count + teams.friendHosts(on: server.id).count,
-                            knowledge: teams.knowledge[server.id]?.count ?? 0, isAdmin: model.isAdmin(server.id)))
+                            knowledge: teams.knowledge[server.id]?.count ?? 0, isAdmin: model.isAdmin(server.id),
+                            requests: model.requests.waitingCount(on: server.id)))
                     }
                 }
             }

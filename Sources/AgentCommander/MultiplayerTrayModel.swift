@@ -268,6 +268,9 @@ final class MultiplayerModel {
     let tailnet: MultiplayerTailnetModel
     /// The relays nearby and the join checklist (MultiplayerDiscovery.swift).
     let discovery: MultiplayerDiscoveryModel
+    /// Requests to join a relay: the person's own, and the ones waiting on them as an admin
+    /// (MultiplayerMembershipRequests.swift).
+    let requests: MultiplayerMembershipRequestModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -293,9 +296,10 @@ final class MultiplayerModel {
          holdTimer: MultiplayerHoldTimer = .clock,
          relay: (any MultiplayerRelayControl)? = nil,
          tailnetPoll: Duration = .seconds(2),
-         discoveryStore: MultiplayerDiscoveryStore = .scratch) {
+         discoveryStore: MultiplayerDiscoveryStore = .scratch,
+         listingPoll: Duration = .seconds(5)) {
         self.client = client
-        self.host = MultiplayerHostModel(control: relay)
+        self.host = MultiplayerHostModel(control: relay, listingInterval: listingPoll)
         self.notifier = notifier
         self.setupFailure = setupFailure
         self.usesFixtureHelper = usesFixtureHelper
@@ -307,9 +311,11 @@ final class MultiplayerModel {
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.tailnet = MultiplayerTailnetModel(client: client, pollInterval: tailnetPoll)
         self.discovery = MultiplayerDiscoveryModel(client: client, store: discoveryStore)
+        self.requests = MultiplayerMembershipRequestModel(client: client)
         self.share.tray = self
         self.remote.tray = self
         self.discovery.tray = self
+        self.requests.tray = self
     }
 
     /// The one live model: the menu bar panel, the review window and invite links all use it.
@@ -479,6 +485,7 @@ final class MultiplayerModel {
         share.cancel()
         remote.cancel()
         discovery.cancel()
+        requests.cancel()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -528,6 +535,7 @@ final class MultiplayerModel {
             share.refresh()
             remote.refresh()
             discovery.refresh()
+            requests.refresh()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -928,6 +936,10 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = requests.quietTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
             // Split so the compiler checks each list in turn.
             let own = actionTask == nil && refreshTask == nil && probeTask == nil && socialTask == nil
@@ -936,7 +948,7 @@ final class MultiplayerModel {
                 && share.live.quietTask == nil && share.live.pageTask == nil && share.teams.quietTask == nil
                 && share.teams.pageTask == nil && share.teams.pullRequestTask == nil
             let found = tailnet.joinTask == nil && tailnet.readTask == nil && discovery.readTask == nil
-                && discovery.seenTask == nil
+                && discovery.seenTask == nil && requests.quietTask == nil
             if own, shared, found { return }
         }
     }

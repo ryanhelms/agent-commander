@@ -137,6 +137,11 @@ enum TeamsSample {
         studioServer.members = [TeamsMember(handle: "ryan", isAdmin: true), TeamsMember(handle: "mira"), TeamsMember(handle: "ines"),
                                 TeamsMember(handle: "sam"), TeamsMember(handle: "priya", isSuspended: true), TeamsMember(handle: "tomas"),
                                 TeamsMember(handle: "", key: "#6")]
+        studioServer.requests = [
+            MultiplayerMembershipRequest(id: "mr-1", email: "noor@lab.example",
+                                         note: "I’m on the relay team from next sprint. Ines said to ask here.", createdAt: ago(1_500)),
+            MultiplayerMembershipRequest(id: "mr-2", email: "jules@example.org", createdAt: ago(18_000))
+        ]
         studioServer.devices = [TeamsDevice(id: "dev-7f3a", name: "dev-7f3a", owner: "mira", isOnline: true),
                                 TeamsDevice(id: "dev-22c1", name: "dev-22c1", owner: "sam", lastSeen: ago(900), isOnline: false),
                                 TeamsDevice(id: "dev-51be", name: "dev-51be", owner: "tomas", lastSeen: ago(86_400), isOnline: false)]
@@ -622,6 +627,14 @@ final class TeamsPreviewState {
             let name = content.server(server)?.devices.first { $0.id == device }?.name ?? device
             update(server) { $0.devices.removeAll { $0.id == device } }
             return .done(id: device, server: server, message: "\(name) is signed out of \(content.serverName(server)).")
+        }
+        actions.decideRequest = { [self] request, server, approve in
+            await pause()
+            let who = content.server(server)?.requests?.first { $0.id == request }?.shownEmail ?? "the request"
+            update(server) { $0.requests?.removeAll { $0.id == request } }
+            return .done(id: request, server: server,
+                         message: approve ? "Approved \(who). They’re admitted the next time they sign in."
+                                          : "Denied \(who). They can ask again in 24 hours.")
         }
         actions.shareHost = { [self] resource, server in shareHost(resource, server) }
         actions.requestAccess = { [self] resource, server in requestAccess(resource, server) }

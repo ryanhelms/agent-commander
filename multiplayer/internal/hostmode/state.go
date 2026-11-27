@@ -72,6 +72,8 @@ type Report struct {
 	Log string `json:"log"`
 	// Setup is what this Mac suggests for a first-time setup, only while unconfigured.
 	Setup *Suggestion `json:"setup,omitempty"`
+	// Listing is the public directory listing, once the host is configured.
+	Listing *ListingReport `json:"listing,omitempty"`
 }
 
 // Inspect reads the host's configuration, lock and certificate. A missing host.json is the
@@ -99,6 +101,7 @@ func InspectWith(dir string, probe Probe) (Report, error) {
 		return report, err
 	}
 	report.Name = cfg.Name
+	report.Listing = listingReport(dir, cfg)
 	host, port, err := net.SplitHostPort(cfg.Listen)
 	if err != nil {
 		return report, err

@@ -169,15 +169,17 @@ extension MultiplayerWindowShortcut {
     }
 
     /// A server's page, under Teams. An admin also gets Admin: the relay's policy, its members
-    /// and its devices, on this server.
+    /// and its devices, on this server. Its count is the membership requests waiting on them.
     static func serverTeams(on server: String, groups: Int, workspaces: Int, hosts: Int, knowledge: Int,
-                            isAdmin: Bool = false) -> [MultiplayerWindowShortcut] {
+                            isAdmin: Bool = false, requests: Int = 0) -> [MultiplayerWindowShortcut] {
         [MultiplayerWindowShortcut(.groups, on: server, symbol: "person.3", count: groups),
          MultiplayerWindowShortcut(.workspaces, on: server, symbol: "square.stack.3d.up", count: workspaces),
          MultiplayerWindowShortcut(.hosts, on: server, symbol: "cpu", count: hosts),
          MultiplayerWindowShortcut(.knowledge, on: server, symbol: "books.vertical", count: knowledge),
          MultiplayerWindowShortcut(.search, on: server, symbol: "magnifyingglass"),
-         isAdmin ? MultiplayerWindowShortcut(.policy, on: server, symbol: "slider.horizontal.3") : nil].compactMap { $0 }
+         isAdmin ? MultiplayerWindowShortcut(.policy, on: server, symbol: "slider.horizontal.3", count: requests, isHot: true,
+                                             noun: requests == 1 ? "request" : "requests") : nil]
+            .compactMap { $0 }
     }
 }
 

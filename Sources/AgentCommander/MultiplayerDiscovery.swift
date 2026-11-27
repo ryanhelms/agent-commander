@@ -10,6 +10,8 @@ import Observation
 // - The fingerprint a relay advertises on the local network is a hint. It is drawn, never sent.
 // - A relay the person has not seen is notified once, and never while they are looking at the list.
 // - Joining goes through the tray's one-action-at-a-time rule; signing in is the server's own flow.
+// - A relay that turned the sign-in away offers Request access in its Membership step, from the
+//   request model's word (MultiplayerMembershipRequests.swift). The checklist never asks by itself.
 //
 // ATOMIC LEVELS:
 //   values     MultiplayerDiscoveredRelay, MultiplayerDiscoverySource, MultiplayerDiscovery,
@@ -369,6 +371,8 @@ struct MultiplayerJoinChecklist: Equatable {
         case joinTailnet
         case confirmFingerprint
         case signIn
+        /// The relay turned the account away: ask its admins.
+        case requestAccess
         /// Every step passed: open the server it became.
         case openServer(String)
 
@@ -377,6 +381,7 @@ struct MultiplayerJoinChecklist: Equatable {
             case .joinTailnet: "Join a tailnet"
             case .confirmFingerprint: "Confirm fingerprint"
             case .signIn: "Sign in"
+            case .requestAccess: "Request access"
             case .openServer: "Open server"
             }
         }
@@ -387,7 +392,7 @@ struct MultiplayerJoinChecklist: Equatable {
             case .joinTailnet: .reachable
             case .confirmFingerprint: .certificate
             case .signIn: .signIn
-            case .openServer: .membership
+            case .requestAccess, .openServer: .membership
             }
         }
     }
@@ -409,6 +414,14 @@ struct MultiplayerJoinChecklist: Equatable {
     /// Whether the fingerprint the relay advertises matches the observed one. A hint, drawn beside
     /// the fingerprint; nil when the relay advertised none.
     let advertisedMatches: Bool?
+    /// The person's request to join, once the relay turned their sign-in away. The Membership step
+    /// draws it.
+    let request: MultiplayerMembershipRequestStatus?
+    /// The relay's admin contact, when it gave one.
+    let contact: String
+    /// Beside the Membership step's own action, the Signed in step offers "Sign in again": another
+    /// account may be the one the relay admits.
+    let offersSignInAgain: Bool
 
     func step(_ stage: Stage) -> Step { steps[stage.rawValue] }
 
@@ -416,12 +429,18 @@ struct MultiplayerJoinChecklist: Equatable {
     var standing: Stage? { steps.first { $0.mark != .done }?.stage }
 
     init(relay: MultiplayerDiscoveredRelay, server: MultiplayerServerSummary? = nil,
-         signIn: MultiplayerJoinSignIn = .idle, notOnTailnet: Bool = false) {
+         signIn: MultiplayerJoinSignIn = .idle, notOnTailnet: Bool = false,
+         request: MultiplayerMembershipRequestStatus? = nil, now: Date = Date()) {
         // The saved server is fresher than the discovery row: a join answers with it at once.
         let standing: MultiplayerRelayNext = server.map { $0.signedIn ? .done : .signIn } ?? relay.step
         let offersTailnet = standing == .unreachable && notOnTailnet && relay.looksLikeTailnet
         let contact = MultiplayerText.clean(relay.adminContact, limit: 120)
-        let ask = contact.isEmpty ? "Ask the relay’s admin." : "Ask \(contact)."
+        let admin = contact.isEmpty ? "" : " Its admin is \(contact)."
+        // A request stands only for a relay in the list that hasn't let the person in, and not
+        // while a new sign-in is under way.
+        let asked = standing == .signIn && signIn != .waitingForBrowser ? request : nil
+        self.contact = contact
+        self.request = asked
 
         // 1. Reachable
         let reachable: Step
@@ -470,6 +489,17 @@ struct MultiplayerJoinChecklist: Equatable {
             let handle = server?.handle.multiplayerDisplay ?? ""
             signedIn = Step(stage: .signIn, mark: .done, detail: handle.isEmpty ? "Signed in." : "Signed in as \(handle).")
         default:
+            // What the relay said when it turned the sign-in away.
+            var refusal = "This relay didn’t admit your account."
+            if case .failed(let reason) = signIn { refusal = MultiplayerSentence.sentence(reason) }
+            switch asked?.phase {
+            case .requestable?, .sending?, .denied?, .full?:
+                signedIn = Step(stage: .signIn, mark: .failed, detail: refusal)
+            case .pending?:
+                signedIn = Step(stage: .signIn, mark: .waiting, detail: "Sign in once an admin has approved your request.")
+            case .approved?:
+                signedIn = Step(stage: .signIn, mark: .current, detail: "An admin approved your request. Sign in to finish.")
+            case nil:
             switch signIn {
             case .waitingForBrowser:
                 signInWaits = true
@@ -482,6 +512,7 @@ struct MultiplayerJoinChecklist: Equatable {
                                 detail: issuer.isEmpty ? "Your browser opens so you can sign in."
                                                        : "Your browser opens so you can sign in with \(issuer).")
             }
+            }
         }
 
         // 4. Membership
@@ -492,15 +523,30 @@ struct MultiplayerJoinChecklist: Equatable {
             membershipDetail = isMember ? "Open. You’re a member." : "Open. Anyone who signs in is a member."
         case .allowlist:
             membershipDetail = isMember ? "Allowlist. Your email is on the list."
-                : "Allowlist. The admin must add your email before you can sign in. \(ask)"
+                : "Allowlist. Your email has to be on the admins’ list. If sign-in turns you away, you can request access here.\(admin)"
         case .invite:
             membershipDetail = isMember ? "Invite only. You’re a member."
-                : "Invite only. You need an invite link or the admin’s approval. \(ask)"
+                : "Invite only. You need an invite link or an admin’s approval. If sign-in turns you away, you can request access here.\(admin)"
         case .unknown:
             membershipDetail = isMember ? "You’re a member." : standing == .unreachable ? ""
                 : "This relay didn’t say how it admits people."
         }
-        let membership = Step(stage: .membership, mark: isMember ? .done : .waiting, detail: membershipDetail)
+        let membership: Step
+        if let asked {
+            // The mode, then where the request stands. Nothing here says who else is a member.
+            let mode = relay.membership.title.map { "\($0). " } ?? ""
+            let mark: Mark = switch asked.phase {
+            case .requestable, .sending, .pending: .current
+            case .approved: .waiting
+            case .denied, .full: .failed
+            }
+            // The Signed in step already carries the relay's refusal, so this one says only what to do.
+            let detail = asked.phase == .requestable || asked.phase == .sending
+                ? "You can ask its admins to let you in." : asked.detail(contact: contact, now: now)
+            membership = Step(stage: .membership, mark: mark, detail: mode + detail)
+        } else {
+            membership = Step(stage: .membership, mark: isMember ? .done : .waiting, detail: membershipDetail)
+        }
 
         steps = [reachable, certificate, signedIn, membership]
         self.fingerprint = fingerprint
@@ -518,17 +564,38 @@ struct MultiplayerJoinChecklist: Equatable {
             action = id.isEmpty ? nil : .openServer(id)
             hint = "You’re in."
         default:
-            action = signInWaits ? nil : .signIn
-            if signInWaits {
-                hint = "Finish signing in in your browser."
-            } else {
-                switch relay.membership {
-                case .allowlist: hint = "Sign in once the admin has added your email."
-                case .invite: hint = "Sign in once you have an invite or the admin’s approval."
-                case .open, .unknown: hint = "Sign in to finish."
+            switch asked?.phase {
+            case .requestable?:
+                action = .requestAccess
+                hint = "Ask the relay’s admins to let you in, or sign in with another account."
+            case .sending?:
+                action = nil
+                hint = "Sending your request…"
+            case .pending?:
+                action = nil
+                hint = "Waiting for the relay’s admins."
+            case .approved?:
+                action = .signIn
+                hint = "Sign in to finish."
+            case .denied?:
+                action = nil
+                hint = "The relay’s admins declined this request."
+            case .full?:
+                action = nil
+                hint = contact.isEmpty ? "Ask one of the relay’s admins directly." : "Ask \(contact) directly."
+            case nil:
+                action = signInWaits ? nil : .signIn
+                if signInWaits {
+                    hint = "Finish signing in in your browser."
+                } else {
+                    switch relay.membership {
+                    case .allowlist, .invite: hint = "Sign in. If the relay turns you away, you can request access."
+                    case .open, .unknown: hint = "Sign in to finish."
+                    }
                 }
             }
         }
+        offersSignInAgain = asked.map { $0.offersSignIn && $0.phase != .approved } ?? false
     }
 }
 
@@ -637,7 +704,15 @@ final class MultiplayerDiscoveryModel {
                 if let failed = session.actionFailure, failed.command == .login { signIn = .failed(failed.message) }
             }
         }
-        return MultiplayerJoinChecklist(relay: relay, server: saved, signIn: signIn, notOnTailnet: notOnTailnet)
+        return MultiplayerJoinChecklist(relay: relay, server: saved, signIn: signIn, notOnTailnet: notOnTailnet,
+                                        request: saved.flatMap { tray?.requests.status(for: $0.id) },
+                                        now: tray?.currentDate() ?? Date())
+    }
+
+    /// The admin contact of the relay a saved server is, when discovery found it and it gave one.
+    func contact(forServer id: String) -> String {
+        guard let relay = relays.first(where: { server(for: $0)?.id == id }) else { return "" }
+        return MultiplayerText.clean(relay.adminContact, limit: 120)
     }
 
     static func ordered(_ relays: [MultiplayerDiscoveredRelay]) -> [MultiplayerDiscoveredRelay] {
