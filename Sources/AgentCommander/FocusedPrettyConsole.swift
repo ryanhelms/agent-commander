@@ -6,23 +6,23 @@ import SwiftUI
 // transcript the workspace projection already holds for that worker: there is no new storage, no
 // service call and no fallback to the worker's PTY output. CopilotKit has no SwiftUI SDK, so the
 // CopilotKit reference console (poc/agui-console) guides the parts and native SwiftUI controls
-// draw them: a run status line, the assistant's messages, Thinking and tool calls as disclosures,
-// a running indicator and a request form.
+// draw them: a run status line, the assistant's messages, tool calls as sentences (the live one
+// inline, last in the transcript) and a request form.
 //
 //   Values     PrettyACPScope               whether a console uses this view
 //              PrettyRunStatus              what the run is doing, from the worker state and transcript
 //              PrettyACPMetrics             inset, type and status height for a density
-//   Molecules  PrettyRunStatusBar           ACP badge, session, phase, counts
-//              PrettyRunningIndicator       the assistant is responding or a tool is running
+//   Molecules  PrettyRunStatusBar           harness chip, lamp and word, counts as a sentence, session
 //              PrettyEmptyConversation      no ACP events yet, said plainly
-//              PrettyRequestForm            the pending request answered by ID (native RequestReply)
-//   Organism   PrettyACPConsole             = PrettyRunStatusBar + PrettyConsoleView
-//                                             + PrettyRunningIndicator + PrettyRequestForm
+//              PrettyRequestForm            the pending request answered by ID, as a bordered block
+//              PrettyFormButtonStyle        the form's and the message box's buttons
+//   Organism   PrettyACPConsole             = PrettyRunStatusBar + PrettyConsoleView (with its
+//                                             inline PrettyLiveLine) + PrettyRequestForm
 //
 // Densities: `.regular` for the focused worker and coordinator, `.compact` for a wall tile,
 // `.pip` for the attention stack. Only a surface that owns a request's reply passes `reply`, so a
 // request has one form: the focused worker or the PiP. A wall tile and the coordinator link to it.
-// Activity story cards take their actions from the same parent (`ActivityStoryContext`): Reply or
+// Activity lines take their actions from the same parent (`ActivityStoryContext`): Reply or
 // Review approval focuses this surface's one form; Open request uses the tile's or coordinator's
 // existing route. The PiP anchors its request's story from the whole transcript.
 // A console without a session, and Terminal and Console modes, keep `ConsoleScrollback`.
@@ -61,6 +61,8 @@ struct PrettyRunStatus: Equatable {
     let failedTools: Int
     /// How many of the failed calls the provider refused permission for: the tool never ran.
     let blockedTools: Int
+    /// How many calls ran and reported an error.
+    let ranAndFailedTools: Int
     /// Every tool call in the transcript that has no result yet, oldest first.
     let openToolIDs: [String]
 
@@ -79,13 +81,13 @@ struct PrettyRunStatus: Equatable {
     /// phase or claims work without evidence, and an explicit Unknown state is kept, not read as
     /// Idle. A waiting worker and its approvals are unchanged.
     init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false) {
-        var prompts = 0, tools = 0, failed = 0, blocked = 0
+        var prompts = 0, tools = 0, failed = 0, blocked = 0, ranAndFailed = 0
         func count(_ result: ToolResult) {
             let status = ToolStatus(result: result)
             switch status {
             case .failed, .declined, .cancelled:
                 if status == .failed { failed += 1 }
-                if ActivityFailureWords.read(result, status: status).outcome == .blocked { blocked += 1 }
+                if ActivityFailureWords.read(result, status: status).outcome == .blocked { blocked += 1 } else { ranAndFailed += 1 }
             default: break
             }
         }
@@ -111,6 +113,7 @@ struct PrettyRunStatus: Equatable {
         self.tools = tools
         self.failedTools = failed
         self.blockedTools = blocked
+        self.ranAndFailedTools = ranAndFailed
         self.openToolIDs = openToolIDs
         switch state {
         case .running, .working, .starting:
@@ -160,8 +163,7 @@ struct PrettyRunStatus: Equatable {
         var parts = [prompts == 1 ? "1 prompt" : "\(prompts) prompts"]
         if tools > 0 { parts.append(tools == 1 ? "1 tool call" : "\(tools) tool calls") }
         if blockedTools > 0 { parts.append("\(blockedTools) blocked") }
-        let failed = failedTools - min(failedTools, blockedTools)
-        if failed > 0 { parts.append("\(failed) failed") }
+        if ranAndFailedTools > 0 { parts.append("\(ranAndFailedTools) failed") }
         return parts.joined(separator: ", ")
     }
 

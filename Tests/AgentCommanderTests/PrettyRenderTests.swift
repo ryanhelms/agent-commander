@@ -84,6 +84,139 @@ let prettyRenderDirectory = ProcessInfo.processInfo.environment["PRETTY_RENDER_D
         return ids
     }
 
+    /// A turn with every other part: a timed thought, a plan, a file, terminal output, a failure
+    /// that is not a denial, an unknown tool with a secret-looking value, and a live thought.
+    static func kitchen() throws -> (entries: [TranscriptEntry], details: ToolDetailStore) {
+        func message(_ json: String) throws -> AGUIMessage { try JSONDecoder().decode(AGUIMessage.self, from: Data(json.utf8)) }
+        func thought(_ id: String, _ messageID: String, _ text: String) throws -> AGUIMessage {
+            try message(#"{"id":"\#(id)","role":"system","content":"\#(text)","metadata":{"acp":{"source":"live","kind":"agent_thought_chunk","messageId":"\#(messageID)","turnId":"t1"}}}"#)
+        }
+        var wire = Wire()
+        wire.user("Cover timeout behavior before headers, after headers, and after the first body chunk.")
+        wire.messages.append(try thought("th1", "m1", "The budget lives in retry/budget.ts. I should map the three phases first, then run the timeout suite and see which cases replay bytes."))
+        let todo = wire.call("TodoWrite", detail: "other", result: "ok")
+        let read = wire.call("Read", detail: "/Users/sample/Developer/relay/retry/budget.ts", result: "1\texport const budget = 3\n2\texport const idle = 30_000\n3\t")
+        let bash = wire.call("Bash", detail: "swift test --filter Timeout", result: "Test Suite 'Timeout' started\n✔ beforeHeaders\n✔ afterHeaders\n✘ afterFirstChunk\nExecuted 3 tests, with 1 failure")
+        wire.call("Bash", detail: "make lint", result: "", error: "Tool failed.\nexit status 2: lint found 3 problems. See the log.")
+        let other = wire.call("mcp__jira__search", detail: #"{"jql":"project = RELAY","token":"sk-abcdefghijklmnopqrstuvwx"}"#,
+                              result: #"{"total":2,"issues":[{"key":"RELAY-12","status":"open","summary":"Retry replays bytes"},{"key":"RELAY-19","status":"done","summary":"Idle timer"}],"next":null}"#)
+        wire.say("Two of three phases pass. After the first body chunk a retry replays bytes the caller already consumed.")
+        wire.messages.append(try thought("th2", "m2", "A retry after the first chunk cannot be transparent. The safest rule is to fail the request and let the caller decide. I need to check whether the budget counts that failure, and whether the idle timer restarts."))
+        let summaries = try JSONDecoder().decode([ToolDetailSummary].self, from: Data("""
+        [{"key":"m1","kind":"thought","started_at":"2026-11-27T01:59:10Z","ended_at":"2026-11-27T02:01:02Z"},
+         {"key":"m2","kind":"thought","started_at":"2026-11-27T02:03:10Z","ended_at":"2026-11-27T02:03:10Z"},
+         {"key":"\(bash)","kind":"tool","name":"Bash","fields":{"command":"swift test --filter Timeout","description":"Ran the timeout suite"}}]
+        """.utf8))
+        let records = try JSONDecoder().decode([ToolDetailRecord].self, from: Data("""
+        [{"key":"\(todo)","kind":"tool","name":"TodoWrite","input":"{\\"todos\\":[{\\"content\\":\\"Map the three phases\\",\\"status\\":\\"completed\\"},{\\"content\\":\\"Run the timeout suite\\",\\"status\\":\\"in_progress\\",\\"activeForm\\":\\"Running the timeout suite\\"},{\\"content\\":\\"Report ambiguous cases\\",\\"status\\":\\"pending\\"}]}"}]
+        """.utf8))
+        _ = (read, other)
+        return (wire.entries, ToolDetailStore(summaries: ["c": summaries], records: ["c": records],
+                                              settings: TranscriptSettings(hideSecrets: true)))
+    }
+
+    static func kitchenOpenIDs(_ entries: [TranscriptEntry], _ details: ToolDetailStore) -> [String] {
+        let facts = ActivityFacts(summaries: details.summaries(worker: "c"))
+        let items = ActivityConversation.items(ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty)), facts: facts)
+        var ids: [String] = []
+        for item in items {
+            if case .group(let group) = item { ids += [group.id] + group.lines.map(\.id) + group.failures.map(\.id) }
+        }
+        return ids
+    }
+
+    static func chrome(_ view: some View, size: CGSize) -> some View {
+        view.frame(width: size.width, height: size.height, alignment: .top).background(Palette.window)
+    }
+
+    @Test func theKitchenTurnReadsItsStoredFacts() throws {
+        let kitchen = try Self.kitchen()
+        var facts = ActivityFacts(summaries: kitchen.details.summaries(worker: "c"))
+        facts.record = { kitchen.details.record(worker: "c", key: $0) }
+        let items = ActivityConversation.items(
+            ConversationActivity.items(TranscriptEntry.displayed(kitchen.entries, mode: .pretty)), facts: facts)
+        let groups = items.compactMap { if case .group(let group) = $0 { group } else { nil } }
+        #expect(groups.first?.lines.first?.sentence.plain == "Thought for 1m 52s")
+        #expect(items.contains { if case .plan(let plan) = $0 { plan.items?.count == 3 } else { false } })
+        let work = try #require(groups.first { $0.lines.contains { $0.sentence.plain == "Ran the timeout suite" } })
+        #expect(work.failures.first?.failure?.reason == "exit status 2: lint found 3 problems.")
+        // The failed call ends its group; the next finished call starts another.
+        #expect(work.summary.text == "Read a file, ran a command" && work.summary.failed == ["1 failed"])
+        #expect(groups.contains { $0.isSingle && $0.lines[0].sentence.plain == "Used search" })
+        // The conversation ends with a thought: while the turn runs it is the live line.
+        #expect(ActivityConversation.liveThought(in: items)?.text.hasPrefix("A retry after") == true)
+        #expect(ActivityConversation.withoutLiveThought(items).count == items.count - 1)
+    }
+
+    @Test func theStatusLineCountsBlockedCallsApartFromFailedOnes() {
+        let status = PrettyRunStatus(state: .completed, entries: Self.coordinator())
+        #expect(status.sentence == "1 prompt, 4 tool calls, 1 blocked")
+        var wire = Wire()
+        wire.user("Go")
+        wire.call("Bash", detail: "make", result: "", error: "Tool failed.\nexit status 2")
+        wire.call("Bash", detail: "ls", result: "", error: "Tool declined.")
+        #expect(PrettyRunStatus(state: .idle, entries: wire.entries).sentence == "1 prompt, 2 tool calls, 1 blocked, 1 failed")
+    }
+
+    @Test func aSpinnerNeedsAnActiveWorkerAndNothingIsInferredForATrackedOne() {
+        #expect(PrettyLive(state: .working, workerName: "reader") == PrettyLive(isActive: true, trailing: .responding("reader")))
+        #expect(PrettyLive(state: .working, workerName: "reader", reportsProgress: true, reportedPhase: .toolRunning).trailing == nil)
+        #expect(PrettyLive(state: .working, workerName: "reader", reportsProgress: true, reportedPhase: .thinking).trailing == .thinking)
+        #expect(PrettyLive(state: .completed, workerName: "reader") == PrettyLive())
+        #expect(PrettyLive(state: .disconnected, workerName: "reader").isDisconnected)
+    }
+
+    @Test func theTranscriptSettingKeepsEverythingByDefaultAndStoresItsChoices() async {
+        final class Box: @unchecked Sendable { var saved: [TranscriptSettings] = [] }
+        let box = Box()
+        let store = ToolDetailStore(source: ToolDetailSource(
+            page: { _, _ in ToolDetailPage(revision: 0, records: []) },
+            record: { _, key in ToolDetailRecord(key: key, kind: "tool", input: "{}") },
+            readSettings: { TranscriptSettings() },
+            writeSettings: { next in
+                if next.limitBytes == 1 { throw ServiceError.rejected("limit_bytes must be 0 or between 1024 and 524288") }
+                box.saved.append(next)
+                return next
+            }))
+        #expect(store.settings.keepsEverything && !store.settingsLoaded)
+        await store.loadSettings()
+        #expect(store.settingsLoaded)
+        await store.save(TranscriptSettings(hideSecrets: true, limitBytes: TranscriptSettings.offeredLimit))
+        #expect(store.settings.hideSecrets && store.settings.limitBytes == 16384 && box.saved.count == 1)
+        // A refused change leaves the shown value as the service holds it, and says why.
+        await store.save(TranscriptSettings(limitBytes: 1))
+        #expect(store.settings.limitBytes == 16384 && store.settingsError?.contains("limit_bytes") == true)
+        #expect(TranscriptSettingsSection.warning.contains("including the PiP"))
+    }
+
+    @Test func detailsAreReadAfterTheLastRevisionAndAFullRecordOnlyOnRequest() async {
+        final class Box: @unchecked Sendable { var afters: [UInt64] = []; var keys: [String] = [] }
+        let box = Box()
+        let store = ToolDetailStore(source: ToolDetailSource(
+            page: { _, after in
+                box.afters.append(after)
+                return after == 0 ? ToolDetailPage(revision: 4, records: [ToolDetailSummary(key: "t1", kind: "tool", name: "Read")])
+                                  : ToolDetailPage(revision: 4, records: [])
+            },
+            record: { _, key in
+                box.keys.append(key)
+                if key == "gone" { throw ServiceError.rejected("tool detail not found") }
+                return ToolDetailRecord(key: key, kind: "tool", input: "{}", result: "ok")
+            },
+            readSettings: { TranscriptSettings() }, writeSettings: { $0 }))
+        await store.refresh(worker: "w")
+        await store.refresh(worker: "w")
+        #expect(box.afters == [0, 4] && store.summary(worker: "w", key: "t1")?.name == "Read")
+        #expect(box.keys.isEmpty && store.record(worker: "w", key: "t1") == nil)
+        await store.open(worker: "w", key: "t1")
+        await store.open(worker: "w", key: "t1")
+        await store.open(worker: "w", key: "gone")
+        await store.open(worker: "w", key: "gone")
+        #expect(box.keys == ["t1", "gone"] && store.record(worker: "w", key: "t1")?.result == "ok")
+        #expect(ServiceClient.toolDetailsPath("w-1", after: 7) == "/v1/workers/w-1/tool-details?after=7")
+        #expect(ServiceClient.toolDetailPath("w-1", key: "event-3 a&b") == "/v1/workers/w-1/tool-details?key=event-3%20a%26b")
+    }
+
     @Test func theMockupRunReadsAsTheApprovedSentences() {
         let items = ActivityConversation.items(
             ConversationActivity.items(TranscriptEntry.displayed(Self.coordinator(), mode: .pretty)), reportsAsCoordinator: true)
@@ -115,6 +248,34 @@ let prettyRenderDirectory = ProcessInfo.processInfo.environment["PRETTY_RENDER_D
         try await write(Self.console(coordinator, density: .compact, open: Self.openIDs(coordinator), size: CGSize(width: 440, height: 900)),
                         "pretty-wall-tile-open", CGSize(width: 440, height: 900))
         try await write(Self.console(live, state: .working, density: .pip, size: pip), "pretty-pip", pip)
+        let kitchen = try Self.kitchen()
+        let tall = CGSize(width: 800, height: 1700)
+        try await write(Self.console(kitchen.entries, state: .working, density: .regular, coordinator: false,
+                                     open: Self.kitchenOpenIDs(kitchen.entries, kitchen.details) + ["th2"], size: tall,
+                                     details: kitchen.details), "pretty-parts-open", tall)
+        try await write(Self.console(kitchen.entries, state: .working, density: .compact, coordinator: false, size: tile,
+                                     details: kitchen.details), "pretty-wall-tile-thinking", tile)
+        // The frame: the message box while a turn runs and idle, and Settings › Transcript.
+        let box = CGSize(width: 800, height: 230)
+        try await write(Self.chrome(PrettyComposer(workerName: "reader", isWorking: true,
+                                                   queued: [QueuedFollowUp(id: "m-1", text: "Also check the idle timer after a retry.")],
+                                                   send: { _ in true }, removeQueued: { _ in }, stop: {}), size: box),
+                        "pretty-message-box-working", box)
+        try await write(Self.chrome(PrettyComposer(workerName: "reader", isWorking: false, send: { _ in true }), size: box),
+                        "pretty-message-box-idle", box)
+        let settings = CGSize(width: 560, height: 470)
+        try await write(Self.chrome(TranscriptSettingsSection(settings: TranscriptSettings(hideSecrets: true)) { _ in }
+                            .padding(Space.xl), size: settings), "settings-transcript", settings)
+        // The live cockpit pages, when the preview conversation is asked for.
+        if ConversationFixture.display == .pretty {
+            for (scenario, name) in [(DesignPreviewScenario.coordinatorWall, "cockpit-wall"), (.focusedWorker, "cockpit-focused-worker"),
+                                     (.attentionPip, "cockpit-pip")] {
+                let modes = ConsoleModeStore()
+                modes.applyGlobal(.pretty)
+                try await ShellRenderTests.write(DesignPreviewPage(scenario: scenario).environment(modes), name,
+                                                 theme: .blackGlass, to: folder)
+            }
+        }
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("pretty-pip-console.png").path))
     }
 }

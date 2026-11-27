@@ -55,7 +55,10 @@ struct ActivityResultSource: Equatable {
                 tried = call.tool.label
                 liveState = call.facts?.liveOperationStatus ?? call.facts?.liveRequestStatus
             } else {
-                tried = ActivityWords.provider(name: name, detail: detail).running.plain
+                // What was tried, in plain words: the tool's label and its subject.
+                let subject = ActivityWords.fact(name, detail: detail, summary: nil).map { ActivityWords.middle($0) }
+                tried = [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(name), subject]
+                    .compactMap { $0 }.joined(separator: ": ")
             }
         case .output(let result):
             name = ""
