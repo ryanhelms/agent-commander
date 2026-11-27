@@ -123,6 +123,9 @@ struct ToolDetailRecord: Decodable, Equatable, Sendable {
     /// shortened, or one empty pointer for a cut at the end of the whole value. Absent from an
     /// older record or service.
     var shortened: [String: [String]]? = nil
+    /// The PNG images of `result` and `content`, read once by the store when it keeps the
+    /// record. Never sent by the service; nil on a record the store has not kept.
+    var images: ResultImages? = nil
 
     private enum CodingKeys: String, CodingKey {
         case key, kind, name, title, input, result, content, truncated, shortened
@@ -190,7 +193,9 @@ final class ToolDetailStore {
     init(summaries: [String: [ToolDetailSummary]], records: [String: [ToolDetailRecord]] = [:],
          settings: TranscriptSettings = TranscriptSettings()) {
         self.summaries = summaries.mapValues { Dictionary($0.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last }) }
-        self.records = records.mapValues { Dictionary($0.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last }) }
+        self.records = records.mapValues {
+            Dictionary($0.map { ($0.key, ToolDetailStore.withImages($0)) }, uniquingKeysWith: { _, last in last })
+        }
         self.settings = settings
     }
 
@@ -239,7 +244,16 @@ final class ToolDetailStore {
         reading.insert(id)
         defer { reading.remove(id) }
         guard let record = try? await source.record(worker, key) else { missing.insert(id); return }
-        records[worker, default: [:]][key] = record
+        records[worker, default: [:]][key] = ToolDetailStore.withImages(record)
+    }
+
+    /// The record with its result's PNG images read, once, so a sentence's tag and an opened
+    /// line's thumbnails do not read the record's text again each time they are drawn.
+    nonisolated static func withImages(_ record: ToolDetailRecord) -> ToolDetailRecord {
+        guard record.kind == "tool", record.images == nil else { return record }
+        var kept = record
+        kept.images = ResultImages.read(result: record.result, content: record.content)
+        return kept
     }
 
     /// Whether a drawn value that looks like a secret is hidden. Until the service in use has
