@@ -284,9 +284,36 @@ final class CockpitModel {
         }
     }
 
+    /// The one gate for the owner's text to a coordinator. Open only after the service has verified
+    /// a native resume: it then reports the coordinator bound to its session, `available`, and
+    /// under a control record the owner holds. Before and during recovery (`starting`, `unknown`,
+    /// `reattaching`, no session, no record) and once the record is no longer held, it is closed.
+    /// It grants nothing else: taking and handing back control, interrupting, stopping, file
+    /// context and structured requests stay with delegated workers (`workerTarget`).
+    func canSendCoordinatorFollowUp(_ id: String) -> Bool { coordinatorFollowUpControl(id) != nil }
+
+    private func coordinatorFollowUpControl(_ id: String) -> WorkerControl? {
+        guard let run = runs.first(where: { $0.coordinatorID == id }),
+              let worker = run.workers?.first(where: { $0.id == id }), worker.role == "coordinator",
+              worker.boundSession != nil, controlRecordApplies(run, worker),
+              ProviderAvailability.allowsControl(ProviderAvailability(worker: worker)),
+              // An absent or unknown value is normal for a worker. A coordinator is sent to only
+              // on the service's own word that the resumed session answers.
+              worker.allFields[ProviderAvailability.fieldName]?.stringValue == ProviderAvailability.availableValue,
+              let control = worker.control, control.held else { return nil }
+        return control
+    }
+
+    /// The held control record a text follow-up is sent under: a delegated worker's, or the
+    /// record of a coordinator whose gate is open. Read again on every send, so the request
+    /// always carries the current generation of exactly the worker it names.
+    private func followUpControl(_ id: String) -> WorkerControl? {
+        guard canControlWorker(id) else { return coordinatorFollowUpControl(id) }
+        return workerTarget(id)?.1.control.flatMap { $0.held ? $0 : nil }
+    }
+
     func sendFollowUp(to id: String, text: String) async -> Bool {
-        guard canControlWorker(id), let control = workerTarget(id)?.1.control, control.held,
-              !workerActions.contains(id) else { return false }
+        guard let control = followUpControl(id), !workerActions.contains(id) else { return false }
         let prior = followUpAttempts[id]
         let operationID = prior.flatMap { attempt in
             attempt.text == text && attempt.generation == control.generation ? attempt.id : nil

@@ -1403,6 +1403,9 @@ struct ConsoleModeTitlebarControl: View {
     /// Present when this console's worker has a provider source. The menu then offers the source
     /// inspector, in either display mode, and a console that hosts the inspector presents it here.
     var source: ConsoleSourceAccess? = nil
+    /// Present on the coordinator, which has no action list. The menu then offers the same
+    /// provider-session panel a worker's action list does, and presents it here.
+    var providerSession: ProviderSessionAccess? = nil
     /// Present on the wall tile, focused worker, coordinator and PiP. The bar then shows the inline
     /// terminal's status in Terminal mode, and the menu offers detach or reconnect and the
     /// standalone read-only viewer.
@@ -1422,9 +1425,10 @@ struct ConsoleModeTitlebarControl: View {
         if let terminal { NativeTerminalChromeStatus(consoleID: consoleID, target: terminal) }
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
-            if let source {
+            if source != nil || providerSession != nil {
                 Divider()
-                ConsoleSourceMenuItems(source: source)
+                if let source { ConsoleSourceMenuItems(source: source) }
+                if let providerSession { ProviderSessionMenuItems(access: providerSession) }
             }
             if let terminal {
                 Divider()
@@ -1461,6 +1465,8 @@ struct ConsoleModeTitlebarControl: View {
         .accessibilityLabel("Display mode, \(consoleName)")
         .accessibilityValue("\(mode.title), \(scope)")
         .modifier(ConsoleSourcePresentation(source: source))
+        // Its own anchor on the same control, so the two panels never share a presenter.
+        .background { Color.clear.modifier(ProviderSessionPresentation(access: providerSession)) }
         }
     }
 }

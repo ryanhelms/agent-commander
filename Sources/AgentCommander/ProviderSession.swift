@@ -12,11 +12,18 @@ import SwiftUI
 //                   ProviderSessionInspection    what the panel draws for the one open worker
 //   Feature layer   ProviderSessionModel         the open worker's reads, pages and reattach
 //                   ProviderSessionIntents       the operations the cockpit emits
-//   Molecules       ProviderSessionFact          one labelled fact, value at the trailing edge
+//   Molecules       ProviderSessionMenuItems     the native action, in the coordinator's display menu
+//                   ProviderSessionFact          one labelled fact, value at the trailing edge
 //                   ProviderCapabilityCheck      one negotiated capability, with its glyph
 //                   ProviderSessionRow           one listed session, marked when it is the bound one
 //   Organism        ProviderSessionPanel         status, capabilities, discovery, reattach
-//                   ProviderSessionPresentation  presents the panel from the worker's title bar
+//                   ProviderSessionPresentation  presents the panel from the console's title bar
+//
+// A coordinator is a worker to the service, and gets the same panel and the same gating. A local
+// Claude coordinator from an older build may have no session projected yet: its panel still opens
+// and reads the status, names no session, and offers only what the service's status allows. The
+// status may itself carry the bound session (`native_session`); the panel names that one first and
+// falls back to the projected one, so a recovered coordinator is identified as soon as it is read.
 //
 // Reattach is always the developer's explicit act on the worker the panel was opened for, and
 // always to that worker's own bound session: a listed session is shown, never chosen. The request
@@ -107,20 +114,37 @@ struct ProviderSessionStatus: Decodable, Equatable, Sendable {
     let generation: Int?
     /// Follow-ups and interrupts the service accepted whose delivery it cannot confirm.
     let deliveryUnknown: Int
+    /// The session the service has bound this worker to, as it reads now. Nil when the service
+    /// sends none, and for a binding with no session ID: an empty binding names nothing.
+    let nativeSession: NativeSession?
 
     init(peerCapabilities: ProviderPeerCapabilities? = nil, canDiscover: Bool = false, canReattach: Bool = false,
-         history: History = .unavailable, generation: Int? = nil, deliveryUnknown: Int = 0) {
+         history: History = .unavailable, generation: Int? = nil, deliveryUnknown: Int = 0,
+         nativeSession: NativeSession? = nil) {
         self.peerCapabilities = peerCapabilities
         self.canDiscover = canDiscover
         self.canReattach = canReattach
         self.history = history
         self.generation = generation
         self.deliveryUnknown = deliveryUnknown
+        self.nativeSession = Self.bound(nativeSession)
     }
 
     private enum CodingKeys: String, CodingKey {
         case peerCapabilities = "peer_capabilities", canDiscover = "can_discover", canReattach = "can_reattach"
-        case history, generation, deliveryUnknown = "delivery_unknown"
+        case history, generation, deliveryUnknown = "delivery_unknown", nativeSession = "native_session"
+    }
+
+    /// A binding that names a session, or nil.
+    private static func bound(_ session: NativeSession?) -> NativeSession? {
+        session.flatMap { $0.sessionID.isEmpty ? nil : $0 }
+    }
+
+    /// The session a panel names for its worker: the one this status reports, else the one the
+    /// worker's presentation carries. The status is the later reading, so a session recovered by
+    /// a reattach is named before the run's next projection arrives.
+    static func identity(status: ProviderSessionStatus?, projected: NativeSession?) -> NativeSession? {
+        status?.nativeSession ?? bound(projected)
     }
 
     init(from decoder: Decoder) throws {
@@ -134,6 +158,9 @@ struct ProviderSessionStatus: Decodable, Equatable, Sendable {
         self.generation = generation > 0 ? generation : nil
         let unknown = try fields.decodeIfPresent(Int.self, forKey: .deliveryUnknown) ?? 0
         deliveryUnknown = max(0, unknown)
+        // `NativeSession` reads any unreadable value as empty, so a malformed binding is unbound
+        // here and never costs the rest of the status.
+        nativeSession = Self.bound(try? fields.decodeIfPresent(NativeSession.self, forKey: .nativeSession))
     }
 
     init(json data: Data) throws {
@@ -508,8 +535,8 @@ extension CockpitModel {
 
 // MARK: - Component values
 
-/// What one worker console needs to offer its provider session: the action, and on a console that
-/// hosts the panel (a wall tile or the focused worker), the panel's values and intents.
+/// What one console needs to offer its provider session: the action, and on a console that hosts
+/// the panel (a wall tile, the focused worker or the coordinator), the panel's values and intents.
 struct ProviderSessionAccess {
     struct Panel {
         let isPresented: Binding<Bool>
@@ -526,12 +553,37 @@ struct ProviderSessionAccess {
     let workerID: String
     let workerName: String
     let client: AgentClient
-    let session: NativeSession
+    /// The session the service projects for this worker. Nil only for a local Claude coordinator
+    /// whose session the service has not projected; the panel then names none.
+    let session: NativeSession?
     let open: () -> Void
     var panel: Panel? = nil
+
+    /// Whether a console offers the provider-session action. Every worker the service has bound to
+    /// a session does, the coordinator included. A coordinator on this Mac running Claude also does
+    /// before a session is projected, so the service's status can be read; the status then decides
+    /// what the panel offers. Every other unbound worker has no action.
+    static func isOffered(to worker: WorkerPresentation) -> Bool {
+        if worker.session != nil { return true }
+        return worker.isCoordinator && worker.platform == .localMac && worker.client == .claude
+    }
 }
 
 // MARK: - Molecules
+
+/// The native action that opens a console's provider session, for a console with no action list:
+/// the coordinator. It sits in the title bar's display menu beside the source action, so the title
+/// bar itself is unchanged.
+struct ProviderSessionMenuItems: View {
+    let access: ProviderSessionAccess
+
+    var body: some View {
+        Button(action: access.open) {
+            Label("Provider Session…", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .accessibilityLabel("Provider session, discovery and reattach for \(access.workerName)")
+    }
+}
 
 /// One labelled fact of the session: the label leading, its value trailing, a sentence beneath
 /// when the value needs one. The adoption concept's detail rows.
@@ -627,12 +679,20 @@ struct ProviderSessionRow: View {
 struct ProviderSessionPanel: View {
     let workerName: String
     let client: AgentClient
-    let session: NativeSession
+    /// The session the worker's presentation carries. Nil when the service projects none.
+    let projected: NativeSession?
     let panel: ProviderSessionAccess.Panel
 
     @State private var confirmingReattach = false
 
     private var inspection: ProviderSessionInspection? { panel.inspection }
+
+    /// The session this panel names: the one the status it read reports, else the projected one.
+    /// Nil when the service reports neither. The panel then names none, marks no listed session,
+    /// and leaves out statements about a session it cannot identify.
+    private var session: NativeSession? {
+        ProviderSessionStatus.identity(status: inspection?.loadedStatus, projected: projected)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -642,8 +702,10 @@ struct ProviderSessionPanel: View {
                 VStack(alignment: .leading, spacing: 16) {
                     statusSection
                     if let status = inspection?.loadedStatus {
-                        capabilities(status)
-                        discovery(status)
+                        if session != nil || status.peerCapabilities != nil { capabilities(status) }
+                        // Without a projected session, discovery is drawn only when the service
+                        // offers it: no reason is given for a session that is not known.
+                        if session != nil || status.canDiscover { discovery(status) }
                     }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
@@ -697,19 +759,27 @@ struct ProviderSessionPanel: View {
                     .font(TypeRole.monoID).foregroundStyle(.inkSecondary)
                     .lineLimit(1).truncationMode(.middle)
                     .textSelection(.enabled)
-                    .help("Harness \(session.harnessInstance.isEmpty ? "not reported" : session.harnessInstance), session \(session.sessionID)")
+                    .help(sessionHelp)
                 Spacer(minLength: 4)
-                Button("copy session") { panel.copy(session.sessionID) }
-                    .buttonStyle(TermButtonStyle(ink: Term.text, size: 10))
-                    .accessibilityLabel("Copy session ID \(session.sessionID)")
+                if let session {
+                    Button("copy session") { panel.copy(session.sessionID) }
+                        .buttonStyle(TermButtonStyle(ink: Term.text, size: 10))
+                        .accessibilityLabel("Copy session ID \(session.sessionID)")
+                }
             }
         }
         .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 10)
     }
 
     private var sessionLine: String {
-        ((session.harnessInstance.isEmpty ? [] : [session.harnessInstance])
+        guard let session else { return "no provider session reported" }
+        return ((session.harnessInstance.isEmpty ? [] : [session.harnessInstance])
             + ["session " + session.sessionID]).joined(separator: " · ")
+    }
+
+    private var sessionHelp: String {
+        guard let session else { return "The service has not reported a provider session for \(workerName)." }
+        return "Harness \(session.harnessInstance.isEmpty ? "not reported" : session.harnessInstance), session \(session.sessionID)"
     }
 
     // MARK: Status
@@ -730,7 +800,8 @@ struct ProviderSessionPanel: View {
                 Kicker(text: "Status").padding(.bottom, 4)
                 ProviderSessionFact(label: "History", value: status.history.label,
                                     tone: status.history == .available ? Tone.working : nil,
-                                    detail: status.history.statement)
+                                    detail: session == nil && status.history == .unavailable
+                                        ? nil : status.history.statement)
                 ProviderSessionFact(label: "Control generation", value: status.generation.map(String.init) ?? "none")
                 ProviderSessionFact(label: "Unresolved delivery",
                                     value: status.deliveryUnknown == 0 ? "None" : "\(status.deliveryUnknown)",
@@ -820,7 +891,7 @@ struct ProviderSessionPanel: View {
                 } else {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(listing.sessions) { item in
-                            ProviderSessionRow(session: item, isBound: item.sessionID == session.sessionID,
+                            ProviderSessionRow(session: item, isBound: item.sessionID == session?.sessionID,
                                                copy: panel.copy)
                         }
                     }
@@ -870,8 +941,7 @@ struct ProviderSessionPanel: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Reattach to the original session").font(TypeRole.label).foregroundStyle(Palette.foreground)
-                    Text(verbatim: status.reattachUnavailableReason
-                         ?? "Restarts \(workerName) on session \(Identifier.short(session.sessionID)). Nothing is sent or resubmitted.")
+                    Text(verbatim: reattachUnavailableReason(status) ?? reattachEffect)
                         .font(TypeRole.caption).foregroundStyle(.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -887,7 +957,7 @@ struct ProviderSessionPanel: View {
                     }
                     .buttonStyle(CapsuleButtonStyle(prominent: true, height: 30))
                     .disabled(!status.reattachIsOffered || phase == .accepted)
-                    .help(status.reattachUnavailableReason ?? "Reattach \(workerName) to its own provider session")
+                    .help(reattachUnavailableReason(status) ?? "Reattach \(workerName) to its own provider session")
                     .accessibilityLabel("Reattach \(workerName) to its original provider session")
                 }
             }
@@ -903,6 +973,20 @@ struct ProviderSessionPanel: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(Palette.panel)
+    }
+
+    /// Why reattach is not offered. Without a projected session there is nothing this panel can
+    /// name to resume, and the reason says that instead of describing a session.
+    private func reattachUnavailableReason(_ status: ProviderSessionStatus) -> String? {
+        guard let reason = status.reattachUnavailableReason else { return nil }
+        return session == nil
+            ? "The service has not reported a provider session for \(workerName), so there is nothing to reattach to yet."
+            : reason
+    }
+
+    private var reattachEffect: String {
+        let target = session.map { "session \(Identifier.short($0.sessionID))" } ?? "its original session"
+        return "Restarts \(workerName) on \(target). Nothing is sent or resubmitted."
     }
 
     private var unresolvedMessage: String {
@@ -939,7 +1023,8 @@ private extension ProviderSessionInspection.ReattachPhase {
     }
 }
 
-/// Presents the provider-session panel from the worker console's title bar.
+/// Presents the provider-session panel from a console's title bar: beside a worker's action
+/// button, and from the coordinator's display menu.
 struct ProviderSessionPresentation: ViewModifier {
     let access: ProviderSessionAccess?
 
@@ -947,7 +1032,7 @@ struct ProviderSessionPresentation: ViewModifier {
         if let access, let panel = access.panel {
             content.popover(isPresented: panel.isPresented, arrowEdge: .bottom) {
                 ProviderSessionPanel(workerName: access.workerName, client: access.client,
-                                     session: access.session, panel: panel)
+                                     projected: access.session, panel: panel)
             }
         } else {
             content
