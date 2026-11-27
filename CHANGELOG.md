@@ -4,6 +4,10 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Fixed
+
+- Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.
+
 ### Removed
 
 - Releases no longer request build attestations for the headless archives. GitHub refuses them for this private repository; `SHA256SUMS` still protects the downloads.
