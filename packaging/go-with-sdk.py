@@ -58,7 +58,7 @@ def main():
             for suffix in (".mod", ".info", ".zip"):
                 if not (proxy / name / "@v" / (version + suffix)).is_file():
                     parser.error(f"{source} has no Go proxy artifact for {name}@{version}{suffix}")
-            # One private proxy per pin. The caller's checkout, public proxy and
+            # One staged proxy per pin. The caller's checkout, remote proxy and
             # previous module cache cannot substitute for either supplied archive.
             env["GOPROXY"] = proxy.as_uri()
             result = subprocess.run(["go", "mod", "download", "-json", "-modfile=" + str(modfile), name + "@" + version],

@@ -8,13 +8,17 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 - See the relays near you at the top of the network tray and in Add server: each relay found on your tailnet or local network, how it admits people, and a checklist that walks you through joining it. A new relay marks the menu bar icon and posts one notification, which you can turn off on the Network tab.
 
+### Changed
+
+- GitHub publishes pilot releases for public download. Source builds can fetch the pinned Go build inputs without a GitHub login.
+
 ### Fixed
 
 - Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.
 
 ### Removed
 
-- Releases no longer request build attestations for the headless archives. GitHub refuses them for this private repository; `SHA256SUMS` still protects the downloads.
+- Releases no longer request build attestations for the headless archives. Use `SHA256SUMS` to verify the downloads.
 
 ## [0.1.0-pilot.5] - 2026-11-26
 

@@ -102,8 +102,8 @@ struct ActivityFailure: Equatable {
     }
 }
 
-/// The fixed table of denials (spec section F, decision 3). An entry is added only for text seen
-/// in a real record, and is matched on its whole phrase.
+/// The fixed table of denials (spec section F, decision 3) and known failures (section H). An
+/// entry is added only for text seen in a real record, and is matched on its whole phrase.
 enum ActivityFailureWords {
     static let table: [(phrase: String, words: String)] = [
         ("has been denied because Claude Code is running in don't ask mode", "Claude Code is in don't-ask mode."),
@@ -129,6 +129,35 @@ enum ActivityFailureWords {
         return end.isEmpty || message.range(of: end, range: from.upperBound..<message.endIndex) != nil
     }
 
+    /// A shell command Claude Code ended at its time limit. The whole result, from a real
+    /// `is_error` record (Bash, `sleep 2`, a 100 ms limit), was "Exit code 143", a newline, then
+    /// "Command timed out after 0s". Both lines must be there whole, first and in that order, with
+    /// a duration as Claude Code writes one. The exit code alone is an ordinary SIGTERM, and the
+    /// phrase anywhere else is a mention.
+    static let timedOut = "Timed out."
+    private static let timeoutExit = "Exit code 143"
+    private static let timeoutPhrase = "Command timed out after "
+
+    static func isShellTimeout(_ message: String) -> Bool {
+        let lines = message.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        guard lines.count >= 2, lines[0] == timeoutExit, lines[1].hasPrefix(timeoutPhrase) else { return false }
+        return isDuration(lines[1].dropFirst(timeoutPhrase.count))
+    }
+
+    /// "0s", "2m 0s", "1h 0m 0s": whole numbers with a unit, largest unit first, one space apart.
+    private static func isDuration(_ text: Substring) -> Bool {
+        let units: [Character] = ["d", "h", "m", "s"]
+        var smallest = -1
+        let parts = text.split(separator: " ", omittingEmptySubsequences: false)
+        for part in parts {
+            guard let unit = part.last, let rank = units.firstIndex(of: unit), rank > smallest else { return false }
+            let digits = part.dropLast()
+            guard !digits.isEmpty, digits.count <= 9, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+            smallest = rank
+        }
+        return !parts.isEmpty
+    }
+
     static let noReason = "No reason was given."
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
@@ -150,6 +179,9 @@ enum ActivityFailureWords {
         }
         for entry in framed where matches(message, start: entry.start, end: entry.end) {
             return ActivityFailure(outcome: entry.outcome, reason: entry.words, exact: first, rest: rest)
+        }
+        if isShellTimeout(message) {
+            return ActivityFailure(outcome: .failed, reason: timedOut, exact: first, rest: rest)
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)
@@ -358,9 +390,10 @@ struct ActivityPlan: Identifiable, Equatable {
     let id: String
     /// Every plan update of the turn, oldest first. The card shows the latest.
     var entries: [TranscriptEntry]
-    /// Nil when no record holds the items: the card is then the line "Updated the plan".
+    /// The latest update's items. Nil when no record holds them: the card is then the line
+    /// "Updated the plan". An empty list is a plan known to be empty.
     var items: [PlanItem]?
-    /// The item count the event carried, when it carried one.
+    /// The item count the latest event carried, when it carried one.
     var count: Int?
 
     var fallback: String {
@@ -414,22 +447,49 @@ enum PrettyItem: Identifiable, Equatable {
 struct ActivityFacts {
     var summary: (String) -> ToolDetailSummary? = { _ in nil }
     var record: (String) -> ToolDetailRecord? = { _ in nil }
-    /// Plan records, oldest first.
-    var plans: [ToolDetailSummary] = []
+    /// The console the entries belong to. A message's ID is `<worker>:<sequence>`, so a plan
+    /// event is matched to its record only when this is known.
+    var worker: String?
+    /// Plan records by the console sequence of the event each was kept from. A sequence two
+    /// records claim names neither.
+    private(set) var plans: [Int: ToolDetailSummary] = [:]
 
     static var none: ActivityFacts { ActivityFacts() }
 
     init(summary: @escaping (String) -> ToolDetailSummary? = { _ in nil },
-         record: @escaping (String) -> ToolDetailRecord? = { _ in nil }, plans: [ToolDetailSummary] = []) {
+         record: @escaping (String) -> ToolDetailRecord? = { _ in nil },
+         worker: String? = nil, plans: [ToolDetailSummary] = []) {
         self.summary = summary
         self.record = record
-        self.plans = plans
+        self.worker = worker
+        self.plans = Self.bySequence(plans)
     }
 
-    init(summaries: [String: ToolDetailSummary], records: [String: ToolDetailRecord] = [:]) {
+    init(summaries: [String: ToolDetailSummary], records: [String: ToolDetailRecord] = [:], worker: String? = nil) {
         summary = { summaries[$0] }
         record = { records[$0] }
-        plans = summaries.values.filter { $0.kind == "plan" }.sorted { ($0.sequence ?? 0) < ($1.sequence ?? 0) }
+        self.worker = worker
+        plans = Self.bySequence(Array(summaries.values))
+    }
+
+    /// The plan record kept from exactly this console event: the record whose sequence is the
+    /// one in the entry's ID. Nil when the console is unknown, the ID holds no sequence, or no
+    /// record has it. Never matched by order or count.
+    func plan(for entry: TranscriptEntry) -> ToolDetailSummary? {
+        guard let worker, let sequence = PrettyRecordPlacement.sequence(of: entry, worker: worker, summary: summary)
+        else { return nil }
+        return plans[sequence]
+    }
+
+    private static func bySequence(_ records: [ToolDetailSummary]) -> [Int: ToolDetailSummary] {
+        var found: [Int: ToolDetailSummary] = [:]
+        var repeated: Set<Int> = []
+        for record in records where record.kind == "plan" {
+            guard let sequence = record.sequence, sequence > 0 else { continue }
+            if found.updateValue(record, forKey: sequence) != nil { repeated.insert(sequence) }
+        }
+        for sequence in repeated { found[sequence] = nil }
+        return found
     }
 }
 
@@ -1070,9 +1130,6 @@ enum ActivityConversation {
         var out: [PrettyItem] = []
         var open: ActivityGroup?
         var planIndex: Int?
-        let planEntries = source.flatMap(\.entries).filter(isPlanEvent)
-        // A plan record is matched to its event only when every event has one, in order.
-        let plansMatch = !planEntries.isEmpty && planEntries.count == facts.plans.count
 
         func flush() {
             if let group = open { out.append(.group(group)); open = nil }
@@ -1115,12 +1172,19 @@ enum ActivityConversation {
                 }
             }
         }
-        func plan(_ entry: TranscriptEntry, items: [PlanItem]?, count: Int?) {
+        /// - Parameter replaces: the event states the whole plan as it now is, so the card shows
+        ///   this update alone: without its items it is the count line, never an earlier list.
+        func plan(_ entry: TranscriptEntry, items: [PlanItem]?, count: Int?, replaces: Bool = false) {
             flush()
             if let index = planIndex, case .plan(var card) = out[index] {
                 card.entries.append(entry)
-                if let items { card.items = items }
-                if let count { card.count = count }
+                if replaces {
+                    card.items = items
+                    card.count = count
+                } else {
+                    if let items { card.items = items }
+                    if let count { card.count = count }
+                }
                 out[index] = .plan(card)
             } else {
                 out.append(.plan(ActivityPlan(id: entry.id + "#plan", entries: [entry], items: items, count: count)))
@@ -1154,9 +1218,8 @@ enum ActivityConversation {
                 if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)
                 } else if isPlanEvent(entry) {
-                    let index = planEntries.firstIndex { $0.id == entry.id }
-                    plan(entry, items: plansMatch ? index.flatMap { facts.plans[$0].plan } : nil,
-                         count: entry.origin?.itemCount)
+                    // The record kept from this very event, by its console sequence.
+                    plan(entry, items: facts.plan(for: entry)?.plan, count: entry.origin?.itemCount, replaces: true)
                 } else if let event = ActivityEvent(entry: entry), event.tone == .quiet {
                     add(ActivitySteps.step(quiet: entry, event: event))
                 } else {
