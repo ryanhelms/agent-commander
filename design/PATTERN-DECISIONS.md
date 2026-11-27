@@ -281,6 +281,11 @@ For an open local Claude turn, Commander persists the expected turn ID with work
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.
 
+An enrolled coordinator can offer the independent, read-only `app.build` grant. The existing signed and addressed device envelope binds the observation to one recipient and operation. The requester retains the nonce and issue time alongside the encrypted submission. It only projects a verified result while that challenge is fresh. Reusing an operation retrieves its original receipt and does not take a new sample.
+
+The app writes its immutable startup build into its existing owner-only launch lease. The device’s platform adapter checks the live kernel lease, process start, canonical executable and code-signing identifier against the configured local service address. An absent, obsolete or ambiguous application produces no evidence. The launch UUID comes from the app process and works independently of the relay and service lifetimes. The sealed response includes build information, the launch UUID and timestamps. Local executable and socket paths stay on the device. The process and code-signing checks operate within the existing trusted macOS account boundary. An ad-hoc development signature supplies a bundle identifier without attesting the developer or protecting against software controlled by the same account.
+
+
 
 ### Reattaching an existing provider session
 

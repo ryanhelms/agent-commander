@@ -181,6 +181,9 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 			if res, e := a.receipt(ctx, s, r.ID); e == nil {
 				fr = firstRow(res)
 				row["status"], row["value"] = fr["status"], fr["value"]
+				if evidence, ok := fr["buildEvidence"]; ok {
+					row["buildEvidence"] = evidence
+				}
 				if len(r.Children) > 0 {
 					if handles == nil {
 						handles = a.friendHandles(ctx, s)

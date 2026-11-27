@@ -373,6 +373,7 @@ enum MultiplayerCapability {
         case "agent.result": "Read a hand-off’s result"
         case "thread.read": "Read request threads"
         case "thread.comment": "Comment on request threads"
+        case "app.build": "Check the running app build"
         default: capability
         }
     }
@@ -394,6 +395,7 @@ enum MultiplayerCapability {
         case "host.run": "play.rectangle"
         case "agent.status", "agent.result": "list.bullet.clipboard"
         case "thread.read", "thread.comment": "bubble.left.and.bubble.right"
+        case "app.build": "checkmark.seal"
         default: "key"
         }
     }
@@ -423,6 +425,8 @@ enum MultiplayerCapability {
             "Lets them run the commands you enrolled on \(name), and nothing else. Each run happens on this Mac and returns its exit code and the end of its output."
         case "agent.status", "agent.result": "Lets them follow the hand-offs they started on \(name) and read their results."
         case "thread.read", "thread.comment": "Lets them read and write the thread of each request they sent to \(name)."
+        case "app.build":
+            "Lets them check which revision of Agent Commander is running on this Mac behind \(name), and tell when the app restarts. They can’t run, change or restart anything with it."
         default: "Lets them use “\(capability)” on \(name), as the network service defines it."
         }
     }

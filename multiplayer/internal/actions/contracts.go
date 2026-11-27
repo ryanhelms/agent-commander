@@ -106,6 +106,11 @@ var registry = register(
 		payloadSchema: closedObject + `,"required":["run"],"properties":{"run":{"type":"string","minLength":1,"maxLength":128}}}`,
 	},
 	descriptor{
+		kind: "coordinator", name: "app.build", run: desktopBuildAction,
+		description:   "Read the running macOS app build and launch identity. Use a new operation and nonce for each observation and compare the response nonce and observedAt. A receipt or service reconnect alone is not evidence.",
+		payloadSchema: closedObject + `,"required":["nonce","issuedAt"],"properties":{"nonce":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"Fresh random 128-bit hex nonce. Never reuse it for another observation."},"issuedAt":{"type":"string","format":"date-time","description":"Current UTC time. A request expires after 90 seconds."}}}`,
+	},
+	descriptor{
 		kind: "coordinator", name: "agent.message", recoverable: true, run: coordinatorMessage,
 		description:   "Leave a message in the shared coordinator's inbox. The JSON-encoded message, including quotes and escapes, is limited to 4 KiB.",
 		payloadSchema: closedObject + `,"required":["text"],"properties":{"text":{"type":"string","minLength":1,"maxLength":4094}}}`,
