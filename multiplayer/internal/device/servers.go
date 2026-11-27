@@ -89,6 +89,9 @@ type ManagerConfig struct {
 	Discover      bool
 	DiscoverEvery time.Duration
 	BonjourWindow time.Duration
+	// DirectoryURL is the public relay directory discovery reads; empty
+	// leaves it out.
+	DirectoryURL string
 }
 
 // Manager runs one Agent per enabled server and serves the tray.
@@ -439,7 +442,10 @@ func (m *Manager) ProbeServer(ctx context.Context, raw string) (Probe, error) {
 			return nil
 		}}}}
 	defer client.CloseIdleConnections()
-	var info RelayInfo
+	var wire struct {
+		RelayInfo
+		ClientSecretProvided bool `json:"clientSecretProvided"`
+	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", u+"/v1/info", nil)
 	resp, e := client.Do(req)
 	if e == nil {
@@ -447,13 +453,14 @@ func (m *Manager) ProbeServer(ctx context.Context, raw string) (Probe, error) {
 		if resp.StatusCode != 200 {
 			e = fmt.Errorf("HTTP %d", resp.StatusCode)
 		} else {
-			e = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&info)
+			e = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&wire)
 		}
 	}
 	if e != nil {
 		add(ProbeStep{Step: "relay", Detail: "not a Commander relay or too old: " + e.Error()})
 		return p, nil
 	}
+	info := wire.RelayInfo
 	add(ProbeStep{Step: "relay", OK: true, Detail: strings.TrimSpace("commander-relay " + info.Mode + " " + info.Version)})
 
 	signin := ProbeStep{Step: "signin", Detail: info.Issuer, ClientID: info.ClientID}
@@ -469,6 +476,10 @@ func (m *Manager) ProbeServer(ctx context.Context, raw string) (Probe, error) {
 		b, e := os.ReadFile(filepath.Join(m.cfg.Dir, "google-desktop-client.json"))
 		if e == nil && json.Unmarshal(b, &gc) == nil && gc.Installed.ClientID == info.ClientID {
 			signin.OK, signin.ClientConfigured = true, true
+		} else if wire.ClientSecretProvided {
+			// The relay hands its installed-app client to the device at sign-in.
+			signin.OK, signin.ClientConfigured = true, true
+			signin.Detail = "Google; the relay provides its sign-in client"
 		} else {
 			signin.Detail = "Google Desktop OAuth JSON for this relay's client ID is missing from " + filepath.Join(m.cfg.Dir, "google-desktop-client.json")
 		}
