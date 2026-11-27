@@ -432,7 +432,7 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 	resource, e := PrepareLocalResource(ctx, socket, Resource{ID: "design", Kind: "agent", Target: "pilot"})
-	if e != nil || !resource.Coordinator || resource.Run != "run-a" || !slices.Equal(ResourceCapabilities(resource), []string{"agent.message"}) {
+	if e != nil || !resource.Coordinator || resource.Run != "run-a" || !slices.Equal(ResourceCapabilities(resource), []string{"agent.message", "app.build"}) {
 		t.Fatal(resource, e)
 	}
 	cfg := Config{CommanderSocket: socket, StateDir: dir, Resources: []Resource{resource}, Grants: []Grant{{ID: "post", Peer: "alice", Resource: "design", Action: "agent.message", ExpiresAt: time.Now().Add(time.Minute)}, {ID: "fake", Peer: "alice", Resource: "design", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute)}}}

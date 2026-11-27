@@ -168,8 +168,8 @@ type pilotState struct {
 	Grants []trayGrant
 }
 type childOutcome struct {
-	ID, Resource, Status string
-	Result               map[string]any
+	ID, Resource, Status, BuildEvidence string
+	Result                              map[string]any
 }
 
 func (p *pilotPeer) state(t *testing.T, ctx context.Context) pilotState {

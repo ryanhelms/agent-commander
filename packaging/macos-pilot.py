@@ -80,15 +80,15 @@ def package(stage, archive, args):
     executables.mkdir(parents=True)
     resources.mkdir()
     plist = ROOT / "packaging" / "Info.plist"
+    info = contents / plist.name
+    shutil.copy2(plist, info)
+    run("sh", ROOT / "packaging" / "stamp-version.sh", info, cwd=ROOT)
     if args.version:
-        metadata = plistlib.loads(plist.read_bytes())
+        metadata = plistlib.loads(info.read_bytes())
         metadata["CFBundleShortVersionString"] = args.version.split("-", 1)[0]
         metadata["CFBundleVersion"] = str(args.build_number)
         metadata["AgentCommanderGitVersion"] = args.version
-        (contents / plist.name).write_bytes(plistlib.dumps(metadata))
-    else:
-        shutil.copy2(plist, contents)
-        run("sh", ROOT / "packaging" / "stamp-version.sh", contents / plist.name)
+        info.write_bytes(plistlib.dumps(metadata))
     for name in RESOURCES:
         run("ditto", products["arm64"] / name, resources / name)
 

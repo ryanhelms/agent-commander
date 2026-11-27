@@ -49,9 +49,10 @@ type outbound struct {
 	Children []control.Addressed `json:"children"`
 }
 type sendRecord struct {
-	Digest string
-	Wire   outbound
-	Audit  []AuditEntry `json:"audit,omitempty"`
+	Digest          string
+	Wire            outbound
+	Audit           []AuditEntry                             `json:"audit,omitempty"`
+	BuildChallenges map[string]actions.DesktopBuildChallenge `json:"buildChallenges,omitempty"`
 }
 
 func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any, error) {
@@ -101,6 +102,16 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 				return nil, e
 			}
 			id := newID()
+			if t.Action == "app.build" {
+				challenge, err := actions.ParseDesktopBuildChallenge(t.Payload)
+				if err != nil {
+					return nil, err
+				}
+				if record.BuildChallenges == nil {
+					record.BuildChallenges = make(map[string]actions.DesktopBuildChallenge)
+				}
+				record.BuildChallenges[id] = challenge
+			}
 			h := devicekeys.Header{Sender: s.User, SenderDevice: s.Device, Recipient: r.Owner, RecipientDevice: r.Device, Operation: id, Resource: r.ID, Action: t.Action, Kind: "request", ExpiresAt: expiry}
 			env, e := a.keys.Seal(p, h, t.Payload)
 			if e != nil {
@@ -181,6 +192,9 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 			return nil, errors.New("receipt sender differs from the pinned device")
 		}
 		row := map[string]any{"id": c.ID, "peer": c.Owner, "resource": c.Resource, "action": c.Action, "status": c.Status}
+		if c.Action == "app.build" && c.Status == "completed" {
+			row["buildEvidence"] = "invalid"
+		}
 		var value json.RawMessage
 		if len(c.Result) > 0 {
 			r, e := a.keys.Open(peer, header(c, "result"), c.Result)
@@ -195,7 +209,18 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 				return nil, errors.New("receipt status does not match signed outcome")
 			}
 			value = signed.Value
-			row["result"] = value
+			if c.Action == "app.build" && c.Status == "completed" {
+				proof := record.BuildChallenges[c.ID].ProofState(value, time.Now().UTC())
+				row["buildEvidence"] = proof
+				switch proof {
+				case "verified":
+					row["result"] = value
+				case "invalid":
+					value = nil
+				}
+			} else {
+				row["result"] = value
+			}
 		}
 		if updated.updateAudit(c, value) {
 			changed = true

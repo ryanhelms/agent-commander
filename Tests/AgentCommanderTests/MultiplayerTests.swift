@@ -260,6 +260,16 @@ extension MultiplayerFixture {
         for phrase in ["private inbox", "decides whether to act", "nothing runs automatically"] {
             #expect(message.contains(phrase))
         }
+        let build = MultiplayerCapability.explanation(MultiplayerSharePolicy.appBuild, resource: "C-1")
+        for phrase in ["which revision of Agent Commander is running", "when the app restarts", "can’t run, change or restart"] {
+            #expect(build.contains(phrase))
+        }
+        #expect(MultiplayerCapability.title("app.build") == "Check the running app build")
+        #expect(MultiplayerCapability.symbol("app.build") == "checkmark.seal")
+        // Chosen by hand: no kind fills it in, and no other action brings it along.
+        #expect(!MultiplayerSharePolicy.isCompanion("app.build"))
+        #expect(!["agent", "repo", "host", "coordinator"].contains { MultiplayerSharePolicy.expected(kind: $0).contains("app.build") })
+        #expect(!MultiplayerSharePolicy.companions(for: ["agent.ask", "agent.handoff", "agent.message"]).contains("app.build"))
     }
 
     @Test func resourceDraftValidatesTheExactTarget() {

@@ -388,6 +388,8 @@ The activity feed says where a waiting request is answered by a name that holds 
 
 The grant sheet is one form drawn in two places. The tray shows it as a page with the tray's footer. A view outside the tray presents the grant host: the same form in a scroll area over a footer with the hint, Cancel and a primary Share. A refused grant shows its reason in a failure banner at the top of the host and leaves the sheet open.
 
+An enrolled coordinator can offer "Check the running app build" (`app.build`, the `checkmark.seal` symbol) under "They can". It reads as every other action does and has no view of its own. Its explanation says the friend can check which revision of Agent Commander is running and tell when the app restarts, and can't run, change or restart anything. The sheet never ticks it for the owner: not as the only action a resource offers, and not as a companion of another action.
+
 **Hosts.** Every composer a view outside the tray presents is drawn through a host: the tray's own composer in the host frame (`MultiplayerHostFrame` in `MultiplayerHosts.swift`). There is a host for the grant sheet, Consult, Hand off, Request review, Watch, Add friend, Invite, Membership and Add server. Teams has a host for New workspace, Claim, Card, Queue a branch, Share knowledge, Run on a host and Relay policy (`MultiplayerTeamsHosts.swift`). A host adds no styling. A host's `onCancel` is optional: with none, the footer has no Cancel or Close, for a page that is the host's home and has nothing to close.
 
 - **Frame.** A banner band, the composer, then the tray's footer with the composer's hint, Cancel and the composer's own actions. Cancel reads Close once a host that stays open has something to show (a consult's reply, an invite link, a watch).
