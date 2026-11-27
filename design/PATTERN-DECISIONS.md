@@ -249,6 +249,8 @@ Commander keeps the runner’s 128-record admission queue separate from the work
 
 The [two-person multiplayer pilot](MULTIPLAYER-PILOT.md) keeps device identity, friendship and resource grants in the control plane. Addressed sealed work items use a transactional outbox, a shared JetStream pull consumer and fenced recipient claims. Local versioned capability handlers own execution. Each execution retains a receipt and relies on an owner-local grant and credential.
 
+Coordinator inbox availability uses the existing resource directory as a projection of owner-device run state. The device publishes observed end and reopen transitions independently of grants. Discovery separates ended inboxes from available targets. The receiving device still validates the addressed run under the original grant and retains the existing receipt for a previously delivered message.
+
 The OIDC identity adapter validates the signed token before handling Google's documented claim forms. Enrollment uses the provider and subject as the account key. Both Google issuer spellings select the same account, and existing device ownership survives enrollment through either form.
 
 The Google Desktop variant sources its OAuth client credentials from the device's private state. It checks the configured client ID against the relay's enrollment challenge and sends the client secret only to Google's token endpoint, with redirects disabled for that exchange. PKCE, the browser callback and the signed ID-token handoff use the existing identity adapter.
