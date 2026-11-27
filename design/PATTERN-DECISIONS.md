@@ -6,6 +6,8 @@ The Go service owns domain operations. The native SwiftUI/AppKit cockpit, termin
 
 The local API service and multiplayer device helper each take operating-system locks on their state directory and configured socket before recovering a stale listener. Concurrent launchers join the running service, and separate profiles can run concurrently with distinct sockets.
 
+A coordinator's private inbox uses a Message Store and a bounded Polling Consumer. Its authenticated read can wait for a new note after a message ID while the recipient run stays active. A stored note never authorizes a provider turn.
+
 For the proposed multi-user Go relay, see the [multiplayer relay architecture](MULTIPLAYER-RELAY.md). A Recipient List gives each logical target an independent delivery. Competing Consumers distribute those deliveries across interchangeable dispatchers. A fenced device route directs each delivery to the edge holding its live tunnel. The [pattern library](../.context/design-patterns/index.md) describes these and their alternatives.
 
 ## First usable run

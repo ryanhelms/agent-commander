@@ -309,7 +309,9 @@ func (p localPolicy) mirrorGroupGrants(s identity.Session, rows []control.Grant)
 }
 
 func grantDefaults(g actions.Grant) actions.Grant {
-	if g.Approval == "" {
+	if g.Action == "agent.message" {
+		g.Approval = "auto"
+	} else if g.Approval == "" {
 		g.Approval = "ask"
 	}
 	if g.Attribution == "" {
@@ -788,9 +790,10 @@ func (a *Agent) Handler() http.Handler {
 		}
 		switch r.PathValue("verb") {
 		case "inbox":
-			var empty struct{}
-			if e = body(r, &empty); e == nil {
-				res, e = actions.CoordinatorInbox(a.localConfig(s), r.Header.Get("X-Commander-Worker"), r.Header.Get("X-Commander-Run"))
+			var in actions.InboxQuery
+			if e = body(r, &in); e == nil {
+				res, e = actions.CoordinatorInbox(r.Context(), func() actions.Config { return a.localConfig(s) },
+					r.Header.Get("X-Commander-Worker"), r.Header.Get("X-Commander-Run"), in)
 			}
 		case "discover":
 			var empty struct{}

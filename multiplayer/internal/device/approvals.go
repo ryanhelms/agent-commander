@@ -56,11 +56,13 @@ type AuditEntry struct {
 }
 
 func (a *Agent) needsApproval(c control.Child) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if actions.IsFollowUp(c.Action) {
+	// A granted coordinator note is data stored in the addressed inbox. Any
+	// subsequent work still goes through the coordinator's own permissions.
+	if c.Action == "agent.message" || actions.IsFollowUp(c.Action) {
 		return false
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if until, ok := a.handovers[c.Sender+"|"+c.Resource]; ok && time.Now().Before(until) && (c.Action == "agent.ask" || c.Action == "agent.suggest") {
 		return false
 	}
