@@ -732,7 +732,7 @@ extension CommanderCall {
     var recordedAnswer: String? {
         switch tool {
         case .reply: return replyConfirmsRequest ? argument("answer") : nil
-        case .wait, .ask, .reconcileReply: return responseIsThisRequest ? field("answer") : nil
+        case .wait, .ask, .reconcileReply: return returnedAnswer
         default: return nil
         }
     }
