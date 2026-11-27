@@ -165,6 +165,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"GET /v1/runs/{run}": s.getRun, "POST /v1/runs/{run}/workers": s.delegate,
 		"POST /v1/runs/{run}/stop":            s.stopRun,
 		"POST /v1/workers/{worker}/questions": s.ask, "GET /v1/workers/{worker}/questions/{qid}": s.getQuestion,
+		"POST /v1/workers/{worker}/questions/{qid}/withdraw":   s.withdrawQuestion,
 		"POST /v1/workers/{worker}/questions/dismiss-provider": s.dismissProviderPermission,
 		"POST /v1/requests/{qid}/reply":                        s.reply, "POST /v1/workers/{worker}/state": s.workerState,
 		"POST /v1/ag-ui/workers/{worker}/requests/{qid}/reply":                       s.replyToWorkerRun,
@@ -746,6 +747,30 @@ func (s *service) getQuestion(req *http.Request, actor string) (outcome, error) 
 	}
 	return read(q), nil
 }
+
+func (s *service) withdrawQuestion(req *http.Request, actor string) (outcome, error) {
+	_, w, err := s.own(req, actor)
+	if err != nil {
+		return outcome{}, err
+	}
+	_, q := s.question(req.PathValue("qid"))
+	if q == nil || q.WorkerID != w.ID {
+		return outcome{}, missing("question")
+	}
+	if _, providerPermission := s.state.Permissions[q.ID]; providerPermission || len(q.Choices) != 0 {
+		return outcome{}, conflict("provider permission requests cannot be withdrawn as ordinary questions")
+	}
+	switch q.Status {
+	case "cancelled":
+		return read(q), nil
+	case "pending":
+		q.Status = "cancelled"
+		return changed(q), nil
+	default:
+		return outcome{}, conflict("only pending questions can be withdrawn")
+	}
+}
+
 func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	r, q := s.question(req.PathValue("qid"))
 	if q == nil {

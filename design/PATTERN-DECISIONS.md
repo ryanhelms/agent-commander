@@ -118,6 +118,8 @@ These scenarios group later work by milestone. Pick the relevant case as a featu
 | M6 · Additional clients | An unfamiliar MCP client participates through the public API contract. A capability-dependent action returns a precise limitation or a resumable operation. |
 
 
+An ordinary question can be withdrawn by its authenticated requester using the existing Correlation Identifier. The Message Store retains the question as cancelled so history and retries can still resolve it. A wait timeout leaves the question pending. Provider approvals and answered questions keep their own lifecycle.
+
 ## Local SDK runtime
 
 For new built-in sessions the local launcher prefers the installed ACP adapter. A service can require ACP or select the legacy Claude runner for future assignments. A configured adapter that cannot start reports an error. The job record binds each existing worker to the executable, runner and native session selected for that assignment.

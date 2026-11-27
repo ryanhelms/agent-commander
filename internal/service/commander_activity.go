@@ -105,7 +105,7 @@ func commanderToolName(name string) string {
 func CommanderToolInput(name string, raw json.RawMessage) string {
 	var key string
 	switch commanderToolName(name) {
-	case "commander_wait", "commander_reply", "commander_reconcile_reply":
+	case "commander_wait", "commander_withdraw_question", "commander_reply", "commander_reconcile_reply":
 		key = "request_id"
 	case "commander_network_submit", "commander_network_receipt":
 		key = "id"
@@ -126,7 +126,7 @@ func correlateCommanderTool(name, detail, output string, failed bool) *commander
 	var activity commanderActivity
 	var in, out commanderPayload
 	switch name {
-	case "commander_ask", "commander_wait", "commander_reply", "commander_reconcile_reply",
+	case "commander_ask", "commander_wait", "commander_withdraw_question", "commander_reply", "commander_reconcile_reply",
 		"commander_delegate", "commander_send", "commander_integrate", "commander_result",
 		"commander_interrupt", "commander_stop_worker", "commander_network_submit", "commander_network_receipt":
 		in = decodeCommanderPayload(detail)
@@ -137,7 +137,7 @@ func correlateCommanderTool(name, detail, output string, failed bool) *commander
 		return nil
 	}
 	switch name {
-	case "commander_ask", "commander_wait", "commander_reply", "commander_reconcile_reply":
+	case "commander_ask", "commander_wait", "commander_withdraw_question", "commander_reply", "commander_reconcile_reply":
 		inputID := localCommanderID(in.text("request_id"), "q-")
 		outputID := localCommanderID(out.text("id"), "q-")
 		activity.RequestID = inputID

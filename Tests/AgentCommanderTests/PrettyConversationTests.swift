@@ -31,6 +31,7 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         (.delegate, "Starting a worker", "Delegated to a new worker", "Couldn't start a worker", "delegated to a new worker"),
         (.ask, "Asking", "Asked a question", "Couldn't send the question", "asked a question"),
         (.wait, "Waiting for a reply", "Waited for a reply", "Couldn't wait for the reply", "waited for a reply"),
+        (.withdrawQuestion, "Withdrawing the question", "Withdrew a question", "Couldn't withdraw the question", "withdrew a question"),
         (.reply, "Replying", "Replied to a question", "Couldn't send the reply", "replied to a question"),
         (.reconcileReply, "Checking whether the reply arrived", "Checked a reply's delivery", "Couldn't check the reply", "checked a reply"),
         (.result, "Reporting", "Reported a result", "Couldn't report the result", "reported a result"),
@@ -462,6 +463,32 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(made.count == 1 && made[0].lines.count == 2)
         #expect(made[0].lines[1].workflow?.calls.count == 3)
         #expect(made[0].summary.text == "Ran a command, asked a question and got an answer")
+    }
+
+    @Test func aWithdrawnQuestionSaysSoOnlyOnItsOwnRecord() {
+        let id = "q-83202cb42d449a0f52b7981d56ac896a"
+        let record = #"{"id":"\#(id)","worker_id":"w","question":"Which database?","status":"cancelled","answer":""}"#
+        let request = #"{"request_id":"\#(id)"}"#
+        // Alone: the question from the record; without one, the short request ID.
+        #expect(ActivityWords.commander(call("commander_withdraw_question", detail: request, result: record)).done.plain
+                == "Withdrew the question: “Which database?”")
+        let bare = ActivityWords.commander(call("commander_withdraw_question", detail: request,
+                                                result: #"{"id":"\#(id)","status":"cancelled"}"#))
+        #expect(bare.done.plain == "Withdrew a question (request \(Identifier.short(id)))" && bare.tag == nil)
+        // A result that is not this request's cancelled record says only what was asked.
+        let unproven = ActivityWords.commander(call("commander_withdraw_question", detail: request, result: "{}"))
+        #expect(unproven.done.plain == "Asked to withdraw a question" && unproven.tag?.word == "uncertain")
+
+        // With its ask: one line, the record's state as the tag, and its own summary phrase.
+        var wire = Wire()
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.call("commander_ask", detail: #"{"question":"Which database?"}"#,
+                  result: record.replacingOccurrences(of: "cancelled", with: "pending"))
+        wire.call("commander_withdraw_question", detail: request, result: record)
+        let made = groups(prettyItems(wire))
+        #expect(made.count == 1 && made[0].lines.count == 2)
+        #expect(made[0].lines[1].sentence.plain == "Asked: “Which database?”" && made[0].lines[1].tag?.word == "cancelled")
+        #expect(made[0].summary.text == "Ran a command, asked a question and withdrew it")
     }
 
     @Test func quietRowsFoldAndAttentionEventsDoNot() throws {

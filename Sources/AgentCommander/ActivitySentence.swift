@@ -606,6 +606,17 @@ enum ActivityWords {
             let answer = call.recordedAnswer ?? call.facts?.liveAnswer
             return wording("Waiting for a reply", answer.map { ActivitySentence("Got the answer: " + quote($0)) },
                            "Waited for a reply", "Couldn't wait for the reply", one: "waited for a reply")
+        case .withdrawQuestion:
+            // Withdrawn is said only on the request's own record. Any other result says what
+            // was asked, tagged uncertain.
+            let confirmed = call.result == nil || call.withdrawalConfirmed
+            let short = call.requestID.map { "Withdrew a question (request \(Identifier.short($0)))" }
+            return wording("Withdrawing the question",
+                           confirmed ? call.question.map { ActivitySentence("Withdrew the question: " + quote($0)) }
+                                     : ActivitySentence("Asked to withdraw a question"),
+                           short ?? "Withdrew a question", "Couldn't withdraw the question",
+                           one: "withdrew a question", many: "withdrew %d questions",
+                           tag: confirmed ? nil : ActivityTag(word: "uncertain", tone: .wait))
         case .reply:
             let answer = argument("answer")
             let confirmed = call.result == nil || call.replyConfirmsRequest
@@ -1081,10 +1092,14 @@ enum ActivitySteps {
             step.sentence = question.map { ActivitySentence("Asked: " + ActivityWords.quote($0)) }
                 ?? ActivitySentence(hasAsk ? "Asked a question (\(short))" : "Waited for a reply (\(short))")
             let answered = status == .answered || status == .complete || answer != nil
+            // Withdrawn: the request is cancelled and a withdrawal's own record says so.
+            let withdrawn = status == .cancelled && calls.contains(where: \.withdrawalConfirmed)
+            if question == nil, !hasAsk, withdrawn { step.sentence = ActivitySentence("Withdrew a question (\(short))") }
+            let asked = answered ? "asked a question and got an answer"
+                : withdrawn ? "asked a question and withdrew it" : "asked a question"
             step.phrase = ActivityPhrase(key: "question",
-                                         one: hasAsk ? (answered ? "asked a question and got an answer" : "asked a question")
-                                                     : "waited for a reply",
-                                         many: hasAsk ? "asked %d questions" : "waited for %d replies")
+                                         one: hasAsk ? asked : withdrawn ? "withdrew a question" : "waited for a reply",
+                                         many: hasAsk ? "asked %d questions" : withdrawn ? "withdrew %d questions" : "waited for %d replies")
             let probes = calls.filter { $0.tool == .wait }.count
             switch status {
             case .waitingForReply:

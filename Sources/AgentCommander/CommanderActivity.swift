@@ -166,7 +166,7 @@ struct CommanderCall: Equatable {
         if let id = facts?.requestID { return id }
         switch tool {
         case .ask: return field("id")
-        case .wait, .reply, .reconcileReply: return argument("request_id") ?? field("id")
+        case .wait, .withdrawQuestion, .reply, .reconcileReply: return argument("request_id") ?? field("id")
         default: return nil
         }
     }
@@ -200,6 +200,14 @@ struct CommanderCall: Equatable {
     var replyConfirmsRequest: Bool {
         guard tool == .reply, let result, result.error == nil else { return false }
         return responseIsThisRequest || field("id") == nil
+    }
+
+    /// A withdrawal that succeeded for its own request: the record it returned, or the service's
+    /// correlation for this call, says the request is cancelled. The service answers a
+    /// withdrawal with the question's record, so a result without that state proves nothing.
+    var withdrawalConfirmed: Bool {
+        guard tool == .withdrawQuestion, let result, result.error == nil else { return false }
+        return ["cancelled", "canceled"].contains(requestState?.lowercased() ?? "")
     }
 
     /// The request's status as this call saw it.
@@ -281,6 +289,8 @@ struct CommanderCall: Equatable {
         if self.tool.family == .request, let state = requestState { return CommanderActivityStatus(request: state) }
         // A reply whose result names another request cannot say this one was answered.
         if self.tool == .reply { return replyConfirmsRequest ? .answered : .uncertain }
+        // A withdrawal whose result is not this request's record cannot say it was withdrawn.
+        if self.tool == .withdrawQuestion { return .uncertain }
         // Only a record that is the operation itself gives its status. A delegated, interrupted
         // or stopped worker's own state is in the summary: the call completed, which says only
         // that the service accepted the request, never that the job finished.
@@ -309,7 +319,7 @@ struct CommanderCall: Equatable {
             summary = Self.join(requestID.map(Self.request), argument("timeout_seconds").map { "up to \($0)s" })
         case .reply:
             summary = Self.join(requestID.map(Self.request), argument("answer").map(Self.quote))
-        case .reconcileReply:
+        case .reconcileReply, .withdrawQuestion:
             summary = requestID.map(Self.request)
         case .result:
             summary = Self.join(argument("result").map(Self.firstLine) ?? plainDetail.map(Self.firstLine),
@@ -362,6 +372,9 @@ struct CommanderCall: Equatable {
         case .reply:
             guard responseIsThisRequest else { return nil }
             return Self.join(field("status"), field("delivery").map { "delivery \($0)" })
+        case .withdrawQuestion:
+            // The record after a withdrawal: its status alone. It holds no answer.
+            return responseIsThisRequest ? field("status") : nil
         case .result, .commit:
             return Self.join(field("revision").map { "rev \(Identifier.short($0))" }, field("status"))
         case .integrate, .send, .interrupt, .stopWorker:
