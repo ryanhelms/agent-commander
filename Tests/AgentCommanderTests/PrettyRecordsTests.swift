@@ -562,6 +562,79 @@ import Testing
         #expect(kept)
     }
 
+    /// The whole result of a real managed Claude ACP Read of a missing file; its error was "Tool failed.".
+    static let missingFileNote = "Note: your current working directory is /private/tmp/ac-read72.QFN76C/Read QA."
+    static let missingFile = "Tool failed.\n```\nFile does not exist. \(missingFileNote)\n```"
+
+    @Test func aFencedMissingFileReadsAsItsDiagnosticInTheTranscript() throws {
+        var wire = Wire()
+        wire.user("Read missing.txt.")
+        wire.call("Read", detail: "/private/tmp/ac-read72.QFN76C/Read QA/missing.txt", result: Self.missingFile, error: "Tool failed.")
+        let failures = Self.items(wire, []).flatMap { item -> [ActivityStep] in
+            if case .group(let group) = item { group.failures } else { [] }
+        }
+        let step = try #require(failures.first)
+        #expect(failures.count == 1 && step.tag == .failed && step.failure?.outcome == .failed)
+        #expect(step.failure?.reason == "File does not exist." && step.failure?.exact == "File does not exist.")
+        #expect(step.failure?.rest == Self.missingFileNote)
+        #expect(step.accessibilityLabel.hasSuffix("Failed, File does not exist."))
+        // The opened line, before its stored record arrives: the same failure, and Source holds
+        // the result as it arrived, fences included.
+        let source = ActivityResultSource(entry: try #require(step.entries.first), step: step, record: nil)
+        #expect(source.failure == step.failure && source.statusWord == "failed" && source.resultText == Self.missingFile)
+        // So does the entry Console and Terminal read.
+        let kept = TranscriptEntry.displayed(wire.entries, mode: .console).contains { entry in
+            if case .tool(_, _, let result?) = entry.kind { result.output == Self.missingFile && result.error == "Tool failed." } else { false }
+        }
+        #expect(kept)
+    }
+
+    @Test func onlyTheWholeFencedMissingFileResultIsUnwrapped() {
+        func read(_ text: String) -> ActivityFailure { ActivityFailureWords.read(ToolResult(output: text, error: "Tool failed."), status: .failed) }
+        #expect(read("Tool failed.\n```\nFile does not exist.\n```") == ActivityFailure(outcome: .failed, reason: "File does not exist.", exact: "File does not exist."))
+
+        // Everything else reads as it did before.
+        let unchanged: [(String, String)] = [
+            // Another diagnostic in the same wrapper, and one that only starts alike.
+            ("Tool failed.\n```\nPermission denied.\n```", "```"),
+            ("Tool failed.\n```\nFile does not exist.txt is a directory.\n```", "```"),
+            // Cut short, or closed by something else.
+            ("Tool failed.\n```\nFile does not exist. \(Self.missingFileNote)", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n~~~", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n````", "```"),
+            // A fence with a language, an indented one, or a fence inside.
+            ("Tool failed.\n```text\nFile does not exist.\n```", "```text"),
+            ("Tool failed.\n ```\nFile does not exist.\n ```", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n```\nmore\n```", "```"),
+            // Text around the wrapper, or no service line before it.
+            ("Tool failed.\n```\nFile does not exist.\n```\nTry another path.", "```"),
+            ("Tool failed.\nRead:\n```\nFile does not exist.\n```", "Read:"),
+            ("```\nFile does not exist.\n```", "```"),
+            // A mention.
+            ("Tool failed.\ngrep: \"```\nFile does not exist.\n```\" not found", "grep: \"```"),
+        ]
+        for (text, first) in unchanged {
+            let failure = read(text)
+            #expect(failure.reason == first && failure.exact == first && failure.tag == .failed, Comment(rawValue: text))
+        }
+        // Without fences the diagnostic was already the first sentence.
+        #expect(read("Tool failed.\nFile does not exist. \(Self.missingFileNote)").rest == Self.missingFileNote)
+        // A declined request and a known denial keep their own words; a timeout is still a timeout.
+        #expect(ActivityFailureWords.read(ToolResult(output: Self.missingFile, error: "Tool declined."), status: .declined).reason == "You denied this.")
+        let denied = read("Tool failed.\n```\nFile does not exist. Permission to use Read has been denied.\n```")
+        #expect(denied.reason == "Permission to use this tool was denied." && denied.tag == .blocked)
+        #expect(read(Self.shellTimeout).reason == "Timed out.")
+
+        // A result that succeeded is not a failure, whatever it quotes.
+        var wire = Wire()
+        wire.call("Read", detail: "/tmp/notes.md", result: Self.missingFile)
+        let failed = Self.items(wire, []).contains { item in
+            if case .group(let group) = item { !group.failures.isEmpty } else { false }
+        }
+        #expect(!failed)
+    }
+
     // MARK: Cards
 
     @Test func aWaitingQuestionAPlanAndADeliverableStandInTheOpen() throws {

@@ -158,6 +158,22 @@ enum ActivityFailureWords {
         return !parts.isEmpty
     }
 
+    /// Claude Code's Read of a missing file, as the service wrote it in a real managed ACP record:
+    /// the line "Tool failed.", a bare code fence, the diagnostic, the closing fence, and nothing
+    /// else. Returns the diagnostic without its fences. It is read from the output as it arrived:
+    /// once lines are trimmed and repeats dropped, the closing fence is gone and the opening one
+    /// reads as the first sentence. Any other text, a fence with a language, a missing or extra
+    /// fence, or text after the closing fence keeps the output as it is.
+    static func missingFileDiagnostic(_ output: String) -> String? {
+        let fence = "```", diagnostic = "File does not exist."
+        let lines = output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        guard lines.count >= 4, lines[0] == "Tool failed.", lines[1] == fence, lines[lines.count - 1] == fence else { return nil }
+        let inner = lines[2..<(lines.count - 1)]
+        guard lines[2] == diagnostic || lines[2].hasPrefix(diagnostic + " "),
+              !inner.contains(where: { $0.contains(fence) }) else { return nil }
+        return inner.joined(separator: "\n")
+    }
+
     static let noReason = "No reason was given."
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
@@ -190,7 +206,7 @@ enum ActivityFailureWords {
     /// The provider's message: the error and the output, without the service's `Tool failed.` line.
     static func body(_ result: ToolResult) -> String {
         var lines: [String] = []
-        for text in [result.error, result.output] {
+        for text in [result.error, missingFileDiagnostic(result.output) ?? result.output] {
             for line in (text ?? "").split(whereSeparator: \.isNewline) {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 var bare = trimmed.lowercased()
