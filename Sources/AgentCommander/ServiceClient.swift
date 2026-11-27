@@ -458,6 +458,8 @@ struct Run: Decodable, Identifiable, Sendable {
     let givenTitle: String?
     let createdAt: String?
     let branch: String?
+    /// The recorded project the run belongs to. Nil from a service without a project catalog.
+    let projectID: String?
 
     /// Every field of the run as the service sent it, including those this model does not name,
     /// such as `worker_limit`, `test_command` and `integrations`.
@@ -470,12 +472,12 @@ struct Run: Decodable, Identifiable, Sendable {
     /// The members of `allFields` that have a typed property.
     static let namedFields: Set<String> = [
         "id", "project", "path", "task", "client", "coordinator_id", "status", "requests",
-        "title", "created_at", "branch"
+        "title", "created_at", "branch", "project_id"
     ]
 
     init(id: String, project: String, path: String, task: String, client: String, coordinatorID: String,
          status: String, workers: [Worker]?, requests: [Question]?, givenTitle: String? = nil,
-         createdAt: String? = nil, branch: String? = nil, allFields: AGUIValue = [:]) {
+         createdAt: String? = nil, branch: String? = nil, projectID: String? = nil, allFields: AGUIValue = [:]) {
         self.id = id
         self.project = project
         self.path = path
@@ -488,6 +490,7 @@ struct Run: Decodable, Identifiable, Sendable {
         self.givenTitle = givenTitle
         self.createdAt = createdAt
         self.branch = branch
+        self.projectID = projectID
         self.allFields = allFields
         stamp = 0
     }
@@ -506,6 +509,8 @@ struct Run: Decodable, Identifiable, Sendable {
         givenTitle = try fields.optionalString("title")
         createdAt = try fields.optionalString("created_at")
         branch = try fields.optionalString("branch")
+        // The ID is a plain member of the run. An empty or non-text value reads as no project.
+        projectID = fields["project_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         allFields = .object(fields)
         stamp = AGUIStamp.next()
     }
@@ -548,7 +553,7 @@ extension Run: Equatable {
         return lhs.id == rhs.id && lhs.status == rhs.status && lhs.project == rhs.project && lhs.path == rhs.path &&
             lhs.task == rhs.task && lhs.client == rhs.client && lhs.coordinatorID == rhs.coordinatorID &&
             lhs.givenTitle == rhs.givenTitle && lhs.createdAt == rhs.createdAt && lhs.branch == rhs.branch &&
-            lhs.requests == rhs.requests && lhs.workers == rhs.workers && lhs.allFields == rhs.allFields
+            lhs.projectID == rhs.projectID && lhs.requests == rhs.requests && lhs.workers == rhs.workers && lhs.allFields == rhs.allFields
     }
 }
 
@@ -747,6 +752,36 @@ actor ServiceClient {
         return try Run(projection: AGUIValue(json: request("/v1/runs", fields: fields, operationID: operationID)))
     }
 
+    /// Starts a run in a recorded project. The request names the project and no path: the
+    /// service uses the folder it recorded.
+    func create(projectID: String, task: String, title: String? = nil, operationID: String) throws -> Run {
+        let fields = Self.runFields(projectID: projectID, task: task, title: title)
+        return try Run(projection: AGUIValue(json: request("/v1/runs", fields: fields, operationID: operationID)))
+    }
+
+    /// The body of a run started in a recorded project: `project_id`, the task, the client and an
+    /// optional title. It never carries `path` or `project`.
+    nonisolated static func runFields(projectID: String, task: String, title: String?) -> [String: String] {
+        var fields = ["project_id": projectID, "task": task, "client": "claude"]
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { fields["title"] = title }
+        return fields
+    }
+
+    // MARK: Projects. Owner socket only.
+
+    /// The recorded projects. A service without the route refuses with its HTTP status, which the
+    /// caller reads as "no catalog". Read beside the client's other requests.
+    nonisolated func projects() async throws -> [Project] {
+        try Project.list(json: await read("/v1/projects", timeout: 6, reportsStatus: true))
+    }
+
+    /// Records a folder as a project, or returns the project already recorded for it.
+    func openProject(path: String) throws -> Project {
+        let body = try JSONEncoder().encode(["path": path])
+        let data = try Self.send(socket: socket, path: "/v1/projects", body: body, operationID: nil, reportsStatus: true)
+        return try JSONDecoder().decode(Project.self, from: data)
+    }
+
     func reply(to requestID: String, answer: String, operationID: String) throws {
         _ = try request("/v1/requests/\(requestID)/reply", fields: ["answer": answer], operationID: operationID)
     }
@@ -874,13 +909,13 @@ actor ServiceClient {
     }
 
     /// Reads one GET answer at `path`, off the request queue and cancellable.
-    private nonisolated func read(_ path: String, timeout: Int) async throws -> Data {
+    private nonisolated func read(_ path: String, timeout: Int, reportsStatus: Bool = false) async throws -> Data {
         let socket = socket
         let transfer = Transfer()
         return try await withTaskCancellationHandler {
             try await Task.detached(priority: .userInitiated) {
                 let data = try Self.send(socket: socket, path: path, body: nil, operationID: nil,
-                                         timeout: timeout, transfer: transfer)
+                                         timeout: timeout, transfer: transfer, reportsStatus: reportsStatus)
                 try Task.checkCancellation()
                 return data
             }.value

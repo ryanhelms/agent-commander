@@ -139,6 +139,17 @@ The service also needs Node 24 or newer, Claude Code, the Claude ACP adapter and
 
 ## Try a planning run
 
+In **Agents**, choose **Open Folder** to register a project before starting a run. Select the project to see its runs, then choose **New run** to start in its saved directory. Open any run from the project page and select a worker to zoom.
+
+From a terminal or an app that can invoke a local command, run these commands with the working directory set to the project:
+
+```sh
+agentctl project open
+agentctl run --cwd "Plan the onboarding guide"
+```
+
+Add `--open` after `project open` or `run` to open the exact result in the macOS cockpit. The commands still print the service receipt as JSON. A caller can also open `agentcommander://project/PROJECT_ID` or `agentcommander://run/RUN_ID` using the returned ID on the Mac connected to that service. To watch a new run in the calling terminal, pass its `coordinator_id` to `agentctl terminal observe WORKER_ID`. The same command accepts any worker ID listed by `agentctl show RUN_ID`.
+
 Choose **New run**, select a project directory and enter a planning task. For a quick first run, enter the following task in a small project.
 
 > Plan an onboarding note for this project. Delegate a reader-profile worker and a structure-review worker. Have the first worker ask me which audience I’m writing for and wait for my answer. Have the second suggest three headings while I decide. Bring their findings back together.

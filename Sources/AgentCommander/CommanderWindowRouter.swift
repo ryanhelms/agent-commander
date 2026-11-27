@@ -9,7 +9,8 @@ import SwiftUI
 //   CommanderOpenCatalog       what exists now, so an unknown item falls back to its place
 //   CommanderOpenDestination   the place and item a request comes to, once checked
 //   CommanderWindowRouter      brings the cockpit forward, reopening it when closed, and hands the
-//                              request to the live window
+//                              request to the live window; it carries a run or project link
+//                              (`CommanderLink`, Projects.swift) the same way
 //   CommanderOpenRequest.init(page:server:)   the tray's moved pages as requests
 //   CommanderOpenRequest.landingCrumbs        the breadcrumb to where a request lands, for a link's label
 
@@ -183,8 +184,12 @@ final class CommanderWindowRouter {
 
     private let present: @MainActor () -> Void
     private var show: (@MainActor (CommanderOpenRequest) -> Void)?
+    private var follow: (@MainActor (CommanderLink) -> Void)?
     private var attachment = 0
     private(set) var waiting: CommanderOpenRequest?
+    /// An `agentcommander://run/…` or `agentcommander://project/…` link that arrived before the
+    /// window could take it: at a cold launch, or while the window was closed. Only the last waits.
+    private(set) var waitingLink: CommanderLink?
 
     /// `present` brings the cockpit window forward and activates the app. A test passes its own.
     init(present: @escaping @MainActor () -> Void = { SingleInstanceCoordinator.shared.bringCockpitForward() }) {
@@ -197,23 +202,51 @@ final class CommanderWindowRouter {
         deliver()
     }
 
-    /// The window's own way to show a request. Returns a token for `detach`.
-    @discardableResult func attach(_ show: @escaping @MainActor (CommanderOpenRequest) -> Void) -> Int {
+    /// Shows a run or a project named by a link. The cockpit comes forward, reopening when it is
+    /// closed, and the window looks the target up on the service it is using. The router only
+    /// carries the link: nothing is started and no service is chosen.
+    func open(_ link: CommanderLink) {
+        waitingLink = link
+        present()
+        deliver()
+    }
+
+    /// Every run and project link in the list, in order; the last one is the one shown. Join
+    /// links and anything else are left for their own handler. Returns whether any was taken.
+    @discardableResult func open(links urls: [URL]) -> Bool {
+        let links = urls.compactMap { CommanderLink($0) }
+        guard let last = links.last else { return false }
+        open(last)
+        return true
+    }
+
+    /// The window's own way to show a request, and to follow a link. Returns a token for `detach`.
+    @discardableResult func attach(_ show: @escaping @MainActor (CommanderOpenRequest) -> Void,
+                                   follow: (@MainActor (CommanderLink) -> Void)? = nil) -> Int {
         attachment += 1
         self.show = show
+        self.follow = follow
         deliver()
         return attachment
     }
 
     /// Forgets the window, unless a newer one has attached since.
     func detach(_ token: Int) {
-        if token == attachment { show = nil }
+        if token == attachment {
+            show = nil
+            follow = nil
+        }
     }
 
     private func deliver() {
-        guard let show, let request = waiting else { return }
-        waiting = nil
-        show(request)
+        if let show, let request = waiting {
+            waiting = nil
+            show(request)
+        }
+        if let follow, let link = waitingLink {
+            waitingLink = nil
+            follow(link)
+        }
     }
 }
 

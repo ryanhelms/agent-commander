@@ -41,6 +41,8 @@ An explicit catalog refresh writes its verified candidate to the same local pin 
 
 ## Host, provider, and worker boundaries
 
+The project catalog persists directory identity in the service and associates runs when they are accepted. Each run retains its original checkout for execution and existing authorization. The app and CLI share the API for opening folders and starting runs. Cockpit links identify saved projects or runs by ID and perform navigation only.
+
 The independently released `agent-acp` SDK generates a GoF Facade for each supported language from its versioned session schema. Each facade delegates runtime calls to an adapter. This supplies one vocabulary for conversation operations. Provider Adapters translate its messages, request IDs and events into the protocol supported by each harness. Share the ACP transport implementation across adapters. Define the public contract in portable session terms so transport negotiation and provider-specific history readers can change independently of callers. Commander maps worker IDs to session handles and applies its ownership policy before invoking the facade.
 
 The SDK candidate packages the same generated contract as a Go module proxy archive, an npm tarball and a Python wheel. Commander records the Go version and checksums in its module files. Its release build verifies the supplied archive with Go's checksum validation in a fresh cache. The language consumers use the same shipped conformance fixture. [SDK release verification](verification/sdk-release/README.md)

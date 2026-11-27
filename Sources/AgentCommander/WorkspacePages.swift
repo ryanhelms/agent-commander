@@ -6,7 +6,8 @@ import SwiftUI
 //
 //   AttentionQueuePage  header | RequestList | RequestInspector        (collection with inspector)
 //   AllAgentsPage       WorkspacePage: FilterChip bar + AgentConsoleCard grid or DataTable
-//   ProjectPage         WorkspacePage: CoordinatorSummary + CoordinatorRow + DataTable of checkouts
+//   ProjectPage         WorkspacePage: CoordinatorSummary + CoordinatorRow (running, then earlier
+//                       runs) + DataTable of checkouts where the page has them
 //   SmartViewPage       WorkspacePage: CollectionInspector(previews + DataTable | RuleInspector)
 //   LinkCheckoutPage    WorkspacePage: CheckoutComparison
 
@@ -342,69 +343,104 @@ struct CheckoutLink: Identifiable, Equatable {
     var path: String { id }
 }
 
+/// A project: its folder, the coordinators running in it and the runs that ended.
+///
+/// The live window draws it from the service's project catalog and runs. It then has no linked
+/// checkouts and no identity, which are the concept's (`linkCheckout` and `identity` are nil), and
+/// the page ends after the runs.
 struct ProjectPage: View {
     let name: String
     let path: String
-    let identity: String
+    var identity: String? = nil
+    /// The runs still going, newest first. The first is drawn in full.
     let runs: [RunContent]
-    let checkouts: [CheckoutLink]
+    /// The runs that ended, newest first, one row each.
+    var history: [RunContent] = []
+    var checkouts: [CheckoutLink] = []
     let openRun: (RunContent) -> Void
     let openWorker: (RunContent, WorkerPresentation) -> Void
     let startCoordinator: () -> Void
-    let linkCheckout: () -> Void
+    /// False where no run can start now: the service is offline.
+    var canStart = true
+    var linkCheckout: (() -> Void)? = nil
 
     var body: some View {
         WorkspacePage {
             PageHeader(kicker: "Project", title: name, subtitle: path) {
                 Button(action: startCoordinator) { Label("Start coordinator", systemImage: "plus") }
                     .buttonStyle(CapsuleButtonStyle(prominent: true))
+                    .disabled(!canStart)
+                    .help(canStart ? "Start a coordinator run in \(path)" : "The service is offline. Reconnect to start a run.")
             }
         } content: {
-            SectionHeading(title: "Running coordinators") {
-                MetaText(text: runs.count == 1 ? "1 run" : "\(runs.count) runs")
-            }
-            if runs.isEmpty {
-                ContentUnavailableView("No coordinator is running", systemImage: "square.stack.3d.up",
-                                       description: Text("Start a coordinator to plan and delegate work in this project."))
-                    .frame(maxWidth: .infinity, minHeight: 180)
-            } else {
-                VStack(spacing: 0) {
-                    if let lead = runs.first {
-                        CoordinatorSummary(run: lead, open: { openRun(lead) }, openWorker: { openWorker(lead, $0) })
+            // A project whose runs all ended opens on "Earlier runs": the
+            // running band is left out rather than drawn empty.
+            if !runs.isEmpty || history.isEmpty {
+                SectionHeading(title: "Running coordinators") {
+                    MetaText(text: Self.count(runs.count))
+                }
+                if runs.isEmpty {
+                    ContentUnavailableView("No runs in this project yet",
+                                           systemImage: "square.stack.3d.up",
+                                           description: Text("Start a coordinator to plan and delegate work in this project."))
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                } else {
+                    VStack(spacing: 0) {
+                        if let lead = runs.first {
+                            CoordinatorSummary(run: lead, open: { openRun(lead) }, openWorker: { openWorker(lead, $0) })
+                        }
+                        ForEach(runs.dropFirst()) { run in
+                            Hairline()
+                            CoordinatorRow(run: run) { openRun(run) }
+                        }
                     }
-                    ForEach(runs.dropFirst()) { run in
-                        Hairline()
+                    .panelSurface()
+                }
+            }
+            if !history.isEmpty {
+                SectionHeading(title: "Earlier runs") {
+                    MetaText(text: Self.count(history.count))
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(history.enumerated()), id: \.element.id) { index, run in
+                        if index > 0 { Hairline() }
                         CoordinatorRow(run: run) { openRun(run) }
                     }
                 }
                 .panelSurface()
             }
-            SectionHeading(title: "Linked checkouts") {
-                Button(action: linkCheckout) { Label("Link checkout", systemImage: "link") }
-                    .buttonStyle(CapsuleButtonStyle(height: 33))
-            }
-            DataTable(headers: ["Checkout", "Host", "Worktree", "Identity"], weights: [35, 19, 23, 23],
-                      rows: checkouts) { checkout, column in
-                switch column {
-                case 0:
-                    Text(checkout.path).font(.system(size: 13.5)).foregroundStyle(Palette.foreground)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                case 1:
-                    Text(checkout.host).font(.system(size: 13.5)).foregroundStyle(Palette.foreground)
-                case 2:
-                    ValueTag(text: checkout.worktree)
-                default:
-                    StatusLabel(text: checkout.identity, tone: .working, symbol: "checkmark.circle.fill", size: 12)
+            if let linkCheckout {
+                SectionHeading(title: "Linked checkouts") {
+                    Button(action: linkCheckout) { Label("Link checkout", systemImage: "link") }
+                        .buttonStyle(CapsuleButtonStyle(height: 33))
+                }
+                DataTable(headers: ["Checkout", "Host", "Worktree", "Identity"], weights: [35, 19, 23, 23],
+                          rows: checkouts) { checkout, column in
+                    switch column {
+                    case 0:
+                        Text(checkout.path).font(.system(size: 13.5)).foregroundStyle(Palette.foreground)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    case 1:
+                        Text(checkout.host).font(.system(size: 13.5)).foregroundStyle(Palette.foreground)
+                    case 2:
+                        ValueTag(text: checkout.worktree)
+                    default:
+                        StatusLabel(text: checkout.identity, tone: .working, symbol: "checkmark.circle.fill", size: 12)
+                    }
                 }
             }
-            HStack {
-                Label("Project identity", systemImage: "folder")
-                Spacer(minLength: 12)
-                Text(identity).textSelection(.enabled)
+            if let identity {
+                HStack {
+                    Label("Project identity", systemImage: "folder")
+                    Spacer(minLength: 12)
+                    Text(identity).textSelection(.enabled)
+                }
+                .font(.system(size: 12)).foregroundStyle(.inkSecondary)
             }
-            .font(.system(size: 12)).foregroundStyle(.inkSecondary)
         }
     }
+
+    private static func count(_ runs: Int) -> String { runs == 1 ? "1 run" : "\(runs) runs" }
 }
 
 // MARK: - Smart view

@@ -59,7 +59,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	}
 	// Agents reattach using their existing credentials. An uncertain launch never
 	// creates a second tmux session. Fresh authenticated worker events restore state.
-	dirty := false
+	dirty := s.recoverProjects()
 	for _, run := range s.state.Runs {
 		dirty = recoverIntegrations(run) || dirty
 		for _, w := range run.Workers {
@@ -161,6 +161,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "api": buildinfo.APIVersion, "version": buildinfo.Current()})
 	})
 	for pattern, op := range map[string]endpoint{
+		"GET /v1/projects": s.listProjects, "POST /v1/projects": s.openProject,
 		"GET /v1/runs": s.listRuns, "POST /v1/runs": s.createRun,
 		"GET /v1/runs/{run}": s.getRun, "POST /v1/runs/{run}/workers": s.delegate,
 		"POST /v1/runs/{run}/stop":            s.stopRun,
@@ -430,12 +431,23 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	}
 	var in struct {
 		Project, Path, Task, Client string
+		ProjectID                   string   `json:"project_id,omitempty"`
 		WorkerLimit                 int      `json:"worker_limit"`
 		Title                       string   `json:"title,omitempty"`
 		TestCommand                 []string `json:"test_command,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
+	}
+	var selected *Project
+	if in.ProjectID != "" {
+		selected = s.projectByID(in.ProjectID)
+		if selected == nil {
+			return outcome{}, missing("project")
+		}
+		if in.Path == "" {
+			in.Path = selected.Path
+		}
 	}
 	if strings.TrimSpace(in.Task) == "" || !filepath.IsAbs(in.Path) {
 		return outcome{}, bad("task and absolute project path are required")
@@ -467,12 +479,16 @@ func (s *service) createRun(req *http.Request, actor string) (outcome, error) {
 	if err != nil {
 		return outcome{}, err
 	}
+	if selected != nil && prepared.projectPath != selected.Path {
+		return outcome{}, conflict("directory does not match the selected project")
+	}
+	project, _ := s.ensureProject(prepared.projectPath, in.Project)
 	title := displayTitle(in.Title)
 	if title == "" {
 		title = displayTitle(in.Task)
 	}
 	r := &Run{
-		ID: randomID("r-"), Project: in.Project, Path: in.Path, Task: in.Task, Client: in.Client,
+		ID: randomID("r-"), Project: in.Project, ProjectID: project.ID, Path: in.Path, Task: in.Task, Client: in.Client,
 		Title: title, CreatedAt: timestamp(), Branch: prepared.branch,
 		Status: "running", WorkerLimit: in.WorkerLimit, Requests: []*Question{}, TestCommand: in.TestCommand,
 	}

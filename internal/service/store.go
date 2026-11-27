@@ -93,6 +93,7 @@ type Question struct {
 type Run struct {
 	ID            string         `json:"id"`
 	Project       string         `json:"project"`
+	ProjectID     string         `json:"project_id,omitempty"`
 	Path          string         `json:"path"`
 	Task          string         `json:"task"`
 	Title         string         `json:"title,omitempty"`
@@ -119,6 +120,7 @@ type providerPermission struct {
 }
 
 type database struct {
+	Projects      []*Project                    `json:"projects,omitempty"`
 	Permissions   map[string]providerPermission `json:"provider_permissions,omitempty"`
 	OutputBatches map[string]outputReceipt      `json:"output_batches,omitempty"` // legacy workers persist their output
 	Runs          []*Run                        `json:"runs"`

@@ -511,6 +511,8 @@ struct RunSummary: Identifiable, Equatable {
     let path: String
     let title: String
     let status: TaskState
+    /// The recorded project the run names. Nil from a service without a project catalog.
+    var projectID: String? = nil
 }
 
 struct RunContent: Identifiable, Equatable {
@@ -541,6 +543,30 @@ struct CockpitContent {
     var sending: Set<String>
     /// The open source inspection, for the one worker whose source is being read.
     var sourceInspection: SourceInspection? = nil
+    /// The Projects group: recorded projects with their runs, then directories of runs that name
+    /// no project. Empty where a page supplies its own navigation (the design preview).
+    var projects: [ProjectEntry] = []
+    /// Every run as a project overview draws it, oldest first. Empty where no overview is shown.
+    var allRuns: [RunContent] = []
+    /// Whether the service in use records projects. An older service has runs only.
+    var projectCatalog = ProjectCatalogState.unknown
+    /// A folder is being recorded as a project.
+    var isOpeningProject = false
+
+    /// The project row the selected run belongs to.
+    var selectedProject: ProjectEntry? {
+        guard let selected else { return nil }
+        return projects.first { $0.runIDs.contains(selected.id) }
+    }
+
+    func project(_ key: String) -> ProjectEntry? { projects.first { $0.key == key } }
+
+    /// A project's runs for its overview, newest first: the ones still going, then the rest.
+    func runs(in entry: ProjectEntry) -> (active: [RunContent], earlier: [RunContent]) {
+        let members = Set(entry.runIDs)
+        let own = allRuns.filter { members.contains($0.id) }.reversed()
+        return (own.filter(\.isActive), own.filter { !$0.isActive })
+    }
 }
 
 /// Targeted intents emitted by the cockpit. Each names its run or request by stable ID.
@@ -551,6 +577,13 @@ struct CockpitActions {
     var reconnect: @MainActor () -> Void
     var dismissNotice: @MainActor () -> Void
     var createRun: @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void
+    /// Starts a run in a recorded project, by its ID. The service uses the folder it recorded.
+    /// Nil where no service records projects; the form then sends the directory.
+    var createRunInProject: (@MainActor (_ projectID: String, _ task: String, _ title: String?,
+                                         _ operationID: String) async throws -> Void)? = nil
+    /// Records a folder as a project of the service in use. A refusal leaves its reason in the
+    /// notice. Nil where nothing records projects, and Open folder is then not offered.
+    var openProject: (@MainActor (_ path: String) async -> ProjectOpenOutcome)? = nil
     /// Hands a worker the developer controls back to its owner.
     var handBack: (@MainActor (_ workerID: String) -> Void)? = nil
     /// Sends a follow-up message to one worker the developer controls. The text is passed exactly
@@ -981,7 +1014,7 @@ extension TranscriptEntry {
 extension RunSummary {
     init(run: Run) {
         self.init(id: run.id, project: run.project, path: run.path, title: run.title,
-                  status: TaskState(api: run.status))
+                  status: TaskState(api: run.status), projectID: run.projectID)
     }
 }
 
@@ -1167,11 +1200,16 @@ extension RunContent {
 extension CockpitContent {
     @MainActor init(model: CockpitModel) {
         let contents = model.runs.map(RunContent.init(run:))
+        let summaries = model.runs.map(RunSummary.init(run:))
         self.init(connection: model.connection, notice: model.notice, isStopping: model.isStopping,
-                  runs: model.runs.map(RunSummary.init(run:)),
+                  runs: summaries,
                   selected: contents.first { $0.id == model.selectedID },
                   pending: contents.flatMap(\.awaiting),
                   sending: model.sending,
-                  sourceInspection: model.source.inspection)
+                  sourceInspection: model.source.inspection,
+                  projects: ProjectEntry.list(catalog: model.projects, runs: summaries),
+                  allRuns: contents,
+                  projectCatalog: model.projectCatalog,
+                  isOpeningProject: model.isOpeningProject)
     }
 }

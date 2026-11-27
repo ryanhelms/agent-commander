@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"os"
 
 	"agentcommander/internal/worktrees"
 )
@@ -12,11 +11,13 @@ type launchCheckKey struct{}
 type launchPrerequisites struct {
 	client, path, host, kind string
 	agent                    bool
+	projectOnly              bool
 }
 
 type launchPreparation struct {
 	input                launchPrerequisites
 	id, checkout, branch string
+	projectPath          string
 	source, isolated     *worktrees.Checkout
 	err                  error
 }
@@ -44,9 +45,14 @@ func (s *service) prepareLaunch(ctx context.Context, input launchPrerequisites) 
 func (s *service) checkLaunch(ctx context.Context, prepared *launchPreparation) error {
 	input := prepared.input
 	if input.host == "" {
-		if info, err := os.Stat(input.path); err != nil || !info.IsDir() {
-			return bad("project path must be an existing directory")
+		path, err := existingProjectDirectory(input.path)
+		if err != nil {
+			return err
 		}
+		prepared.projectPath = path
+	}
+	if input.projectOnly {
+		return nil
 	}
 	if input.host == "" || input.host == "localhost" {
 		if input.agent {
