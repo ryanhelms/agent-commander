@@ -2,6 +2,10 @@
 
 Run `make test-multiplayer-docker` from the repository root. The target allocates a fresh Compose project, creates disposable identities and certificates, checks failover, runs the collaboration scenario and tears the project down. It requires Docker Compose v2 with support for `!reset`, Python 3, OpenSSL and the Go version in `multiplayer/go.mod`. The first build may need internet access to fetch base images and Go modules. During the exercise all five Docker networks are internal and the project publishes zero host ports.
 
+The readiness probe accepts a TLS refusal or HTTP 401 for an anonymous request and requires HTTP 204 over TLS 1.3 with a device certificate. The unattended scenario explicitly gives its disposable grants automatic approval. The live pilot continues to use the approval policy chosen by each owner.
+
+The November 27 rerun passed all 11 acceptance scenarios, including broker and edge failover, one-to-many worker replies, reconnect, scoped GitHub writes, and revocation. The lab stored 21 encrypted requests and 20 encrypted results, with one denial and no result for that denial. Teardown removed the disposable stack.
+
 ## Verified on November 23, 2026
 
 | Exercise | Observed result |

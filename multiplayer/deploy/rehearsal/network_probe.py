@@ -60,7 +60,8 @@ try:
     _,status=readiness(ctx, host)
 except (ssl.SSLError,ConnectionError):
     status=b""
-if status: raise RuntimeError("unauthenticated TLS client received HTTP")
+if status and not status.startswith(b"HTTP/1.1 401 "):
+    raise RuntimeError(f"unauthenticated readiness probe was not denied: {status!r}")
 ctx.load_cert_chain("/proof/client.pem","/proof/client.key")
 version,status=readiness(ctx, host)
 if version!="TLSv1.3" or not status.startswith(b"HTTP/1.1 204 "):
