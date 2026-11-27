@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -174,7 +175,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config) (*Server, error) {
  CREATE TABLE IF NOT EXISTS mp_auth_devices(device text PRIMARY KEY, user_id text NOT NULL, encryption_key text NOT NULL, descriptor jsonb NOT NULL, access_hash bytea, access_expires timestamptz, refresh_hash bytea, refresh_expires timestamptz, revoked boolean NOT NULL DEFAULT false);
  ALTER TABLE mp_auth_devices ADD COLUMN IF NOT EXISTS email_hash text;
  CREATE INDEX IF NOT EXISTS mp_auth_device_owner ON mp_auth_devices(user_id);
- `)
+ `+membershipRequestSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -220,18 +221,23 @@ func admitMember(ctx context.Context, tx pgx.Tx, user, email, hash, invite strin
 		return err
 	}
 	if suspended {
-		return denied
+		return fmt.Errorf("%w: %w", denied, errSuspended)
 	}
 	var allowed bool
 	err = tx.QueryRow(ctx, `SELECT mode='open' OR $1=ANY(admin_hashes) OR
-		($1=ANY(allowed_hashes) AND (mode='allowlist' OR EXISTS (SELECT FROM mp_members WHERE user_id=$2)))
+		($1=ANY(allowed_hashes) AND (mode='allowlist' OR EXISTS (SELECT FROM mp_members WHERE user_id=$2))) OR
+		($1<>'' AND EXISTS (SELECT FROM mp_membership_requests WHERE email_hash=$1 AND status='approved'))
 		FROM mp_membership_policy FOR UPDATE`, hash, user).Scan(&allowed)
 	if err != nil {
 		return err
 	}
 	if invite == "" {
 		if allowed {
-			return nil
+			// An approved request admits once; membership carries it from here.
+			if hash != "" {
+				_, err = tx.Exec(ctx, "UPDATE mp_membership_requests SET status='admitted' WHERE email_hash=$1 AND status='approved'", hash)
+			}
+			return err
 		}
 		return denied
 	}
@@ -338,6 +344,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/identity/devices/{device}", s.lookup)
 	mux.HandleFunc("DELETE /v1/identity/devices/{device}", s.revoke)
 	mux.HandleFunc("GET /v1/admin/members", s.adminMembers)
+	mux.HandleFunc("POST /v1/membership-requests", s.requestMembership)
+	mux.HandleFunc("GET /v1/membership-requests/mine", s.myMembershipRequest)
+	mux.HandleFunc("GET /v1/admin/membership-requests", s.adminMembershipRequests)
+	mux.HandleFunc("POST /v1/admin/membership-requests/{id}/approve", s.admin(s.decideMembershipRequest(true)))
+	mux.HandleFunc("POST /v1/admin/membership-requests/{id}/deny", s.admin(s.decideMembershipRequest(false)))
 	mux.HandleFunc("DELETE /v1/admin/devices/{device}", s.admin(s.adminRevoke))
 	mux.HandleFunc("POST /v1/admin/members/{handle}/suspend", s.admin(s.setSuspended(true)))
 	mux.HandleFunc("POST /v1/admin/members/{handle}/unsuspend", s.admin(s.setSuspended(false)))
@@ -464,6 +475,11 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := admitMember(ctx, tx, user, claims.Email, enrollmentEmail, invite); err != nil {
 		if errors.Is(err, denied) {
+			// A verified person who is not suspended may ask to join from this device.
+			if !errors.Is(err, errSuspended) && s.recordRefusal(ctx, id, claims.Email, enrollmentEmail) {
+				reply(w, 403, map[string]any{"error": http.StatusText(403), "requestable": true})
+				return
+			}
 			failure(w, 403)
 		} else {
 			failure(w, 503)
