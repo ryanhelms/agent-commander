@@ -119,9 +119,13 @@ struct ToolDetailRecord: Decodable, Equatable, Sendable {
     var startedAt: String? = nil
     var endedAt: String? = nil
     var truncated: [String]? = nil
+    /// Where the service cut each value in `truncated`: JSON Pointers to the strings it
+    /// shortened, or one empty pointer for a cut at the end of the whole value. Absent from an
+    /// older record or service.
+    var shortened: [String: [String]]? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case key, kind, name, title, input, result, content, truncated
+        case key, kind, name, title, input, result, content, truncated, shortened
         case startedAt = "started_at", endedAt = "ended_at"
     }
 }
