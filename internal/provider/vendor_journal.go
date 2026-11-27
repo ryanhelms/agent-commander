@@ -36,7 +36,7 @@ func (l *Local) ReadNativeJournalPage(ctx context.Context, native service.Native
 	ref := &model.SessionRef{HarnessInstance: native.HarnessInstance, SessionId: native.SessionID}
 	var journal vendorJournal
 	switch {
-	case native.HarnessInstance == "local-claude":
+	case native.HarnessInstance == "local-claude", native.HarnessInstance == service.LegacyClaudeHarness:
 		journal = vendorJournal{"Claude", os.Getenv("CLAUDE_CONFIG_DIR")}
 	case native.HarnessInstance == "local-codex":
 		journal = vendorJournal{"Codex", os.Getenv("CODEX_HOME")}

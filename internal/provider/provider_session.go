@@ -100,6 +100,13 @@ func providerBindingFingerprint(j job) (string, error) {
 }
 
 func verifyProviderBinding(j job, ref service.NativeSession, fingerprint string) error {
+	if ref.HarnessInstance == service.LegacyClaudeHarness {
+		if !legacyCoordinatorJob(j) || !journalSessionID.MatchString(ref.SessionID) ||
+			fingerprint == "" || fingerprint != j.ProviderBinding {
+			return errors.New("the original Claude CLI executable, profile, or checkout is unavailable")
+		}
+		return nil
+	}
 	if !j.localACP() || fingerprint == "" || fingerprint != j.ProviderBinding {
 		return errors.New("provider executable, profile, or checkout changed since the worker was bound")
 	}
@@ -163,7 +170,7 @@ func (l *Local) ProviderHistoryAvailability(ref service.NativeSession) string {
 	}
 	harness := ref.HarnessInstance
 	switch {
-	case harness == service.LocalClaudeHarness, harness == "local-codex",
+	case harness == service.LocalClaudeHarness, harness == service.LegacyClaudeHarness, harness == "local-codex",
 		strings.HasPrefix(harness, "local-managed-codex-"), strings.HasPrefix(harness, "ssh-") && strings.HasSuffix(harness, "-claude"):
 		return "available"
 	case strings.HasPrefix(harness, "local-builtin:"):

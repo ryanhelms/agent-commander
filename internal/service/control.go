@@ -103,7 +103,9 @@ func (s *service) controlTarget(req *http.Request, actor string) (*Run, *Worker,
 	if w == nil {
 		return nil, nil, missing("worker")
 	}
-	if w.Role != "worker" || (actor != "" && actor != w.ParentID && actor != r.CoordinatorID) {
+	localCoordinator := actor == "" && localSessionOwner(req) && w.Role == "coordinator" &&
+		w.ID == r.CoordinatorID && w.Control != nil
+	if !localCoordinator && (w.Role != "worker" || (actor != "" && actor != w.ParentID && actor != r.CoordinatorID)) {
 		return nil, nil, denied()
 	}
 	return r, w, nil
@@ -277,7 +279,7 @@ func (s *service) workerControlSnapshot(workerID, actor, turn string) (workerCon
 	if w == nil {
 		return workerControlFeed{}, missing("worker")
 	}
-	if actor != w.ID || (w.Role != "worker" && turn == "") {
+	if actor != w.ID || (w.Role != "worker" && w.Control == nil && turn == "") {
 		return workerControlFeed{}, denied()
 	}
 	feed := workerControlFeed{State: w.State, ProviderAvailability: w.ProviderAvailability, Live: r.Status == "running" && w.Control != nil &&
@@ -313,7 +315,7 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 	if err != nil {
 		return outcome{}, err
 	}
-	if r.Status != "running" || w.Role != "worker" {
+	if r.Status != "running" || (w.Role != "worker" && (w.ID != r.CoordinatorID || w.Control == nil)) {
 		return outcome{}, conflict("worker control cannot be registered")
 	}
 	var input struct {
