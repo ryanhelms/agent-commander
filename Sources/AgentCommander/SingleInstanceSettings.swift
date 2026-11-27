@@ -78,8 +78,12 @@ struct SingleInstanceSettingsPage: View {
     @AppStorage(SingleInstancePreference.key) private var allowsOnlyOneInstance = SingleInstancePreference.defaultValue
 
     var body: some View {
-        LaunchSettingsSection(allowsOnlyOneInstance: $allowsOnlyOneInstance)
-            .onChange(of: allowsOnlyOneInstance) { SingleInstancePreference.commit() }
+        VStack(alignment: .leading, spacing: Space.xl) {
+            LaunchSettingsSection(allowsOnlyOneInstance: $allowsOnlyOneInstance)
+                .onChange(of: allowsOnlyOneInstance) { SingleInstancePreference.commit() }
+            // Settings › Transcript: what Commander keeps of a tool call.
+            TranscriptSettingsHost()
+        }
             .padding(Space.xl)
             .frame(width: 560, alignment: .topLeading)
             .fixedSize(horizontal: false, vertical: true)

@@ -36,6 +36,9 @@ final class CockpitModel {
     let providerSessions: ProviderSessionModel
     /// The structured requests of the one worker whose panel is open, and the owner's replies.
     let elicitations: ElicitationModel
+    /// What Pretty shows beyond the console preview: stored tool arguments, results, plan items
+    /// and times, and the transcript setting. Read beside the client's other requests.
+    let toolDetails: ToolDetailStore
 
     init(endpoint: ServiceEndpoint = .live) {
         api = ServiceClient(endpoint: endpoint)
@@ -45,6 +48,11 @@ final class CockpitModel {
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
+        toolDetails = ToolDetailStore(source: ToolDetailSource(
+            page: { try await reader.toolDetails($0, after: $1) },
+            record: { try await reader.toolDetail($0, key: $1) },
+            readSettings: { try await reader.transcriptSettings() },
+            writeSettings: { try await reader.setTranscriptSettings($0) }))
         harnesses = HarnessFeed(api: HarnessAPI(
             watch: { reader.watchHarnesses() },
             check: { try await reader.checkHarness($0) },
@@ -319,6 +327,14 @@ final class CockpitModel {
         }
         if accepted { followUpAttempts[id] = nil }
         return accepted
+    }
+
+    /// Takes back a follow-up that is still queued for the worker's next turn.
+    func cancelFollowUp(_ id: String, messageID: String) async {
+        guard canControlWorker(id) else { return }
+        _ = await performWorkerAction(id, label: "Remove queued follow-up") {
+            try await api.cancelFollowUp(id, messageID: messageID)
+        }
     }
 
     func interruptWorker(_ id: String) async {

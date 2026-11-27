@@ -59,6 +59,8 @@ struct PrettyRunStatus: Equatable {
     let prompts: Int
     let tools: Int
     let failedTools: Int
+    /// How many of the failed calls the provider refused permission for: the tool never ran.
+    let blockedTools: Int
     /// Every tool call in the transcript that has no result yet, oldest first.
     let openToolIDs: [String]
 
@@ -77,7 +79,16 @@ struct PrettyRunStatus: Equatable {
     /// phase or claims work without evidence, and an explicit Unknown state is kept, not read as
     /// Idle. A waiting worker and its approvals are unchanged.
     init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false) {
-        var prompts = 0, tools = 0, failed = 0
+        var prompts = 0, tools = 0, failed = 0, blocked = 0
+        func count(_ result: ToolResult) {
+            let status = ToolStatus(result: result)
+            switch status {
+            case .failed, .declined, .cancelled:
+                if status == .failed { failed += 1 }
+                if ActivityFailureWords.read(result, status: status).outcome == .blocked { blocked += 1 }
+            default: break
+            }
+        }
         var openTool: String?
         var openToolIDs: [String] = []
         for entry in entries {
@@ -87,11 +98,11 @@ struct PrettyRunStatus: Equatable {
                 openTool = nil
             case .tool(let name, _, let result):
                 tools += 1
-                if let result, ToolStatus(result: result) == .failed { failed += 1 }
+                if let result { count(result) }
                 openTool = result == nil ? name : nil
                 if result == nil { openToolIDs.append(entry.id) }
             case .output(let result):
-                if ToolStatus(result: result) == .failed { failed += 1 }
+                count(result)
             case .other:
                 break
             }
@@ -99,6 +110,7 @@ struct PrettyRunStatus: Equatable {
         self.prompts = prompts
         self.tools = tools
         self.failedTools = failed
+        self.blockedTools = blocked
         self.openToolIDs = openToolIDs
         switch state {
         case .running, .working, .starting:
@@ -142,6 +154,17 @@ struct PrettyRunStatus: Equatable {
         }
     }
 
+    /// The counts as the status line reads them: `3 prompts, 14 tool calls, 1 blocked`. A call the
+    /// provider refused is counted as blocked, apart from one that ran and failed.
+    var sentence: String {
+        var parts = [prompts == 1 ? "1 prompt" : "\(prompts) prompts"]
+        if tools > 0 { parts.append(tools == 1 ? "1 tool call" : "\(tools) tool calls") }
+        if blockedTools > 0 { parts.append("\(blockedTools) blocked") }
+        let failed = failedTools - min(failedTools, blockedTools)
+        if failed > 0 { parts.append("\(failed) failed") }
+        return parts.joined(separator: ", ")
+    }
+
     /// `3 prompts · 5 tools · 1 failed`, leaving out what is zero apart from prompts.
     var counts: String {
         var parts = [prompts == 1 ? "1 prompt" : "\(prompts) prompts"]
@@ -163,12 +186,12 @@ struct PrettyACPMetrics {
     init(_ density: PrettyDensity, inset: CGFloat? = nil) {
         switch density {
         case .regular:
-            self.inset = inset ?? 21; barHeight = 28; barSize = 11.5; showsSession = true; showsCounts = true
+            self.inset = inset ?? 21; barHeight = 34; barSize = 12.5; showsSession = true; showsCounts = true
         case .compact:
-            self.inset = inset ?? 11; barHeight = 22; barSize = 10.5; showsSession = false; showsCounts = true
+            self.inset = inset ?? 11; barHeight = 26; barSize = 11.5; showsSession = false; showsCounts = true
         case .pip:
             // The PiP's transcript is a recent window, so whole-run counts would mislead.
-            self.inset = inset ?? 11; barHeight = 20; barSize = 10; showsSession = false; showsCounts = false
+            self.inset = inset ?? 11; barHeight = 22; barSize = 10.5; showsSession = false; showsCounts = false
         }
     }
 }
@@ -194,6 +217,10 @@ struct PrettyACPConsole: View {
     /// The service reports this worker's phase, shown in its footer (a tracked local Claude
     /// worker). The status then infers no Responding or Running tool and draws no spinner.
     var reportsProgress = false
+    /// The phase that service reports now. Only a reported thinking phase adds a Thinking line.
+    var reportedPhase: ClaudeProgress.Phase? = nil
+    /// The console is a coordinator's: its report is the run's result.
+    var isCoordinator = false
     /// Where the call awaiting approval comes from. A surface holding the whole transcript
     /// derives it; the PiP, which holds a window, takes the one its request resolved.
     var awaitingApproval: AwaitingApproval = .derived
@@ -219,9 +246,6 @@ struct PrettyACPConsole: View {
                 .frame(maxWidth: .infinity, maxHeight: conversationHeight == nil ? .infinity : nil)
                 .frame(height: conversationHeight)
                 .layoutPriority(1)
-            if status.isLive {
-                PrettyRunningIndicator(status: status, workerName: name, density: density, inset: metrics.inset)
-            }
             if let request, let reply {
                 PrettyRequestForm(request: request, context: reply, density: density)
                     .padding(.horizontal, metrics.inset).padding(.vertical, density == .regular ? 10 : 7)
@@ -241,7 +265,10 @@ struct PrettyACPConsole: View {
         if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
-                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor)
+                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
+                              live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
+                                               reportedPhase: reportedPhase),
+                              reportsAsCoordinator: isCoordinator)
         } else {
             PrettyEmptyConversation(status: status, workerName: name, hasEntries: !entries.isEmpty,
                                     density: density, inset: metrics.inset)
@@ -267,6 +294,8 @@ extension PrettyACPConsole {
                   request: reply == nil ? nil : worker.request, reply: reply, density: density, inset: inset,
                   choiceRequestPending: !(worker.request?.choices.isEmpty ?? true),
                   reportsProgress: worker.claudeProgress != nil,
+                  reportedPhase: worker.claudeProgress?.evidence?.phase,
+                  isCoordinator: worker.isCoordinator,
                   stories: stories ?? .form(for: worker.request, reply: reply))
     }
 
@@ -288,6 +317,8 @@ extension PrettyACPConsole {
 
 // MARK: - Molecules
 
+/// The run status line: one quiet line with a hairline beneath. Harness chip, lamp and word,
+/// the counts as a sentence, and the short session ID at the trailing edge.
 struct PrettyRunStatusBar: View {
     let status: PrettyRunStatus
     let session: NativeSession
@@ -295,66 +326,39 @@ struct PrettyRunStatusBar: View {
     var metrics = PrettyACPMetrics(.regular)
 
     var body: some View {
-        let sessionHelp = "Session \(session.sessionID) · "
-            + (session.harnessInstance.isEmpty ? client.displayName : session.harnessInstance)
-        HStack(spacing: metrics.showsSession ? 10 : 7) {
-            Text("ACP")
-                .font(.system(size: 9.5, weight: .bold)).kerning(0.6)
-                .foregroundStyle(Palette.focus)
-                .padding(.horizontal, 5).padding(.vertical, 2)
-                .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(Palette.focus.opacity(0.45)) }
+        let harness = session.harnessInstance.isEmpty ? client.displayName : session.harnessInstance
+        let sessionHelp = "Session \(session.sessionID) · \(harness)"
+        HStack(spacing: metrics.showsSession ? 12 : 8) {
+            Text(verbatim: client.displayName.lowercased())
+                .font(Term.font(metrics.barSize - 1.5)).foregroundStyle(.inkSecondary)
+                .lineLimit(1).fixedSize()
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .help("Structured transcript from the provider session over ACP. " + sessionHelp)
-            if metrics.showsSession {
-                Text(verbatim: String(session.sessionID.prefix(8)))
-                    .font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
-                    .lineLimit(1)
-                    .help(sessionHelp)
-                    .accessibilityLabel("Session \(session.sessionID)")
-            }
-            HStack(spacing: 5) {
-                Circle().fill(status.ink).frame(width: 6, height: 6)
-                Text(status.word).font(.system(size: metrics.barSize, weight: .medium)).foregroundStyle(status.ink)
-                    .lineLimit(1)
+                .accessibilityLabel("Harness \(client.displayName), over ACP")
+            HStack(spacing: 6) {
+                Circle().fill(status.ink).frame(width: 7, height: 7)
+                Text(status.word).font(.system(size: metrics.barSize)).foregroundStyle(.inkSecondary)
+                    .lineLimit(1).fixedSize()
             }
             .accessibilityElement(children: .combine)
-            Spacer(minLength: 6)
             if metrics.showsCounts {
-                Text(status.counts)
-                    .font(.system(size: metrics.barSize - 0.5)).monospacedDigit().foregroundStyle(.inkSecondary)
-                    .lineLimit(1).truncationMode(.head)
+                Text(status.sentence)
+                    .font(.system(size: metrics.barSize)).monospacedDigit().foregroundStyle(.inkSecondary)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            Spacer(minLength: 6)
+            if metrics.showsSession {
+                Text(verbatim: String(session.sessionID.prefix(8)))
+                    .font(Term.font(metrics.barSize - 1.5)).foregroundStyle(.inkSecondary)
+                    .lineLimit(1).fixedSize()
+                    .help(sessionHelp)
+                    .accessibilityLabel("Session \(session.sessionID)")
             }
         }
         .padding(.horizontal, metrics.inset)
         .frame(height: metrics.barHeight)
-        .background(Palette.footer)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct PrettyRunningIndicator: View {
-    let status: PrettyRunStatus
-    let workerName: String
-    var density: PrettyDensity = .regular
-    var inset: CGFloat = 21
-
-    var body: some View {
-        let size: CGFloat = density == .regular ? 12 : 10.5
-        HStack(spacing: density == .regular ? 8 : 6) {
-            ProgressView().controlSize(.mini)
-            if case .runningTool(let name) = status.phase, let tool = CommanderTool(name: name) {
-                // A Commander call says what it is doing: a wait is waiting for a reply.
-                Text(verbatim: tool.runningPhrase)
-            } else if case .runningTool(let name) = status.phase {
-                Text("Running \(Text(verbatim: name).font(Term.font(size - 0.5)).foregroundStyle(Palette.foreground))")
-            } else {
-                Text("\(workerName) is responding")
-            }
-        }
-        .font(.system(size: size)).foregroundStyle(.inkSecondary)
-        .lineLimit(1).truncationMode(.middle)
-        .padding(.horizontal, inset).padding(.vertical, density == .regular ? 7 : 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 }
@@ -397,15 +401,16 @@ struct PrettyEmptyConversation: View {
     }
 }
 
-/// The pending request as a native form. It answers exactly one request by ID with the same
-/// reply context as `RequestReply`: the same draft, focus target, send action, and the same closed
-/// and held states while the worker or its host is away.
+/// The pending request as a bordered block: who asks and the short request ID, the question as
+/// prose, the provider's choices as full-width buttons with the first one primary, or a reply
+/// field. It answers exactly one request by ID with the same reply context as `RequestReply`: the
+/// same draft, focus target and send action. Offline, held, closed and sending states keep the
+/// form visible, disable input and say why in one line.
 ///
-/// A request with explicit choices shows the shared `RequestChoiceButtons`: one native button per
-/// choice, whose click sends that choice's exact ID through the request's own draft and reply
-/// action, because the service accepts only an offered ID. The free-form field is shown only for a
-/// request without choices.
-/// The choice list the service appends to the question text is left out when it matches `choices`.
+/// A choice's click sends that choice's exact ID through the request's own draft and reply
+/// action, because the service accepts only an offered ID. The free-form field is shown only for
+/// a request without choices. The choice list the service appends to the question text is left
+/// out when it matches `choices`.
 struct PrettyRequestForm: View {
     let request: RequestPresentation
     let context: ReplyContext
@@ -415,6 +420,7 @@ struct PrettyRequestForm: View {
     private var isRegular: Bool { density == .regular }
 
     var body: some View {
+        let metrics = PrettyMetrics(density)
         let draft = context.draft(request.id)
         let isSending = context.sending.contains(request.id)
         let unavailable = request.replyUnavailableStatement
@@ -422,32 +428,40 @@ struct PrettyRequestForm: View {
         let blocked = !context.isOnline || isSending || unavailable != nil
         let isEmpty = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let isFocused = context.focus.wrappedValue == request.id && unavailable == nil
+        let shape = RoundedRectangle(cornerRadius: metrics.blockRadius, style: .continuous)
+        let approval = !request.choices.isEmpty
 
         VStack(alignment: .leading, spacing: isRegular ? 8 : 5) {
-            HStack(spacing: 6) {
-                Label("Input needed", systemImage: "questionmark.bubble.fill")
-                    .font(.system(size: isRegular ? 11.5 : 10.5, weight: .semibold)).foregroundStyle(Palette.attention)
-                Text(verbatim: request.shortID).font(TypeRole.monoMeta).foregroundStyle(.inkSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(verbatim: approval ? "\(request.workerName) needs your approval" : "\(request.workerName) asks")
+                    .font(.system(size: metrics.detailSize)).foregroundStyle(.inkSecondary)
+                IDChip(id: request.id, size: metrics.tagSize + 0.5)
                     .help("Request \(request.id)")
             }
             Text(request.promptWithoutChoiceList)
-                .font(.system(size: isRegular ? 13.5 : 12, weight: .medium)).foregroundStyle(Palette.foreground)
+                .font(metrics.body).foregroundStyle(Palette.foreground)
                 .lineSpacing(isRegular ? 3 : 1.5).lineLimit(isRegular ? 10 : 6).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if let note = unavailable ?? held {
-                Label(unavailable != nil ? "Reply unavailable until \(request.host) reconnects"
-                                         : "Reply now · held until \(request.host) reconnects",
-                      systemImage: unavailable != nil ? "exclamationmark.triangle" : "arrow.clockwise")
-                    .font(.system(size: 11)).foregroundStyle(Palette.attention)
-                    .help(note).accessibilityValue(note)
+            if let reason = stateLine(isSending: isSending, unavailable: unavailable, held: held) {
+                Text(verbatim: reason.text)
+                    .font(.system(size: metrics.detailSize)).foregroundStyle(Palette.attention)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(reason.help).accessibilityValue(reason.help)
             }
-            if !request.choices.isEmpty {
-                RequestChoiceButtons(request: request, context: context)
+            if approval {
+                choices(blocked: blocked, isFocused: isFocused, unavailable: unavailable, metrics: metrics)
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     TextField("Reply to \(request.workerName)", text: draft, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .font(metrics.body)
                         .lineLimit(1...5)
+                        .padding(.horizontal, 10).padding(.vertical, isRegular ? 7 : 5)
+                        .background(Palette.panel, in: RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous)
+                                .strokeBorder(isFocused ? Palette.focus : Palette.hairline, lineWidth: 1)
+                        }
                         .focused(context.focus, equals: request.id)
                         .disabled(blocked)
                         .onSubmit { if !blocked && !isEmpty { context.send(request) } }
@@ -458,7 +472,7 @@ struct PrettyRequestForm: View {
                             .accessibilityLabel("Sending reply")
                     } else {
                         Button("Reply") { context.send(request) }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(PrettyFormButtonStyle(isPrimary: true, metrics: metrics))
                             .keyboardShortcut(isFocused ? KeyboardShortcut(.return, modifiers: [.command]) : nil)
                             .disabled(blocked || isEmpty)
                             .help(unavailable ?? (context.isOnline ? "Send reply to \(request.workerName) (↩ or ⌘↩)"
@@ -468,15 +482,75 @@ struct PrettyRequestForm: View {
                 }
             }
         }
-        .controlSize(isRegular ? .regular : .small)
-        .padding(isRegular ? 12 : 8)
+        .padding(.horizontal, isRegular ? 16 : 10).padding(.vertical, isRegular ? 14 : 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.attentionFill, in: RoundedRectangle(cornerRadius: isRegular ? 10 : 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: isRegular ? 10 : 8, style: .continuous)
-                .strokeBorder(isFocused ? Palette.attention : Palette.attentionSoftEdge, lineWidth: 1)
-        }
+        .background(Palette.well, in: shape)
+        .overlay { shape.strokeBorder(Palette.attention.opacity(isFocused ? 0.8 : 0.45), lineWidth: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Request \(request.shortID) from \(request.workerName)")
+    }
+
+    /// Why input is disabled or held, in one line. Nil when the form can take input.
+    private func stateLine(isSending: Bool, unavailable: String?, held: String?) -> (text: String, help: String)? {
+        if let unavailable { return ("Reply unavailable until \(request.host) reconnects.", unavailable) }
+        if !context.isOnline { return ("The local service is offline. Your draft is kept.", "The local service is offline") }
+        if isSending { return ("Sending your reply.", "Sending your reply") }
+        if let held { return ("Reply now. It is held until \(request.host) reconnects.", held) }
+        return nil
+    }
+
+    /// One full-width button per choice, the first one primary. The group is the request's focus
+    /// target; it never selects or sends a choice by itself.
+    private func choices(blocked: Bool, isFocused: Bool, unavailable: String?, metrics: PrettyMetrics) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(request.choices.enumerated()), id: \.element.id) { index, choice in
+                Button {
+                    guard !blocked else { return }
+                    context.draft(request.id).wrappedValue = RequestChoiceButtons.answer(for: choice)
+                    context.send(request)
+                } label: {
+                    Text(verbatim: choice.label).lineLimit(2).multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(PrettyFormButtonStyle(isPrimary: index == 0, metrics: metrics, fillsWidth: true))
+                .disabled(blocked)
+                .help(unavailable ?? "Reply with \(choice.id)")
+                .accessibilityLabel(choice.label)
+                .accessibilityHint("Replies to request \(request.shortID) with \(choice.id)")
+            }
+        }
+        .padding(3)
+        .overlay {
+            RoundedRectangle(cornerRadius: metrics.listRadius + 3)
+                .strokeBorder(Palette.focus, lineWidth: 1.5)
+                .opacity(isFocused ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        .focusable()
+        .focusEffectDisabled()
+        .focused(context.focus, equals: request.id)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Choices for request \(request.shortID)")
+    }
+}
+
+/// A button of the request form and the message box: a 9 pt outline, the first one primary.
+struct PrettyFormButtonStyle: ButtonStyle {
+    var isPrimary = false
+    let metrics: PrettyMetrics
+    var fillsWidth = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous)
+        configuration.label
+            .font(.system(size: metrics.bodySize, weight: fillsWidth ? .regular : .medium))
+            .foregroundStyle(isPrimary && !fillsWidth ? Palette.onAccent : Palette.foreground)
+            .padding(.horizontal, 12).padding(.vertical, metrics.density == .regular ? 6 : 4)
+            .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
+            .background(isPrimary && !fillsWidth ? AnyShapeStyle(Palette.focus) : AnyShapeStyle(Color.clear), in: shape)
+            .overlay { shape.strokeBorder(isPrimary ? Palette.focus : Palette.hairline, lineWidth: 1) }
+            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
+            .contentShape(shape)
     }
 }

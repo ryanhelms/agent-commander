@@ -65,8 +65,10 @@ private func delta(_ operations: String...) -> String {
         let direct = try JSONDecoder().decode(WorkerControl.self, from: Data(json.utf8))
         let projected = try WorkerControl(projection: AGUIValue(json: json))
         #expect(direct == projected)
-        #expect(direct.messages == [WorkerFollowUp(id: "fu-1", status: "queued", generation: 3),
-                                    WorkerFollowUp(id: "fu-2", status: "delivery_unknown", generation: 3)])
+        // The text is kept for the message box's queued line; no receipt statement reads it.
+        #expect(direct.messages == [WorkerFollowUp(id: "fu-1", status: "queued", generation: 3, text: "secret follow-up body"),
+                                    WorkerFollowUp(id: "fu-2", status: "delivery_unknown", generation: 3, text: "secret follow-up body")])
+        #expect(QueuedFollowUp.queued(direct) == [QueuedFollowUp(id: "fu-1", text: "secret follow-up body")])
     }
 
     @Test func olderProjectionsWithoutGenerationStillDecode() throws {

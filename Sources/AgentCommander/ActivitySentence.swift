@@ -799,7 +799,7 @@ enum ActivitySteps {
         let first = calls[0]
         var step = ActivityStep(id: flow.id, kind: calls.count > 1 ? .workflow : .call, entries: calls.map(\.entry),
                                 state: .done, sentence: ActivitySentence(""))
-        if calls.count > 1 { step.workflow = flow }
+        step.workflow = flow
         if calls.count == 1 {
             let status = first.toolStatus
             step.state = state(status)

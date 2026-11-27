@@ -127,6 +127,9 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     /// The worker whose live terminal Terminal mode shows. Nil where a console has none (the
     /// queue inspector); Terminal mode then shows the Console transcript.
     private let terminal: NativeTerminalTarget?
+    /// What the surface knows about the turn in progress, for Pretty's live line.
+    private let live: PrettyLive?
+    private let reportsAsCoordinator: Bool
     private let console: () -> ConsoleContent
 
     init(
@@ -136,8 +139,12 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         density: PrettyDensity,
         horizontalInset: CGFloat = 12,
         terminal: NativeTerminalTarget? = nil,
+        live: PrettyLive? = nil,
+        reportsAsCoordinator: Bool = false,
         @ViewBuilder console: @escaping () -> ConsoleContent
     ) {
+        self.live = live
+        self.reportsAsCoordinator = reportsAsCoordinator
         self.consoleID = consoleID
         self.entries = entries
         self.rawOutput = rawOutput
@@ -158,7 +165,9 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
                 entries: entries,
                 rawOutput: rawOutput,
                 density: density,
-                horizontalInset: horizontalInset
+                horizontalInset: horizontalInset,
+                live: live,
+                reportsAsCoordinator: reportsAsCoordinator
             )
         } else {
             console()
@@ -257,6 +266,7 @@ enum PrettyContent {
 
 struct PrettyConsoleView: View {
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
+    @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
 
@@ -268,21 +278,55 @@ struct PrettyConsoleView: View {
     /// The open tool call of a worker waiting for the developer's reply, which reads as awaiting
     /// approval. Nil everywhere else, so every call keeps the status its result gives it.
     var awaitingToolID: String? = nil
-    /// The requests the parent surface can act on and how, for activity story actions.
+    /// The requests the parent surface can act on and how, for a line's targeted actions.
     var stories = ActivityStoryContext()
     /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
     var anchor: CommanderWorkflow? = nil
+    /// What the surface knows about the turn in progress. Nil draws no spinner and no last line.
+    var live: PrettyLive? = nil
+    /// The console is a coordinator's: its report is the run's result.
+    var reportsAsCoordinator = false
+
+    private struct Layout {
+        var items: [PrettyItem]
+        /// The thought the agent is in now, drawn by the live line.
+        var thinking: ActivityStep?
+        var thinkingStarted: Date?
+    }
+
+    /// A streamed reply is one turn, as it is in Console. Commander's calls are linked only by
+    /// exact IDs; then finished calls and quiet rows fold into groups, and failures, reports,
+    /// pending requests, plans and attention events stay in the open (`ActivityConversation`).
+    private func layout() -> Layout {
+        let summaries = details?.summaries(worker: consoleID) ?? [:]
+        let store = details
+        let worker = consoleID
+        var facts = ActivityFacts(summaries: summaries)
+        facts.record = { key in store?.record(worker: worker, key: key) }
+        let conversation = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
+                                                      awaitingToolID: awaitingToolID, anchor: anchor)
+        let items = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
+                                               reportsAsCoordinator: reportsAsCoordinator)
+        guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
+            return Layout(items: items)
+        }
+        let record = (thought.entries.first?.origin?.messageID).flatMap { summaries[$0] } ?? summaries[thought.id]
+        return Layout(items: ActivityConversation.withoutLiveThought(items), thinking: thought, thinkingStarted: record?.started)
+    }
+
+    /// Changes when the transcript gains an entry or a call gains its result: the moments the
+    /// service may hold new details. Nothing is read on a timer.
+    private var detailRevision: String {
+        var results = 0
+        for entry in entries { if case .tool(_, _, let result) = entry.kind, result != nil { results += 1 } }
+        return "\(consoleID) \(entries.count) \(results)"
+    }
 
     var body: some View {
         let metrics = PrettyMetrics(density)
         let scope = stories.scope(canOpenSource: access?.openSource != nil)
-        // A streamed reply is one turn, as it is in Console. Pretty then sets adjacent routine
-        // entries (usage, session state, harness diagnostics) close together as activity lines in
-        // their place, each visible; every other entry is laid out as it is, in order.
-        // Commander's own calls read as activity stories, linked only by exact IDs; a recognised
-        // provider tool reads as a one-call story; every other tool keeps its generic row.
-        let shown = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
-                                               awaitingToolID: awaitingToolID, anchor: anchor)
+        let layout = layout()
+        let shown = layout.items
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
@@ -291,24 +335,11 @@ struct PrettyConsoleView: View {
                     PrettyRawBlock(text: rawOutput, metrics: metrics, caption: "Unformatted output")
                 } else {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
-                        Group {
-                            switch item {
-                            case .entry(let entry):
-                                if let story = ActivityStories.story(for: entry, awaitingToolID: awaitingToolID, scope: scope) {
-                                    storyCard(story, scope: scope, metrics: metrics)
-                                } else {
-                                    row(entry, metrics: metrics)
-                                }
-                            case .activity(let activity):
-                                PrettyActivityRun(activity: activity, metrics: metrics) { entry in
-                                    row(entry, metrics: metrics)
-                                }
-                            case .commander(let workflow):
-                                storyCard(ActivityStories.story(for: workflow, scope: scope), scope: scope, metrics: metrics)
-                            }
-                        }
-                        .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
+                        self.item(item, scope: scope, metrics: metrics)
+                            .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
                     }
+                    lastLine(layout, metrics: metrics)
+                        .padding(.top, shown.isEmpty ? 0 : metrics.blockSpacing * 1.4)
                 }
             }
             .frame(maxWidth: metrics.columnWidth, alignment: .leading)
@@ -321,16 +352,169 @@ struct PrettyConsoleView: View {
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
+        .task(id: detailRevision) { await details?.refresh(worker: consoleID) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
     }
 
-    private func spacing(before item: ConversationItem, after previous: ConversationItem, metrics: PrettyMetrics) -> CGFloat {
-        guard case .entry(let entry) = item, case .entry(let earlier) = previous else {
-            // An activity is a quiet line between turns: nearer than a change of speaker.
-            return (metrics.blockSpacing + metrics.turnSpacing) / 2
+    private func spacing(before item: PrettyItem, after previous: PrettyItem, metrics: PrettyMetrics) -> CGFloat {
+        func isPrompt(_ item: PrettyItem) -> Bool {
+            if case .entry(let entry) = item { return entry.isFromUser }
+            return false
         }
-        return PrettyContent.speaker(of: entry) == PrettyContent.speaker(of: earlier) ? metrics.blockSpacing : metrics.turnSpacing
+        // A change of speaker opens a new turn; everything inside the agent's turn sits closer.
+        return isPrompt(item) != isPrompt(previous) || isPrompt(item) ? metrics.turnSpacing : metrics.blockSpacing * 1.4
+    }
+
+    @ViewBuilder
+    private func item(_ item: PrettyItem, scope: ActivityStoryScope, metrics: PrettyMetrics) -> some View {
+        switch item {
+        case .entry(let entry):
+            row(entry, metrics: metrics)
+        case .group(let group):
+            VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.8) {
+                ActivityGroupView(group: group, metrics: metrics, isExpanded: isExpanded, toggle: toggle,
+                                  setAll: setAll) { step in detail(step, scope: scope, metrics: metrics) }
+                // A pending question keeps its targeted action in reach while its line is closed.
+                if group.isSingle, !isExpanded(group.lines[0].id) {
+                    let primary = actions(for: group.lines[0], scope: scope).filter(\.isPrimary)
+                    if !primary.isEmpty {
+                        ActivityActionGroup(actions: primary, fontSize: metrics.toolSize, density: density) { perform($0) }
+                    }
+                }
+            }
+        case .report(let report):
+            PrettyReportBlock(report: report, isExpanded: isExpanded(report.id), metrics: metrics,
+                              toggle: { toggle(report.id) }) { reportDetail(report, metrics: metrics) }
+        case .plan(let plan):
+            if let items = plan.items {
+                PrettyPlanCard(items: items, metrics: metrics, isLive: live?.isActive == true)
+            } else {
+                Text(verbatim: plan.fallback).font(metrics.body).foregroundStyle(.inkSecondary)
+                    // The older runner keeps the items in the call's stored arguments.
+                    .task(id: plan.entries.last?.id) {
+                        if let key = plan.entries.last?.id { await details?.open(worker: consoleID, key: key) }
+                    }
+            }
+        case .live(let step):
+            PrettyLiveLine(subject: .call(step), live: live ?? PrettyLive(), isExpanded: false, metrics: metrics) {}
+        case .approval(let step):
+            VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "hand.raised").font(.system(size: metrics.bodySize - 2, weight: .medium))
+                        .foregroundStyle(Palette.attention).accessibilityHidden(true)
+                    ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.attention)
+                }
+                .accessibilityElement(children: .combine)
+                let primary = actions(for: step, scope: scope).filter(\.isPrimary)
+                if !primary.isEmpty {
+                    ActivityActionGroup(actions: primary, fontSize: metrics.toolSize, density: density) { perform($0) }
+                }
+            }
+            .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+        }
+    }
+
+    /// The last item of the transcript while a turn runs and no call is open: Thinking, with its
+    /// time and text when the provider sent them, or that the agent is responding.
+    @ViewBuilder
+    private func lastLine(_ layout: Layout, metrics: PrettyMetrics) -> some View {
+        if let live {
+            if let thought = layout.thinking {
+                PrettyLiveLine(subject: .thinking(text: thought.text, started: layout.thinkingStarted), live: live,
+                               isExpanded: isExpanded(thought.id), metrics: metrics, copy: copy) { toggle(thought.id) }
+            } else if live.isActive, let trailing = live.trailing, !endsWithOpenCall(layout.items) {
+                switch trailing {
+                case .thinking:
+                    PrettyLiveLine(subject: .thinking(text: "", started: nil), live: live, isExpanded: false, metrics: metrics) {}
+                case .responding(let name):
+                    PrettyLiveLine(subject: .responding(name), live: live, isExpanded: false, metrics: metrics) {}
+                }
+            }
+        }
+    }
+
+    private func endsWithOpenCall(_ items: [PrettyItem]) -> Bool {
+        switch items.last {
+        case .live?, .approval?: true
+        default: false
+        }
+    }
+
+    /// The story of a line's Commander calls, for its timeline and targeted actions.
+    private func actions(for step: ActivityStep, scope: ActivityStoryScope) -> [ActivityStoryAction] {
+        if let flow = step.workflow { return ActivityStories.story(for: flow, scope: scope).actions(in: scope) }
+        guard let entry = step.entries.first else { return [] }
+        return ActivityStories.story(for: entry, awaitingToolID: awaitingToolID, scope: scope)?.actions(in: scope) ?? []
+    }
+
+    /// What an opened line shows: a thought's text; or each call's typed result, after the
+    /// milestone timeline when several calls are linked by an exact ID.
+    @ViewBuilder
+    private func detail(_ step: ActivityStep, scope: ActivityStoryScope, metrics: PrettyMetrics) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if step.kind == .thought {
+                PrettyThoughtBody(text: step.text, metrics: metrics, copy: copy)
+            } else {
+                if step.kind == .workflow, let flow = step.workflow {
+                    let story = ActivityStories.story(for: flow, scope: scope)
+                    if !story.milestones.isEmpty {
+                        ActivityMilestoneTimeline(story: story, limit: density == .pip ? 4 : nil, fontSize: metrics.toolSize)
+                    }
+                    if !story.relations.isEmpty { ActivityRelationList(relations: story.relations, fontSize: metrics.toolSize) }
+                }
+                let actions = actions(for: step, scope: scope).filter { $0.intent != .openSource }
+                if !actions.isEmpty {
+                    ActivityActionGroup(actions: actions, fontSize: metrics.toolSize, density: density) { perform($0) }
+                }
+                if step.entries.count == 1, let entry = step.entries.first {
+                    result(entry, step: step, metrics: metrics)
+                } else {
+                    // Each call stays inside its line, in order, behind its own disclosure.
+                    ForEach(Array(step.entries.enumerated()), id: \.element.id) { index, entry in
+                        ResultDisclosure(title: callTitle(entry, index: index), metrics: metrics) {
+                            result(entry, step: step, metrics: metrics)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func callTitle(_ entry: TranscriptEntry, index: Int) -> String {
+        if let call = CommanderCall(entry: entry) {
+            let words = ActivityWords.commander(call)
+            let failed = call.result.map { ToolStatus(result: $0) != .done } ?? false
+            return (failed ? words.failed : call.result == nil ? words.running : words.done).plain
+        }
+        return "Call \(index + 1)"
+    }
+
+    private func result(_ entry: TranscriptEntry, step: ActivityStep, metrics: PrettyMetrics) -> some View {
+        let record = details?.record(worker: consoleID, key: entry.id)
+        return ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record), metrics: metrics,
+                                  hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
+            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            // The full record is read only now that the line is open.
+            .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.id) }
+    }
+
+    private func reportDetail(_ report: ActivityReport, metrics: PrettyMetrics) -> some View {
+        let call = report.call
+        var step = ActivityStep(id: call.entry.id, entries: [call.entry], state: .done, sentence: ActivitySentence(report.heading))
+        step.workflow = nil
+        let tests = call.tests.map { CommanderCall.join($0.command, $0.outcome) ?? $0.command }
+        var sent: [String] = call.revision.map { ["rev " + Identifier.short($0)] } ?? []
+        sent += tests
+        return VStack(alignment: .leading, spacing: 8) {
+            ResultFieldList(rows: [
+                ResultField(key: "goes_to", value: .string(reportsAsCoordinator
+                    ? "the run's result (a coordinator has no coordinator above it)" : "the coordinator")),
+                ResultField(key: "tests_revision", value: sent.isEmpty ? .null : .string(sent.joined(separator: ", "))),
+            ], metrics: metrics, labels: ["goes_to": "Goes to", "tests_revision": "Tests, revision"])
+            result(call.entry, step: step, metrics: metrics)
+        }
     }
 
     /// A prompt as Pretty shows it. The service's trailing media marker is left out of the bubble
@@ -347,6 +531,7 @@ struct PrettyConsoleView: View {
         return (shown.text, hasAction ? nil : media.caption)
     }
 
+    /// An entry that is not folded: a prompt, a reply, an attention-tone event or a role note.
     @ViewBuilder
     private func row(_ entry: TranscriptEntry, metrics: PrettyMetrics) -> some View {
         switch entry.kind {
@@ -359,42 +544,13 @@ struct PrettyConsoleView: View {
                 PrettyAssistantTurn(text: text, metrics: metrics)
                     .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: density != .pip), density: density)
             }
-        case .tool(let name, let detail, let result):
-            TranscriptToolRow(
-                name: name,
-                detail: detail,
-                result: result,
-                isExpanded: isExpanded(entry.id),
-                fontSize: metrics.toolSize,
-                style: .pretty,
-                isAwaitingApproval: entry.id == awaitingToolID,
-                toggle: { toggle(entry.id) }
-            )
-            .frame(maxWidth: metrics.readingWidth, alignment: .leading)
-            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-        case .output(let result):
-            // A failed result without its call: the shared status line, then any output.
-            VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.5) {
-                if result.error != nil {
-                    ToolResultStatusLine(result: result, fontSize: metrics.toolSize)
-                }
-                if result.output.contains(where: { !$0.isWhitespace }) {
-                    PrettyRawBlock(text: result.output, metrics: metrics, caption: "Tool result")
-                }
-            }
-            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+        case .tool, .output:
+            // Every call and result is a line of a group; none reaches here.
+            EmptyView()
         case .other(let role, let text):
-            if entry.isThought {
-                PrettyThinkingRow(
-                    text: text,
-                    metrics: metrics,
-                    isExpanded: Binding(
-                        get: { isExpanded(entry.id) },
-                        set: { if $0 != isExpanded(entry.id) { toggle(entry.id) } }))
-                    .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-            } else if let event = ActivityEvent(entry: entry) {
-                // A recognised event, or any record with an ACP kind: one visible activity line.
-                // It never carries a reply; a pending request is answered only in its form.
+            if let event = ActivityEvent(entry: entry) {
+                // A warning, harness stderr or a permission notice: one visible line in the
+                // attention ink. It never carries a reply; a request is answered only in its form.
                 PrettyActivityRow(event: event, metrics: metrics)
                     .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             } else {
@@ -404,28 +560,12 @@ struct PrettyConsoleView: View {
         }
     }
 
-    /// One activity story at this console's density and type, with the actions this console's
-    /// parent supplied. The story and its Tool details keep their open state by the story's ID,
-    /// which depends only on its first call, so they stay open as facts update.
-    private func storyCard(_ story: ActivityStory, scope: ActivityStoryScope, metrics: PrettyMetrics) -> some View {
-        ActivityStoryCard(
-            story: story,
-            actions: story.actions(in: scope),
-            isExpanded: isExpanded(story.id),
-            isShowingDetails: isExpanded(story.id + "#details"),
-            fontSize: metrics.toolSize,
-            density: density,
-            toggle: { toggle(story.id) },
-            toggleDetails: { toggle(story.id + "#details") },
-            perform: { perform($0) }
-        ) { entry in
-            // The original call, exactly as Console's Pretty row draws it.
-            row(entry, metrics: metrics)
-        }
-        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+    private var copy: (String) -> Void {
+        let action = access?.copy ?? RecordPasteboard.copy
+        return { action($0) }
     }
 
-    /// Performs a story's targeted action through the parent's own action. Nothing else navigates.
+    /// Performs a line's targeted action through the parent's own action. Nothing else navigates.
     private func perform(_ intent: ActivityStoryIntent) {
         switch intent {
         case .focusRequest(let id): stories.focusRequest?(id)
@@ -435,6 +575,8 @@ struct PrettyConsoleView: View {
         }
     }
 
+    /// Open state is kept per console by the line's first call ID, so a line stays open as later
+    /// calls and facts arrive.
     private func isExpanded(_ entryID: String) -> Bool {
         if let modes { return modes.isToolExpanded(console: consoleID, entry: entryID) }
         return localExpanded.contains(entryID)
@@ -449,11 +591,15 @@ struct PrettyConsoleView: View {
             localExpanded.insert(entryID)
         }
     }
+
+    private func setAll(_ ids: [String], _ expanded: Bool) {
+        for id in ids where isExpanded(id) != expanded { toggle(id) }
+    }
 }
 
 // MARK: - Metrics
 
-private struct PrettyMetrics {
+struct PrettyMetrics {
     let density: PrettyDensity
     let body: Font
     let codeSize: CGFloat
@@ -473,43 +619,78 @@ private struct PrettyMetrics {
     let listIndent: CGFloat = 16
     let markerWidth: CGFloat = 16
 
+    /// Pretty's own corners (DESIGN.md, Pretty transcript): the activity list and field, tags and
+    /// wells. They match the black-glass `control` and `chip` values and read no theme.
+    let listRadius: CGFloat = 9
+    let chipRadius: CGFloat = 5
+    /// The prompt bubble, the request form and the message box.
+    let blockRadius: CGFloat = 13
+    /// Padding of one activity line inside its list.
+    let lineInset: CGSize
+    /// Type of an opened line's fields, a step below the sentence.
+    let detailSize: CGFloat
+    /// State tags, IDs and elapsed time, in the terminal face.
+    let tagSize: CGFloat
+    /// Width of the label column of an opened line's fields.
+    let labelWidth: CGFloat
+    /// The size of `body`, for values set in the terminal face inside a sentence.
+    let bodySize: CGFloat
+    /// How many lines a clamped report, thought or quote shows before "Show all".
+    let clampLines: Int
+
     init(_ density: PrettyDensity) {
         self.density = density
         switch density {
         case .regular:
-            body = .system(size: 14)
-            codeSize = 12
+            bodySize = 13
+            codeSize = 11.5
             toolSize = 12
-            turnSpacing = 24
+            turnSpacing = 22
             blockSpacing = 10
             lineSpacing = 4.5
             verticalInset = 16
             userGutter = 72
-            bubbleRadius = 18
+            bubbleRadius = 13
             bubbleInset = CGSize(width: 14, height: 9)
+            lineInset = CGSize(width: 14, height: 9)
+            detailSize = 12.5
+            tagSize = 10.5
+            labelWidth = 104
+            clampLines = 4
         case .compact:
-            body = .system(size: 13)
+            bodySize = 12.5
             codeSize = 11
             toolSize = 11
-            turnSpacing = 16
+            turnSpacing = 14
             blockSpacing = 7
             lineSpacing = 3
-            verticalInset = 11
+            verticalInset = 10
             userGutter = 32
-            bubbleRadius = 15
+            bubbleRadius = 13
             bubbleInset = CGSize(width: 11, height: 7)
+            lineInset = CGSize(width: 10, height: 6)
+            detailSize = 11.5
+            tagSize = 10
+            labelWidth = 84
+            clampLines = 6
         case .pip:
-            body = .system(size: 12)
+            bodySize = 11.5
             codeSize = 10
             toolSize = 10
             turnSpacing = 9
-            blockSpacing = 4
+            blockSpacing = 5
             lineSpacing = 1.5
             verticalInset = 6
             userGutter = 20
-            bubbleRadius = 11
+            bubbleRadius = 10
             bubbleInset = CGSize(width: 8, height: 4)
+            lineInset = CGSize(width: 8, height: 5)
+            detailSize = 11
+            tagSize = 9.5
+            labelWidth = 70
+            clampLines = 3
         }
+        body = .system(size: bodySize)
     }
 
     var wrapsCode: Bool { density != .regular }
@@ -526,7 +707,7 @@ private struct PrettyMetrics {
 
 // MARK: - Surfaces (contrast / transparency aware)
 
-private struct PrettySurface: ViewModifier {
+struct PrettySurface: ViewModifier {
     enum Role { case userTurn, code, raw }
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -552,7 +733,7 @@ private struct PrettySurface: ViewModifier {
 
     private var fill: Color {
         switch role {
-        case .userTurn: return Palette.userBubble
+        case .userTurn: return Palette.selection
         case .code: return Palette.well
         case .raw: return Palette.panel
         }
@@ -561,7 +742,7 @@ private struct PrettySurface: ViewModifier {
 
 // MARK: - Turns
 
-private struct PrettyUserTurn: View {
+struct PrettyUserTurn: View {
     let text: String
     /// Says the prompt carried media, on a surface that draws no attachment action for it.
     var attachmentNote: String? = nil
@@ -576,7 +757,7 @@ private struct PrettyUserTurn: View {
                 Text(verbatim: text.trimmingCharacters(in: .newlines))
                     .font(metrics.body)
                     .lineSpacing(metrics.lineSpacing)
-                    .foregroundStyle(Palette.userBubbleInk)
+                    .foregroundStyle(Palette.foreground)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, metrics.bubbleInset.width)
                     .padding(.vertical, metrics.bubbleInset.height)
@@ -597,29 +778,11 @@ private struct PrettyUserTurn: View {
     }
 }
 
-/// A run of adjacent routine entries, set close together in their place. Every line is visible:
-/// nothing that needs the developer can sit behind a count. Each line is the conversation's own
-/// row, so it keeps its source and fields action.
-private struct PrettyActivityRun<Row: View>: View {
-    let activity: ConversationActivity
-    let metrics: PrettyMetrics
-    @ViewBuilder let row: (TranscriptEntry) -> Row
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: metrics.density == .pip ? 1 : 3) {
-            ForEach(activity.entries) { entry in row(entry) }
-        }
-        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(activity.accessibilityLabel)
-    }
-}
-
 /// One activity line, in the terminal's restrained voice: a small symbol, a short label and the
 /// event's readable detail. An event that may need the developer, such as harness stderr or a
 /// permission notice, is drawn in the attention ink; the rest are secondary. Details wrap, so
 /// nothing is cut; a record with only fields says so and its fields action opens them.
-private struct PrettyActivityRow: View {
+struct PrettyActivityRow: View {
     let event: ActivityEvent
     let metrics: PrettyMetrics
 
@@ -650,69 +813,11 @@ private struct PrettyActivityRow: View {
     }
 }
 
-/// Reasoning the provider emitted as live ACP thought chunks, joined into one thought. Closed, it
-/// is one quiet line, "Thinking" and the start of the thought; open, the whole text in italics
-/// beside a tinted rule, so it never reads as the agent's reply. Only emitted thought chunks are
-/// shown here; nothing is inferred from other output.
-private struct PrettyThinkingRow: View {
-    let text: String
-    let metrics: PrettyMetrics
-    @Binding var isExpanded: Bool
-
-    var body: some View {
-        let thought = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = thought.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        let size = metrics.toolSize - (metrics.density == .regular ? 0.5 : 0)
-        VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.6) {
-            Button { isExpanded.toggle() } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: size - 3, weight: .semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: size - 2)
-                    Image(systemName: "brain").font(.system(size: size - 1))
-                    Text("Thinking").fontWeight(.medium)
-                    if !isExpanded, !preview.isEmpty {
-                        Text(verbatim: preview).italic().foregroundStyle(Palette.secondary)
-                            .lineLimit(1).truncationMode(.tail)
-                    }
-                }
-                .font(.system(size: size))
-                .foregroundStyle(Palette.focus)
-                .padding(.vertical, metrics.density == .pip ? 1 : 3)
-                .padding(.trailing, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .textSelection(.disabled)
-            .help(isExpanded ? "Hide the provider's thinking" : "Show the thinking the provider reported")
-            .accessibilityLabel("Thinking")
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint("Shows or hides the reasoning the provider emitted for this turn")
-            if isExpanded {
-                Text(verbatim: thought.isEmpty ? "The provider sent no thinking text." : thought)
-                    .font(metrics.body.italic())
-                    .lineSpacing(metrics.lineSpacing)
-                    .foregroundStyle(Palette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, metrics.density == .pip ? 8 : 12)
-                    .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 1).fill(Palette.focus.opacity(0.45)).frame(width: 2)
-                    }
-                    .accessibilityLabel("Thinking: \(thought)")
-            }
-        }
-        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
-        .accessibilityElement(children: .contain)
-    }
-}
-
 /// Text from a role that is neither the developer nor the agent, such as `system` or `developer`.
 /// It is named by its role and set in the terminal face at lower prominence, as written: it is
 /// often harness output, so it is not read as Markdown. An entry with no text says so and leaves
 /// its content to the fields.
-private struct PrettyRoleNote: View {
+struct PrettyRoleNote: View {
     let role: String
     let text: String
     let metrics: PrettyMetrics
@@ -749,7 +854,7 @@ private struct PrettyRoleNote: View {
     }
 }
 
-private struct PrettyAssistantTurn: View {
+struct PrettyAssistantTurn: View {
     let text: String
     let metrics: PrettyMetrics
 
@@ -765,7 +870,7 @@ private struct PrettyAssistantTurn: View {
 
 // MARK: - Markdown blocks
 
-private struct PrettyBlock: Identifiable {
+struct PrettyBlock: Identifiable {
     enum Content {
         case text(AttributedString, headingLevel: Int?)
         case code(String, language: String?)
@@ -780,7 +885,7 @@ private struct PrettyBlock: Identifiable {
     var quoted: Bool = false
 }
 
-private struct PrettyBlockView: View {
+struct PrettyBlockView: View {
     let block: PrettyBlock
     let metrics: PrettyMetrics
 
@@ -832,7 +937,7 @@ private struct PrettyBlockView: View {
     }
 }
 
-private struct PrettyCodeBlock: View {
+struct PrettyCodeBlock: View {
     let code: String
     let language: String?
     let metrics: PrettyMetrics
@@ -869,7 +974,7 @@ private struct PrettyCodeBlock: View {
     }
 }
 
-private struct PrettyTable: View {
+struct PrettyTable: View {
     let rows: [[AttributedString]]
     let hasHeader: Bool
     let metrics: PrettyMetrics
@@ -896,7 +1001,7 @@ private struct PrettyTable: View {
 
 // MARK: - Markdown parsing (Foundation, full syntax)
 
-private enum PrettyMarkdown {
+enum PrettyMarkdown {
     static func parse(_ source: String) -> [PrettyBlock] {
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,
@@ -1032,7 +1137,7 @@ private enum PrettyMarkdown {
 
 /// Keeps streaming re-renders cheap: unchanged messages are never re-parsed.
 @MainActor
-private final class PrettyMarkdownCache {
+final class PrettyMarkdownCache {
     static let shared = PrettyMarkdownCache()
 
     private final class Box {
@@ -1058,7 +1163,7 @@ private final class PrettyMarkdownCache {
 
 // MARK: - Raw / legacy output (no Markdown, no speaker inference)
 
-private struct PrettyRawBlock: View {
+struct PrettyRawBlock: View {
     let text: String
     let metrics: PrettyMetrics
     /// What the block holds, stated above it.
