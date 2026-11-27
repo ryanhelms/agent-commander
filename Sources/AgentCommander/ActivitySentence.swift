@@ -484,6 +484,9 @@ struct ActivityFacts {
     /// Plan records by the console sequence of the event each was kept from. A sequence two
     /// records claim names neither.
     private(set) var plans: [Int: ToolDetailSummary] = [:]
+    /// Who approves the console's held call when that is not the developer: the coordinator or
+    /// parent that answers a delegated worker's request (`WorkerInputRoute`). Nil: the developer.
+    var approvalOwner: WorkerInputOwner? = nil
 
     static var none: ActivityFacts { ActivityFacts() }
 
@@ -964,13 +967,17 @@ enum ActivityWords {
                     : ActivitySentence(.text("Thought for "), .mono(ElapsedTime.text(duration)))
     }
 
-    /// What a held call's line reads: "Needs your approval to run `command`".
-    static func approval(name: String, detail: String?, summary: ToolDetailSummary?) -> ActivitySentence {
+    /// What a held call's line reads: "Needs your approval to run `command`". While the worker's
+    /// coordinator or parent answers (`owner`), it names them and asks nothing of the reader:
+    /// "Waiting for the coordinator's approval to run `command`".
+    static func approval(name: String, detail: String?, summary: ToolDetailSummary?,
+                         owner: WorkerInputOwner? = nil) -> ActivitySentence {
+        let lead = owner.map { "Waiting for \($0.phrase)'s approval to " } ?? "Needs your approval to "
         if CommanderTool(name: name) == nil, providerKind(name) == .shell,
            let command = fact(name, detail: detail, summary: summary) {
-            return ActivitySentence(.text("Needs your approval to run "), .mono(middle(command)))
+            return ActivitySentence(.text(lead + "run "), .mono(middle(command)))
         }
-        return ActivitySentence(.text("Needs your approval to use "), .mono(CommanderTool(name: name)?.rawValue ?? bareName(name)))
+        return ActivitySentence(.text(lead + "use "), .mono(CommanderTool(name: name)?.rawValue ?? bareName(name)))
     }
 }
 
@@ -1013,7 +1020,8 @@ enum ActivitySteps {
         let summary = facts.summary(entry.detailKey)
         var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
         if status == .awaitingApproval {
-            step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary)
+            step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary,
+                                                   owner: facts.approvalOwner)
         }
         let record = facts.record(entry.detailKey)
         apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
@@ -1086,7 +1094,8 @@ enum ActivitySteps {
             let status = first.toolStatus
             step.state = state(status)
             if status == .awaitingApproval {
-                step.sentence = ActivityWords.approval(name: first.tool.rawValue, detail: first.detail, summary: nil)
+                step.sentence = ActivityWords.approval(name: first.tool.rawValue, detail: first.detail, summary: nil,
+                                                       owner: facts.approvalOwner)
             }
             var wording = ActivityWords.commander(first, detail: facts.summary(first.entry.id))
             // A lone wait that returned no answer is still pending for its request.

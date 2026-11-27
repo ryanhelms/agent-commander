@@ -48,6 +48,56 @@ func TestHeldWorkersStayAddressableAfterCoordinatorFinishes(t *testing.T) {
 	}
 }
 
+func TestNativeWorkerRepliesFollowInputControl(t *testing.T) {
+	f := newFixture(t)
+	coordinator := f.run()
+	worker := f.delegate(coordinator, "answer routing")
+	path := "/v1/workers/" + worker.ID
+	f.call("POST", path+"/state", worker.Token, map[string]string{"state": "working"}, 200, "")
+	f.call("POST", path+"/control/ready", worker.Token, struct{}{}, 200, "")
+
+	ask := func(spec LaunchSpec, prompt string) string {
+		t.Helper()
+		var question Question
+		raw := f.call("POST", "/v1/workers/"+spec.ID+"/questions", spec.Token,
+			map[string]any{"question": prompt, "choices": []QuestionChoice{{ID: "allow", Label: "Allow once"}}}, 201, "")
+		if err := json.Unmarshal(raw, &question); err != nil {
+			t.Fatal(err)
+		}
+		return "/v1/requests/" + question.ID + "/reply"
+	}
+	control := func(held bool, generation int) {
+		t.Helper()
+		f.call("POST", path+"/control", "", map[string]any{"held": held, "generation": generation}, 200, "")
+	}
+	nativeReply := func(target string, generation, code int) {
+		t.Helper()
+		f.call("POST", target, "", map[string]any{"answer": "allow", "generation": generation}, code, "")
+	}
+	ownerAnswer := map[string]string{"answer": "allow"}
+
+	agentRequest := ask(worker, "Coordinator decision")
+	nativeReply(agentRequest, 1, 409)
+	f.call("POST", agentRequest, coordinator.Token, ownerAnswer, 200, "")
+
+	control(true, 1)
+	heldRequest := ask(worker, "Developer decision")
+	f.call("POST", heldRequest, coordinator.Token, ownerAnswer, 409, "")
+	nativeReply(heldRequest, 2, 200)
+
+	returned := ask(worker, "Back to coordinator")
+	control(false, 2)
+	nativeReply(returned, 2, 409)
+	nativeReply(heldRequest, 2, 200) // The same settled answer remains idempotent.
+	control(true, 3)
+	nativeReply(returned, 2, 409)
+	control(false, 4)
+	f.call("POST", returned, coordinator.Token, ownerAnswer, 200, "")
+
+	escalation := ask(coordinator, "Needs the developer")
+	f.call("POST", escalation, "", ownerAnswer, 200, "")
+}
+
 func TestManagedWorkerControl(t *testing.T) {
 	f := newFixture(t)
 	coord := f.run()

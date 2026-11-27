@@ -870,11 +870,13 @@ struct TerminalStatusLine<Trailing: View>: View {
     /// The execution host, while its persistent SSH link is reconnecting. Nil otherwise. It
     /// follows the status, which stays the worker's own.
     var reconnectingHost: String? = nil
+    /// The status word in place of the state's own label (`WorkerPresentation.statusLabel`).
+    var statusLabel: String? = nil
     @ViewBuilder let trailing: Trailing
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            TerminalStatus(state: state, size: size)
+            TerminalStatus(state: state, size: size, label: statusLabel)
             // Its word is kept ahead of the trailing cue's. In a narrow tile the mark stands alone.
             if let reconnectingHost { HostLinkStatus(host: reconnectingHost, size: size).layoutPriority(2) }
             if let request, let openRequest {

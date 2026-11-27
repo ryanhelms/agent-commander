@@ -250,6 +250,8 @@ import Testing
 
     @Test func aRequestIsNotCountedAsInViewWhileAnotherPageShows() throws {
         let store = PreviewStore(scenario: .coordinatorWall)
+        // A wall worker's request is the developer's only while they control that worker.
+        store.take("W-047")
         let content = DesignFixture.content(for: store)
         let ui = CockpitPresentationState()
         ui.suppressesVisibleSources = true
