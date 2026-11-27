@@ -168,7 +168,11 @@ final class ToolDetailStore {
     private(set) var settings = TranscriptSettings()
     /// Why the last settings change was not saved. Nil once one is.
     private(set) var settingsError: String?
+    /// The service in use has answered with its saved setting, or accepted a change to it.
     private(set) var settingsLoaded = false
+    /// Counts each change of service, so an answer from the service just left is dropped.
+    @ObservationIgnored private var settingsGeneration = 0
+    @ObservationIgnored private var isLoadingSettings = false
     private var summaries: [String: [String: ToolDetailSummary]] = [:]
     private var records: [String: [String: ToolDetailRecord]] = [:]
     @ObservationIgnored private var revisions: [String: UInt64] = [:]
@@ -234,20 +238,52 @@ final class ToolDetailStore {
         records[worker, default: [:]][key] = record
     }
 
+    /// Whether a drawn value that looks like a secret is hidden. Until the service in use has
+    /// said what was saved, the answer is yes: a transcript drawn at launch, or just after a
+    /// change of host, never shows a value the saved setting hides. A store of fixed values
+    /// reads nothing, so its setting is the one it was given.
+    var hidesSecrets: Bool { settings.hideSecrets || (source != nil && !settingsLoaded) }
+
     func loadSettings() async {
-        guard let source, let read = try? await source.readSettings() else { return }
+        let generation = settingsGeneration
+        guard let source, let read = try? await source.readSettings(), generation == settingsGeneration else { return }
         settings = read
         settingsLoaded = true
+    }
+
+    /// Reads the saved setting once per service: when the service first answers, and when a
+    /// transcript is drawn before it has. A failed read is tried again at the next of those.
+    func loadSettingsIfNeeded() async {
+        guard source != nil, !settingsLoaded, !isLoadingSettings else { return }
+        let generation = settingsGeneration
+        isLoadingSettings = true
+        await loadSettings()
+        // A change of service during the read freed the flag for the new service's read.
+        if generation == settingsGeneration { isLoadingSettings = false }
+    }
+
+    /// The selected service changed. The last one's setting is dropped, so values are hidden
+    /// until the new service says what it holds.
+    func serviceChanged() {
+        settingsGeneration += 1
+        isLoadingSettings = false
+        settings = TranscriptSettings()
+        settingsLoaded = false
+        settingsError = nil
     }
 
     /// Saves a change. The shown value moves only when the service accepts it.
     func save(_ next: TranscriptSettings) async {
         guard let source else { settings = next; return }
+        let generation = settingsGeneration
         do {
-            settings = try await source.writeSettings(next)
+            let saved = try await source.writeSettings(next)
+            guard generation == settingsGeneration else { return }
+            settings = saved
             settingsError = nil
             settingsLoaded = true
         } catch {
+            guard generation == settingsGeneration else { return }
             settingsError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
     }

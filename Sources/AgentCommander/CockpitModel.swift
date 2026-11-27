@@ -110,6 +110,8 @@ final class CockpitModel {
         notice = nil
         receivedStreamState = false
         usingLegacyService = false
+        // The new service's transcript setting is not known yet: values stay hidden until it is.
+        toolDetails.serviceChanged()
         sending = []
         replyAttempts = [:]
         followUpAttempts = [:]
@@ -161,6 +163,8 @@ final class CockpitModel {
 
     private func apply(_ latest: [Run]) {
         connection = .online
+        // The service answers: read its saved transcript setting before a result is opened.
+        if !toolDetails.settingsLoaded { Task { await toolDetails.loadSettingsIfNeeded() } }
         if runs != latest { runs = latest }
         if selected == nil { select(runs.last?.id) }
     }

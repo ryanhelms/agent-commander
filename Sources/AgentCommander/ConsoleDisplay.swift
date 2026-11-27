@@ -389,7 +389,8 @@ struct PrettyConsoleView: View {
         let items = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
         // The run's jobs, then the provider's own: background commands and child agents.
         let jobs = background + ProviderJobs.jobs(summaries: records, record: { key in store?.record(worker: worker, key: key) },
-                                                  entries: entries, worker: worker)
+                                                  entries: entries, worker: worker,
+                                                  hidesSecrets: store?.hidesSecrets ?? false)
         guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
             return Layout(items: items, jobs: jobs)
         }
@@ -467,6 +468,8 @@ struct PrettyConsoleView: View {
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
         .task(id: detailRevision) {
+            // The saved setting first, on any surface: until it is known, job text is drawn hidden.
+            await details?.loadSettingsIfNeeded()
             await details?.refresh(worker: consoleID)
             // A report's text may be only in its stored record: summaries leave out long values.
             for key in ActivitySteps.reportsToRead(entries) { await details?.open(worker: consoleID, key: key) }

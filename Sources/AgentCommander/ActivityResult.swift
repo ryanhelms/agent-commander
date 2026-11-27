@@ -691,6 +691,77 @@ enum SecretValues {
         return hiddenCount == 0 ? (text, 0) : (words.joined(separator: " "), hiddenCount)
     }
 
+    /// Prose with secrets hidden: a job's exit summary, a failure's reason, a description. Whole
+    /// JSON is masked as Source masks it. Other text is read word by word, across lines: a
+    /// `Bearer …`, `sk-…` or JWT word, and the value joined to a secret-looking key
+    /// (`API_TOKEN=…`, `--password=…`, `"token":"…"`). Quotes, brackets and sentence punctuation
+    /// around a word are kept. Mask before cutting a sentence out of the text: a cut secret no
+    /// longer looks like one. `count` is how many values were hidden.
+    static func masked(prose text: String) -> (text: String, count: Int) {
+        if let reading = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines)), reading.value.string == nil {
+            return masked(text: text)
+        }
+        var out = ""
+        var hiddenCount = 0
+        var previousWasBearer = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let isSpace = text[index].isWhitespace
+            let end = text[index...].firstIndex { $0.isWhitespace != isSpace } ?? text.endIndex
+            let run = text[index..<end]
+            index = end
+            guard !isSpace else { out += run; continue }
+            let core = run.drop { opening.contains($0) }
+            let lead = run[run.startIndex..<core.startIndex]
+            var word = core
+            while let last = word.last, closing.contains(last) { word = word.dropLast() }
+            let trail = core[word.endIndex...]
+            let wasBearer = previousWasBearer
+            previousWasBearer = word.lowercased() == "bearer"
+            if !word.isEmpty, valueLooksSecret(String(word)) || (wasBearer && word.count > 8) {
+                hiddenCount += 1
+                out += lead
+                out += hidden(String(word))
+                out += trail
+            } else if let value = keyedValue(in: word) {
+                hiddenCount += 1
+                out += lead
+                out += word[..<value.lowerBound]
+                out += hidden(String(word[value]))
+                out += word[value.upperBound...]
+                out += trail
+            } else {
+                out += run
+            }
+        }
+        return hiddenCount == 0 ? (text, 0) : (out, hiddenCount)
+    }
+
+    private static let quotes: Set<Character> = ["\"", "'", "`"]
+    private static let opening: Set<Character> = quotes.union(["(", "[", "{", "<"])
+    private static let closing: Set<Character> = quotes.union([")", "]", "}", ">", ".", ",", ";", ":", "!", "?"])
+
+    /// The value joined to a secret-looking key inside one word: what follows `=` or `:`, without
+    /// its quotes. Nil when the word holds no such key, or the key has no value.
+    private static func keyedValue(in word: Substring) -> Range<Substring.Index>? {
+        for at in word.indices where word[at] == "=" || word[at] == ":" {
+            var keyEnd = at
+            while keyEnd > word.startIndex, quotes.contains(word[word.index(before: keyEnd)]) { keyEnd = word.index(before: keyEnd) }
+            var keyStart = keyEnd
+            while keyStart > word.startIndex {
+                let before = word.index(before: keyStart)
+                guard word[before].isLetter || word[before].isNumber || word[before] == "_" || word[before] == "-" else { break }
+                keyStart = before
+            }
+            guard keyStart < keyEnd, keyLooksSecret(String(word[keyStart..<keyEnd])) else { continue }
+            var from = word.index(after: at), to = word.endIndex
+            while from < to, quotes.contains(word[from]) { from = word.index(after: from) }
+            while to > from, quotes.contains(word[word.index(before: to)]) { to = word.index(before: to) }
+            if from < to { return from..<to }
+        }
+        return nil
+    }
+
     private static func count(_ value: OrderedJSON, key: String = "") -> Int {
         switch value {
         case .string: looksSecret(key: key, value: value) ? 1 : 0

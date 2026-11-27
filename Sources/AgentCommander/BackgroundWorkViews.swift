@@ -221,6 +221,13 @@ struct BackgroundStack: View {
 
     /// A worker opens to its latest group (closed), any failure and its live line, then
     /// "Open <name>". A follow-up opens to its text and status with origin. Source is last.
+    /// The stored exit summary an opened line may draw, behind `SecretText`. A failed line gets
+    /// none: its reason is the first sentence of the masked summary, and opening the line adds
+    /// no text from the record, so nothing there can show a hidden value.
+    static func exitSummary(_ row: BackgroundStackLayout.Row) -> String? {
+        row.line.isFailure ? nil : row.job.result
+    }
+
     @ViewBuilder private func detail(_ row: BackgroundStackLayout.Row) -> some View {
         let job = row.job
         VStack(alignment: .leading, spacing: 8) {
@@ -259,9 +266,9 @@ struct BackgroundStack: View {
                 origin(job, "from the run's record, by integration ID")
             case .providerChild, .command:
                 // The exit summary the full record holds, then where the state was read from.
-                if let result = job.result, !row.line.isFailure {
-                    Text(verbatim: result).font(metrics.body).foregroundStyle(.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                // Under the hide-secrets setting it is drawn masked, with Reveal.
+                if let result = Self.exitSummary(row) {
+                    SecretText(text: result, hidden: job.hiddenResult, count: job.hiddenCount, metrics: metrics)
                 }
                 origin(job, "from this console's records, by tool call ID")
             case .question:
