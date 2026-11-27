@@ -31,6 +31,7 @@ type pilotPeer struct {
 	agent                              *Agent
 	otherRun                           *pilotPeer
 	turns                              atomic.Int32
+	ended                              atomic.Bool
 }
 
 func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
@@ -59,7 +60,11 @@ func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
 	})
 	for _, coordinator := range []*pilotPeer{who, who.otherRun} {
 		mux.HandleFunc("GET /v1/ag-ui/workers/"+coordinator.actor, func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{"workerId": coordinator.actor, "role": "coordinator", "runId": coordinator.run, "runStatus": "running", "generation": 1})
+			status := "running"
+			if coordinator.ended.Load() {
+				status = "completed"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workerId": coordinator.actor, "role": "coordinator", "runId": coordinator.run, "runStatus": status, "generation": 1})
 		})
 	}
 	base := "/v1/ag-ui/workers/" + who.worker

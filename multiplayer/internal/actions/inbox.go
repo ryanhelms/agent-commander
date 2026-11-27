@@ -36,37 +36,48 @@ const inboxWaitMaxSeconds = 10
 
 var errInboxNotConfigured = errors.New("This coordinator has no inbox. Ask the owner to share this running coordinator as an Agent resource and grant the peer Send the coordinator a note")
 
-func requireActiveCoordinator(ctx context.Context, socket, worker, run string) error {
-	if !identifier.MatchString(worker) || !identifier.MatchString(run) {
-		return ErrDenied
+// CoordinatorInboxEnded checks only the enrolled worker and run. An unavailable
+// service or a different worker binding cannot establish that this run ended.
+func CoordinatorInboxEnded(ctx context.Context, socket string, r Resource) (bool, error) {
+	if !validCoordinatorInbox(r) {
+		return false, ErrDenied
 	}
-	client, e := commanderClient(socket)
-	if e != nil {
-		return e
-	}
-	defer client.CloseIdleConnections()
-	info, e := workerInfo(ctx, client, worker)
-	if e != nil {
-		return e
-	}
-	if info.Role != "coordinator" || info.RunID != run || info.RunStatus != "running" {
-		return ErrDenied
-	}
-	return nil
+	return coordinatorInboxEnded(ctx, socket, r.Target, r.Run)
 }
 
-func activeMailbox(ctx context.Context, cfg Config, r Resource) (string, error) {
-	if r.Kind != "agent" || !r.Coordinator || !identifier.MatchString(r.Target) || !identifier.MatchString(r.Run) {
-		return "", ErrDenied
+func coordinatorInboxEnded(ctx context.Context, socket, worker, run string) (bool, error) {
+	if !identifier.MatchString(worker) || !identifier.MatchString(run) {
+		return false, ErrDenied
 	}
-	if e := requireActiveCoordinator(ctx, cfg.CommanderSocket, r.Target, r.Run); e != nil {
-		return "", e
+	client, err := commanderClient(socket)
+	if err != nil {
+		return false, err
 	}
+	defer client.CloseIdleConnections()
+	info, err := workerInfo(ctx, client, worker)
+	if err != nil {
+		return false, err
+	}
+	if info.Role != "coordinator" || info.RunID != run {
+		return false, ErrDenied
+	}
+	switch info.RunStatus {
+	case "completed", "failed", "stopped":
+		return true, nil
+	case "running":
+		return false, nil
+	default:
+		return false, ErrUnavailable
+	}
+}
+
+func validCoordinatorInbox(r Resource) bool {
+	return r.Kind == "agent" && r.Coordinator && identifier.MatchString(r.Target) && identifier.MatchString(r.Run)
+}
+
+func mailboxPath(cfg Config, r Resource) string {
 	dir := filepath.Join(cfg.StateDir, "coordinator-inbox", hash([]byte(r.Target+"\x00"+r.Run)))
-	if e := privateDir(dir); e != nil {
-		return "", ErrUnavailable
-	}
-	return filepath.Join(dir, "messages.json"), nil
+	return filepath.Join(dir, "messages.json")
 }
 
 func readMailbox(path string) (coordinatorMailbox, error) {
@@ -94,13 +105,17 @@ func coordinatorInboxSnapshot(ctx context.Context, cfg Config, worker, run strin
 		if r.Kind != "agent" || !r.Coordinator || r.Target != worker || r.Run != run {
 			continue
 		}
-		path, e := activeMailbox(ctx, cfg, r)
-		if e != nil {
-			return coordinatorMailbox{}, e
+		ended, err := CoordinatorInboxEnded(ctx, cfg.CommanderSocket, r)
+		if err != nil {
+			return coordinatorMailbox{}, err
 		}
-		return readMailbox(path)
+		if ended {
+			return coordinatorMailbox{}, ErrDenied
+		}
+		return readMailbox(mailboxPath(cfg, r))
 	}
-	if e := requireActiveCoordinator(ctx, cfg.CommanderSocket, worker, run); e != nil {
+	ended, err := coordinatorInboxEnded(ctx, cfg.CommanderSocket, worker, run)
+	if err != nil || ended {
 		return coordinatorMailbox{}, ErrDenied
 	}
 	return coordinatorMailbox{}, errInboxNotConfigured
@@ -173,11 +188,15 @@ func coordinatorMessage(ctx context.Context, cfg Config, r Resource, req Request
 	if len(encoded) > 4096 {
 		return nil, ErrInvalid
 	}
-	path, e := activeMailbox(ctx, cfg, r)
-	if e != nil {
-		return nil, e
+	if !validCoordinatorInbox(r) {
+		return nil, ErrDenied
 	}
-	lock, e := os.OpenFile(filepath.Join(filepath.Dir(path), ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	path := mailboxPath(cfg, r)
+	dir := filepath.Dir(path)
+	if e := privateDir(dir); e != nil {
+		return nil, ErrUnavailable
+	}
+	lock, e := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
 		return nil, ErrUnavailable
 	}
@@ -199,6 +218,13 @@ func coordinatorMessage(ctx context.Context, cfg Config, r Resource, req Request
 	}
 	if recoverOnly {
 		return nil, ErrUncertain
+	}
+	ended, e := CoordinatorInboxEnded(ctx, cfg.CommanderSocket, r)
+	if e != nil {
+		return nil, e
+	}
+	if ended {
+		return nil, ErrCoordinatorInboxEnded
 	}
 	if len(box.Messages) == 32 {
 		box.Messages = box.Messages[1:]

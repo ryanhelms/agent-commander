@@ -160,6 +160,9 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Unlock()
 	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
+		if r.InboxEnded {
+			row["inboxEnded"] = true
+		}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
 		}
@@ -169,7 +172,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
 			own = append(own, row)
-		} else if r.Owner != s.User {
+		} else if r.Owner != s.User && !r.InboxEnded {
 			shared = append(shared, row)
 		}
 	}
@@ -802,6 +805,14 @@ func (a *Agent) Handler() http.Handler {
 				rs, e = a.resources(r.Context(), s)
 				if e == nil {
 					rs = slices.DeleteFunc(rs, func(r control.Resource) bool { return r.Owner == s.User })
+					ended := []control.Resource{}
+					rs = slices.DeleteFunc(rs, func(resource control.Resource) bool {
+						if !resource.InboxEnded {
+							return false
+						}
+						ended = append(ended, resource)
+						return true
+					})
 					contracts := make(map[string]actions.ActionContract)
 					for _, resource := range rs {
 						for _, action := range resource.Actions {
@@ -813,7 +824,7 @@ func (a *Agent) Handler() http.Handler {
 							}
 						}
 					}
-					res = map[string]any{"resources": rs, "actionContracts": contracts}
+					res = map[string]any{"resources": rs, "endedCoordinatorInboxes": ended, "actionContracts": contracts}
 				}
 			}
 		case "online":

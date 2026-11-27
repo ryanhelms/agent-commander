@@ -299,6 +299,7 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 	a.sessionStop = cancel
 	a.problem = ""
 	a.mu.Unlock()
+	go a.syncCoordinatorInboxes(ctx, who, l)
 	go func() {
 		defer cancel()
 		for wait(ctx, 15*time.Second) {

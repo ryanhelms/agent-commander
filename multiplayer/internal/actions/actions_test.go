@@ -472,10 +472,16 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 	if e = save(receiptPath, interrupted); e != nil {
 		t.Fatal(e)
 	}
+	active.Store(false)
+	ended, e := CoordinatorInboxEnded(ctx, socket, resource)
+	if e != nil || !ended {
+		t.Fatalf("completed inbox: ended=%v, error=%v", ended, e)
+	}
 	recovered, e := action(t, cfg, "m1", "alice", "design", "agent.message", msg)
 	if e != nil || recovered["messageId"] != delivered {
 		t.Fatal(recovered, e)
 	}
+	active.Store(true)
 	for i := 0; i < 32; i++ {
 		if _, e := action(t, cfg, fmt.Sprintf("note-%d", i), "alice", "design", "agent.message", map[string]string{"text": fmt.Sprint(i)}); e != nil {
 			t.Fatal(e)
@@ -537,7 +543,23 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 	if _, e := CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{}); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
-	if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrDenied) {
+	for range 2 {
+		if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrCoordinatorInboxEnded) || FailureCode(e) != "coordinator_inbox_ended" {
+			t.Fatal(e)
+		}
+	}
+	if _, e := action(t, cfg, "no-grant-ended", "bob", "design", "agent.message", msg); !errors.Is(e, ErrDenied) {
+		t.Fatal(e)
+	}
+	active.Store(true)
+	ended, e = CoordinatorInboxEnded(ctx, socket, resource)
+	if e != nil || ended {
+		t.Fatalf("reopened inbox: ended=%v, error=%v", ended, e)
+	}
+	if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrCoordinatorInboxEnded) {
+		t.Fatalf("replay unexpectedly changed the original receipt: %v", e)
+	}
+	if _, e := action(t, cfg, "new-after-reopen", "alice", "design", "agent.message", msg); e != nil {
 		t.Fatal(e)
 	}
 }
