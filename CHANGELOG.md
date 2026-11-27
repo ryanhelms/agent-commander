@@ -4,6 +4,10 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Added
+
+- See the relays near you at the top of the network tray and in Add server: each relay found on your tailnet or local network, how it admits people, and a checklist that walks you through joining it. A new relay marks the menu bar icon and posts one notification, which you can turn off on the Network tab.
+
 ### Changed
 
 - GitHub publishes pilot releases for public download. Source builds can fetch the pinned Go build inputs without a GitHub login.

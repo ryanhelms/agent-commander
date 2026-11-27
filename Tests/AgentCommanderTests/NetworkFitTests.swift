@@ -53,7 +53,7 @@ let networkFitRenderDirectory = ProcessInfo.processInfo.environment["NETWORK_FIT
         let layout = NetworkSplitLayout()
         // Room to spare: the inspector at its full 420 pt.
         #expect(layout.arrangement(width: 1148, collectionMinimum: 600)
-                == .init(beside: true, collection: 1148 - 16 - 420, inspector: 420))
+                == .init(beside: true, collection: 712, inspector: 420))    // 1148 - 16 - 420
         // Tight: the inspector narrows, but never under 400 pt.
         #expect(layout.arrangement(width: 1020, collectionMinimum: 600) == .init(beside: true, collection: 600, inspector: 404))
         // Too tight: the inspector goes under, and neither is wider than the page.

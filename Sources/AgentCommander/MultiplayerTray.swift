@@ -899,7 +899,8 @@ private struct MultiplayerPanelContent: View {
         let trouble = model.servers.filter { $0.state == .certChanged || $0.state == .error }.count
         return [
             MultiplayerTabBar.Tab(id: .agents, count: share.waitingApprovals.count + share.waitingAccess.count, isHot: true),
-            MultiplayerTabBar.Tab(id: .network, count: trouble, isHot: true),
+            // A relay the person hasn't seen counts here until the Network tab shows it.
+            MultiplayerTabBar.Tab(id: .network, count: trouble + model.discovery.newCount, isHot: true),
             MultiplayerTabBar.Tab(id: .people, count: requests + model.unseen, isHot: requests > 0),
         ]
     }
@@ -937,6 +938,8 @@ private struct MultiplayerPanelContent: View {
         switch model.route {
         case .home: home
         case .addServer:
+            // An invite names its server, so the relays nearby are offered only without one.
+            if model.activeInvite == nil { relaysNearby(showsEmpty: false, onHome: false) }
             MultiplayerAddServerForm(draft: $model.serverDraft, addressProblem: model.addressProblem,
                                      probe: model.currentProbe, canProbe: model.canProbe,
                                      invite: model.activeInvite, inviteProblem: model.invitePinProblem,
@@ -1195,6 +1198,7 @@ private struct MultiplayerPanelContent: View {
             }
         } else {
             if model.servers.isEmpty {
+                relaysNearby(showsEmpty: false, onHome: true)
                 MultiplayerFirstRun(onAddServer: { model.startAddServer() }, onHosting: { model.go(.hosting) })
             } else {
                 Group {
@@ -1271,8 +1275,34 @@ private struct MultiplayerPanelContent: View {
         }
     }
 
+    /// Relays nearby, with the chosen relay's join checklist. What the band lists is marked seen
+    /// while it is on screen. On Add server the Join a tailnet form is already on the page, and
+    /// Save server stays the one primary action.
+    @ViewBuilder private func relaysNearby(showsEmpty: Bool, onHome: Bool, notifies: Binding<Bool>? = nil) -> some View {
+        let discovery = model.discovery
+        let relays = discovery.nearby
+        if showsEmpty || !relays.isEmpty {
+            MultiplayerRelaysNearbyBand(relays: relays, selected: discovery.selected,
+                                        checklist: discovery.selectedRelay.map { discovery.checklist(for: $0) },
+                                        hasLoaded: discovery.hasLoaded, isReading: discovery.isReading,
+                                        failure: discovery.failure, canAct: discovery.canAct,
+                                        notifies: notifies, isProminent: onHome,
+                                        onSelect: { discovery.select($0) },
+                                        onConfirm: { discovery.confirmFingerprint($0) },
+                                        onSignIn: { discovery.signIn($0) },
+                                        onOpenServer: { id in
+                                            discovery.select(nil)
+                                            model.openServer(id)
+                                        },
+                                        onJoinTailnet: onHome ? { model.startAddServer() } : nil)
+                .onAppear { discovery.listAppeared() }
+                .onDisappear { discovery.listDisappeared() }
+        }
+    }
+
     /// Network: the servers, their state and the keys they are known by.
     @ViewBuilder private var networkTab: some View {
+        relaysNearby(showsEmpty: true, onHome: true, notifies: Bindable(model.discovery).notifies)
         MultiplayerServerList(servers: model.servers, now: model.currentDate(), isBusy: model.isBusy,
                               onAdd: { model.startAddServer() },
                               onOpen: { model.openServer($0) },

@@ -254,4 +254,51 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         }
         model.close()
     }
+    /// Relays nearby (DESIGN.md, "Relays nearby"): the band on the Network tab with each checklist
+    /// state, the same band on Add server, and the checklist for a Mac that is on no tailnet.
+    @Test(.enabled(if: multiplayerRenderDirectory != nil)) func drawsRelaysNearby() async throws {
+        let root = URL(fileURLWithPath: try #require(multiplayerRenderDirectory), isDirectory: true)
+        _ = NSApplication.shared
+        defer {
+            unsetenv("COMMANDER_NETWORK_FIXTURE_NOW")
+            unsetenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY")
+        }
+        for (theme, subfolder) in Self.themes {
+            let folder = subfolder.map { root.appendingPathComponent($0, isDirectory: true) } ?? root
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            setenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "nearby", 1)
+            let model = Self.fixtureModel(state: folder.appendingPathComponent("fixture-discovery-state.json"))
+            model.open()
+            await model.settle()
+            let discovery = model.discovery
+            model.tab = .network
+            try await Self.write(model, "relays-nearby", to: folder, theme: theme)
+            for name in ["build-relay", "den-mini", "attic-relay"] {
+                discovery.select(discovery.relays.first { $0.name == name }?.id)
+                try await Self.write(model, "relays-nearby-\(name)", to: folder, theme: theme)
+            }
+            // Confirmed: the relay is in the list and its checklist stands at Sign in.
+            if let den = discovery.relays.first(where: { $0.name == "den-mini" }) {
+                discovery.select(nil)
+                discovery.select(den.id)
+                await discovery.confirmFingerprint(den)?.value
+                await model.settle()
+                try await Self.write(model, "relays-nearby-added", to: folder, theme: theme)
+            }
+            discovery.select(nil)
+            discovery.select(discovery.relays.first { $0.name == "build-relay" }?.id)
+            model.startAddServer()
+            try await Self.write(model, "relays-nearby-add-server", to: folder, theme: theme)
+            model.close()
+
+            setenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "offnet", 1)
+            let off = Self.fixtureModel(state: folder.appendingPathComponent("fixture-discovery-state.json"))
+            off.open()
+            await off.settle()
+            off.tab = .network
+            off.discovery.select(off.discovery.nearby.first?.id)
+            try await Self.write(off, "relays-nearby-off-tailnet", to: folder, theme: theme)
+            off.close()
+        }
+    }
 }

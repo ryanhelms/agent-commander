@@ -210,6 +210,28 @@ struct MultiplayerClient: Sendable {
         return try await fetch(.tailnetJoin, payload, as: MultiplayerTailnetStatus.self)
     }
 
+    // MARK: Relay discovery
+
+    /// The relays found on the tailnet and the local network. Without `refresh` the device agent
+    /// answers with its last pass when that is under a minute old.
+    func discoverRelays(refresh: Bool = false) async throws -> MultiplayerDiscovery {
+        try await fetch(.relayDiscover, refresh ? ["refresh": .bool(true)] : [:], as: MultiplayerDiscovery.self)
+    }
+
+    /// Marks the named relays as seen, so they no longer count as new.
+    func markRelaysSeen(_ ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        try await send(.relayDiscoverSeen, ["relays": .strings(ids)])
+    }
+
+    /// Adds a discovered relay to the server list. `pin` is the key the device agent observed and
+    /// the person confirmed; a relay verified on the tailnet or trusted by macOS takes none.
+    func joinRelay(id: String, pin: String? = nil) async throws -> MultiplayerServerSummary {
+        var payload: [String: MultiplayerPayloadValue] = ["relay": .string(id)]
+        if let pin, !pin.isEmpty { payload["pin"] = .string(pin) }
+        return try await fetch(.relayJoin, payload, as: MultiplayerServerSummary.self)
+    }
+
     /// Sends only the settings that are given.
     func updateServer(id: String, name: String? = nil, favorite: Bool? = nil,
                       autoConnect: Bool? = nil) async throws -> MultiplayerServerSummary {
@@ -353,7 +375,9 @@ struct MultiplayerProcessHelper: MultiplayerHelper {
         let executable = executable
         let arguments = verb.arguments
         // A key login may take the device agent 30 s; its tray server writes within 40 s.
-        let timeout = verb == .tailnetJoin ? max(timeout, .seconds(40)) : timeout
+        // A discovery pass and a join's fresh check of the relay are bounded by the device agent.
+        let timeout = verb == .tailnetJoin ? max(timeout, .seconds(40))
+            : verb == .relayDiscover || verb == .relayJoin ? max(timeout, .seconds(30)) : timeout
         let limit = outputLimit
         let inputLimit = MultiplayerClient.inputLimit(for: verb)
         return try await withTaskCancellationHandler {
