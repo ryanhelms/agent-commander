@@ -105,18 +105,18 @@ import Testing
         // Nothing is shown yet.
         #expect(Self.placed([], records).isEmpty)
         // The entries are another console's: their IDs hold no sequence of this worker.
-        #expect(!Self.placed(wire.messages, records, worker: "x").contains(where: \.isThought))
+        #expect(!Self.placed(wire.messages, records, worker: "x").map(\.isThought).contains(true))
 
         // A first entry whose sequence is not known. A call's is in its stored record.
         var calls = Wire()
         let call = calls.call("Bash", detail: "ls", result: "a")     // w:1, w:2
         calls.say("Done.")                                           // w:3
-        #expect(!Self.placed(calls.messages, records).contains(where: \.isThought))
+        #expect(!Self.placed(calls.messages, records).map(\.isThought).contains(true))
         let known = try Self.records(Self.thought(), PrettyRecordsTests.tool(call, 1))
         #expect(Self.placed(calls.messages, known).first?.isThought == true)
         // The first entry is known, and it is not the first event.
         let later = try Self.records(Self.thought(), PrettyRecordsTests.tool(call, 4))
-        #expect(!Self.placed(calls.messages, later).contains(where: \.isThought))
+        #expect(!Self.placed(calls.messages, later).map(\.isThought).contains(true))
     }
 
     @Test func aRecordWithNoSequenceUnderAnotherKeyIsNeverPlaced() throws {
@@ -124,7 +124,7 @@ import Testing
         wire.say("First reply.")                                     // w:1
         for key in ["thought-0", "m1", "3f2b8c1e-9a4d-4e6f-8b1a-0c2d4e6f8a1b"] {
             let records = try Self.records(Self.thought(key, bytes: 20), Self.thought(key + "-zero", sequence: 0, bytes: 20))
-            #expect(!Self.placed(wire.messages, records).contains(where: \.isThought), "\(key)")
+            #expect(!Self.placed(wire.messages, records).map(\.isThought).contains(true), "\(key)")
             #expect(PrettyRecordPlacement.thoughtsToRead(records).isEmpty, "\(key)")
         }
     }
@@ -206,7 +206,7 @@ import Testing
         """#.utf8))
         let messages = [thought, AGUIMessage(id: "w:2", role: "assistant", content: "Done.")]
         let displayed = TranscriptEntry.displayed(TranscriptEntry.entries(from: messages), mode: .pretty)
-        #expect(displayed.contains(where: \.isThought))
+        #expect(displayed.map(\.isThought).contains(true))
         // The ACP thought's own record, bound to its console event, and a record in the older
         // runner's form: neither adds an entry.
         let records = try Self.records(
