@@ -321,6 +321,8 @@ struct PrettyConsoleView: View {
     var live: PrettyLive? = nil
     /// The console is a coordinator's: its report is the run's result.
     var reportsAsCoordinator = false
+    /// The jobs this console's calls started, each read by exact ID (`BackgroundJobs`).
+    var background: [BackgroundJob] = []
 
     private struct Layout {
         var items: [PrettyItem]
@@ -376,6 +378,13 @@ struct PrettyConsoleView: View {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
                         self.item(item, scope: scope, metrics: metrics)
                             .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
+                    }
+                    // Background work sits at the bottom, above the agent's own live line.
+                    if !background.isEmpty {
+                        BackgroundStack(jobs: background, metrics: metrics, isExpanded: isExpanded, toggle: toggle,
+                                        openRequest: stories.openRequest,
+                                        openSource: access?.openSource)
+                            .padding(.top, shown.isEmpty ? 0 : metrics.blockSpacing * 1.4)
                     }
                     lastLine(layout, metrics: metrics)
                         .padding(.top, shown.isEmpty ? 0 : metrics.blockSpacing * 1.4)

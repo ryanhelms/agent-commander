@@ -509,7 +509,7 @@ The tray keeps its own versions of these:
 
 ### Pretty transcript
 
-This section is the rule for the Pretty view's transcript. Its main view is built: sentences, groups, failure lines, the report, the live line, the Thinking row, typed results with Source, the plan card, the frame and the transcript setting. Two parts are approved and not yet built: background work and the edge cases, marked below. Change either from this section, the [spec](design/mockups/pretty-conversation.md) and the [mockup](design/mockups/pretty-conversation.html). Console mode stays as it is, and so does the provider's output in Terminal mode.
+This section is the rule for the Pretty view's transcript. Its main view is built: sentences, groups, failure lines, the report, the live line, the Thinking row, typed results with Source, the plan card, the frame and the transcript setting. Background work is built for the records the app already holds. Still to build: background work for provider child sessions, background commands and network submits, and the edge cases, marked below. Change either from this section, the [spec](design/mockups/pretty-conversation.md) and the [mockup](design/mockups/pretty-conversation.html). Console mode stays as it is, and so does the provider's output in Terminal mode.
 
 | Part | State | Where |
 |---|---|---|
@@ -519,7 +519,8 @@ This section is the rule for the Pretty view's transcript. Its main view is buil
 | Status line, prompt bubble, request form | Built | `FocusedPrettyConsole.swift`, `ConsoleDisplay.swift` |
 | Message box with queue, Remove and Stop; Settings › Transcript | Built | `PrettyComposer.swift` |
 | Stored tool details: read after the last revision, full record on open | Built | `ToolDetails.swift` |
-| Background work | Not yet built | spec section G |
+| Background work: delegated worker, follow-up, stop and interrupt, pending question, integration | Built | `BackgroundJob.swift`, `BackgroundWorkViews.swift` |
+| Background work: provider child session, background command, network submit | Not yet built | spec section G |
 | Edge cases | Not yet built | spec section H |
 
 **Metrics.** `PrettyMetrics` holds every Pretty size: `body` 13 pt on the focused worker and coordinator, 12.5 pt on a wall tile, 11.5 pt in the PiP; the 9 pt list and field corner, the 5 pt tag and well corner, and the 13 pt corner of the prompt bubble, request form and message box. A Pretty view takes its sizes from there and its inks from `Palette` and `Term`.
@@ -547,7 +548,18 @@ It allows four departures from the rules above, inside the Pretty transcript onl
 
 **State tags.** Monospaced, beside the sentence: `accepted`, `starting`, `running`, `waiting`, `partial`, `uncertain`, `cancelled`, `Blocked`, `Failed`. `Blocked` means the provider refused permission and the tool never ran. A delegation, follow-up, stop, interrupt, integration or submit says what was asked; its tag is the run record's state, and `accepted` when the run record says nothing yet.
 
-**Background work (not yet built).** A job that goes on after its call returns (a delegated worker, a follow-up or queued message, a stop or interrupt, a pending question, an integration, a network submit) keeps its past-tense line where the call happened and also gets a line in a stack at the bottom of the transcript, above the live line. Running: the name, then the child's own live sentence ("**tracer**: Reading `runner.go`"), with a spinner. Finished: "**reader** finished", linking to that worker, until the next prompt. Failed: a failure line with its reason; it never collapses and is never counted away. A spinner needs a record that says running, read by exact ID, over a live connection; otherwise a hollow dot and "last known …". Disconnected from the service: one line says so, and no spinner or timer shows. Up to three running lines, then "and N more running"; the wall tile shows two; the PiP shows every failure and one count line. A line opens in place to the child's latest group, any failure and its live line, then "Open tracer". Elapsed time shows only where the record holds a start time. Provider child sessions and background commands get a line once the service records them. Full rules: spec section G.
+**Background work.** A job that goes on after its call returns (a delegated worker, a follow-up or queued message, a stop or interrupt, a pending question, an integration, a network submit) keeps its past-tense line where the call happened and also gets a line in a stack at the bottom of the transcript, above the live line. Running: the name, then the child's own live sentence ("**tracer**: Reading `runner.go`"), with a spinner. Finished: "**reader** finished", linking to that worker, until the next prompt. Failed: a failure line with its reason; it never collapses and is never counted away. A spinner needs a record that says running, read by exact ID, over a live connection; otherwise a hollow dot and "last known …". Disconnected from the service: one line says so, and no spinner or timer shows. Up to three running lines, then "and N more running"; the wall tile shows two; the PiP shows every failure and one count line. A line opens in place to the child's latest group, any failure and its live line, then "Open tracer". Elapsed time shows only where the record holds a start time. Provider child sessions and background commands get a line once the service records them. Full rules: spec section G.
+
+As built, where the spec leaves a case open:
+
+- A job comes from a Commander call in this console that returned or named an exact ID (a delegation's worker, a follow-up's message, a stop's worker, an integration). A delegated worker's question is read from the run's requests by that worker's ID. The run must hold the record, or there is no line.
+- A finished, stopped or cancelled job shows while its call is after the console's last prompt. The records hold no end time.
+- A lost-contact line reads "**builder**: lost contact with its host." The record does not keep the state before the loss, so no "Last known" follows.
+- A queued follow-up has an attention dot and is not counted as running. The PiP's count line names it: "4 running, 1 queued, 1 needs you".
+- A worker state the table does not name (`idle`) reads as sent, "**tracer** is idle", with a solid dot, and follows the finish rule.
+- A worker waiting on its pending question has the question's line only.
+- On a wall tile the count line also stands for the lost-contact and finished lines: "and 5 more". It reads "and N more running" only when every folded job is running.
+- A network submit has no line: the app holds its receipt only inside a call's result, which is not a live record.
 
 **JSON is pretty-printed.** Wherever JSON text shows (Source, or output that is JSON), it is indented two spaces, one property per line, keys in the order sent. It is never shown as a one-line string. Copy keeps the exact original text.
 
@@ -563,7 +575,7 @@ It allows four departures from the rules above, inside the Pretty transcript onl
 
 **Type and colour.** `body` for prose and sentences; secondary ink for summaries and finished sentences; `failure` ink for a failed or blocked sentence; the terminal face for values. No new colours.
 
-**Components.** Atoms: `ActivityTagView`, `ActivityChevron`, `PrettySpinner`, `StatusLamp`, `IDChip`, `PathText`. Molecules: `ActivitySentenceText`, `ActivityLine`, `ActivityGroupSummary`, `ActivityFailureLine`, `PrettyReportBlock`, `PrettyLiveLine`, `PrettyThoughtBody`, `PrettyPlanCard`, `PrettyClamp`, `ResultFieldList`, `ResultRecordTable`, `ResultQuote`, `ResultWell`, `ResultEmptyState`, `ResultTruncationBanner`, `SecretValue`, `ResultDisclosure`, `ResultSourceDisclosure`, `PrettyQueuedMessage`, `PrettyComposer`, `PrettyFormButtonStyle`. Organisms: `ActivityGroupView`, `ActivityResultView`, `TranscriptSettingsSection`. They replace `ActivityStoryCard`, `ActivityStoryHeader`, `ActivityToolDetails`, `PrettyActivityRun`, `PrettyThinkingRow` and `PrettyRunningIndicator`, which are removed. `ActivityMilestoneTimeline`, `ActivityRelationList` and `ActivityActionGroup` stay, inside an opened line. `BackgroundStack` and `BackgroundJobLine` come with background work. The honesty rules in `ActivityStory.swift` stay.
+**Components.** Atoms: `ActivityTagView`, `ActivityChevron`, `PrettySpinner`, `StatusLamp`, `IDChip`, `PathText`. Molecules: `ActivitySentenceText`, `ActivityLine`, `ActivityGroupSummary`, `ActivityFailureLine`, `PrettyReportBlock`, `PrettyLiveLine`, `PrettyThoughtBody`, `PrettyPlanCard`, `PrettyClamp`, `ResultFieldList`, `ResultRecordTable`, `ResultQuote`, `ResultWell`, `ResultEmptyState`, `ResultTruncationBanner`, `SecretValue`, `ResultDisclosure`, `ResultSourceDisclosure`, `PrettyQueuedMessage`, `PrettyComposer`, `PrettyFormButtonStyle`. Organisms: `ActivityGroupView`, `ActivityResultView`, `TranscriptSettingsSection`. They replace `ActivityStoryCard`, `ActivityStoryHeader`, `ActivityToolDetails`, `PrettyActivityRun`, `PrettyThinkingRow` and `PrettyRunningIndicator`, which are removed. `ActivityMilestoneTimeline`, `ActivityRelationList` and `ActivityActionGroup` stay, inside an opened line. Background work adds the molecules `BackgroundJobLine`, `BackgroundMark`, `PrettyElapsedText` and `PrettyLinkButton`, and the organism `BackgroundStack`; its values are `BackgroundJob` and `BackgroundStackLayout`. The honesty rules in `ActivityStory.swift` stay.
 
 ### Quiet theme, "Two speeds" (approved target, not yet built)
 

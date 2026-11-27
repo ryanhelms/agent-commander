@@ -542,6 +542,20 @@ struct CockpitScreen: View {
         return present
     }
 
+    /// What a console's background stack may do here: go to a worker of the selected run, and
+    /// open a pending request where it is answered. Offline, the stack draws no spinner or timer.
+    private var backgroundWork: BackgroundWorkAccess {
+        let openWorker: @MainActor (String) -> Void = { workerID in
+            ui.zoomedRemoteWorkerID = nil
+            ui.zoomedWorkerID = workerID
+            ui.returnFocusWorkerID = workerID
+        }
+        let openRequest: @MainActor (String) -> Void = { requestID in
+            if let request = content.pending.first(where: { $0.id == requestID }) { open(request) }
+        }
+        return BackgroundWorkAccess(isConnected: isOnline, openWorker: openWorker, openRequest: openRequest)
+    }
+
     // MARK: Body
 
     var body: some View {
@@ -549,6 +563,7 @@ struct CockpitScreen: View {
         // enough for the type checker.
         chrome
             .consoleRecordAccess(actions, openSource: openSource)
+            .environment(\.backgroundWork, backgroundWork)
             .onChange(of: run?.id) { _, _ in runChanged() }
             // A key command is run here, where the page's values are current.
             .onChange(of: ui.keyCommandCount) { _, _ in if let command = ui.keyCommand { perform(command) } }
