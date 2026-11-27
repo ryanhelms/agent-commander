@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -75,7 +77,10 @@ func TestRelayInfo(t *testing.T) {
 	}
 	for _, mode := range []string{"edge", "host"} {
 		t.Run(mode, func(t *testing.T) {
-			cfg := relaySettings{mode: mode, name: "Studio", identity: identity.Config{Issuer: "https://issuer.test", ClientID: "desktop"}}
+			var secret atomic.Value
+			secret.Store("")
+			cfg := relaySettings{mode: mode, name: "Studio", identity: identity.Config{Issuer: "https://issuer.test", ClientID: "desktop",
+				ClientSecret: func() string { return secret.Load().(string) }}}
 			var membership atomic.Value
 			membership.Store("open")
 			// A 204 means the request reached the existing protected router.
@@ -97,6 +102,14 @@ func TestRelayInfo(t *testing.T) {
 			checkInfo(t, anon, ts.URL, mode, cfg.name, cfg.identity.Issuer, cfg.identity.ClientID, "open")
 			membership.Store("invite")
 			checkInfo(t, anon, ts.URL, mode, cfg.name, cfg.identity.Issuer, cfg.identity.ClientID, "invite")
+			// /v1/info says whether the relay provides its sign-in client, never the secret.
+			if body := rawInfo(t, anon, ts.URL); !strings.Contains(body, `"clientSecretProvided":false`) {
+				t.Fatalf("info without a secret: %s", body)
+			}
+			secret.Store("installed-app-secret")
+			if body := rawInfo(t, anon, ts.URL); !strings.Contains(body, `"clientSecretProvided":true`) || strings.Contains(body, "installed-app-secret") {
+				t.Fatalf("info with a secret: %s", body)
+			}
 			for _, req := range []struct{ method, path string }{
 				{"GET", "/ready"}, {"POST", "/v1/auth/challenge"}, {"GET", "/v1/profile"},
 				{"HEAD", "/v1/info"}, {"POST", "/v1/info"}, {"GET", "/v1/info/"},
@@ -149,4 +162,18 @@ func checkInfo(t *testing.T, client *http.Client, origin, mode, name, issuer, id
 		info.AdminContact != "owner@example.test" || info.Policy.RetentionDays != 30 {
 		t.Fatalf("GET /v1/info returned HTTP %d %+v", res.StatusCode, info)
 	}
+}
+
+func rawInfo(t *testing.T, client *http.Client, origin string) string {
+	t.Helper()
+	res, err := client.Get(origin + "/v1/info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

@@ -196,7 +196,13 @@ func Configure(dir string, setup Setup, p Probe) error {
 	if cfg.ClientID == "" {
 		return errors.New("enter the sign-in client ID: this Mac has no Google Desktop client to reuse")
 	}
-	return InitConfig(dir, cfg)
+	if err := InitConfig(dir, cfg); err != nil {
+		return err
+	}
+	if p.NetworkDir != nil {
+		adoptLocalClientSecret(dir, p.NetworkDir(), cfg.ClientID)
+	}
+	return nil
 }
 
 // ReadSetup decodes one setup from the app.
