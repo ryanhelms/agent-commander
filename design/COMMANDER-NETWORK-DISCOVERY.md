@@ -98,11 +98,11 @@ Today a person who is not admitted is refused after sign-in, and `POST /v1/acces
 
 New:
 
-- After sign-in, a person who is not admitted gets a limited session that can call only `POST /v1/membership-requests` and `GET /v1/membership-requests/mine`.
-- The request carries the person's verified email, display name and an optional note.
-- Admins see pending requests in the tray's Hosting or Members section and on their activity feed. **Approve** adds the email to the allowlist. **Deny** records the decision.
-- The requester's tray shows **Requested** and posts a notification when the request is decided. On approval it signs in again without asking.
-- Rate limits: one pending request per person per relay, and a cap on pending requests per relay.
+- When the relay refuses a sign-in for a verified email that is not suspended, it keeps a record for that device for 15 minutes and marks the 403 `requestable`. The tray offers **Request access** without a second browser sign-in.
+- `POST /v1/membership-requests` (device certificate, optional note) turns that record into a request. `GET /v1/membership-requests/mine` reports pending, approved, denied or admitted. Neither route needs a session, and neither says anything about other members.
+- Admins list pending requests (`GET /v1/admin/membership-requests`) and approve or deny one (`POST …/{id}/approve|deny`). Approval admits the person on their next sign-in, once, in allowlist and invite modes, and adds the email to the allowlist.
+- The requester's tray shows **Requested** and, once approved, offers **Sign in**.
+- Limits: one request per email, at most 200 pending per relay, and a 24-hour cool-down after a denial.
 
 ## Public directory
 
@@ -141,7 +141,7 @@ Frontend work under AGENTS.md: Fable with the `frontend-design` skill, [DESIGN.m
 1. **Find.** `relay-discover` merging the tailnet and Bonjour sources with `/v1/info` badges. Bonjour advertising in host mode. Automatic pinning for verified tailnet relays. Tests with a fake `tailscale` CLI and a local Bonjour service.
 2. **Sign in without a file.** The client secret in the pinned enrollment challenge, `clientSecretProvided` in `/v1/info`, relay-side `--client-secret-file`, device fallback.
 3. **Join.** The Relays nearby section, join checklist, background refresh and notifications (frontend).
-4. **Ask to join.** Limited sessions for people not yet admitted, membership requests and the admin approval flow in the tray.
+4. **Ask to join.** Requestable refusals, membership requests and admin approval in the relay and helper, then the tray buttons.
 5. **Directory.** The bytedesk.ai directory service, relay registration and heartbeats, **List publicly**, and the directory as a discovery source.
 
 Each increment ends with a working slice verified on this Mac and a second Mac over Headscale.
