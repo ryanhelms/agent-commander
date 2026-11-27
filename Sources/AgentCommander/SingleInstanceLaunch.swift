@@ -174,8 +174,10 @@ final class SingleInstanceAppDelegate: NSObject, NSApplicationDelegate {
     /// arrives at a cold launch waits for the cockpit, and the window looks its target up on the
     /// service it is using. Anything else is ignored.
     func application(_ application: NSApplication, open urls: [URL]) {
-        MultiplayerLinkWindow.open(urls, in: MultiplayerModel.shared)
         CommanderWindowRouter.shared.open(links: urls)
+        // The join handler takes every address of the scheme, so a run or project link is kept
+        // from it: it would read as a broken invite and open the network panel.
+        MultiplayerLinkWindow.open(urls.filter { CommanderLink($0) == nil }, in: MultiplayerModel.shared)
     }
 
     /// Dock click or Launch Services reopen: restore the cockpit even when only Settings or the

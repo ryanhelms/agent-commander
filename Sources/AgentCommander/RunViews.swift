@@ -204,15 +204,20 @@ struct NewRunView: View {
 
     // MARK: Header
 
+    private var headerText: String {
+        if capabilities.hasWorkerPolicy {
+            return "Choose the coordinator, its workspace, and the limits for everyone it delegates to."
+        }
+        if let project { return "Describe the task for the coordinator. It runs in \(project.name)’s folder." }
+        return "Choose the project directory and describe the task for the coordinator."
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Kicker(text: projectName.map { "\($0) / Runs" } ?? "Runs")
             Text("Start a coordinator run").font(TypeRole.pageTitle).tracking(-1.1)
                 .foregroundStyle(Palette.foreground).accessibilityAddTraits(.isHeader)
-            Text(capabilities.hasWorkerPolicy
-                 ? "Choose the coordinator, its workspace, and the limits for everyone it delegates to."
-                 : project.map { "Describe the task for the coordinator. It runs in \($0.name)’s folder." }
-                    ?? "Choose the project directory and describe the task for the coordinator.")
+            Text(headerText)
                 .font(TypeRole.body).foregroundStyle(.inkSecondary)
         }
     }
