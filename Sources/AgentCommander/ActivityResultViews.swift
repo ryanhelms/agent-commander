@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ACTIVITY RESULT VIEWS
@@ -14,6 +15,7 @@ import SwiftUI
 //              ResultEmptyState         the sentence an empty result reads as
 //              ResultTruncationBanner   a result the service cut short
 //              ResultShortenedTag       "Shortened", beside one value the service shortened
+//              ResultImageRow           an image result's thumbnails, from `ResultImages`
 //              SecretValue              "Hidden, N characters" with Reveal
 //              SecretText               prose with its secret-looking values hidden, with Reveal
 //              ResultDisclosure         a quiet nested disclosure ("3 more fields, 1 empty")
@@ -43,6 +45,8 @@ struct ActivityResultSource: Equatable {
     var fields: [String: AGUIValue]? = nil
     /// `callText` is the stored record's full input.
     var callIsStored = false
+    /// The PNG images of the stored record's result, when it is exactly an image result.
+    var images: ResultImages? = nil
 
     /// One call of a line. `record` is the stored full record, once it has been read; `summary`
     /// is the same record without its large values.
@@ -55,6 +59,7 @@ struct ActivityResultSource: Equatable {
         switch entry.kind {
         case .tool(let name, let detail, let result):
             self.name = name
+            images = record?.resultImages
             callText = record?.input.flatMap { $0.isEmpty ? nil : $0 } ?? detail
             resultText = record?.result.flatMap { $0.isEmpty ? nil : $0 } ?? result?.output
             callCut = StoredCut(record: record, field: "input", isStored: callIsStored)
@@ -256,6 +261,64 @@ struct ResultWell: View {
         while let last = rows.last, last.text.isEmpty { rows.removeLast() }
         if let prompt { rows.insert(Line(text: "$ " + prompt, isPrompt: true), at: 0) }
         return rows
+    }
+}
+
+/// The images of an image result: one thumbnail per distinct PNG over its media type, then the
+/// fallback sentence when a part's bytes were not kept. Each thumbnail is decoded on this Mac
+/// from the bytes in the record, reduced as it is read; nothing is fetched.
+struct ResultImageRow: View {
+    let images: ResultImages
+    let metrics: PrettyMetrics
+
+    /// The approved thumbnail box (spec section H). A smaller image keeps its own size.
+    static let box = CGSize(width: 176, height: 108)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(images.images.enumerated()), id: \.offset) { _, data in
+                ResultImageThumbnail(data: data, metrics: metrics)
+            }
+            if images.unkept > 0 {
+                ResultEmptyState(sentence: ResultImages.unkeptSentence, metrics: metrics)
+                    .accessibilityLabel(images.unkept == 1 ? ResultImages.unkeptSentence
+                                        : "\(images.unkept) images. " + ResultImages.unkeptSentence)
+            }
+        }
+        .textSelection(.disabled)
+    }
+}
+
+/// One thumbnail and its media type. Bytes no decoder reads fall back to the sentence.
+private struct ResultImageThumbnail: View {
+    let data: Data
+    let metrics: PrettyMetrics
+    @State private var image: NSImage?
+    @State private var decoded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let image {
+                let shape = RoundedRectangle(cornerRadius: metrics.chipRadius, style: .continuous)
+                Image(nsImage: image)
+                    .resizable().interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: min(image.size.width, ResultImageRow.box.width),
+                           maxHeight: min(image.size.height, ResultImageRow.box.height), alignment: .leading)
+                    .clipShape(shape)
+                    .overlay { shape.strokeBorder(Palette.border, lineWidth: 1) }
+                    .accessibilityLabel("Thumbnail of the returned image")
+                Text(verbatim: ResultImages.mediaType)
+                    .font(.system(size: metrics.detailSize - 1)).foregroundStyle(.inkSecondary)
+            } else if decoded {
+                ResultEmptyState(sentence: ResultImages.unkeptSentence, metrics: metrics)
+            }
+        }
+        .task(id: data) {
+            // Twice the box, for a Retina display. The decoder never builds the full image.
+            image = SourceAttachment.thumbnail(of: data, maxPixel: Int(ResultImageRow.box.width) * 2)
+            decoded = true
+        }
     }
 }
 
@@ -690,13 +753,19 @@ struct ActivityResultView: View {
         let payload = ResultPayload.read(source.resultText, cut: source.resultCut)
         let failed = source.failure != nil
         let selection = ResultShape.select(tool: source.name, payload: payload, resultText: source.resultText, failed: failed)
+        // An image result is its thumbnails. A failure keeps the failure renderer.
+        let images = selection.shape == .failure ? nil : source.images
         VStack(alignment: .leading, spacing: 10) {
             // The end of the result is gone, or values were shortened that no tag below marks.
-            if !failed, let sentence = ResultShape.notice(selection, payload: payload).sentence {
+            if !failed, images == nil, let sentence = ResultShape.notice(selection, payload: payload).sentence {
                 ResultTruncationBanner(text: sentence, metrics: metrics)
             }
-            typed(selection, payload: payload)
-            if let value = payload.value, !selection.remaining.isEmpty {
+            if let images {
+                ResultImageRow(images: images, metrics: metrics)
+            } else {
+                typed(selection, payload: payload)
+            }
+            if images == nil, let value = payload.value, !selection.remaining.isEmpty {
                 let rows = ResultField.rows(value, keys: selection.remaining, shortened: payload.shortened)
                 let empty = rows.filter { $0.kind == .empty }.count
                 ResultDisclosure(title: (rows.count == 1 ? "1 more field" : "\(rows.count) more fields")

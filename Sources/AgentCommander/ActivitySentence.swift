@@ -1008,8 +1008,12 @@ enum ActivitySteps {
         if status == .awaitingApproval {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary)
         }
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: facts.record(entry.detailKey)),
+        let record = facts.record(entry.detailKey)
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
               to: &step, status: status, result: result)
+        // The stored result is an image. Only the full record says so, so the tag shows once
+        // that record has been read: nothing in the summary or the call's text is taken as one.
+        if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
         return step
     }
 
