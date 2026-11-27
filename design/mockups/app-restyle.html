@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App restyle proposal</title>
+<style>
+/* Page chrome uses the app's own black-glass values. Each mock below sets its own variables. */
+:root{--sys:-apple-system,BlinkMacSystemFont,system-ui,"Helvetica Neue",sans-serif;--mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  --focus:#B5D6FF;--working:#A8E0C0;--attention:#F1C587;--failure:#EC9B92;--on-accent:#101825}
+*{box-sizing:border-box}
+body{margin:0;background:#090A0D;color:#F5F5F9;font:14px/1.5 var(--sys);-webkit-font-smoothing:antialiased}
+main{max-width:1500px;margin:0 auto;padding:32px 24px 64px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+h2{font-size:15px;font-weight:600;margin:32px 0 4px}
+p.lede{margin:0 0 16px;color:#B7BAC6;max-width:78ch}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+@media (max-width:1000px){.pair,.three{grid-template-columns:1fr}}
+figure{margin:0;min-width:0}
+figcaption{font-size:12.5px;color:#B7BAC6;margin:0 0 8px}
+figcaption b{color:#F5F5F9;font-weight:600}
+.frame{border:1px solid #383B44;overflow:hidden;min-width:0}
+.lamp{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.lamp::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.ok{color:var(--working)}.wait{color:var(--attention)}.bad{color:var(--failure)}
+button{font:inherit;color:inherit;background:none}
+
+/* ===== BEFORE: the console theme, after design/demos/main-window-6/fit-1280-teams-workspace-console.png ===== */
+.c{--w:#090A0D;--p:#101116;--hair:rgba(255,255,255,.11);--bd:#383B44;--fg:#F5F5F9;--sec:#B7BAC6;background:var(--w);color:var(--fg);font:13px/1.4 var(--sys);border-radius:2px}
+.c .top{display:flex;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--hair);font:600 12px var(--mono)}
+.c .top span{color:var(--sec);font-weight:400}
+.c .body{display:grid;grid-template-columns:40px 170px minmax(0,1fr)}
+.c .rail{border-right:1px solid var(--hair);padding:10px 6px;display:flex;flex-direction:column;gap:8px}
+.c .rail i{width:26px;height:26px;border:1px solid var(--bd);display:block;border-radius:2px}
+.c .rail i.on{background:#283344;border-color:var(--focus)}
+.c .side{border-right:1px solid var(--hair);padding:12px 8px;font-size:12.5px}
+.c .side h4{font:600 11.5px var(--mono);margin:10px 6px 6px}
+.c .side div{padding:5px 8px;display:flex;justify-content:space-between}
+.c .side .on{background:#283344;border-left:2px solid var(--focus)}
+.c .cnt{font:600 9.5px var(--mono);background:#1c1f26;padding:1px 5px}
+.c .page{padding:14px 18px;min-width:0}
+.c .crumb{font:600 9.5px var(--mono);letter-spacing:.8px}
+.c h3{font-size:18px;margin:6px 0 2px}
+.c .sub{color:var(--sec);font-size:12.5px;margin-bottom:10px}
+.c .read{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid var(--hair);margin-bottom:10px}
+.c .read div{padding:6px 8px;border-left:1px solid var(--hair);font:600 14px var(--mono)}
+.c .read div:first-child{border-left:0}
+.c .read small{display:block;font:600 9.5px var(--mono);color:var(--sec)}
+.c .tabs{display:flex;border:1px solid var(--hair);margin:10px 0;font:500 11.5px var(--mono)}
+.c .tabs span{padding:7px 12px;border-right:1px solid var(--hair);color:var(--sec)}
+.c .tabs .on{background:var(--p);color:var(--fg);border-bottom:2px solid var(--focus)}
+.c table{width:100%;border-collapse:collapse;border:1px solid var(--hair);font:500 11px var(--mono)}
+.c th{font:600 9.5px var(--mono);color:var(--sec);text-align:left;padding:6px 8px;background:var(--p)}
+.c td{padding:7px 8px;border-top:1px solid var(--hair);vertical-align:top}
+.c .chip{font:600 9.5px var(--mono);border:1px solid var(--bd);padding:0 4px;border-radius:1px}
+.c .chip.h{background:#283344;color:var(--focus)}
+.c .btn{font:500 11px var(--mono);border:1px solid var(--bd);padding:3px 9px;border-radius:2px}
+.c .st{font:600 10.5px var(--mono)}
+
+/* ===== AFTER: option C. Proposed values, not tokens yet. ===== */
+.q{--w:#16171B;--p:#1D1E23;--well:#101114;--hair:rgba(255,255,255,.08);--fg:#ECEDF1;--sec:#A6A9B4;--ter:#7E818C;background:var(--w);color:var(--fg);font:13px/1.5 var(--sys);border-radius:12px}
+.q .top{display:flex;gap:12px;align-items:center;padding:11px 16px;font-size:13px;font-weight:600}
+.q .top span{color:var(--ter);font-weight:400}
+.q .body{display:grid;grid-template-columns:44px 178px minmax(0,1fr)}
+.q .rail{padding:8px;display:flex;flex-direction:column;gap:6px}
+.q .rail i{width:28px;height:28px;border-radius:8px;display:block;background:rgba(255,255,255,.04)}
+.q .rail i.on{background:rgba(181,214,255,.16)}
+.q .side{padding:8px 8px 12px;font-size:13px}
+.q .side h4{font-size:12px;font-weight:500;color:var(--ter);margin:12px 8px 4px}
+.q .side div{padding:5px 8px;border-radius:7px;display:flex;justify-content:space-between;color:var(--sec)}
+.q .side .on{background:rgba(255,255,255,.07);color:var(--fg)}
+.q .cnt{font:12px var(--mono);color:var(--ter)}
+.q .page{padding:10px 24px 20px;min-width:0;background:var(--p);border-radius:12px 0 0 0}
+.q .crumb{font-size:12px;color:var(--ter)}
+.q h3{font-size:20px;font-weight:600;margin:6px 0 2px;letter-spacing:-.01em}
+.q .sub{color:var(--sec);margin-bottom:12px}
+.q .read{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:6px;color:var(--sec)}
+.q .read b{font:500 13px var(--mono);color:var(--fg);margin-right:5px}
+.q .meta{color:var(--ter);font-size:12.5px;margin-bottom:10px}.q .meta code{font:12px var(--mono);color:var(--sec)}
+.q .tabs{display:flex;gap:20px;border-bottom:1px solid var(--hair);margin:12px 0 4px;color:var(--sec)}
+.q .tabs span{padding:7px 0}
+.q .tabs .on{color:var(--fg);box-shadow:0 2px 0 var(--focus)}
+.q .tabs small{font:12px var(--mono);color:var(--ter);margin-left:4px}
+.q table{width:100%;border-collapse:collapse}
+.q th{font-size:12px;font-weight:500;color:var(--ter);text-align:left;padding:8px 10px 6px 0}
+.q td{padding:9px 10px 9px 0;border-top:1px solid var(--hair);vertical-align:top}
+.q .chip{font:11px var(--mono);color:var(--sec);background:rgba(255,255,255,.06);padding:1px 6px;border-radius:5px}
+.q code{font:12px var(--mono);color:var(--sec)}
+.q .btn{font-size:12.5px;border:1px solid var(--hair);padding:3px 11px;border-radius:7px;color:var(--fg)}
+.q .dim{color:var(--ter)}
+
+/* tiles */
+.tile{padding:0;min-width:0}
+.c .tile{border:1px solid var(--hair)}
+.c .tile header{padding:7px 9px;border-bottom:1px solid var(--hair);display:flex;gap:8px;align-items:baseline;font:600 11.5px var(--mono)}
+.c .tile pre{margin:0;padding:9px;font:11px/1.55 var(--mono);color:#D9DCE3;white-space:pre-wrap}
+.c .tile footer{border-top:1px solid var(--hair);padding:6px 9px;display:flex;justify-content:space-between;font:600 10.5px var(--mono)}
+.q .tile{background:var(--p);border-radius:12px;border:1px solid var(--hair)}
+.q .tile header{padding:10px 14px 4px;display:flex;gap:8px;align-items:baseline;font-weight:600}
+.q .tile .conv{padding:4px 14px 10px;display:flex;flex-direction:column;gap:8px}
+.q .tile .sum{color:var(--sec)}
+.q .tile footer{padding:8px 14px;border-top:1px solid var(--hair);display:flex;justify-content:space-between;color:var(--sec);font-size:12.5px}
+.q .need{border:1px solid rgba(241,197,135,.45);border-radius:9px;padding:8px 12px;background:var(--well)}
+.q .bub{align-self:flex-end;background:rgba(255,255,255,.08);border-radius:12px;padding:6px 12px;max-width:85%}
+.walls{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
+.opt{padding:14px}
+.note{font-size:12.5px;color:#B7BAC6;margin:8px 0 0;max-width:78ch}
+.term{font:12px/1.5 var(--mono);padding:12px 14px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+<h1>App restyle toward the conversation language</h1>
+<p class="lede">A proposal, not DESIGN.md. Left is the console theme as it ships; right is the recommended option C. Content is taken from the app's own demo capture of Teams › Workspaces › Relay launch. "After" colours and sizes are proposed values.</p>
+
+<h2>Main window: before and after</h2>
+<div class="pair">
+<figure><figcaption><b>Before.</b> Console theme. Mono for nearly every label, 9.5 to 11.5 pt, a border round each region.</figcaption>
+<div class="frame c">
+  <div class="top">Agent Commander <span>Teams › Workspaces › Relay launch</span></div>
+  <div class="body">
+    <div class="rail"><i></i><i></i><i></i><i class="on"></i></div>
+    <div class="side"><h4>Workspaces</h4><div class="on">Relay launch <span class="cnt">4</span></div><div>Infra guild <span class="cnt">1</span></div><h4>Team tools</h4><div>Groups</div><div>Hosts</div><div>Knowledge</div><div>Directory</div><div>Admin</div></div>
+    <div class="page">
+      <div class="crumb">TEAMS / WORKSPACES / STUDIO</div>
+      <h3>Relay launch</h3><div class="sub">Ship the per-request retry budget and the lease renewal fix for 1.4.</div>
+      <div class="read"><div><small>members</small>3</div><div><small>live claims</small><span class="wait">4</span></div><div><small>open cards</small>3</div><div><small>done</small><span class="ok">2</span></div><div><small>in the queue</small>2</div></div>
+      <div class="tabs"><span>Board 7</span><span class="on">Combined view 5</span><span>Integration 2</span><span>Claims 4</span></div>
+      <table><tr><th>member</th><th>worker</th><th>branch</th><th>checks</th><th></th></tr>
+        <tr><td>ryan (you)<br><span class="lamp ok st">Online</span></td><td>relay-worker <span class="st ok">Working</span><br><span class="chip h">Claude</span> <span class="chip">fable-5.2</span></td><td>collab/lease-timer</td><td><span class="lamp ok st">14 passing</span></td><td><span class="btn">Open</span></td></tr>
+        <tr><td>mira<br><span class="lamp ok st">Online</span></td><td>mira-claude <span class="st ok">Working</span><br><span class="chip h">Claude</span> <span class="chip">opus-5.5</span></td><td>collab/retry-budget</td><td><span class="st" style="color:var(--focus)">Running</span></td><td><span class="btn">Open</span></td></tr>
+        <tr><td>sam<br><span class="st" style="color:var(--sec)">○ Offline</span></td><td>sam-codex <span class="st wait">Waiting on review</span><br><span class="chip h">Codex</span> <span class="chip">gpt-5.5</span></td><td>collab/fake-clock</td><td><span class="lamp bad st">2 failing</span></td><td><span class="btn">Open</span></td></tr>
+      </table>
+    </div>
+  </div>
+</div></figure>
+
+<figure><figcaption><b>After, option C.</b> System face for words, mono only for values, ink and space in place of boxes. Row rules stay because the table is scanned.</figcaption>
+<div class="frame q" style="border-color:rgba(255,255,255,.1)">
+  <div class="top">Agent Commander <span>Teams › Workspaces › Relay launch</span></div>
+  <div class="body">
+    <div class="rail"><i></i><i></i><i></i><i class="on"></i></div>
+    <div class="side"><h4>Workspaces</h4><div class="on">Relay launch <span class="cnt">4</span></div><div>Infra guild <span class="cnt">1</span></div><h4>Team tools</h4><div>Groups</div><div>Hosts</div><div>Knowledge</div><div>Directory</div><div>Admin</div></div>
+    <div class="page">
+      <div class="crumb">Teams › Workspaces › Studio</div>
+      <h3>Relay launch</h3><div class="sub">Ship the per-request retry budget and the lease renewal fix for 1.4.</div>
+      <div class="read"><span><b>3</b>members</span><span class="wait"><b style="color:inherit">4</b>live claims</span><span><b>3</b>open cards</span><span><b>2</b>done</span><span><b>2</b>in the queue</span></div>
+      <div class="meta"><code>ryanhelms/relay</code> on <code>main</code>, lands by merge queue. Group Relay crew, owned by you.</div>
+      <div class="tabs"><span>Board<small>7</small></span><span class="on">Combined view<small>5</small></span><span>Integration<small>2</small></span><span>Claims<small>4</small></span></div>
+      <table><tr><th>Member</th><th>Worker</th><th>Branch</th><th>Checks</th><th></th></tr>
+        <tr><td>ryan (you)<br><span class="lamp ok">Online</span></td><td>relay-worker <span class="lamp ok">Working</span><br><span class="chip">Claude</span> <span class="chip">fable-5.2</span></td><td><code>collab/lease-timer</code></td><td><span class="lamp ok">14 passing</span></td><td><button class="btn">Open</button></td></tr>
+        <tr><td>mira<br><span class="lamp ok">Online</span></td><td>mira-claude <span class="lamp ok">Working</span><br><span class="chip">Claude</span> <span class="chip">opus-5.5</span></td><td><code>collab/retry-budget</code></td><td><span class="lamp" style="color:var(--focus)">Running</span></td><td><button class="btn">Open</button></td></tr>
+        <tr><td>sam<br><span class="lamp dim">Offline</span></td><td>sam-codex <span class="lamp wait">Waiting on review</span><br><span class="chip">Codex</span> <span class="chip">gpt-5.5</span></td><td><code>collab/fake-clock</code></td><td><span class="lamp bad">2 failing</span></td><td><button class="btn">Open</button></td></tr>
+      </table>
+    </div>
+  </div>
+</div></figure>
+</div>
+
+<h2>Worker wall tile and Needs-you: before and after</h2>
+<div class="pair">
+<figure><figcaption><b>Before.</b> Illustrative content in the console theme's tile.</figcaption>
+<div class="frame c"><div class="walls">
+  <div class="tile"><header>Backoff strategy <span class="chip h">Codex</span></header><pre>$ git diff --stat
+ retry/backoff.ts | 42 ++++++
+$ pnpm test backoff
+✓ jitter stays within cap</pre><footer><span class="lamp ok">Working</span><span>14:16:34</span></footer></div>
+  <div class="tile" style="border-color:var(--attention)"><header>Timeout cases <span class="chip h">Codex</span></header><pre>$ pnpm test timeout
+✓ connection can retry
+<span class="wait">? Should the client retry after response body bytes have already been delivered?</span></pre><footer><span class="lamp wait">Needs input</span><span>14:16:28</span></footer></div>
+</div></div></figure>
+<figure><figcaption><b>After, option C.</b> The tile shows the Pretty transcript. Lamp and word, harness chip and the ownership line stay.</figcaption>
+<div class="frame q" style="border-color:rgba(255,255,255,.1);background:#16171B"><div class="walls">
+  <div class="tile"><header>Backoff strategy <span class="chip">Codex</span></header><div class="conv"><div class="sum">Ran 2 commands, edited 2 files ›</div><div>Jitter now stays within the cap. Running the budget tests next.</div></div><footer><span class="lamp ok">Working</span><span>Input: Retry policy</span></footer></div>
+  <div class="tile" style="border-color:rgba(241,197,135,.5)"><header>Timeout cases <span class="chip">Codex</span></header><div class="conv"><div class="sum">Ran 1 command ›</div><div class="need">Should the client retry after response body bytes have already been delivered?</div></div><footer><span class="lamp wait">Needs you</span><span>Input: Failure paths</span></footer></div>
+</div></div></figure>
+</div>
+
+<h2>Three options, the same row</h2>
+<div class="three">
+<figure><figcaption><b>A. Quiet console.</b> Keep every grid and box. Change only type: system face for words, larger sizes, sentence-case labels.</figcaption>
+<div class="frame c opt"><table style="font:13px var(--sys)"><tr><th style="font:500 12px var(--sys)">Worker</th><th style="font:500 12px var(--sys)">Checks</th></tr><tr><td>relay-worker <span class="lamp ok">Working</span><br><span class="chip">Claude</span></td><td><span class="lamp ok">14 passing</span></td></tr></table></div></figure>
+<figure><figcaption><b>B. Conversation everywhere.</b> No rules or boxes at all, rounded surfaces, hierarchy by ink and space only.</figcaption>
+<div class="frame q opt" style="border-color:transparent"><div style="display:flex;justify-content:space-between;padding:6px 0"><span>relay-worker <span class="lamp ok">Working</span> <span class="chip">Claude</span></span><span class="lamp ok">14 passing</span></div><div style="display:flex;justify-content:space-between;padding:6px 0" class="dim"><span>docs-agent Idle</span><span>none</span></div></div></figure>
+<figure><figcaption><b>C. Two speeds (recommended).</b> Conversation language for reading surfaces; scanned surfaces keep row rules, with B's type and corners.</figcaption>
+<div class="frame q opt" style="border-color:rgba(255,255,255,.1)"><table><tr><th>Worker</th><th>Checks</th></tr><tr><td>relay-worker <span class="lamp ok">Working</span><br><span class="chip">Claude</span></td><td><span class="lamp ok">14 passing</span></td></tr></table></div></figure>
+</div>
+
+<h2>Terminal mode: what can change</h2>
+<div class="pair">
+<figure><figcaption><b>Today.</b> The provider's own TUI, drawn from a PTY. Illustrative text.</figcaption>
+<div class="frame c"><div class="term" style="background:#090A0D;color:#D9DCE3;padding:6px 8px;font-size:11px">╭──────────────────────────────╮
+│ > make reload SERVICE=1      │
+╰──────────────────────────────╯
+  ⏺ Bash(go test ./...)</div></div></figure>
+<figure><figcaption><b>Possible.</b> Same TUI, same layout. Commander changes only the well: size, padding, default ink and ground, the frame around it.</figcaption>
+<div class="frame q" style="border-color:rgba(255,255,255,.1)"><div class="term" style="background:#101114;color:#DDDEE4;font-size:12.5px;line-height:1.5">╭──────────────────────────────╮
+│ > make reload SERVICE=1      │
+╰──────────────────────────────╯
+  ⏺ Bash(go test ./...)</div></div></figure>
+</div>
+<p class="note">The boxes, glyphs, wording and true-colour inks belong to the provider's TUI. Commander cannot turn them into sentences; Pretty mode is where that happens.</p>
+</main>
+</body>
+</html>
