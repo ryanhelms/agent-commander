@@ -22,12 +22,15 @@ import Observation
 /// Where the device agent found a relay. A word this build does not know is kept and drawn as "Nearby".
 enum MultiplayerRelaySource: Hashable, Sendable {
     case tailnet, bonjour
+    /// The opt-in public directory on bytedesk.ai (design/COMMANDER-NETWORK-DISCOVERY.md).
+    case directory
     case other(String)
 
     init(word: String) {
         switch word.lowercased() {
         case "tailnet": self = .tailnet
         case "bonjour": self = .bonjour
+        case "directory": self = .directory
         default: self = .other(word)
         }
     }
@@ -36,6 +39,7 @@ enum MultiplayerRelaySource: Hashable, Sendable {
         switch self {
         case .tailnet: "tailnet"
         case .bonjour: "bonjour"
+        case .directory: "directory"
         case .other(let word): word
         }
     }
@@ -45,6 +49,7 @@ enum MultiplayerRelaySource: Hashable, Sendable {
         switch self {
         case .tailnet: "Tailnet"
         case .bonjour: "Local network"
+        case .directory: "Public directory"
         case .other: "Nearby"
         }
     }
@@ -54,6 +59,7 @@ enum MultiplayerRelaySource: Hashable, Sendable {
         switch self {
         case .tailnet: "on your tailnet"
         case .bonjour: "on your local network"
+        case .directory: "in the public directory"
         case .other: "nearby"
         }
     }

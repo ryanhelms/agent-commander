@@ -142,7 +142,7 @@ enum MultiplayerDiscoveryFixture {
 
         let sparse = try decoder.decode(MultiplayerDiscovery.self, from: Data(#"""
         {"relays":[{"id":"r-1"},{"name":"no id"},{"id":""},{"id":"r-1","name":"again"},
-                   {"id":"r-2","url":"https://lab.example:8443","sources":["directory","bonjour",""],"reachable":"yes",
+                   {"id":"r-2","url":"https://lab.example:8443","sources":["mesh","bonjour",""],"reachable":"yes",
                     "membership":"knock","next":"wave","advertisedPinMatches":true,"lastSeen":"soon"}],
          "sources":[{"name":"tailnet"},{"ok":true},7],"refreshedAt":7}
         """#.utf8))
@@ -155,7 +155,7 @@ enum MultiplayerDiscoveryFixture {
 
         let odd = sparse.relays[1]
         #expect(odd.name == "lab.example:8443" && odd.displayName == "lab.example:8443")
-        #expect(odd.sources == [.other("directory"), .bonjour] && odd.source.title == "Nearby")
+        #expect(odd.sources == [.other("mesh"), .bonjour] && odd.source.title == "Nearby")
         // A word this build doesn't know is never read as reachable, open or done.
         #expect(!odd.reachable && odd.membership == .unknown && odd.next == .unknown && odd.lastSeen == nil)
         #expect(odd.advertisedPinMatches == nil)
@@ -251,6 +251,16 @@ enum MultiplayerDiscoveryFixture {
         var ipv6 = lan
         ipv6.error = "dial tcp [fd7a:115c:a1e0::9]:443: i/o timeout"
         #expect(ipv6.looksLikeTailnet)
+    }
+
+    @MainActor @Test func aDirectoryRelayIsNamedForItsSource() {
+        #expect(MultiplayerRelaySource(word: "directory") == .directory)
+        #expect(MultiplayerRelaySource.directory.title == "Public directory")
+        let listed = MultiplayerDiscoveredRelay(id: "r-pub", name: "public", url: "https://relay.example.org", sources: [.directory])
+        #expect(MultiplayerDiscoveryModel.notice(for: listed) == "public is in the public directory. Open the network tray to join it.")
+        // A relay found on the tailnet as well is named for the tailnet.
+        let both = MultiplayerDiscoveredRelay(id: "r-both", name: "both", url: "https://both.tail.example", sources: [.directory, .tailnet])
+        #expect(both.source == .tailnet)
     }
 
     @Test func unreachableReasonsReadPlainly() {
