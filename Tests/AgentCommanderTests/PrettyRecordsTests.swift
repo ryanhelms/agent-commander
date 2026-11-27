@@ -58,6 +58,47 @@ import Testing
         #expect(ConsoleScrollback(request: request, density: .pip) { EmptyView() }.pretty.background == request.workerBackgroundJobs)
     }
 
+    // MARK: A worker that waits for a reply inside its turn
+
+    @Test func aWorkerWaitingForAReplyInsideItsTurnIsStillInItsTurn() throws {
+        func content(askerState: String) -> RunContent {
+            var child = Wire()
+            child.user("Ask before you write.")
+            child.call("commander_ask", commander: ["requestId": "q-1"], result: #"{"id":"q-1","status":"pending"}"#)
+            child.call("commander_wait", commander: ["requestId": "q-1"])
+            let asker = BackgroundWorkTests.worker("asker", askerState, messages: child.messages)
+            var wire = Wire()
+            wire.user("Split the work.")
+            BackgroundWorkTests.delegate(&wire, asker)
+            let coordinator = Worker(id: BackgroundWorkTests.coordinatorID, name: "Coordinator", role: "coordinator", parentID: "",
+                                     runID: "r-1", state: "working", host: "localhost", worktree: "/tmp", task: "", output: "",
+                                     messages: wire.messages)
+            let ask = Question(id: "q-1", workerID: asker.id, question: "Which file?", status: "pending", answer: "")
+            return RunContent(run: Run(id: "r-1", project: "p", path: "/tmp", task: "t", client: "claude",
+                                       coordinatorID: coordinator.id, status: "running", workers: [coordinator, asker], requests: [ask]))
+        }
+        let running = content(askerState: "working")
+        let asker = try #require(running.wall.workers.first)
+        // It reads needs-input, and the service says its turn is running.
+        #expect(asker.state == .needsInput && asker.turnIsRunning && asker.isInTurn)
+        let live = PrettyLive(state: asker.state, workerName: asker.name, turnIsRunning: asker.turnIsRunning)
+        // The open call spins; nothing is inferred after it.
+        #expect(live.isActive && !live.isDisconnected && live.trailing == nil)
+        #expect(running.awaiting.first?.workerTurnIsRunning == true)
+        // The coordinator's line for the child is the child's own live sentence, in table A's words.
+        let job = try #require(running.coordinator?.backgroundJobs.first { $0.kind == .worker })
+        #expect(job.line(connected: true).sentence.plain == "asker: Waiting for a reply")
+        #expect(job.line(connected: true).mark == .spinner)
+
+        // A worker the service calls waiting, finished or disconnected stays as it was.
+        for state in ["waiting", "completed", "disconnected"] {
+            let other = try #require(content(askerState: state).wall.workers.first)
+            #expect(!other.turnIsRunning && !other.isInTurn)
+            #expect(!PrettyLive(state: other.state, workerName: other.name, turnIsRunning: other.turnIsRunning).isActive)
+        }
+        #expect(!PrettyLive(state: .needsInput, workerName: "asker").isActive)
+    }
+
     // MARK: Background jobs from `job` records
 
     @Test func aJobRecordIsJoinedToItsCallByExactToolUseID() throws {

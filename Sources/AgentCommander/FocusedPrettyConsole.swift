@@ -233,6 +233,8 @@ struct PrettyACPConsole: View {
     var anchor: CommanderWorkflow? = nil
     /// The jobs this console's calls started, for the background stack.
     var background: [BackgroundJob] = []
+    /// The service says the turn is still running (`WorkerPresentation.turnIsRunning`).
+    var turnIsRunning = false
 
     enum AwaitingApproval {
         /// From `entries` and `choiceRequestPending`, through `PrettyRunStatus.awaitingToolID`.
@@ -271,7 +273,7 @@ struct PrettyACPConsole: View {
                               density: density, horizontalInset: metrics.inset,
                               awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
                               live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
-                                               reportedPhase: reportedPhase),
+                                               reportedPhase: reportedPhase, turnIsRunning: turnIsRunning),
                               reportsAsCoordinator: isCoordinator, background: background)
         } else {
             PrettyEmptyConversation(status: status, workerName: name, hasEntries: !entries.isEmpty,
@@ -301,7 +303,7 @@ extension PrettyACPConsole {
                   reportedPhase: worker.claudeProgress?.evidence?.phase,
                   isCoordinator: worker.isCoordinator,
                   stories: stories ?? .form(for: worker.request, reply: reply),
-                  background: worker.backgroundJobs)
+                  background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning)
     }
 
     /// The asking worker's console in the PiP: its recent window and the request it answers. The
@@ -317,7 +319,7 @@ extension PrettyACPConsole {
                   awaitingApproval: .resolved(request.awaitingApprovalToolID),
                   stories: .form(for: request, reply: reply),
                   anchor: request.requestWorkflow,
-                  background: request.workerBackgroundJobs)
+                  background: request.workerBackgroundJobs, turnIsRunning: request.workerTurnIsRunning)
     }
 }
 

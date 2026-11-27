@@ -412,7 +412,10 @@ enum BackgroundJobs {
         let turn = transcript.lastIndex(where: \.isFromUser).map { Array(transcript[($0 + 1)...]) } ?? transcript
         job.console = turn
         if TaskState(api: worker.state).isActiveTurn, let last = turn.last, case .tool(_, _, nil) = last.kind {
-            job.liveSentence = ActivitySteps.step(tool: last, awaitingToolID: nil, facts: .none)?.sentence
+            // The child's own live sentence: a Commander tool reads as table A words it
+            // ("Waiting for a reply"), any other tool as its provider sentence.
+            job.liveSentence = CommanderCall(entry: last).map { ActivityWords.commander($0, detail: nil).running }
+                ?? ActivitySteps.step(tool: last, awaitingToolID: nil, facts: .none)?.sentence
         }
         // A start time exists only for the worker's first turn: `created_at`. A later turn has
         // none, so it shows none.

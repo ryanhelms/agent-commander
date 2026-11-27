@@ -338,6 +338,8 @@ struct RequestPresentation: Identifiable, Equatable {
     var hostIsReconnecting = false
     /// The asking worker's background jobs, as on its own console.
     var workerBackgroundJobs: [BackgroundJob] = []
+    /// The service says the asking worker's turn is still running (`WorkerPresentation.turnIsRunning`).
+    var workerTurnIsRunning = false
     /// The asking worker's provider session, when the service has bound one. A request surface
     /// uses it to point to that worker's source inspector.
     var workerSession: NativeSession? = nil
@@ -453,8 +455,15 @@ struct WorkerPresentation: Identifiable, Equatable {
     var promptCapabilities: WorkerPromptCapabilities? = nil
     /// The jobs this worker's calls started, each read from the run by exact ID.
     var backgroundJobs: [BackgroundJob] = []
+    /// The service's own state says a turn is in progress, whatever `state` reads. A worker that
+    /// asked the developer a question and waits for the reply inside its turn reads needs-input,
+    /// and its turn is still running: the live line spins and the message box queues.
+    var turnIsRunning = false
 
     var isDisconnected: Bool { state == .disconnected }
+    /// A turn is in progress: the message box queues and offers Stop. A disconnected or finished
+    /// worker is never in a turn.
+    var isInTurn: Bool { state.isActiveTurn || (state == .needsInput && turnIsRunning) }
 
     /// The scope a follow-up's file context is prepared in. Nil when the session accepts neither a
     /// file link nor a snapshot.
@@ -1053,6 +1062,7 @@ extension RunContent {
                     disconnectReason: disconnectReason,
                     hostIsReconnecting: reconnecting,
                     workerBackgroundJobs: background,
+                    workerTurnIsRunning: TaskState(api: worker.state).isActiveTurn,
                     workerSession: worker.boundSession,
                     choices: question.choices ?? [],
                     workerTelemetry: telemetry,
@@ -1101,7 +1111,8 @@ extension RunContent {
                 pendingRequests: requests,
                 checkout: worker.worktree,
                 promptCapabilities: isCoordinator ? nil : worker.control?.promptCapabilities,
-                backgroundJobs: background)
+                backgroundJobs: background,
+                turnIsRunning: TaskState(api: worker.state).isActiveTurn)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

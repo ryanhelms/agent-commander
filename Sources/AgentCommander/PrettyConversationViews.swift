@@ -51,8 +51,14 @@ struct PrettyLive: Equatable {
     /// - Parameters:
     ///   - reportedPhase: the phase a tracked local Claude worker's service reports. With it,
     ///     "responding" is never inferred: only a reported thinking phase adds a line.
-    init(state: TaskState, workerName: String, reportsProgress: Bool = false, reportedPhase: ClaudeProgress.Phase? = nil) {
+    ///   - turnIsRunning: the service's own state says a turn is in progress. A worker that reads
+    ///     needs-input while it waits for a reply inside its turn is then active: its open call
+    ///     spins. Nothing is inferred after that call, so there is no "responding" line.
+    init(state: TaskState, workerName: String, reportsProgress: Bool = false, reportedPhase: ClaudeProgress.Phase? = nil,
+         turnIsRunning: Bool = false) {
         switch state {
+        case .needsInput where turnIsRunning:
+            isActive = true
         case .running, .working, .starting:
             isActive = true
             if reportsProgress {
