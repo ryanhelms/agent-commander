@@ -1091,7 +1091,8 @@ enum ActivitySteps {
             let short = CommanderCall.request(flow.calls[0].requestID ?? "")
             step.sentence = question.map { ActivitySentence("Asked: " + ActivityWords.quote($0)) }
                 ?? ActivitySentence(hasAsk ? "Asked a question (\(short))" : "Waited for a reply (\(short))")
-            let answered = status == .answered || status == .complete || answer != nil
+            // A cancelled request was never answered, whatever text a call carried.
+            let answered = status != .cancelled && (status == .answered || status == .complete || answer != nil)
             // Withdrawn: the request is cancelled and a withdrawal's own record says so.
             let withdrawn = status == .cancelled && calls.contains(where: \.withdrawalConfirmed)
             if question == nil, !hasAsk, withdrawn { step.sentence = ActivitySentence("Withdrew a question (\(short))") }

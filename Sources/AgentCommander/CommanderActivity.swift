@@ -13,6 +13,8 @@ import Foundation
 //
 // Linking rules. Nothing is linked by position or similarity alone:
 // - ask, wait, reply and reconcile join only on the exact, whole request ID, within one console;
+// - an ask, wait or withdrawal whose returned record names another worker than its console's
+//   gives no request ID, state, question or answer; a cancelled record gives no answer;
 // - network submit and receipt join only on the exact operation ID;
 // - a result joins a question only when the call names its request ID, or when exactly one
 //   question was touched in the same uninterrupted turn (no developer prompt between), that
@@ -145,8 +147,8 @@ struct CommanderCall: Equatable {
         let parsed = CommanderPayload.value(detail)
         arguments = parsed?.objectValue
         let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // An ACP placeholder such as `other` is not the call's detail.
-        plainDetail = parsed == nil && !text.isEmpty && !ToolDetailText.isPlaceholder(text) ? text : nil
+        // An ACP placeholder such as `other`, or the call's own title, is not the call's detail.
+        plainDetail = parsed == nil && !text.isEmpty && !ToolDetailText.isPlaceholder(text) && text != name ? text : nil
         // A failed call's output is its error text, not the service's record.
         response = result.flatMap { $0.error == nil ? CommanderPayload.value($0.output) : nil }
         facts = entry.commander
@@ -165,9 +167,35 @@ struct CommanderCall: Equatable {
     var requestID: String? {
         if let id = facts?.requestID { return id }
         switch tool {
-        case .ask: return field("id")
-        case .wait, .withdrawQuestion, .reply, .reconcileReply: return argument("request_id") ?? field("id")
+        case .ask: return returnedRequestID
+        case .wait, .withdrawQuestion: return argument("request_id") ?? returnedRequestID
+        case .reply, .reconcileReply: return argument("request_id") ?? field("id")
         default: return nil
+        }
+    }
+
+    /// The ID of the request record an ask, wait or withdrawal returned. Nil when the record
+    /// names another worker: it then identifies nothing in this console.
+    private var returnedRequestID: String? { recordIsAnotherWorkers ? nil : field("id") }
+
+    /// The console this call was made in, from the feed's call ID, `<worker ID>:<tool ID>`.
+    /// Nil when the ID does not start with a whole local worker ID.
+    var consoleWorker: String? {
+        guard let colon = entry.id.firstIndex(of: ":") else { return nil }
+        let worker = entry.id[..<colon]
+        guard worker.hasPrefix("w-"), worker.count == 34,
+              worker.dropFirst(2).allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        return String(worker)
+    }
+
+    /// A worker asks, waits for and withdraws only its own questions. A returned record that
+    /// names a different worker than this console's is not this call's request.
+    var recordIsAnotherWorkers: Bool {
+        switch tool {
+        case .ask, .wait, .withdrawQuestion:
+            guard let console = consoleWorker, let named = field("worker_id") else { return false }
+            return named != console
+        default: return false
         }
     }
 
@@ -188,7 +216,8 @@ struct CommanderCall: Equatable {
     /// call's request is known from the correlation object or its own `request_id`, a response
     /// with a different `id` is someone else's record and none of its fields are read.
     var responseIsThisRequest: Bool {
-        guard tool.family == .request, let response, response["question"] != nil || response["id"] != nil else { return false }
+        guard tool.family == .request, let response, response["question"] != nil || response["id"] != nil,
+              !recordIsAnotherWorkers else { return false }
         let known = facts?.requestID ?? (tool == .ask ? nil : argument("request_id"))
         guard let known, let returned = field("id") else { return true }
         return known == returned
@@ -268,9 +297,16 @@ struct CommanderCall: Equatable {
         if let live = facts?.liveAnswer { return live }
         switch tool {
         case .reply: return argument("answer") ?? (responseIsThisRequest ? field("answer") : nil)
-        case .wait, .ask, .reconcileReply: return responseIsThisRequest ? field("answer") : nil
+        case .wait, .ask, .reconcileReply: return returnedAnswer
         default: return nil
         }
+    }
+
+    /// The answer in the request's own returned record. A record that says the request is
+    /// cancelled holds no answer, whatever text it carries.
+    var returnedAnswer: String? {
+        guard responseIsThisRequest, !["cancelled", "canceled"].contains(field("status")?.lowercased() ?? "") else { return nil }
+        return field("answer")
     }
 
     var question: String? {

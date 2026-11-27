@@ -60,13 +60,16 @@ enum CommanderTool: String, CaseIterable, Sendable {
 
     /// The tool a provider's name stands for. Providers prefix MCP tools with their server:
     /// `mcp__commander__commander_ask`, `mcp.commander.commander_ask`, `commander/commander_ask`.
-    /// The name must end with a registered tool name, after a separator, and anything before it
-    /// must name the Commander server. Every other name is nil.
+    /// Claude over ACP sends the call's title, `commander: commander_ask`: the server, a colon
+    /// and one space. The name must end with a registered tool name, after a separator, and
+    /// anything before it must name the Commander server. Every other name is nil.
     init?(name: String) {
         if let exact = CommanderTool(rawValue: name) { self = exact; return }
         let separators = CharacterSet(charactersIn: ".:/_")
         for tool in Self.allCases where name.hasSuffix(tool.rawValue) {
-            let prefix = name.dropLast(tool.rawValue.count)
+            var prefix = name.dropLast(tool.rawValue.count)
+            // The ACP title form: exactly one space, and only after a colon.
+            if prefix.hasSuffix(": ") { prefix = prefix.dropLast() }
             guard let separator = prefix.unicodeScalars.last, separators.contains(separator) else { continue }
             // The last component before the tool is the server's name, exactly.
             let server = prefix.lowercased().components(separatedBy: separators).last { !$0.isEmpty }
