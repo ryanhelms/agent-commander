@@ -254,6 +254,7 @@ struct ActivityLine: View {
                     .accessibilityHidden(true)
             }
             ActivitySentenceText(sentence: step.sentence, metrics: metrics)
+            if let change = step.change { ChangeCountsText(counts: change, size: metrics.bodySize * 0.9) }
             if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
             if step.opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
             Spacer(minLength: 0)

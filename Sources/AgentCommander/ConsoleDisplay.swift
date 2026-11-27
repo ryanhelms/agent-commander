@@ -671,7 +671,8 @@ struct PrettyConsoleView: View {
                                    metrics: metrics)
             }
             ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
-                               metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
+                               metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false,
+                               hidesChangeText: details?.hidesSecrets, copy: copy)
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
         }
         // The full record is read only now that the line is open.

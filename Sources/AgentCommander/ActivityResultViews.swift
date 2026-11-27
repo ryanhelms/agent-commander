@@ -11,7 +11,7 @@ import SwiftUI
 //   Molecules  ResultFieldList          label and typed value rows (the generic renderer)
 //              ResultRecordTable        a uniform list as a table
 //              ResultQuote              quoted text that keeps its line breaks, clamped
-//              ResultWell               file lines or terminal output in the terminal face
+//              ResultWell               file lines, terminal output or a change in the terminal face
 //              ResultEmptyState         the sentence an empty result reads as
 //              ResultTruncationBanner   a result the service cut short
 //              ResultShortenedTag       "Shortened", beside one value the service shortened
@@ -47,6 +47,8 @@ struct ActivityResultSource: Equatable {
     var callIsStored = false
     /// The PNG images of the stored record's result, when it is exactly an image result.
     var images: ResultImages? = nil
+    /// The typed diff blocks of the stored record's tool content (`ResultChanges.swift`).
+    var changes: ResultChanges? = nil
 
     /// One call of a line. `record` is the stored full record, once it has been read; `summary`
     /// is the same record without its large values.
@@ -60,6 +62,7 @@ struct ActivityResultSource: Equatable {
         case .tool(let name, let detail, let result):
             self.name = name
             images = record?.resultImages
+            changes = record?.resultChanges
             callText = record?.input.flatMap { $0.isEmpty ? nil : $0 } ?? detail
             resultText = record?.result.flatMap { $0.isEmpty ? nil : $0 } ?? result?.output
             callCut = StoredCut(record: record, field: "input", isStored: callIsStored)
@@ -83,6 +86,8 @@ struct ActivityResultSource: Equatable {
             let stored = entry.toolCallID == nil ? nil : (record?.name ?? summary?.name)
             name = stored ?? ""
             callText = entry.toolCallID == nil ? nil : record?.input.flatMap { $0.isEmpty ? nil : $0 }
+            // Only a result that names its call by exact ID takes that call's stored diff.
+            changes = entry.toolCallID == nil ? nil : record?.resultChanges
             callCut = StoredCut(record: record, field: "input", isStored: callText != nil)
             resultText = result.output
             statusWord = result.error == nil ? "completed" : ToolStatus(result: result).word
@@ -195,9 +200,48 @@ struct ResultQuote: View {
     }
 }
 
-/// Lines in the terminal face inside a well: a file's numbered lines, or a command's output.
+/// Lines in the terminal face inside a well: a file's numbered lines, a command's output, or a
+/// change's added and removed lines.
 struct ResultWell: View {
-    struct Line: Equatable { var number: String? = nil; let text: String; var isPrompt = false }
+    /// What a line is, in a change. An added or removed line takes its ink and a 9% wash of it
+    /// across the well; a note is a quiet line that stands for lines not drawn.
+    enum Tone: Equatable {
+        case plain, added, removed, note
+
+        var ink: Color? {
+            switch self {
+            case .plain: nil
+            case .added: Palette.working
+            case .removed: Palette.failure
+            case .note: Palette.secondary.opacity(0.7)
+            }
+        }
+
+        var wash: Color? {
+            switch self {
+            case .added: Palette.working.opacity(0.09)
+            case .removed: Palette.failure.opacity(0.09)
+            case .plain, .note: nil
+            }
+        }
+
+        /// What VoiceOver says before the line, where the ink and the sign say it to the eye.
+        var spoken: String? {
+            switch self {
+            case .added: "Added"
+            case .removed: "Removed"
+            case .plain, .note: nil
+            }
+        }
+    }
+
+    struct Line: Equatable {
+        /// The gutter: a file's line number, or a change's sign.
+        var number: String? = nil
+        let text: String
+        var isPrompt = false
+        var tone = Tone.plain
+    }
 
     let lines: [Line]
     let metrics: PrettyMetrics
@@ -206,26 +250,39 @@ struct ResultWell: View {
     var keepsEnd = false
     @State private var showsAll = false
 
+    /// The well's inset. A change line's wash reaches the well's edges across it.
+    private static let inset: CGFloat = 10
+    private static let rowSpacing: CGFloat = 1.5
+
     var body: some View {
         let hidden = showsAll ? 0 : max(0, lines.count - limit)
         let shown = hidden == 0 ? lines : (keepsEnd ? Array(lines.prefix(1).filter(\.isPrompt)) + lines.suffix(limit) : Array(lines.prefix(limit)))
         VStack(alignment: .leading, spacing: 4) {
-            VStack(alignment: .leading, spacing: 1.5) {
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
                 ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         if let number = line.number {
-                            Text(verbatim: number).foregroundStyle(Palette.secondary.opacity(0.7))
+                            Text(verbatim: number).foregroundStyle(line.tone.ink ?? Palette.secondary.opacity(0.7))
                                 .frame(width: 26, alignment: .trailing)
                         }
                         Text(verbatim: line.text.isEmpty ? " " : line.text)
-                            .foregroundStyle(line.isPrompt ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary))
+                            .foregroundStyle(line.tone.ink.map { AnyShapeStyle($0) }
+                                             ?? (line.isPrompt ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary)))
                             .fontWeight(line.isPrompt ? .medium : .regular)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        // Washes of neighbouring lines meet: each covers half the row spacing.
+                        if let wash = line.tone.wash {
+                            wash.padding(.horizontal, -Self.inset).padding(.vertical, -Self.rowSpacing / 2)
+                        }
+                    }
+                    .modifier(ResultWellLineVoice(tone: line.tone, text: line.text))
                 }
             }
             .font(Term.font(metrics.codeSize))
-            .padding(.horizontal, 10).padding(.vertical, 7)
+            .padding(.horizontal, Self.inset).padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.well, in: RoundedRectangle(cornerRadius: metrics.chipRadius, style: .continuous))
             .overlay {
@@ -261,6 +318,22 @@ struct ResultWell: View {
         while let last = rows.last, last.text.isEmpty { rows.removeLast() }
         if let prompt { rows.insert(Line(text: "$ " + prompt, isPrompt: true), at: 0) }
         return rows
+    }
+}
+
+/// An added or removed line is one VoiceOver element, "Added: …" or "Removed: …". Any other
+/// line is left as it is.
+private struct ResultWellLineVoice: ViewModifier {
+    let tone: ResultWell.Tone
+    let text: String
+
+    func body(content: Content) -> some View {
+        if let spoken = tone.spoken {
+            content.accessibilityElement(children: .ignore)
+                .accessibilityLabel(text.isEmpty ? spoken + ": empty line" : spoken + ": " + text)
+        } else {
+            content
+        }
     }
 }
 
@@ -747,6 +820,9 @@ struct ActivityResultView: View {
     let source: ActivityResultSource
     let metrics: PrettyMetrics
     var hidesSecrets = false
+    /// Whether a change's lines hide their secret-looking values, when the caller knows better
+    /// than `hidesSecrets`: the store's answer, which hides until the saved setting is read.
+    var hidesChangeText: Bool? = nil
     var copy: (String) -> Void = { _ in }
 
     var body: some View {
@@ -755,14 +831,22 @@ struct ActivityResultView: View {
         let selection = ResultShape.select(tool: source.name, payload: payload, resultText: source.resultText, failed: failed)
         // An image result is its thumbnails. A failure keeps the failure renderer.
         let images = selection.shape == .failure ? nil : source.images
+        // The call's typed diff blocks come from its tool content, so they are drawn whatever the
+        // result holds. They stand in only for the Change renderer's own body: an edit's result
+        // text, which stays in Source. Images and a structured result's fields are drawn as before.
+        let changes = selection.shape == .failure ? nil : source.changes
+        let replaced = Self.replacesBody(selection, changes: changes)
         VStack(alignment: .leading, spacing: 10) {
             // The end of the result is gone, or values were shortened that no tag below marks.
-            if !failed, images == nil, let sentence = ResultShape.notice(selection, payload: payload).sentence {
+            if !failed, images == nil, !replaced, let sentence = ResultShape.notice(selection, payload: payload).sentence {
                 ResultTruncationBanner(text: sentence, metrics: metrics)
+            }
+            if let changes {
+                ResultChangeList(changes: changes, metrics: metrics, hidesSecrets: hidesChangeText ?? hidesSecrets)
             }
             if let images {
                 ResultImageRow(images: images, metrics: metrics)
-            } else {
+            } else if !replaced, !Self.isAbsentDiff(selection, changes: changes) {
                 typed(selection, payload: payload)
             }
             if images == nil, let value = payload.value, !selection.remaining.isEmpty {
@@ -823,6 +907,19 @@ struct ActivityResultView: View {
                 ResultEmptyState(sentence: "This result could not be read as data. Its text is in Source.", metrics: metrics)
             }
         }
+    }
+
+    /// The "no diff" sentence of an edit with no result text is left out when the record does
+    /// hold diff parts: what is said of them stands in its place.
+    static func isAbsentDiff(_ selection: ResultShape.Selection, changes: ResultChanges?) -> Bool {
+        changes != nil && selection.shape == .empty(ResultChanges.absentSentence)
+    }
+
+    /// Whether the diff blocks stand in for the typed body: only for an edit's own result text
+    /// (the Change renderer), and only when a block has lines or a sentence to draw. Any other
+    /// result keeps its body and its More fields beside the change.
+    static func replacesBody(_ selection: ResultShape.Selection, changes: ResultChanges?) -> Bool {
+        changes?.hasDrawableBlock == true && selection.shape == .change
     }
 
     static func labels(_ shape: ResultShape) -> [String: String] {
