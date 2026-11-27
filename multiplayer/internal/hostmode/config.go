@@ -25,6 +25,8 @@ type Config struct {
 	ClientID      string   `json:"client_id"`
 	AllowedEmails []string `json:"allowed_emails"`
 	Admins        []string `json:"admins"`
+	// NoAdvertise stops the relay advertising itself over Bonjour.
+	NoAdvertise bool `json:"no_advertise,omitempty"`
 }
 
 // DefaultDir is the host state directory: Application Support on macOS,
