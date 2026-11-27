@@ -23,6 +23,7 @@ import (
 
 	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/dispatch"
+	"agentcommander.network/pilot/internal/hostmode"
 	"agentcommander.network/pilot/internal/identity"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -43,9 +44,12 @@ type config struct {
 	Replicas           int      `json:"replicas"`
 	Issuer             string   `json:"issuer"`
 	ClientID           string   `json:"client_id"`
-	AllowedEmails      []string `json:"allowed_emails"`
-	Admins             []string `json:"admins"`
-	IssuerCA           string   `json:"issuer_ca"`
+	// ClientSecretFile holds the sign-in client's installed-app secret, which
+	// the relay hands to enrolling devices. Read on each challenge.
+	ClientSecretFile string   `json:"client_secret_file"`
+	AllowedEmails    []string `json:"allowed_emails"`
+	Admins           []string `json:"admins"`
+	IssuerCA         string   `json:"issuer_ca"`
 	// Only explicit IP loopback dependencies can use plaintext in an isolated rehearsal.
 	LoopbackTest bool `json:"loopback_test"`
 }
@@ -206,7 +210,8 @@ func serve(ctx context.Context, cfg config, listen net.Listener) error {
 	defer httpClient.CloseIdleConnections()
 	return serveRelay(ctx, listen, cert, pool, nc, relaySettings{
 		edge: cfg.Edge, replicas: cfg.Replicas, mode: "edge", name: cfg.Edge,
-		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest},
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: httpClient, AllowLoopbackHTTP: cfg.LoopbackTest,
+			ClientSecret: fileClientSecret(cfg.ClientSecretFile, cfg.ClientID)},
 	})
 }
 
@@ -313,6 +318,7 @@ func relayServer(cert tls.Certificate, cfg relaySettings, protected http.Handler
 				"version": "1", "mode": cfg.mode, "name": cfg.name, "membership": settings.Membership,
 				"adminContact": settings.AdminContact, "policy": settings.Policy,
 				"issuer": cfg.identity.Issuer, "clientId": cfg.identity.ClientID,
+				"clientSecretProvided": cfg.identity.ProvidedClientSecret() != "",
 			})
 			return
 		}
@@ -375,5 +381,23 @@ func main() {
 	defer cancel()
 	if err := run(ctx, os.Args[1:]); err != nil && !errors.Is(err, flag.ErrHelp) {
 		log.Fatal(err)
+	}
+}
+
+// fileClientSecret reads an installed-app client secret from path on each call.
+func fileClientSecret(path, clientID string) func() string {
+	if path == "" {
+		return nil
+	}
+	return func() string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		secret, err := hostmode.ParseClientSecret(data, clientID)
+		if err != nil {
+			return ""
+		}
+		return secret
 	}
 }

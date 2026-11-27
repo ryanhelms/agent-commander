@@ -116,7 +116,7 @@ func (c Client) Login(ctx context.Context, keys *devicekeys.Keys, openBrowser fu
 	oauth := oauth2.Config{ClientID: ch.ClientID, Endpoint: endpoint, RedirectURL: redirect, Scopes: []string{oidc.ScopeOpenID}}
 	issuerHTTP := c.OIDCHTTP
 	if ch.Issuer == googleIssuer {
-		oauth.ClientSecret, err = c.googleDesktopSecret(ch.ClientID, endpoint.TokenURL)
+		oauth.ClientSecret, err = c.googleDesktopSecret(ch.ClientID, endpoint.TokenURL, ch.ClientSecret)
 		if err != nil {
 			return Session{}, err
 		}

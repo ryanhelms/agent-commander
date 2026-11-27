@@ -29,7 +29,10 @@ func hostCommand(ctx context.Context, args []string) error {
 	}
 	action := flags.Arg(0)
 	var cfg hostmode.Config
+	secretFile, clearSecret := "", false
 	if action == "configure" {
+		flags.StringVar(&secretFile, "client-secret-file", "", "store the sign-in client's installed-app secret: a Google Desktop OAuth JSON file or the bare secret; - or /dev/stdin reads standard input")
+		flags.BoolVar(&clearSecret, "clear-client-secret", false, "stop handing out a sign-in client secret")
 		flags.StringVar(&cfg.Listen, "listen", "", "replace the HTTPS listen address")
 		flags.Func("add-hostname", "add a certificate DNS name or IP (repeatable)", func(value string) error {
 			cfg.Hostnames = append(cfg.Hostnames, value)
@@ -94,6 +97,31 @@ func hostCommand(ctx context.Context, args []string) error {
 	case "init":
 		return hostmode.InitConfig(path, cfg)
 	case "configure":
+		if secretFile != "" && clearSecret {
+			return errors.New("use either --client-secret-file or --clear-client-secret")
+		}
+		if secretFile != "" {
+			in := io.Reader(os.Stdin)
+			if secretFile != "-" && secretFile != "/dev/stdin" {
+				f, err := os.Open(secretFile)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				in = f
+			}
+			if err := hostmode.SetClientSecret(path, in); err != nil {
+				return err
+			}
+		}
+		if clearSecret {
+			if err := hostmode.ClearClientSecret(path); err != nil {
+				return err
+			}
+		}
+		if (secretFile != "" || clearSecret) && len(cfg.Hostnames) == 0 && cfg.Listen == "" {
+			return nil
+		}
 		return hostmode.UpdateConfig(path, cfg.Hostnames, cfg.Listen)
 	case "install":
 		return hostmode.Install(path)
@@ -198,7 +226,8 @@ func serveHost(ctx context.Context, dir string, client *http.Client) (err error)
 	}()
 	err = serveRelay(runCtx, ln, cert, pg.Pool, nc, relaySettings{
 		edge: "host", replicas: 1, mode: "host", name: cfg.Name,
-		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client},
+		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client,
+			ClientSecret: func() string { return hostmode.ClientSecret(dir) }},
 	})
 	if cause := context.Cause(runCtx); cause != nil && ctx.Err() == nil {
 		return errors.Join(err, cause)
