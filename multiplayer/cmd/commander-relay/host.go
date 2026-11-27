@@ -7,11 +7,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 
+	"agentcommander.network/pilot/internal/bonjour"
 	"agentcommander.network/pilot/internal/hostmode"
 	"agentcommander.network/pilot/internal/identity"
 )
@@ -29,10 +31,11 @@ func hostCommand(ctx context.Context, args []string) error {
 	}
 	action := flags.Arg(0)
 	var cfg hostmode.Config
-	secretFile, clearSecret := "", false
+	secretFile, clearSecret, advertise := "", false, ""
 	if action == "configure" {
 		flags.StringVar(&secretFile, "client-secret-file", "", "store the sign-in client's installed-app secret: a Google Desktop OAuth JSON file or the bare secret; - or /dev/stdin reads standard input")
 		flags.BoolVar(&clearSecret, "clear-client-secret", false, "stop handing out a sign-in client secret")
+		flags.StringVar(&advertise, "advertise", "", `"on" or "off": advertise the relay over Bonjour`)
 		flags.StringVar(&cfg.Listen, "listen", "", "replace the HTTPS listen address")
 		flags.Func("add-hostname", "add a certificate DNS name or IP (repeatable)", func(value string) error {
 			cfg.Hostnames = append(cfg.Hostnames, value)
@@ -119,7 +122,16 @@ func hostCommand(ctx context.Context, args []string) error {
 				return err
 			}
 		}
-		if (secretFile != "" || clearSecret) && len(cfg.Hostnames) == 0 && cfg.Listen == "" {
+		if advertise != "" {
+			on, err := hostmode.ParseOnOff(advertise)
+			if err != nil {
+				return fmt.Errorf("--advertise: %w", err)
+			}
+			if err = hostmode.SetAdvertise(path, on); err != nil {
+				return err
+			}
+		}
+		if (secretFile != "" || clearSecret || advertise != "") && len(cfg.Hostnames) == 0 && cfg.Listen == "" {
 			return nil
 		}
 		return hostmode.UpdateConfig(path, cfg.Hostnames, cfg.Listen)
@@ -203,6 +215,15 @@ func serveHost(ctx context.Context, dir string, client *http.Client) (err error)
 	cert, err := hostmode.EnsureTLS(dir, cfg.Hostnames)
 	if err != nil {
 		return fmt.Errorf("load host TLS identity: %w", err)
+	}
+	if service, skip := hostmode.BonjourService(cfg, cert, ln.Addr()); skip != "" {
+		log.Printf("bonjour: not advertising: %s", skip)
+	} else if stop, err := (bonjour.Tools{}).Advertise(ctx, service); err != nil {
+		// Discovery is a convenience; the relay still serves without it.
+		log.Printf("bonjour: not advertising: %v", err)
+	} else {
+		defer stop()
+		log.Printf("bonjour: advertising %q on port %d", service.Name, service.Port)
 	}
 	pg, err := hostmode.StartPostgres(ctx, dir)
 	if err != nil {

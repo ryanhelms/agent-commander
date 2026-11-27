@@ -168,6 +168,7 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 		Dir: dir, CommanderSocket: commander, Roots: roots, OIDCHTTP: issuer,
 		SeedRelay: os.Getenv("COMMANDER_NETWORK_RELAY"),
 		Tailscale: os.Getenv("COMMANDER_TAILSCALE"),
+		Discover:  true,
 		Secrets: func(relay string) (devicekeys.Store, error) {
 			sum := sha256.Sum256([]byte(relay))
 			return devicekeys.Keychain("device-" + hex.EncodeToString(sum[:]))

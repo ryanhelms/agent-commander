@@ -19,10 +19,14 @@ import (
 //	after-login.json  copied over status.json by `login`
 //	args           one line of arguments per call
 //	keyfile        `login --auth-key file:P` copies P here and records whether P existed
+//	whois-IP.json  printed by `whois --json IP`; missing means no such node
 const fakeTailscale = `#!/bin/sh
 D="$(dirname "$0")"
 echo "$@" >> "$D/args"
 case "$1" in
+whois)
+  [ -f "$D/whois-$3.json" ] && { cat "$D/whois-$3.json"; exit 0; }
+  echo "no match for IP" >&2; exit 1 ;;
 status)
   cat "$D/status.json"
   [ -f "$D/status.exit" ] && exit 1
