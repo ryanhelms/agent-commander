@@ -518,6 +518,83 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(fallback.items == nil && fallback.fallback == "Updated the plan")
     }
 
+    // ACP plan events, as the service projects them: the message ID is `<worker>:<sequence>` and
+    // the plan record carries the sequence of the same console event.
+
+    private static func message(_ sequence: Int, role: String, _ text: String, acp: String? = nil) throws -> AGUIMessage {
+        let metadata = acp.map { #","metadata":{"acp":\#($0)}"# } ?? ""
+        return try JSONDecoder().decode(AGUIMessage.self, from: Data(
+            #"{"id":"w:\#(sequence)","role":"\#(role)","content":"\#(text)"\#(metadata)}"#.utf8))
+    }
+
+    private static func planEvent(_ sequence: Int, count: Int) throws -> AGUIMessage {
+        try message(sequence, role: "system", "[ACP plan] \(count) items",
+                    acp: #"{"source":"live","cursor":"c-\#(sequence)","kind":"plan","itemCount":\#(count)}"#)
+    }
+
+    private static func planRecord(_ sequence: Int, _ items: [(String, String)]) -> ToolDetailSummary {
+        ToolDetailSummary(key: "event-\(sequence)", kind: "plan", sequence: sequence,
+                          plan: items.map { PlanItem(content: $0.0, status: $0.1) })
+    }
+
+    private static func plans(_ messages: [AGUIMessage], _ records: [ToolDetailSummary], worker: String? = "w") -> [ActivityPlan] {
+        var wire = Wire()
+        wire.messages = messages
+        let facts = ActivityFacts(summaries: Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) }), worker: worker)
+        return prettyItems(wire, facts: facts).compactMap { if case .plan(let plan) = $0 { plan } else { nil } }
+    }
+
+    @Test func anACPPlanReadsOnlyTheRecordOfItsOwnEvent() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1), try Self.planEvent(5, count: 2)]
+        // As many records as events, kept from other events: none is shown.
+        let unrelated = [Self.planRecord(3, [("Other", "pending")]), Self.planRecord(9, [("Unrelated", "completed")])]
+        let wrong = Self.plans(events, unrelated)
+        #expect(wrong.count == 1 && wrong[0].items == nil && wrong[0].fallback == "Updated the plan: 2 items")
+        // The exact records, listed out of order, each go to their own event; the card shows the latest.
+        let exact = Self.plans(events, [Self.planRecord(5, [("Map", "completed"), ("Run", "pending")]), Self.planRecord(2, [("Map", "in_progress")])])
+        #expect(exact.count == 1 && exact[0].id == "w:2#plan" && exact[0].entries.map(\.id) == ["w:2", "w:5"])
+        #expect(exact[0].items?.map(\.content) == ["Map", "Run"] && exact[0].items?.map(\.state) == [.done, .pending])
+        // Another console's sequence numbers match nothing, and neither does an unknown console.
+        #expect(Self.plans(events, [Self.planRecord(2, [("Map", "pending")]), Self.planRecord(5, [("Map", "pending")])], worker: "other")[0].items == nil)
+        #expect(Self.plans(events, [Self.planRecord(5, [("Map", "pending")])], worker: nil)[0].items == nil)
+        // Two records claiming one event name neither.
+        let twin = ToolDetailSummary(key: "event-5b", kind: "plan", sequence: 5, plan: [PlanItem(content: "Twin", status: "pending")])
+        #expect(Self.plans(events, [Self.planRecord(5, [("Map", "pending")]), twin])[0].items == nil)
+        // A record of another kind at the event's sequence is not a plan.
+        #expect(Self.plans(events, [ToolDetailSummary(key: "t", kind: "tool", sequence: 5, plan: [PlanItem(content: "x", status: "pending")])])[0].items == nil)
+    }
+
+    @Test func anACPPlanWithARetainedOrMissingRecordShowsOnlyWhatItsLatestEventHolds() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1),
+                      try Self.message(3, role: "assistant", "Working."), try Self.planEvent(4, count: 3)]
+        // The first record was dropped, the latest kept: the card sits at the first event with the latest items.
+        let kept = Self.plans(events, [Self.planRecord(4, [("Map", "completed"), ("Run", "in_progress"), ("Report", "pending")])])
+        #expect(kept.count == 1 && kept[0].id == "w:2#plan" && kept[0].items?.count == 3)
+        // The latest record is missing: the count line, never the earlier list.
+        let missing = Self.plans(events, [Self.planRecord(2, [("Map", "in_progress")])])
+        #expect(missing.count == 1 && missing[0].items == nil && missing[0].fallback == "Updated the plan: 3 items")
+        // No records at all, and one item.
+        #expect(Self.plans(Array(events.prefix(2)), [])[0].fallback == "Updated the plan: 1 item")
+        // A plan known to be empty is a card with no items, not the fallback.
+        let empty = Self.plans([try Self.planEvent(2, count: 0)], [Self.planRecord(2, [])])
+        #expect(empty[0].items == [])
+        #expect(Self.plans([try Self.planEvent(2, count: 0)], [])[0].items == nil)
+    }
+
+    @Test func aPlanEventInALaterTurnIsItsOwnCard() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1),
+                      try Self.message(3, role: "user", "Now the next part"), try Self.planEvent(4, count: 2),
+                      try Self.planEvent(6, count: 2)]
+        let records = [Self.planRecord(2, [("First", "completed")]), Self.planRecord(4, [("Second", "in_progress"), ("Third", "pending")])]
+        let plans = Self.plans(events, records)
+        #expect(plans.map(\.id) == ["w:2#plan", "w:4#plan"])
+        #expect(plans[0].entries.map(\.id) == ["w:2"] && plans[0].items?.map(\.content) == ["First"])
+        // The second turn's latest event has no record: its own count line; the first turn is untouched.
+        #expect(plans[1].entries.map(\.id) == ["w:4", "w:6"] && plans[1].items == nil && plans[1].fallback == "Updated the plan: 2 items")
+        let both = Self.plans(events, records + [Self.planRecord(6, [("Second", "completed"), ("Third", "in_progress")])])
+        #expect(both[1].items?.map(\.state) == [.done, .inProgress] && both[0].items?.map(\.content) == ["First"])
+    }
+
     @Test func aBoundedSurfaceShowsTheFirstAndLatestThreeLinesOfAnOpenGroup() {
         var wire = Wire()
         for index in 0..<7 { wire.call("Read", detail: "/a/f\(index).txt", result: "x") }
