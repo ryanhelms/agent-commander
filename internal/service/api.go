@@ -780,7 +780,10 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	if actor != "" && (actor == w.ID || (actor != r.CoordinatorID && actor != w.ParentID)) {
 		return outcome{}, denied()
 	}
-	var in struct{ Answer string }
+	var in struct {
+		Answer     string
+		Generation *int
+	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
@@ -801,6 +804,12 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	}
 	if actor != "" && w.Control != nil && w.Control.Held {
 		return outcome{}, conflict("developer holds worker input")
+	}
+	// Native worker replies are bound to the input grant the developer saw. The
+	// explicit owner API still accepts unversioned replies from existing clients.
+	if actor == "" && w.ID != r.CoordinatorID && in.Generation != nil &&
+		(w.Control == nil || !w.Control.Held || w.Control.Generation != *in.Generation) {
+		return outcome{}, conflict("worker input control changed before the reply")
 	}
 	backgroundPermission := w.Role == "worker" && w.State == "completed" && w.Control != nil &&
 		r.Status == "running" && !w.providerBlocksControl() &&

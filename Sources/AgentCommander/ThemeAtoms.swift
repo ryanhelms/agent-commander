@@ -192,8 +192,11 @@ struct AppVersionFooter: View {
 
     /// The git version the build stamped ("v0.1.0-pilot.3-236-g441beb9"), else "0.1.0 (1)" from the
     /// bundle; "Development build" when run outside a bundle.
-    static var bundleVersion: String {
-        let info = Bundle.main.infoDictionary
+    static var bundleVersion: String { version(in: Bundle.main.infoDictionary) }
+
+    /// The same label from any bundle's Info.plist. Pure, so launch evidence can call it off the
+    /// main actor.
+    nonisolated static func version(in info: [String: Any]?) -> String {
         if let git = info?["AgentCommanderGitVersion"] as? String, !git.isEmpty { return git }
         guard let short = info?["CFBundleShortVersionString"] as? String else { return "Development build" }
         if let build = info?["CFBundleVersion"] as? String, !build.isEmpty { return "\(short) (\(build))" }

@@ -732,7 +732,9 @@ final class MultiplayerShareModel {
     func reconcileGrantActions() {
         let choices = grantResource?.choices ?? []
         grantDraft.actions = grantDraft.actions.filter(choices.contains)
-        if grantDraft.actions.isEmpty, choices.count == 1 { grantDraft.actions = [choices[0]] }
+        if grantDraft.actions.isEmpty, choices.count == 1, choices[0] != MultiplayerSharePolicy.appBuild {
+            grantDraft.actions = [choices[0]]
+        }
     }
 
     func toggleGrantAction(_ action: String) {

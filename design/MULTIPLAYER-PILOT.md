@@ -86,6 +86,15 @@ The live checklist requires a Fabric GKE origin, a Cloudflare DNS-only record po
 
 Read a coordinator's current inbox with `commander_network_inbox({})`. To wait for subsequent notes, pass the last processed ID as `afterMessageId` and `waitSeconds` up to 10. An empty result means the wait timed out. If a cursor falls outside the retained window, the response returns the available messages with `truncated: true`. Deduplicate replayed messages by ID. The wait holds the active coordinator's tool call open. An authorized `agent.message` goes straight to that inbox without asking the operator to approve the note. The coordinator still owns delegation and any approvals for work it initiates. A stored note does not start a provider or confirm that a person read it. If a fresh run replaces the coordinator, register its new resource and grant the reply action again.
 
+### Check the running app build
+
+Upgrade the owner’s native app and bundled network helper. Refresh the enrolled coordinator resource or enroll a new coordinator. Grant **Check the running app build** separately from the note. A prior note grant does not permit build queries. The capability uses the existing device envelope and works with older relays. Older apps provide no launch evidence.
+
+Discover the granted `app.build` capability and submit a fresh operation with a random 32-character lower-case hex `nonce` and the current UTC RFC 3339 `issuedAt`. Read the signed outcome through `commander_network_receipt`. A result is current only with `buildEvidence: "verified"`. The receipt binds the peer and resource, and its evidence binds the exact nonce. A request or observation older than its 90-second window does not verify the current build. If the grant asks for approval, the owner has to answer within that window.
+
+Compare `revision`, `tree` and `launchId` across fresh observations. The same launch ID identifies the same app instance, even if the service reconnected. A different launch ID and its kernel start time distinguish a relaunch. A dirty build may carry the expected Git revision. Treat its stamp as the reported source revision while preserving the reported dirty state. The request runs no command and never relaunches the app.
+
+
 The agent resource shares the ability to request a bounded number of operations. The provider credentials stay on the owner's Mac, and one use is one operation. A model call's actual token count can vary. Each Mac's OS user is the local trust boundary for the owner socket and Keychain. Peers see the resource names, granted actions and replies the owner shares. Relays see routing metadata and encrypted envelopes. A first-time device key is trusted through the authenticated directory, and its signing and encryption keys are pinned locally for subsequent deliveries.
 
 The pilot supports explicit one-to-many target lists. Named persistent groups, pooled token budgets measured in provider tokens, and multi-host database or ingress failover belong to later increments in the [relay architecture](MULTIPLAYER-RELAY.md).

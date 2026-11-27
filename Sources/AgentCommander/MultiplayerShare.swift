@@ -834,6 +834,8 @@ enum MultiplayerSharePolicy {
     static let handoff = "agent.handoff"
     /// Lend hardware (increment 5): run one of a host's enrolled commands.
     static let hostRun = "host.run"
+    /// Check the running app's revision and restarts. Always chosen by hand, never filled in.
+    static let appBuild = "app.build"
     static let thread = ["thread.read", "thread.comment"]
     static let tracking = ["agent.status", "agent.result"]
 

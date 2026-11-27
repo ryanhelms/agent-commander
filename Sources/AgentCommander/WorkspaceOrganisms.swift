@@ -187,14 +187,15 @@ struct CoordinatorSummary: View {
                             Text(node.worker.name).font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Palette.foreground).lineLimit(1)
                             Spacer(minLength: 8)
-                            StatusLabel(node.worker.state, size: 11.5)
+                            StatusLabel(text: node.worker.statusLabel, tone: node.worker.state.tone,
+                                        symbol: node.worker.state.symbol, size: 11.5)
                         }
                         .padding(.leading, node.nested ? 27 : 0)
                         .frame(minHeight: 26)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(node.worker.name), \(node.worker.state.label)\(node.nested ? ", nested" : "")")
+                    .accessibilityLabel("\(node.worker.name), \(node.worker.statusLabel)\(node.nested ? ", nested" : "")")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -375,7 +375,7 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	if action == "" {
 		return errors.New("provide a capability for the grant")
 	}
-	if !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
+	if !revoke && !slices.Contains(a.advertisedResourceActions(s, p.Resources[i]), action) {
 		return fmt.Errorf("resource %s does not support %s", resource, action)
 	}
 	// The other user can end the friendship from a different device. Reconcile
@@ -489,6 +489,14 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	return err
 }
 
+func (a *Agent) advertisedResourceActions(s identity.Session, r actions.Resource) []string {
+	offered := actions.ResourceCapabilities(r)
+	if r.Coordinator && !actions.DesktopBuildSupported() && a.localConfig(s).ReadDesktopBuild == nil {
+		offered = slices.DeleteFunc(offered, func(action string) bool { return action == "app.build" })
+	}
+	return offered
+}
+
 func (a *Agent) publishResource(ctx context.Context, s identity.Session, in input, update bool) (any, error) {
 	id := in.ID
 	if update && id == "" {
@@ -550,7 +558,7 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 	} else {
 		resources[i] = r
 	}
-	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": actions.ResourceCapabilities(r)}
+	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": a.advertisedResourceActions(s, r)}
 	if r.Capabilities != nil {
 		body["capabilities"] = r.Capabilities
 	}
