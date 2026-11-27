@@ -9,7 +9,8 @@ import SwiftUI
 //   atoms      reused: MultiplayerMark, MultiplayerBadge, MultiplayerLamp, MultiplayerStepMark,
 //              MultiplayerFingerprintText, MultiplayerSpinner, the tray button and switch styles
 //   molecules  reused: MultiplayerRelayRow (MultiplayerTailnet.swift), MultiplayerProbeStepRow,
-//              MultiplayerWell, MultiplayerBandHeading, MultiplayerStateLabel
+//              MultiplayerWell, MultiplayerBandHeading, MultiplayerStateLabel,
+//              MultiplayerRequestAccess (MultiplayerMembershipRequests.swift)
 //              new: MultiplayerJoinChecklistView
 //   organism   MultiplayerRelaysNearbyBand
 
@@ -27,6 +28,16 @@ extension MultiplayerDiscoveredRelay {
         }
     }
 
+    /// The row's state once the relay turned the sign-in away: where the request to join stands.
+    static func rowState(asked request: MultiplayerMembershipRequestStatus) -> (lamp: MultiplayerLamp.Kind, text: String, tone: Tone) {
+        switch request.phase {
+        case .requestable: (.waiting, "Request access", .attention)
+        case .sending: (.waiting, "Sending…", .focus)
+        case .pending, .denied, .full: (request.lamp, request.title ?? "", request.tone)
+        case .approved: (.waiting, "Sign in", .focus)
+        }
+    }
+
     /// New, then how the relay admits people.
     var rowTags: [MultiplayerRelayRow.Tag] {
         var tags: [MultiplayerRelayRow.Tag] = []
@@ -38,8 +49,9 @@ extension MultiplayerDiscoveredRelay {
 
 extension MultiplayerRelayRow {
     /// A relay found nearby, in the Relays nearby band. Choosing it opens its join checklist.
-    init(relay: MultiplayerDiscoveredRelay, isChosen: Bool, onChoose: @escaping () -> Void) {
-        let state = relay.rowState
+    init(relay: MultiplayerDiscoveredRelay, isChosen: Bool, request: MultiplayerMembershipRequestStatus? = nil,
+         onChoose: @escaping () -> Void) {
+        let state = request.map(MultiplayerDiscoveredRelay.rowState(asked:)) ?? relay.rowState
         let unreachable = relay.step == .unreachable
         self.init(name: relay.displayName, address: relay.host, source: relay.source.title, tags: relay.rowTags,
                   lamp: state.lamp, state: state.text, tone: state.tone,
@@ -66,6 +78,10 @@ struct MultiplayerJoinChecklistView: View {
     let onOpenServer: (String) -> Void
     /// Nil where the Join a tailnet form is already on the page.
     var onJoinTailnet: (() -> Void)? = nil
+    /// The note that goes with Request access, and the instant its ages are measured from.
+    var note: Binding<String> = .constant("")
+    var now = Date()
+    var onRequestAccess: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -104,6 +120,19 @@ struct MultiplayerJoinChecklistView: View {
             }
             .padding(.top, Space.xs)
         }
+        if step.stage == .signIn, checklist.offersSignInAgain {
+            Button("Sign in again", action: onSignIn)
+                .buttonStyle(MultiplayerTrayButtonStyle())
+                .disabled(!canAct)
+                .accessibilityHint("Opens your browser to sign in, with this or another account")
+                .padding(.top, Space.xs)
+        }
+        if step.stage == .membership, let request = checklist.request {
+            // The step's own line says where the request stands; this adds its state and the form.
+            MultiplayerRequestAccess(status: request, contact: checklist.contact, now: now, note: note, canAct: canAct,
+                                     isProminent: isProminent, showsDetail: false, onRequest: onRequestAccess)
+                .padding(.top, Space.xs)
+        }
         if step.stage == checklist.action?.stage { action }
     }
 
@@ -124,6 +153,9 @@ struct MultiplayerJoinChecklistView: View {
                    hint: "Pins this certificate and adds the relay to your servers", perform: onConfirm)
         case .signIn:
             button(MultiplayerJoinChecklist.Action.signIn.title, hint: "Opens your browser to sign in", perform: onSignIn)
+        case .requestAccess:
+            // MultiplayerRequestAccess holds the button, under the note it sends.
+            EmptyView()
         case .openServer(let id):
             Button(MultiplayerJoinChecklist.Action.openServer(id).title) { onOpenServer(id) }
                 .buttonStyle(MultiplayerTrayButtonStyle())
@@ -159,11 +191,17 @@ struct MultiplayerRelaysNearbyBand: View {
     /// "Notify me about relays nearby", where the band offers it.
     var notifies: Binding<Bool>? = nil
     var isProminent = true
+    /// The note for the chosen relay's Request access, and the instant ages are measured from.
+    var note: Binding<String> = .constant("")
+    var now = Date()
+    /// A listed relay's request to join, once it is in the server list and turned the sign-in away.
+    var request: (MultiplayerDiscoveredRelay) -> MultiplayerMembershipRequestStatus? = { _ in nil }
     let onSelect: (String) -> Void
     let onConfirm: (MultiplayerDiscoveredRelay) -> Void
     let onSignIn: (MultiplayerDiscoveredRelay) -> Void
     let onOpenServer: (String) -> Void
     var onJoinTailnet: (() -> Void)? = nil
+    var onRequestAccess: (MultiplayerDiscoveredRelay) -> Void = { _ in }
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -189,11 +227,12 @@ struct MultiplayerRelaysNearbyBand: View {
                             if index > 0 {
                                 Rectangle().fill(MultiplayerTheme.hair).frame(height: 1).padding(.horizontal, Space.s)
                             }
-                            MultiplayerRelayRow(relay: relay, isChosen: relay.id == selected) { onSelect(relay.id) }
+                            MultiplayerRelayRow(relay: relay, isChosen: relay.id == selected, request: request(relay)) { onSelect(relay.id) }
                             if relay.id == selected, let checklist {
                                 MultiplayerJoinChecklistView(checklist: checklist, canAct: canAct, isProminent: isProminent,
                                                              onConfirm: { onConfirm(relay) }, onSignIn: { onSignIn(relay) },
-                                                             onOpenServer: onOpenServer, onJoinTailnet: onJoinTailnet)
+                                                             onOpenServer: onOpenServer, onJoinTailnet: onJoinTailnet,
+                                                             note: note, now: now, onRequestAccess: { onRequestAccess(relay) })
                                     .padding(.horizontal, Space.s)
                                     .padding(.bottom, Space.s)
                                     // The chosen row's marker runs on beside its steps.

@@ -97,6 +97,22 @@ COMMANDER_NETWORK_FIXTURE_DISCOVERY picks what is nearby:
 `relay-join` adds the relay as `server-add` would. It refuses a relay that needs confirming unless
 `pin` is the observed pin, and never accepts another pin. The seen marks are kept in the scratch file.
 
+Membership requests (design/COMMANDER-NETWORK-DISCOVERY.md): COMMANDER_NETWORK_FIXTURE_ACCESS makes
+every `login` to a server that isn't signed in a refused one, and picks what follows. Unset, a
+sign-in succeeds as before.
+
+    requestable  the refusal can be followed by `membership-request`, which is taken (pending) and
+                 approved on the third `membership-request-status` read after it.
+    pending      a request made about two hours ago is still waiting.
+    approved     a request was approved five minutes ago; the next `login` is admitted.
+    denied       a request was declined three hours ago; asking again is refused for a day.
+    full         `membership-request` is refused because the relay's queue is full.
+
+After a refusal `status` carries `accessRequest` and the refusal as `error`. `membership-request`
+without a refusal is refused ("sign in first…"), and on a signed-in server too ("already a member…").
+`admin-requests` lists two people waiting on ryan-mac's admin and is refused on any other server;
+`admin-request-decide` takes one off the list. Each refuses any field it doesn't know.
+
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
 (Relay reconnect on a merge queue with claims, a board and three queued branches; iOS onboarding on
 pull requests), a host you lend (studio-mac) and two that friends lend (jonas-mac-mini is granted,
@@ -1354,6 +1370,103 @@ def teams(state, verb, request):
     return {"queue": rows}
 
 
+ACCESS_MODES = ("requestable", "pending", "approved", "denied", "full")
+REFUSED = "this relay did not admit your account."
+ASKABLE = " You can ask the relay's admins to let you in."
+MEMBERSHIP_REQUESTS = [
+    ("mr-noor", "noor@lab.example", "I'm on the relay team from next sprint. Sam said to ask here.", -25),
+    ("mr-jules", "jules@example.org", "", -300),
+]
+
+
+def refuse_login(state, server):
+    """A sign-in the relay turns away, as COMMANDER_NETWORK_FIXTURE_ACCESS says. True when refused."""
+    mode = os.environ.get("COMMANDER_NETWORK_FIXTURE_ACCESS", "")
+    if mode not in ACCESS_MODES or server["signedIn"]:
+        return False
+    asked = state.setdefault("access", {})
+    row = asked.get(server["id"])
+    if row and row["state"] == "approved":
+        # Approval admits the person once, on their next sign-in.
+        row["state"] = "admitted"
+        return False
+    if row and row["state"] in ("pending", "denied"):
+        return True
+    row = {"mode": mode, "state": "requestable", "note": "", "reads": 0}
+    if mode == "pending":
+        row.update(state="pending", id="mr-you", note="I work with Sam on the relay.", createdAt=now(-125))
+    elif mode == "approved":
+        row.update(state="approved", id="mr-you", createdAt=now(-125), decidedAt=now(-5))
+    elif mode == "denied":
+        row.update(state="denied", id="mr-you", createdAt=now(-300), decidedAt=now(-180))
+    asked[server["id"]] = row
+    return True
+
+
+def access_status(state, server):
+    """What `status` adds for a server whose sign-in was refused."""
+    row = state.get("access", {}).get(server["id"])
+    if not row or row["state"] == "admitted" or server["signedIn"]:
+        return {}
+    word = row["state"]
+    return {"accessRequest": word, "error": REFUSED + (ASKABLE if word == "requestable" else "")}
+
+
+def membership(state, verb, request):
+    """A person's request to join after a refused sign-in, and an admin's list and answer."""
+    allowed = {"membership-request": {"server", "note"}, "membership-request-status": {"server"},
+               "admin-requests": {"server"}, "admin-request-decide": {"server", "id", "decision"}}[verb]
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    server = find(state, request)
+    if verb in ("admin-requests", "admin-request-decide"):
+        if server["id"] != "s-fixture-home" or not server["signedIn"]:
+            raise ValueError("only a relay admin can list membership requests")
+        decided = state.setdefault("membershipDecided", [])
+        waiting = [{"id": ident, "email": email, "note": note, "status": "pending", "createdAt": now(minutes)}
+                   for ident, email, note, minutes in MEMBERSHIP_REQUESTS if ident not in decided]
+        if verb == "admin-requests":
+            return {"requests": waiting}
+        if request.get("decision") not in ("approve", "deny"):
+            raise ValueError("decision must be approve or deny")
+        if not any(row["id"] == request.get("id") for row in waiting):
+            raise ValueError("no pending membership request with that ID")
+        decided.append(request["id"])
+        save(state)
+        return {}
+    row = state.setdefault("access", {}).get(server["id"])
+
+    def shown():
+        out = {"id": row.get("id", ""), "status": row["state"], "note": row.get("note", ""), "createdAt": row.get("createdAt", "")}
+        if row.get("decidedAt"):
+            out["decidedAt"] = row["decidedAt"]
+        return out
+
+    if verb == "membership-request-status":
+        if not row or row["state"] in ("requestable", "full"):
+            return {"status": ""}
+        if row["state"] == "pending" and row.get("mode") == "requestable":
+            row["reads"] = row.get("reads", 0) + 1
+            if row["reads"] >= 3:
+                row.update(state="approved", decidedAt=now())
+            save(state)
+        return shown()
+    if server["signedIn"]:
+        raise ValueError("already a member of this relay")
+    if not row or row["state"] == "admitted":
+        raise ValueError("sign in first; a request must follow a refused sign-in from this Mac within 15 minutes")
+    if row["state"] == "denied":
+        raise ValueError("the relay's admins declined a request from this account in the last day")
+    if row.get("mode") == "full":
+        row["state"] = "full"
+        save(state)
+        raise ValueError("the relay has too many pending requests; ask an admin directly")
+    if row["state"] == "requestable":
+        row.update(state="pending", id="mr-you", note=(request.get("note") or "").strip()[:280], createdAt=now(), reads=0)
+        save(state)
+    return shown()
+
+
 def summary(server, state=None):
     live = server["state"] == "online" and server["id"] in FRIENDS
     home = live and server["id"] == "s-fixture-home"
@@ -1498,6 +1611,8 @@ def run(verb, request):
         return remote(state, verb, request)
     if verb in ("tailnet-status", "tailnet-join", "tailnet-relays"):
         return tailnet(state, verb, request)
+    if verb in ("membership-request", "membership-request-status", "admin-requests", "admin-request-decide"):
+        return membership(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
         favorites = sorted([s for s in ordered if s["favorite"]], key=lambda s: s.get("lastUsedAt") or "", reverse=True)
@@ -1531,15 +1646,17 @@ def run(verb, request):
         elif verb == "server-trust":
             server.update(pin=request.get("pin") or "", state="signedOut")
         elif verb == "login":
-            server.update(state="online", signedIn=True, handle="fixture-ryan", lastUsedAt=now(), lastSeen=now())
+            if not refuse_login(state, server):
+                server.update(state="online", signedIn=True, handle="fixture-ryan", lastUsedAt=now(), lastSeen=now())
         elif verb == "logout":
             server.update(state="signedOut", signedIn=False, handle="")
         else:
             if server["id"] in FRIENDS and server["state"] == "online":
                 return status(state, server)
             online = server["state"] == "online"
-            return {"online": online, "signedIn": server["signedIn"], "handle": server["handle"], "friends": [],
-                    "incoming": [], "outgoing": [], "grants": [], "resources": [], "shared": []}
+            return dict({"online": online, "signedIn": server["signedIn"], "handle": server["handle"], "friends": [],
+                         "incoming": [], "outgoing": [], "grants": [], "resources": [], "shared": []},
+                        **access_status(state, server))
         save(state)
         return summary(server, state) if verb.startswith("server-") else {}
     if verb == "contacts":

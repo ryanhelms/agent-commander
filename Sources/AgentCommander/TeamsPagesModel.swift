@@ -199,6 +199,9 @@ struct TeamsPagesContent {
         var policy: MultiplayerRelayPolicy? = nil
         var members: [TeamsMember] = []
         var devices: [TeamsDevice] = []
+        /// The membership requests waiting on the admin. Nil while they haven't been read, or when
+        /// the relay wouldn't list them: the page then leaves the list out.
+        var requests: [MultiplayerMembershipRequest]? = nil
         /// The widest scope the relay lets a member share knowledge with, as it tells every member.
         var knowledgeWidest: MultiplayerKnowledgeScope? = nil
         /// Why the policy or the member and device lists couldn't be read.
@@ -244,6 +247,8 @@ struct TeamsPagesContent {
     func handle(on server: String) -> String { self.server(server)?.handle ?? "" }
 
     var adminServers: [Server] { servers.filter(\.isAdmin) }
+    /// Membership requests waiting on the person, across the servers they administer.
+    var requestsWaiting: Int { adminServers.reduce(0) { $0 + ($1.requests?.count ?? 0) } }
     var isAdmin: Bool { !adminServers.isEmpty }
 
     func workspace(_ key: String) -> (server: Server, workspace: MultiplayerWorkspace)? {
@@ -435,7 +440,8 @@ struct TeamsPagesContent {
                     cell("endorsed", "endorsed", found?.resources.filter { !$0.endorsements.isEmpty }.count ?? 0, tone: .working)]
         case TeamsPlace.admin:
             let members = adminServers.flatMap(\.members)
-            return [cell("servers", "servers you run", adminServers.count), cell("members", "members", members.count),
+            return [cell("servers", "servers you run", adminServers.count),
+                    cell("requests", "requests to join", requestsWaiting, tone: .attention), cell("members", "members", members.count),
                     cell("suspended", "suspended", members.filter(\.isSuspended).count, tone: .failure),
                     cell("devices", "devices", adminServers.reduce(0) { $0 + $1.devices.count })]
         default:
@@ -791,6 +797,8 @@ enum TeamsIntent {
     case askSuspend(String, server: String)
     case unsuspend(String, server: String)
     case askRevoke(String, server: String)
+    /// Approves or denies a membership request, by its ID.
+    case decideRequest(String, server: String, approve: Bool)
 }
 
 // MARK: - The action boundary
@@ -873,6 +881,8 @@ struct TeamsPageActions {
         = { handle, server, _ in unavailable(handle, server) }
     var revokeDevice: @MainActor (_ device: String, _ server: String) async -> Result
         = { device, server in unavailable(device, server) }
+    var decideRequest: @MainActor (_ request: String, _ server: String, _ approve: Bool) async -> Result
+        = { request, server, _ in unavailable(request, server) }
 }
 
 /// How a claim, or a card's claim or completion, ended: the result, and who stopped it when the
@@ -1314,6 +1324,8 @@ final class TeamsPagesState {
             run(TeamsKey.result("member", TeamsKey.make(handle, on: server)), from: place) { await actions.setSuspended(handle, server, false) }
         case .askRevoke(let device, let server):
             selection.confirming = .revokeDevice(device: device, server: server)
+        case .decideRequest(let request, let server, let approve):
+            run(TeamsKey.result("request", TeamsKey.make(request, on: server)), from: place) { await actions.decideRequest(request, server, approve) }
         }
     }
 

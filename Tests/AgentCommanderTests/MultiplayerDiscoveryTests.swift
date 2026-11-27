@@ -286,7 +286,7 @@ enum MultiplayerDiscoveryFixture {
         #expect(checklist.advertisedMatches == false)
         #expect(checklist.step(.reachable).detail == "Answers at den-mini.local:8443.")
         #expect(checklist.step(.membership).detail
-                == "Invite only. You need an invite link or the admin’s approval. Ask ops@lab.example.")
+                == "Invite only. You need an invite link or an admin’s approval. If sign-in turns you away, you can request access here. Its admin is ops@lab.example.")
         #expect(checklist.hint == "Confirm the fingerprint to add this relay.")
 
         var matching = den
@@ -326,7 +326,7 @@ enum MultiplayerDiscoveryFixture {
         let added = MultiplayerJoinChecklist(relay: den, server: saved)
         #expect(Self.marks(added) == [.done, .done, .current, .waiting])
         #expect(added.step(.certificate).detail == "You confirmed its fingerprint." && added.fingerprint == nil)
-        #expect(added.action == .signIn && added.hint == "Sign in once you have an invite or the admin’s approval.")
+        #expect(added.action == .signIn && added.hint == "Sign in. If the relay turns you away, you can request access.")
 
         let waiting = MultiplayerJoinChecklist(relay: den, server: saved, signIn: .waitingForBrowser)
         #expect(waiting.action == nil && waiting.step(.signIn).mark == .current)
@@ -350,8 +350,8 @@ enum MultiplayerDiscoveryFixture {
         relay.membership = .allowlist
         let allowlist = MultiplayerJoinChecklist(relay: relay)
         #expect(allowlist.step(.membership).detail
-                == "Allowlist. The admin must add your email before you can sign in. Ask the relay’s admin.")
-        #expect(allowlist.step(.membership).mark == .waiting && allowlist.hint == "Sign in once the admin has added your email.")
+                == "Allowlist. Your email has to be on the admins’ list. If sign-in turns you away, you can request access here.")
+        #expect(allowlist.step(.membership).mark == .waiting && allowlist.hint == "Sign in. If the relay turns you away, you can request access.")
         relay.membership = .unknown
         #expect(MultiplayerJoinChecklist(relay: relay).step(.membership).detail == "This relay didn’t say how it admits people.")
     }
