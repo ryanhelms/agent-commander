@@ -120,6 +120,77 @@ func TestDetailRoutesRefuseAuthorizationHeaders(t *testing.T) {
 	}
 }
 
+func TestToolDetailsKeepLocationsScopedAndClearOldTargets(t *testing.T) {
+	f := newFixture(t)
+	coordinator := f.run()
+	first := f.delegate(coordinator, "first")
+	second := f.delegate(coordinator, "second")
+	firstPath := "/v1/workers/" + first.ID
+	secondPath := "/v1/workers/" + second.ID
+	firstLocation := ToolLocation{Path: "/private/tmp/first/location-only-in-details.txt", Line: 7}
+	secondLocation := ToolLocation{Path: "/private/tmp/second/location-only-in-details.txt", Line: 13}
+	send := func(path, token string, location *ToolLocation) {
+		f.call("POST", path+"/output", token, map[string]any{
+			"events":  []ConsoleEvent{{Kind: "tool_result", ToolID: "same-id", Name: "Read", Text: "preview"}},
+			"details": []ToolDetail{{Kind: "tool", Key: "same-id", Result: "file text", Location: location}},
+		}, 200, "")
+	}
+	readLocation := func(path, query string) *ToolLocation {
+		t.Helper()
+		body := f.call("GET", path+"/tool-details"+query, "", nil, 200, "")
+		if query == "" {
+			var list detailList
+			if err := json.Unmarshal(body, &list); err != nil || len(list.Records) != 1 {
+				t.Fatalf("summary: %+v, %v", list, err)
+			}
+			return list.Records[0].Location
+		}
+		var detail ToolDetail
+		if err := json.Unmarshal(body, &detail); err != nil || detail.Key != "same-id" {
+			t.Fatalf("detail: %+v, %v", detail, err)
+		}
+		return detail.Location
+	}
+	send(firstPath, first.Token, &firstLocation)
+	send(secondPath, second.Token, &secondLocation)
+	send(firstPath, first.Token, nil)
+	if got := readLocation(firstPath, ""); !reflect.DeepEqual(got, &firstLocation) {
+		t.Fatalf("summary lost the first location: %+v", got)
+	}
+	if got := readLocation(secondPath, "?key=same-id"); !reflect.DeepEqual(got, &secondLocation) {
+		t.Fatalf("equal call ID borrowed a different worker's location: %+v", got)
+	}
+	for _, shared := range []string{"/v1/runs", "/v1/runs/" + first.RunID + "?view=ag-ui"} {
+		if body := f.call("GET", shared, "", nil, 200, ""); strings.Contains(string(body), "location-only-in-details") {
+			t.Fatalf("%s carries the private location", shared)
+		}
+	}
+	f.call("GET", firstPath+"/tool-details?key=same-id", first.Token, nil, 403, "")
+
+	for _, invalid := range []ToolLocation{
+		{}, {Path: "relative", Line: 7}, {Path: "/a", Line: -1}, {Path: "/a", Line: 1 << 32},
+		{Path: "/a\nline", Line: 7}, {Path: "/" + strings.Repeat("a", 4096), Line: 7},
+	} {
+		send(firstPath, first.Token, &invalid)
+		if got := readLocation(firstPath, ""); got != nil {
+			t.Fatalf("invalid update retained a location: %+v", got)
+		}
+		send(firstPath, first.Token, &firstLocation)
+	}
+	send(firstPath, first.Token, &ToolLocation{})
+	restarted, err := New(f.dir, f.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.api = restarted
+	if got := readLocation(firstPath, "?key=same-id"); got != nil {
+		t.Fatalf("restart restored the cleared location: %+v", got)
+	}
+	if got := readLocation(secondPath, "?key=same-id"); !reflect.DeepEqual(got, &secondLocation) {
+		t.Fatalf("restart lost the unaffected location: %+v", got)
+	}
+}
+
 func TestTranscriptLimitShortensNewValuesInOrder(t *testing.T) {
 	f := newFixture(t)
 	coordinator := f.run()

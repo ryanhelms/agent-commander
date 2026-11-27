@@ -101,8 +101,8 @@ func jsonValue(raw json.RawMessage) string {
 // wireToolDetail reads the full values of an ACP tool_call or tool_call_update.
 func wireToolDetail(body []byte) *service.ToolDetail {
 	var update struct {
-		SessionUpdate, ToolCallID, Title, Kind string
-		RawInput, RawOutput, Content           json.RawMessage
+		SessionUpdate, ToolCallID, Title, Kind  string
+		RawInput, RawOutput, Content, Locations json.RawMessage
 	}
 	if json.Unmarshal(body, &update) != nil || update.ToolCallID == "" ||
 		(update.SessionUpdate != "tool_call" && update.SessionUpdate != "tool_call_update") {
@@ -112,6 +112,13 @@ func wireToolDetail(body []byte) *service.ToolDetail {
 		Input: jsonValue(update.RawInput), Result: jsonValue(update.RawOutput)}
 	if content := jsonValue(update.Content); content != "[]" {
 		d.Content = content
+	}
+	if update.Locations != nil {
+		var locations []service.ToolLocation
+		d.Location = &service.ToolLocation{}
+		if json.Unmarshal(update.Locations, &locations) == nil && len(locations) == 1 && locations[0].Valid() {
+			d.Location = &locations[0]
+		}
 	}
 	return d
 }

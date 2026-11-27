@@ -611,6 +611,9 @@ struct CockpitActions {
     /// Reads the images and audio one prompt carried, by its worker and turn. Nil where no
     /// service backs the transcript, and a user entry then offers no attachments action.
     var promptAttachments: PromptAttachmentIntents? = nil
+    /// Opens the file and line a worker's tool call reported, on this Mac. Nil where no service
+    /// backs the transcript, and an opened line then offers no "Open at line".
+    var toolLocation: ToolLocationIntents? = nil
 
     /// True when a worker's action list carries more than zoom, reply and copy.
     var offersWorkerOperations: Bool { takeControl != nil || interruptWorker != nil || stopWorker != nil }
