@@ -73,7 +73,7 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
                 if let name = match.output[1].substring { registered.insert(String(name)) }
             }
         }
-        #expect(registered.count == 23)
+        #expect(registered.count == 24)
         #expect(registered == Set(CommanderTool.allCases.map(\.rawValue)))
     }
 
@@ -87,6 +87,7 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
         }
         #expect(CommanderTool.ask.family == .request && CommanderTool.wait.family == .request)
         #expect(CommanderTool.reply.family == .request && CommanderTool.reconcileReply.family == .request)
+        #expect(CommanderTool.withdrawQuestion.family == .request && CommanderTool.withdrawQuestion.domain == .question)
         #expect(CommanderTool.networkSubmit.family == .operation && CommanderTool.networkReceipt.family == .operation)
         #expect(CommanderTool.result.family == .report)
     }
@@ -115,6 +116,7 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
             (.ask, #"{"question":"Which database?"}"#, question("req-1", "pending"), "“Which database?”", "request req-1"),
             (.wait, #"{"request_id":"req-1","timeout_seconds":45}"#, question("req-1", "answered", answer: "Postgres"),
              "request req-1 · up to 45s", "answer “Postgres”"),
+            (.withdrawQuestion, #"{"request_id":"req-1"}"#, question("req-1", "cancelled"), "request req-1", "cancelled"),
             (.reply, #"{"request_id":"req-1","answer":"Postgres"}"#, question("req-1", "answered", answer: "Postgres"),
              "request req-1 · “Postgres”", "answered"),
             (.reconcileReply, #"{"request_id":"req-1"}"#, #"{"id":"req-1","question":"q","status":"answered","answer":"","delivery":"delivered"}"#,
@@ -209,6 +211,50 @@ private func workflows(_ items: [ConversationItem]) -> [CommanderWorkflow] {
         later.call("commander_wait", detail: #"{"request_id":"req-1"}"#, result: question("req-1", "answered", answer: "x"))
         let pending = Question(id: "req-1", workerID: "w", question: "q", status: "pending", answer: "")
         #expect(workflows(items(later, requests: [pending])).first?.status == .waitingForReply)
+    }
+
+    /// commander_withdraw_question takes `request_id` and returns the question's record with
+    /// status `cancelled`. It joins its question by that exact ID and says withdrawn only on
+    /// that record.
+    @Test func aWithdrawalJoinsItsQuestionByExactRequestIDAndIsSaidOnlyOnItsOwnRecord() throws {
+        var wire = Wire()
+        wire.call("commander_ask", detail: "Which database?", result: question("req-1", "pending"))
+        wire.call("commander_wait", detail: #"{"request_id":"req-1"}"#, result: question("req-1", "pending"))
+        wire.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, result: question("req-1", "cancelled"))
+        let flow = try #require(workflows(items(wire)).first)
+        #expect(workflows(items(wire)).count == 1 && flow.calls.count == 3)
+        #expect(flow.link == .request("req-1") && flow.status == .cancelled)
+        #expect(flow.calls[2].withdrawalConfirmed && flow.calls[2].answer == nil)
+
+        // ACP keeps only the service's correlation: the exact ID and the state it read.
+        var acp = Wire()
+        acp.call("commander_ask", detail: "Which database?", result: question("req-1", "pending"))
+        acp.call("mcp__commander__commander_withdraw_question", detail: "",
+                 commander: ["requestId": "req-1", "requestStatus": "cancelled"], result: "{}")
+        let correlated = try #require(workflows(items(acp)).first)
+        #expect(correlated.calls.count == 2 && correlated.status == .cancelled)
+
+        // A request whose ID only shares a prefix is another request.
+        var other = Wire()
+        other.call("commander_ask", detail: "Which database?", result: question("req-1", "pending"))
+        other.call("commander_withdraw_question", detail: #"{"request_id":"req-10"}"#, result: question("req-10", "cancelled"))
+        let apart = workflows(items(other))
+        #expect(apart.count == 2 && apart[0].status == .waitingForReply)
+
+        // A result that is another request's record, or no record, confirms nothing.
+        var wrong = Wire()
+        wrong.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, result: question("req-2", "cancelled"))
+        wrong.call("commander_withdraw_question", detail: #"{"request_id":"req-3"}"#, result: "{}")
+        for flow in workflows(items(wrong)) {
+            #expect(!flow.calls[0].withdrawalConfirmed && flow.status == .uncertain)
+        }
+
+        // A refused withdrawal (answered already, or another worker's) leaves the question as it was.
+        var refused = Wire()
+        refused.call("commander_ask", detail: "Which database?", result: question("req-1", "pending"))
+        refused.call("commander_withdraw_question", detail: #"{"request_id":"req-1"}"#, error: "only pending questions can be withdrawn")
+        let kept = try #require(workflows(items(refused)).first)
+        #expect(!kept.calls[1].withdrawalConfirmed && kept.status != .cancelled)
     }
 
     @Test func aFailedPollStaysVisibleWhileTheRequestIsUnresolved() throws {

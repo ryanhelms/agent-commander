@@ -4,6 +4,7 @@ import SwiftUI
 // Values come from `PrettyRecords.swift`; density and type come from the console.
 //
 //   Molecule   PrettyTurnEndLine       the end of a turn: how long it worked, or why it stopped
+//              PrettyFormOutcomeLine   the line after a form reply: answered, declined, cancelled
 //              PrettyChoiceCard        a provider question's choices, read-only
 //              PrettyPlanDocument      a proposed plan as Markdown beside a rule
 //              PrettyDeliverableCard   a published artifact or a sent file: name, kind, Open
@@ -23,6 +24,21 @@ struct PrettyTurnEndLine: View {
             .frame(maxWidth: metrics.readingWidth, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(end.spoken)
+    }
+}
+
+/// The line after the owner's reply to a form request: "Answered a form", "Declined a form" or
+/// "Cancelled a form", in secondary ink like a turn's duration. It is text: it does not open,
+/// takes no Tab stop and shows nothing the owner entered. Never folded.
+struct PrettyFormOutcomeLine: View {
+    let outcome: PrettyFormOutcome
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        ActivitySentenceText(sentence: outcome.sentence, metrics: metrics, ink: Palette.secondary)
+            .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(outcome.spoken)
     }
 }
 

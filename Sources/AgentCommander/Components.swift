@@ -357,9 +357,15 @@ struct RequestPresentation: Identifiable, Equatable {
     /// The asking worker's reported provider usage, as on its tile. Nil without a session.
     var workerTelemetry: ProviderTelemetry? = nil
     /// The asking worker's one tool call that is awaiting this request's approval, resolved from
-    /// its whole transcript before `contextEntries` is cut to a recent window. Nil unless the
-    /// request offers choices and exactly one call is open; see `PrettyRunStatus.awaitingToolID`.
+    /// its whole transcript before `contextEntries` is cut to a recent window. A request whose
+    /// permission names its call marks that call alone, or none when the ID matches no single
+    /// open call. A request that names none marks a call only when it offers choices and exactly
+    /// one call is open; see `PrettyRunStatus.awaitingToolID`.
     var awaitingApprovalToolID: String? = nil
+    /// The same call, set only when the permission named it by exact ID
+    /// (`PrettyRunStatus.approvalToolID`). Never set from the one-open-call rule, so a proposed
+    /// plan is shown only for the call its permission names.
+    var exactApprovalToolID: String? = nil
     /// This request's Commander workflow (its ask, waits and linked result), linked over the
     /// asking worker's whole transcript before `contextEntries` is cut to a recent window, so the
     /// PiP reads the request as one story with its Ask. Nil when no Commander call names it.
@@ -617,6 +623,10 @@ struct CockpitActions {
     var canControlWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
     var canInterruptWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
     var canStopWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
+    /// Whether the owner's text may go to this coordinator through `sendFollowUp` right now. The
+    /// feature model owns every condition. Unlike the queries above, nil means no: the fixtures
+    /// leave it out and keep `messageCoordinator`.
+    var canSendCoordinatorFollowUp: (@MainActor (_ workerID: String) -> Bool)? = nil
     /// True while a control, interrupt or stop request for the worker is still in flight.
     var workerIsBusy: (@MainActor (_ workerID: String) -> Bool)? = nil
     /// Reads a worker's provider source. Nil where no source can be read, and then no console
@@ -628,6 +638,9 @@ struct CockpitActions {
     /// Reads the images and audio one prompt carried, by its worker and turn. Nil where no
     /// service backs the transcript, and a user entry then offers no attachments action.
     var promptAttachments: PromptAttachmentIntents? = nil
+    /// Opens the file and line a worker's tool call reported, on this Mac. Nil where no service
+    /// backs the transcript, and an opened line then offers no "Open at line".
+    var toolLocation: ToolLocationIntents? = nil
 
     /// True when a worker's action list carries more than zoom, reply and copy.
     var offersWorkerOperations: Bool { takeControl != nil || interruptWorker != nil || stopWorker != nil }
@@ -1086,8 +1099,15 @@ extension RunContent {
             }
             let asked = questions.map { question in
                 // From the full transcript: the PiP's window could hide a competing open call.
-                let awaitingToolID = PrettyRunStatus(state: state, entries: transcript)
-                    .awaitingToolID(choiceRequestPending: !(question.choices ?? []).isEmpty)
+                let status = PrettyRunStatus(state: state, entries: transcript)
+                let offersChoices = !(question.choices ?? []).isEmpty
+                // A permission that names its call marks that call or none: the one-open-call
+                // rule is only for a request that names none.
+                let exactToolID = offersChoices ? question.providerToolCallID.flatMap {
+                    status.approvalToolID(worker: worker.id, providerToolCallID: $0)
+                } : nil
+                let awaitingToolID = question.providerToolCallID == nil
+                    ? status.awaitingToolID(choiceRequestPending: offersChoices) : exactToolID
                 return RequestPresentation(
                     id: question.id, shortID: Identifier.short(question.id), question: question.question,
                     workerID: worker.id, workerName: worker.name, workerIsCoordinator: isCoordinator,
@@ -1104,6 +1124,7 @@ extension RunContent {
                     choices: question.choices ?? [],
                     workerTelemetry: telemetry,
                     awaitingApprovalToolID: awaitingToolID,
+                    exactApprovalToolID: exactToolID,
                     // Also from the full transcript: the window could cut off the request's Ask.
                     requestWorkflow: CommanderActivity.workflow(request: question.id, in: transcript,
                                                                 awaitingToolID: awaitingToolID))

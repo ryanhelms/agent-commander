@@ -395,9 +395,13 @@ struct Question: Decodable, Identifiable, Equatable, Sendable {
     /// The explicit choices the service offered with the question. When present, the service
     /// accepts only the exact ID of one of them as the answer. Absent on free-form requests.
     var choices: [QuestionChoice]? = nil
+    /// The tool call a provider permission names, as the provider's own tool ID without the
+    /// worker prefix. The worker's transcript names that call `<worker ID>:<this ID>`. Nil on a
+    /// request that names no call, and on records that predate the field.
+    var providerToolCallID: String? = nil
 
     init(id: String, workerID: String, question: String, status: String, answer: String,
-         delivery: String? = nil, choices: [QuestionChoice]? = nil) {
+         delivery: String? = nil, choices: [QuestionChoice]? = nil, providerToolCallID: String? = nil) {
         self.id = id
         self.workerID = workerID
         self.question = question
@@ -405,6 +409,7 @@ struct Question: Decodable, Identifiable, Equatable, Sendable {
         self.answer = answer
         self.delivery = delivery
         self.choices = choices
+        self.providerToolCallID = providerToolCallID
     }
 
     /// One reader for the request API and the AG-UI projection, so both treat `choices` alike.
@@ -436,7 +441,9 @@ extension Question {
         self.init(id: try fields.string("id"), workerID: try fields.string("worker_id"),
                   question: try fields.string("question"), status: try fields.string("status"),
                   answer: try fields.string("answer"), delivery: try fields.optionalString("delivery"),
-                  choices: Self.choices(fields["choices"]))
+                  choices: Self.choices(fields["choices"]),
+                  // Never throws: an empty or unreadable ID reads as none, so the request stays.
+                  providerToolCallID: fields["provider_tool_call_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 })
     }
 
     /// The offered choices, all or none. A list with any element that is not an `{id, label}`

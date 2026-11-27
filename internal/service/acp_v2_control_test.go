@@ -22,8 +22,12 @@ func TestV2PermissionSurvivesForegroundAndDismissesByIdentity(t *testing.T) {
 		if err := json.Unmarshal(f.call("POST", path+"/questions", worker.Token, map[string]any{
 			"question": "Read fixture?", "choices": []QuestionChoice{{ID: "once", Label: "Allow once"}},
 			"provider_turn": ACPSessionPermissionScope, "provider_request": id,
+			"provider_tool_call_id": id + "-tool",
 		}, 201, ""), &q); err != nil {
 			t.Fatal(err)
+		}
+		if q.WorkerID != worker.ID || q.ProviderToolCallID != id+"-tool" {
+			t.Fatalf("wrong addressed permission: %+v", q)
 		}
 		return q.ID
 	}

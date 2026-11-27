@@ -27,6 +27,17 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case tailnetStatus = "tailnet-status"
     case tailnetJoin = "tailnet-join"
     case tailnetRelays = "tailnet-relays"
+    /// Relay discovery: the relays found on the tailnet and the local network, marking them seen,
+    /// and adding one to the server list (MultiplayerDiscovery.swift). These name no server.
+    case relayDiscover = "relay-discover"
+    case relayDiscoverSeen = "relay-discover-seen"
+    case relayJoin = "relay-join"
+    /// Membership requests (MultiplayerMembershipRequests.swift): asking a relay's admins to admit
+    /// this account after a refused sign-in, and an admin's list and answer. Each names a server.
+    case membershipRequest = "membership-request"
+    case membershipRequestStatus = "membership-request-status"
+    case adminRequests = "admin-requests"
+    case adminRequestDecide = "admin-request-decide"
     /// Social (increment 2). `contacts`, `activity`, `activity-seen` and `join` name no server.
     case presence, contacts, activity, avatar, membership, join, me
     case activitySeen = "activity-seen"
@@ -241,10 +252,13 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
     let hasAvatar: Bool
     /// Every friend's resource on this server with what it offers, when the relay lists them (increment 3).
     let directory: [MultiplayerDirectoryEntry]?
+    /// Where a request to join this relay stands, after a refused sign-in (`accessRequest`).
+    let membershipAsk: MultiplayerMembershipAsk
 
     private enum CodingKeys: String, CodingKey {
         case online, signedIn, handle, loginPending, error, friends, outgoing, incoming, grants, resources, shared
         case displayName, statusMessage, hasAvatar, directory
+        case membershipAsk = "accessRequest"
     }
 
     init(from decoder: any Decoder) throws {
@@ -268,6 +282,7 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         hasAvatar = (try? container.decodeIfPresent(Bool.self, forKey: .hasAvatar)) ?? false
         directory = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerDirectoryEntry>.self, forKey: .directory)) ?? nil)?.items
+        membershipAsk = MultiplayerMembershipAsk(word: ((try? container.decodeIfPresent(String.self, forKey: .membershipAsk)) ?? nil) ?? "")
     }
 
     /// Friends' resources: the relay's directory, or the older list of what was shared with you.

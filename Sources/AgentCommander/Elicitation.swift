@@ -28,6 +28,10 @@ import SwiftUI
 // Commander never fetches a request's address and never opens a browser by itself: the owner
 // chooses to open it and confirms, and only an http or https address whose host is the one the
 // service checked is opened. A 404 or 409 reply means the request was withdrawn.
+//
+// After the service accepts a form reply the model says so once (`formReplied`). The Pretty
+// transcript's line for it ("Answered a form") is drawn only from the record the service keeps
+// (`PrettyFormOutcome`, PrettyRecords.swift), never from the reply sent here.
 
 // MARK: - Values
 
@@ -675,6 +679,10 @@ final class ElicitationModel {
     @ObservationIgnored private let pollInterval: Duration
     /// Changes whenever the open worker changes, so an answer for an earlier one is dropped.
     @ObservationIgnored private var epoch = 0
+    /// Called once when the service accepts the owner's reply to a form request, with the worker
+    /// and the request's exact ID. Never for a refused, failed or withdrawn reply, or a URL
+    /// request. The cockpit reads the transcript's stored record of the reply from here.
+    @ObservationIgnored var formReplied: (@MainActor (_ workerID: String, _ elicitationID: String) -> Void)?
 
     init(service: Service, pollInterval: Duration = .seconds(3),
          openExternally: @escaping @MainActor (URL) -> Void) {
@@ -768,6 +776,8 @@ final class ElicitationModel {
             } catch {
                 failure = error
             }
+            // Said before the panel's own state is read: the reply stands when the panel closed.
+            if failure == nil, isForm { self.formReplied?(workerID, elicitationID) }
             guard var latest = self.inspection, latest.scope == scope else { return }
             latest.replying[elicitationID] = nil
             let short = Identifier.short(elicitationID)

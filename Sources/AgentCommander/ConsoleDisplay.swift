@@ -357,6 +357,9 @@ struct PrettyConsoleView: View {
     /// Who approves that call when it is not the developer: the coordinator or parent that
     /// answers a delegated worker's request. Nil reads "Needs your approval".
     var approvalOwner: WorkerInputOwner? = nil
+    /// The call the pending permission names by exact ID. Only this call shows its proposed plan
+    /// before the decision (`PrettyToolInput.pendingPlan`). Nil when the request names no call.
+    var exactApprovalToolID: String? = nil
     /// The requests the parent surface can act on and how, for a line's targeted actions.
     var stories = ActivityStoryContext()
     /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
@@ -401,22 +404,26 @@ struct PrettyConsoleView: View {
         let conversation = ConversationActivity.items(displayed, awaitingToolID: awaitingToolID, anchor: anchor)
         let built = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
                                                reportsAsCoordinator: reportsAsCoordinator)
-        let placed = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        let ended = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        // A form reply's line follows the console event it was sent after, before the turn's end.
+        let placed = PrettyRecordPlacement.withFormOutcomes(ended, summaries: records, worker: worker, summary: lookup)
         // Chosen from the finished items, so a failure keeps its line and a group its count.
-        let items = showsRecent
+        let chosen = showsRecent
             ? ActivityConversation.recent(placed, keeping: Set(anchor?.entries.map(\.id) ?? [])) : placed
+        // What the turn is doing now is read from before the reply lines the conversation ends with.
+        let (items, outcomes) = PrettyRecordPlacement.beforeTrailingOutcomes(chosen)
         // The run's jobs, then the provider's own: background commands and child agents.
         let jobs = background + ProviderJobs.jobs(summaries: records, record: { key in store?.record(worker: worker, key: key) },
                                                   entries: entries, worker: worker,
                                                   hidesSecrets: store?.hidesSecrets ?? false)
         guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
-            return Layout(items: items, jobs: jobs)
+            return Layout(items: chosen, jobs: jobs)
         }
         let record = (thought.entries.first?.origin?.messageID).flatMap { store?.summary(worker: worker, key: $0) }
             ?? store?.summary(worker: worker, key: thought.id)
         // A thought whose record holds its end is over: it stays a line, and is not the live one.
-        if record?.ended != nil { return Layout(items: items, jobs: jobs) }
-        return Layout(items: ActivityConversation.withoutLiveThought(items), jobs: jobs, thinking: thought,
+        if record?.ended != nil { return Layout(items: chosen, jobs: jobs) }
+        return Layout(items: ActivityConversation.withoutLiveThought(items) + outcomes, jobs: jobs, thinking: thought,
                       thinkingStarted: record?.started)
     }
 
@@ -433,12 +440,15 @@ struct PrettyConsoleView: View {
         let scope = stories.scope(canOpenSource: access?.openSource != nil)
         let layout = layout()
         let shown = layout.items
+        // No entry and no line: the unformatted output. A form reply from before the worker's
+        // first event is a line, and is drawn as one.
+        let isUnformatted = entries.isEmpty && shown.isEmpty
         GeometryReader { column in
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
             LazyVStack(alignment: .leading, spacing: 0) {
-                if entries.isEmpty {
+                if isUnformatted {
                     PrettyRawBlock(text: rawOutput, metrics: metrics, caption: "Unformatted output")
                 } else {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
@@ -481,7 +491,7 @@ struct PrettyConsoleView: View {
         }
         // The unformatted output and the conversation are two scroll views. One kept across the
         // change holds the old offset, which lies past the end of a shorter conversation.
-        .id(entries.isEmpty)
+        .id(isUnformatted)
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
@@ -553,6 +563,8 @@ struct PrettyConsoleView: View {
                            callStarted: live?.callStart(record)) {}
         case .turnEnd(let end):
             PrettyTurnEndLine(end: end, metrics: metrics)
+        case .formOutcome(let outcome):
+            PrettyFormOutcomeLine(outcome: outcome, metrics: metrics)
         case .card(let card):
             let key = card.entry?.detailKey ?? card.step.id
             PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
@@ -568,6 +580,13 @@ struct PrettyConsoleView: View {
                     ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.attention)
                 }
                 .accessibilityElement(children: .combine)
+                // A proposed plan is read before its decision: this console's record of the call
+                // the permission names.
+                if let plan = PrettyToolInput.pendingPlan(
+                    for: step, exactToolID: exactApprovalToolID, summary: { details?.summary(worker: consoleID, key: $0) },
+                    record: { details?.record(worker: consoleID, key: $0) }) {
+                    PrettyPlanDocument(plan: plan, metrics: metrics)
+                }
                 let primary = actions(for: step, scope: scope).filter(\.isPrimary)
                 if !primary.isEmpty {
                     ActivityActionGroup(actions: primary, fontSize: metrics.toolSize, density: density) { perform($0) }
@@ -597,7 +616,8 @@ struct PrettyConsoleView: View {
     }
 
     private func endsWithOpenCall(_ items: [PrettyItem]) -> Bool {
-        switch items.last {
+        // A form reply's line after the open call does not close it.
+        switch PrettyRecordPlacement.beforeTrailingOutcomes(items).items.last {
         case .live?, .approval?: true
         // A provider question that waits for its answer is the open call.
         case .card(let card)?: card.step.state == .running
@@ -658,11 +678,19 @@ struct PrettyConsoleView: View {
     private func result(_ entry: TranscriptEntry, step: ActivityStep, metrics: PrettyMetrics) -> some View {
         let record = details?.record(worker: consoleID, key: entry.detailKey)
         let summary = details?.summary(worker: consoleID, key: entry.detailKey)
-        return ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
-                                  metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
-            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-            // The full record is read only now that the line is open.
-            .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.detailKey) }
+        return VStack(alignment: .leading, spacing: 0) {
+            // The file and line this worker's own call reported, from its latest stored summary.
+            if let location = summary?.openableLocation, let intents = access?.toolLocation {
+                ToolLocationAction(workerID: consoleID, detailKey: entry.detailKey, location: location, intents: intents,
+                                   metrics: metrics)
+            }
+            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+                               metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false,
+                               hidesChangeText: details?.hidesSecrets, copy: copy)
+                .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+        }
+        // The full record is read only now that the line is open.
+        .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.detailKey) }
     }
 
     private func reportDetail(_ report: ActivityReport, metrics: PrettyMetrics) -> some View {
@@ -1390,6 +1418,9 @@ struct ConsoleModeTitlebarControl: View {
     /// Present when this console's worker has a provider source. The menu then offers the source
     /// inspector, in either display mode, and a console that hosts the inspector presents it here.
     var source: ConsoleSourceAccess? = nil
+    /// Present on the coordinator, which has no action list. The menu then offers the same
+    /// provider-session panel a worker's action list does, and presents it here.
+    var providerSession: ProviderSessionAccess? = nil
     /// Present on the wall tile, focused worker, coordinator and PiP. The bar then shows the inline
     /// terminal's status in Terminal mode, and the menu offers detach or reconnect and the
     /// standalone read-only viewer.
@@ -1409,9 +1440,10 @@ struct ConsoleModeTitlebarControl: View {
         if let terminal { NativeTerminalChromeStatus(consoleID: consoleID, target: terminal) }
         Menu {
             ConsoleModeMenuItems(modes: modes, consoleID: consoleID)
-            if let source {
+            if source != nil || providerSession != nil {
                 Divider()
-                ConsoleSourceMenuItems(source: source)
+                if let source { ConsoleSourceMenuItems(source: source) }
+                if let providerSession { ProviderSessionMenuItems(access: providerSession) }
             }
             if let terminal {
                 Divider()
@@ -1448,6 +1480,8 @@ struct ConsoleModeTitlebarControl: View {
         .accessibilityLabel("Display mode, \(consoleName)")
         .accessibilityValue("\(mode.title), \(scope)")
         .modifier(ConsoleSourcePresentation(source: source))
+        // Its own anchor on the same control, so the two panels never share a presenter.
+        .background { Color.clear.modifier(ProviderSessionPresentation(access: providerSession)) }
         }
     }
 }

@@ -68,14 +68,15 @@ type Config struct {
 }
 
 var (
-	identifier         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
-	ErrDenied          = errors.New("action is outside the current local grant")
-	ErrBudgetExhausted = errors.New("grant token budget exhausted")
-	ErrInvalid         = errors.New("invalid action or target")
-	ErrUncertain       = errors.New("outcome uncertain; reconcile the original operation")
-	ErrConflict        = errors.New("operation identity or expected revision conflicts")
-	ErrStaleRevision   = fmt.Errorf("shared revision changed: %w", ErrConflict)
-	ErrUnavailable     = errors.New("owner-local resource or credential unavailable")
+	identifier               = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
+	ErrDenied                = errors.New("action is outside the current local grant")
+	ErrBudgetExhausted       = errors.New("grant token budget exhausted")
+	ErrInvalid               = errors.New("invalid action or target")
+	ErrUncertain             = errors.New("outcome uncertain; reconcile the original operation")
+	ErrConflict              = errors.New("operation identity or expected revision conflicts")
+	ErrStaleRevision         = fmt.Errorf("shared revision changed: %w", ErrConflict)
+	ErrCoordinatorInboxEnded = errors.New("coordinator inbox has ended; discover an active coordinator before submitting a new operation")
+	ErrUnavailable           = errors.New("owner-local resource or credential unavailable")
 )
 
 var actionFailures = [...]struct {
@@ -85,6 +86,7 @@ var actionFailures = [...]struct {
 	{ErrStaleRevision, "stale_revision"},
 	{ErrConflict, "conflict"},
 	{ErrDenied, "access_denied"},
+	{ErrCoordinatorInboxEnded, "coordinator_inbox_ended"},
 	{ErrBudgetExhausted, "budget_exhausted"},
 	{ErrInvalid, "invalid_request"},
 	{ErrUnavailable, "resource_unavailable"},
@@ -109,6 +111,9 @@ func (r requestRefusal) Unwrap() error { return ErrInvalid }
 
 // FailureReason returns a requester-facing explanation when the handler supplied one.
 func FailureReason(err error) string {
+	if errors.Is(err, ErrCoordinatorInboxEnded) {
+		return ErrCoordinatorInboxEnded.Error()
+	}
 	var refusal requestRefusal
 	if errors.As(err, &refusal) {
 		return refusal.Error()

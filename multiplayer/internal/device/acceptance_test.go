@@ -31,6 +31,7 @@ type pilotPeer struct {
 	agent                              *Agent
 	otherRun                           *pilotPeer
 	turns                              atomic.Int32
+	ended                              atomic.Bool
 }
 
 func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
@@ -59,7 +60,11 @@ func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
 	})
 	for _, coordinator := range []*pilotPeer{who, who.otherRun} {
 		mux.HandleFunc("GET /v1/ag-ui/workers/"+coordinator.actor, func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{"workerId": coordinator.actor, "role": "coordinator", "runId": coordinator.run, "runStatus": "running", "generation": 1})
+			status := "running"
+			if coordinator.ended.Load() {
+				status = "completed"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workerId": coordinator.actor, "role": "coordinator", "runId": coordinator.run, "runStatus": status, "generation": 1})
 		})
 	}
 	base := "/v1/ag-ui/workers/" + who.worker
@@ -395,6 +400,9 @@ func runDevicePilot(t *testing.T, configureActions func(actions.Config) actions.
 		t.Fatalf("friendship renewal silently restored capabilities: %+v", catalog)
 	}
 	for _, who := range []*pilotPeer{alice, bob} {
+		if _, why := who.call(t, ctx, "/coordinator/inbox", struct{}{}); !strings.Contains(why, "has no inbox") {
+			t.Fatalf("expected actionable inbox setup error, got %q", why)
+		}
 		who.must(t, ctx, "/tray/resource-add", input{ID: who.handle + "-inbox", Name: who.handle + " coordinator", Kind: "agent", Target: who.actor}, nil)
 		who.must(t, ctx, "/tray/resource-add", input{ID: who.handle + "-other-inbox", Name: who.handle + " second coordinator", Kind: "agent", Target: who.otherRun.actor}, nil)
 	}
@@ -409,7 +417,10 @@ func runDevicePilot(t *testing.T, configureActions func(actions.Config) actions.
 		if _, why := sender.call(t, ctx, "/coordinator/submit", in); why == "" {
 			t.Fatal("peer sent a coordinator note before receiving a directional grant")
 		}
-		grant(receiver, sender, resource, "agent.message")
+		receiver.must(t, ctx, "/tray/grant", input{
+			Resource: resource, Handle: sender.handle, Capability: "agent.message",
+			Approval: "ask", ExpiresAt: time.Now().Add(time.Hour), MaxUses: 10,
+		}, nil)
 		sender.must(t, ctx, "/coordinator/submit", in, nil)
 		out := sender.completed(t, ctx, in.ID, 1)[resource].Result
 		messageID, ok := out["messageId"].(string)
@@ -422,6 +433,10 @@ func runDevicePilot(t *testing.T, configureActions func(actions.Config) actions.
 		receiver.must(t, ctx, "/coordinator/inbox", struct{}{}, &inbox)
 		if len(inbox.Messages) != 1 || inbox.Messages[0].ID != messageID || inbox.Messages[0].Text != text || inbox.Messages[0].Resource != resource || inbox.Messages[0].Peer == "" {
 			t.Fatalf("wrong addressed inbox: %+v", inbox)
+		}
+		receiver.must(t, ctx, "/coordinator/inbox", actions.InboxQuery{AfterMessageID: messageID, WaitSeconds: 1}, &inbox)
+		if len(inbox.Messages) != 0 {
+			t.Fatal("cursor wait replayed an already-seen note")
 		}
 		receiver.otherRun.must(t, ctx, "/coordinator/inbox", struct{}{}, &inbox)
 		if len(inbox.Messages) != 0 {

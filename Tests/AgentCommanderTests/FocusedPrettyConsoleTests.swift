@@ -56,6 +56,21 @@ private func request(question: String, choices: [QuestionChoice]) -> RequestPres
     #expect(!PrettyACPScope.applies(mode: .pretty, session: NativeSession(harnessInstance: "x", sessionID: "")))
 }
 
+@Test func harnessChipNamesClaudeCLIOnlyForItsExactBinding() {
+    let cli = PrettyRunStatusBar.claudeCLIHarness
+    #expect(cli == "local-claude-cli")
+    #expect(PrettyRunStatusBar.harnessLabel(client: .claude, harnessInstance: cli) == "Harness Claude CLI")
+    #expect(PrettyRunStatusBar.harnessHelp(harnessInstance: cli)
+        == "Structured transcript from the provider session through Claude CLI.")
+    // An ACP binding and an unbound session keep the ACP wording.
+    for instance in ["claude-acp", ""] {
+        #expect(PrettyRunStatusBar.harnessLabel(client: .claude, harnessInstance: instance)
+            == "Harness \(AgentClient.claude.displayName), over ACP")
+        #expect(PrettyRunStatusBar.harnessHelp(harnessInstance: instance)
+            == "Structured transcript from the provider session over ACP.")
+    }
+}
+
 @Test func runStatusReadsTheOpenToolAndCounts() {
     let failed = ToolResult(output: "", error: "exit 1")
     let entries = [
@@ -74,7 +89,9 @@ private func request(question: String, choices: [QuestionChoice]) -> RequestPres
 
 /// A run whose worker `w2` asks a choice question while `openCalls` have no result. Each open call
 /// is followed by enough replies that only the last one stays inside the PiP's recent window.
-private func approvalContent(openCalls: [String]) throws -> RunContent {
+/// `provider` is the tool ID the request's permission names, as the service sends it: the
+/// provider's own ID, without the worker prefix.
+private func approvalContent(openCalls: [String], provider: String? = nil) throws -> RunContent {
     var messages: [String] = []
     for (index, call) in openCalls.enumerated() {
         messages.append(#"{"id":"c\#(index)","role":"assistant","toolCalls":[{"id":"\#(call)","type":"function","function":{"name":"Bash","arguments":"{}"}}]}"#)
@@ -87,7 +104,8 @@ private func approvalContent(openCalls: [String]) throws -> RunContent {
     func worker(_ id: String, role: String, messages: [String] = []) -> String {
         #"{"id":"\#(id)","name":"\#(id)","role":"\#(role)","parent_id":"","run_id":"r1","state":"waiting","host":"local","worktree":"/p","task":"t","output":"","messages":[\#(messages.joined(separator: ","))]}"#
     }
-    let request = #"{"id":"q1","worker_id":"w2","question":"Run it?","status":"pending","answer":"","choices":[{"id":"run-once","label":"Run once"}]}"#
+    let named = provider.map { #","provider_tool_call_id":"\#($0)""# } ?? ""
+    let request = #"{"id":"q1","worker_id":"w2","question":"Run it?","status":"pending","answer":"","choices":[{"id":"run-once","label":"Run once"}]\#(named)}"#
     let json = #"{"runs":[{"id":"r1","project":"p","path":"/p","task":"t","client":"claude","coordinator_id":"w1","status":"running","requests":[\#(request)],"workers":[\#(worker("w1", role: "coordinator")),\#(worker("w2", role: "worker", messages: messages))]}]}"#
     return try RunContent(run: #require(Run.list(json: Data(json.utf8)).first))
 }
@@ -111,4 +129,35 @@ private func approvalContent(openCalls: [String]) throws -> RunContent {
     #expect(trimmed.turnEntries.contains { $0.id == "call-a" })
     #expect(trimmed.prettyEntries == trimmed.turnEntries)
     #expect(ToolStatus.awaitingApproval.word == "Awaiting approval")
+}
+
+/// Issue #112. A permission that names its tool call marks that call or none. The transcript
+/// names the call `<worker ID>:<provider tool ID>`.
+@Test func aPermissionMarksOnlyTheCallItNames() throws {
+    func request(_ calls: [String], provider: String?) throws -> RequestPresentation {
+        try #require(approvalContent(openCalls: calls, provider: provider).wall.workers.first { $0.id == "w2" }?.request)
+    }
+    // Two calls are open. The named one is marked, and it alone may show its plan.
+    let exact = try request(["w2:tool-a", "w2:tool-b"], provider: "tool-a")
+    #expect(exact.awaitingApprovalToolID == "w2:tool-a" && exact.exactApprovalToolID == "w2:tool-a")
+    #expect(Question(id: "q1", workerID: "w2", question: "", status: "pending", answer: "").providerToolCallID == nil)
+    // The same provider ID under another worker, or with no worker, is not this worker's call.
+    for foreign in ["w1:tool-a", "tool-a"] {
+        let other = try request([foreign], provider: "tool-a")
+        #expect(other.awaitingApprovalToolID == nil && other.exactApprovalToolID == nil)
+    }
+    // A stale ID names no open call. The one open call is not marked in its place.
+    let stale = try request(["w2:tool-b"], provider: "tool-gone")
+    #expect(stale.awaitingApprovalToolID == nil && stale.exactApprovalToolID == nil)
+    // Two open calls carry the named ID: neither is marked.
+    let twice = try request(["w2:tool-a", "w2:tool-a"], provider: "tool-a")
+    #expect(twice.awaitingApprovalToolID == nil && twice.exactApprovalToolID == nil)
+    // A request that names no call, or an empty ID, keeps the one-open-call rule for the
+    // approval line and never an exact call, so no plan is attached.
+    for legacy: String? in [nil, ""] {
+        let single = try request(["w2:tool-b"], provider: legacy)
+        #expect(single.awaitingApprovalToolID == "w2:tool-b" && single.exactApprovalToolID == nil)
+        let several = try request(["w2:tool-a", "w2:tool-b"], provider: legacy)
+        #expect(several.awaitingApprovalToolID == nil && several.exactApprovalToolID == nil)
+    }
 }

@@ -15,7 +15,8 @@ import SwiftUI
 //                         (+ FollowUpReceiptStatus row directly above the status line in the focused
 //                            variant of a managed local Claude worker with follow-up receipts)
 //                         (+ ProviderSessionPanel popover from the action list for a bound worker:
-//                            status, capabilities, discovery and explicit reattach)
+//                            status, capabilities, discovery and explicit reattach; the
+//                            CoordinatorConsole opens the same panel from its display menu)
 //                         (+ FollowUpContextMenu and FollowUpContextChip in the focused follow-up's
 //                            TerminalComposer when the session accepts file links or snapshots)
 //                         (+ ElicitationPanel popover from the action list for a bound worker: the
@@ -23,6 +24,8 @@ import SwiftUI
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
+//                         (+ TerminalComposer as the footer line: the owner's follow-up to a
+//                            recovered coordinator the owner controls, else the preview's message)
 //   AttentionStack      = request controls + ConsoleTitleBar + TerminalWell + RequestPrompt
 //                         + TerminalStatusLine (the PiP)
 //
@@ -797,8 +800,15 @@ struct CoordinatorConsole: View {
     var isKeyFocused = false
     /// Sends a message to the coordinator. Present only where the service supports it.
     var sendMessage: ((String) -> Void)? = nil
+    /// Sends the owner's follow-up to a coordinator the owner controls, and reports whether the
+    /// service accepted it. Present only while the feature model's gate is open; it then takes the
+    /// composer in place of `sendMessage`, and a refused draft stays in the field.
+    var sendFollowUp: ((String) async -> Bool)? = nil
     /// The coordinator's provider source, when it has one.
     var source: ConsoleSourceAccess? = nil
+    /// The coordinator's provider session: status, discovery and reattach, the same panel a
+    /// worker's action list opens. Offered from the display menu, the control this console has.
+    var providerSession: ProviderSessionAccess? = nil
     let openRequest: (RequestPresentation) -> Void
     /// Laid-out height of the transcript, reported by the terminal well.
     @State private var transcriptHeight: CGFloat = 160
@@ -818,6 +828,7 @@ struct CoordinatorConsole: View {
                             locationIsBranch: coordinator.locationIsBranch, density: .console) {
                 ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name,
                                            client: coordinator.client, source: source,
+                                           providerSession: providerSession,
                                            terminal: NativeTerminalTarget(worker: coordinator))
             }
             if let session = prettySession {
@@ -879,7 +890,11 @@ struct CoordinatorConsole: View {
                     InputOwnership(workerName: coordinator.name, control: coordinator.control, isKeyFocused: true)
                 }
             }
-            if let sendMessage {
+            if let sendFollowUp {
+                // The same quiet footer line: only what the send reports differs.
+                TerminalComposer(workerName: coordinator.name, prompt: "Message coordinator",
+                                 outlined: false, send: sendFollowUp)
+            } else if let sendMessage {
                 TerminalComposer(workerName: coordinator.name, prompt: "Message coordinator",
                                  outlined: false, send: { text in
                                      sendMessage(text)

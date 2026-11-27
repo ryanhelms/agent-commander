@@ -101,7 +101,7 @@ enum ShellSample {
                            collapsed: Set<String> = [], profile: CommanderProfile = profile,
                            servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
                            sent: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
-                           isAdmin: Bool = true,
+                           isAdmin: Bool = true, membershipRequests: Int = 0,
                            harnesses: HarnessTally = HarnessTally(HarnessFixture.harnesses)) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
@@ -129,7 +129,7 @@ enum ShellSample {
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
             place("people.requests", "Friend requests", "person.badge.plus", count: friendRequests, hot: true, detail: true),
             place("people.groups", "Groups", "person.3", detail: true),
-        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin) + HarnessPlace.places(harnesses) + [
+        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin, requests: membershipRequests) + HarnessPlace.places(harnesses) + [
             place("hosts", "Hosts", "desktopcomputer"),
             place("settings", "Settings", "gearshape")
         ]
@@ -232,7 +232,8 @@ final class ShellPreviewState {
                                collapsed: collapsed, profile: profile, servers: network.health,
                                approvals: network.approvalCount, friendRequests: network.friendRequestCount,
                                sent: network.sentCount, workspaces: teams.workspacePlaces,
-                               isAdmin: teams.content.isAdmin, harnesses: harnesses.tally)
+                               isAdmin: teams.content.isAdmin, membershipRequests: teams.content.requestsWaiting,
+                               harnesses: harnesses.tally)
     }
 
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {

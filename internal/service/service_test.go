@@ -196,6 +196,73 @@ func TestScopedConversationAndRecovery(t *testing.T) {
 	}
 }
 
+func TestRequesterWithdrawsOnlyAnOrdinaryPendingQuestion(t *testing.T) {
+	f := newFixture(t)
+	coordinator := f.run()
+	worker := f.delegate(coordinator, "requester")
+	other := f.delegate(coordinator, "other")
+	workerPath := "/v1/workers/" + worker.ID
+	ask := func(input any, key string) Question {
+		f.t.Helper()
+		var q Question
+		if err := json.Unmarshal(f.call("POST", workerPath+"/questions", worker.Token, input, 201, key), &q); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	obsolete := map[string]string{"question": "Which option do you prefer?"}
+	q := ask(obsolete, "obsolete")
+	answered := ask(map[string]string{"question": "Which option went ahead?"}, "")
+	stillPending := ask(map[string]string{"question": "Can we publish the notes?"}, "")
+	f.call("POST", "/v1/requests/"+answered.ID+"/reply", "", map[string]string{"answer": "Second"}, 200, "")
+	path := workerPath + "/questions/" + q.ID + "/withdraw"
+	for _, token := range []string{"", coordinator.Token, other.Token} {
+		f.call("POST", path, token, nil, 403, "")
+	}
+	f.call("POST", "/v1/workers/"+other.ID+"/questions/"+q.ID+"/withdraw", other.Token, nil, 404, "")
+	f.call("POST", workerPath+"/questions/"+answered.ID+"/withdraw", worker.Token, nil, 409, "")
+
+	f.call("POST", workerPath+"/state", worker.Token, map[string]string{"state": "working"}, 200, "")
+	f.call("POST", workerPath+"/native-session", "", NativeSession{HarnessInstance: "fixture", SessionID: "permission"}, 200, "")
+	permission := ask(map[string]any{
+		"question": "Allow this provider action?", "choices": []QuestionChoice{{ID: "allow_once", Label: "Allow once"}},
+		"provider_turn": "initial-" + worker.ID, "provider_request": "provider-approval",
+	}, "")
+	f.call("POST", workerPath+"/questions/"+permission.ID+"/withdraw", worker.Token, nil, 409, "")
+
+	for range 2 {
+		var cancelled Question
+		if err := json.Unmarshal(f.call("POST", path, worker.Token, nil, 200, ""), &cancelled); err != nil ||
+			cancelled.ID != q.ID || cancelled.Status != "cancelled" || cancelled.Answer != "" || cancelled.Question != q.Question {
+			t.Fatalf("withdrawal did not preserve the original record: %+v, %v", cancelled, err)
+		}
+	}
+	f.call("POST", "/v1/requests/"+q.ID+"/reply", "", map[string]string{"answer": "Too late"}, 409, "")
+	var replayed Question
+	if err := json.Unmarshal(f.call("POST", workerPath+"/questions", worker.Token, obsolete, 200, "obsolete"), &replayed); err != nil ||
+		replayed.ID != q.ID || replayed.Status != "cancelled" {
+		t.Fatalf("replaying the ask reopened the request: %+v, %v", replayed, err)
+	}
+
+	var err error
+	f.api, err = New(f.dir, f.p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ id, status, answer string }{
+		{q.ID, "cancelled", ""},
+		{answered.ID, "answered", "Second"},
+		{stillPending.ID, "pending", ""},
+		{permission.ID, "pending", ""},
+	} {
+		var got Question
+		if err := json.Unmarshal(f.call("GET", workerPath+"/questions/"+want.id, worker.Token, nil, 200, ""), &got); err != nil ||
+			got.Status != want.status || got.Answer != want.answer {
+			t.Fatalf("wrong request after restart: got %+v, want %+v, %v", got, want, err)
+		}
+	}
+}
+
 func TestStopIsScopedAndNoNewWorkers(t *testing.T) {
 	f := newFixture(t)
 	coord := f.run()

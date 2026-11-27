@@ -57,6 +57,9 @@ struct ConsoleRecordAccess {
     /// Opens a worker's Source inspector, for a message with media and no reference to it. Nil
     /// on a surface that hosts no inspector.
     var openSource: (@MainActor (_ workerID: String) -> Void)? = nil
+    /// Opens the file and line one of a console's tool calls reported. Nil where nothing can
+    /// be opened.
+    var toolLocation: ToolLocationIntents? = nil
 }
 
 private struct ConsoleRecordAccessKey: EnvironmentKey {
@@ -76,7 +79,8 @@ extension View {
     func consoleRecordAccess(_ actions: CockpitActions,
                              openSource: (@MainActor (_ workerID: String) -> Void)? = nil) -> some View {
         environment(\.consoleRecordAccess, actions.recordDetail.map {
-            ConsoleRecordAccess(detail: $0, attachments: actions.promptAttachments, openSource: openSource)
+            ConsoleRecordAccess(detail: $0, attachments: actions.promptAttachments, openSource: openSource,
+                                toolLocation: actions.toolLocation)
         })
     }
 }

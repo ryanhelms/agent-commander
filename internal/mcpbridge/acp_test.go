@@ -8,12 +8,85 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-acp.local/sdks/go/runtime"
 	"agentcommander/internal/localapi"
 )
+
+func TestCommanderWithdrawalUsesScopedRequestAndWaitKeepsPending(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "ac-mcp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "mcp.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withdrawn atomic.Bool
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "Bearer fixture-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		const question = "/v1/workers/worker/questions/question"
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == question:
+		case req.Method == http.MethodPost && req.URL.Path == question+"/withdraw":
+			withdrawn.Store(true)
+		default:
+			http.NotFound(w, req)
+			return
+		}
+		status := "pending"
+		if withdrawn.Load() {
+			status = "cancelled"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "question", "status": status})
+	})}
+	go server.Serve(listener)
+	t.Cleanup(func() { _ = server.Close() })
+	call, err := NewACPHandler(t.Context(), localapi.New(socket, "fixture-token"), map[string]string{
+		"AGENT_COMMANDER_WORKER_ID": "worker", "AGENT_COMMANDER_RUN_ID": "run",
+		"AGENT_COMMANDER_TOKEN": "fixture-token", "AGENT_COMMANDER_ROLE": "worker",
+	}, []string{"commander_wait", "commander_withdraw_question"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := func(name string) json.RawMessage {
+		t.Helper()
+		args := map[string]any{"request_id": "question"}
+		if name == "commander_wait" {
+			args["timeout_seconds"] = 1
+		}
+		params, err := json.Marshal(map[string]any{"name": name, "arguments": args, "_meta": map[string]any{
+			"io.modelcontextprotocol/protocolVersion":    runtime.ACPMCPProtocolVersion,
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+			"io.modelcontextprotocol/clientInfo":         map[string]string{"name": "test", "version": "1"},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := call(t.Context(), runtime.MCPACPRequest{RequestID: name, Method: "tools/call", Params: params})
+		if err != nil || len(result.Error) != 0 || bytes.Contains(result.Result, []byte(`"isError":true`)) {
+			t.Fatalf("%s failed: %+v, %v", name, result, err)
+		}
+		return result.Result
+	}
+	if result := tool("commander_wait"); !bytes.Contains(result, []byte("pending")) || withdrawn.Load() {
+		t.Fatalf("waiting timed out without preserving the open question: %s", result)
+	}
+	if result := tool("commander_withdraw_question"); !bytes.Contains(result, []byte("cancelled")) || !withdrawn.Load() {
+		t.Fatalf("withdrawal did not use the bound worker and request: %s", result)
+	}
+	if result := tool("commander_wait"); !bytes.Contains(result, []byte("cancelled")) {
+		t.Fatalf("wait did not return the terminal state: %s", result)
+	}
+}
 
 func TestDraftMCPHandlerFiltersToolsAndSeparatesErrorDomains(t *testing.T) {
 	ctx := t.Context()

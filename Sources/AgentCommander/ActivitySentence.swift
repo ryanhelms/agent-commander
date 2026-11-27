@@ -158,6 +158,22 @@ enum ActivityFailureWords {
         return !parts.isEmpty
     }
 
+    /// Claude Code's Read of a missing file, as the service wrote it in a real managed ACP record:
+    /// the line "Tool failed.", a bare code fence, the diagnostic, the closing fence, and nothing
+    /// else. Returns the diagnostic without its fences. It is read from the output as it arrived:
+    /// once lines are trimmed and repeats dropped, the closing fence is gone and the opening one
+    /// reads as the first sentence. Any other text, a fence with a language, a missing or extra
+    /// fence, or text after the closing fence keeps the output as it is.
+    static func missingFileDiagnostic(_ output: String) -> String? {
+        let fence = "```", diagnostic = "File does not exist."
+        let lines = output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        guard lines.count >= 4, lines[0] == "Tool failed.", lines[1] == fence, lines[lines.count - 1] == fence else { return nil }
+        let inner = lines[2..<(lines.count - 1)]
+        guard lines[2] == diagnostic || lines[2].hasPrefix(diagnostic + " "),
+              !inner.contains(where: { $0.contains(fence) }) else { return nil }
+        return inner.joined(separator: "\n")
+    }
+
     static let noReason = "No reason was given."
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
@@ -190,7 +206,7 @@ enum ActivityFailureWords {
     /// The provider's message: the error and the output, without the service's `Tool failed.` line.
     static func body(_ result: ToolResult) -> String {
         var lines: [String] = []
-        for text in [result.error, result.output] {
+        for text in [result.error, missingFileDiagnostic(result.output) ?? result.output] {
             for line in (text ?? "").split(whereSeparator: \.isNewline) {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 var bare = trimmed.lowercased()
@@ -273,6 +289,9 @@ struct ActivityStep: Identifiable, Equatable {
     var duration: TimeInterval? = nil
     /// A thought's text, or a quiet row's event. Empty when the provider sent none.
     var text: String = ""
+    /// The lines a finished call added and removed, from its stored record's typed diff blocks.
+    /// Exact, or nil: never an estimate, and nil until that record has been read.
+    var change: ChangeCounts? = nil
 
     /// Whether the line opens: every call does; a thought only when it has text.
     var opens: Bool {
@@ -285,6 +304,7 @@ struct ActivityStep: Identifiable, Equatable {
 
     var accessibilityLabel: String {
         var parts = [sentence.plain]
+        if let change { parts.append(change.spoken) }
         if let tag { parts.append(tag.word) }
         if let failure { parts.append(failure.reason) }
         return parts.joined(separator: ", ")
@@ -367,6 +387,14 @@ struct ActivityGroup: Identifiable, Equatable {
                        steps: lines.reduce(0) { $0 + $1.count } + failures.count)
     }
 
+    /// What an Option-click on the summary opens or closes: the group, each line that opens, and
+    /// each failure drawn beneath the list. A line that does not open is left out, so it keeps
+    /// no open state. Every line counts, shown or not: a step the PiP holds behind "Show all"
+    /// is already open when it is revealed.
+    var everyStepIDs: [String] {
+        [id] + lines.filter(\.opens).map(\.id) + failures.map(\.id)
+    }
+
     /// The lines an opened group shows on a bounded surface: the first and the latest three,
     /// with how many are left out until "Show all".
     func shownLines(limit: Int?) -> (lines: [ActivityStep], hidden: Int) {
@@ -416,6 +444,8 @@ enum PrettyItem: Identifiable, Equatable {
     case card(PrettyToolCard)
     /// The end-of-turn line, from the turn's `turn_end` records. Never folded.
     case turnEnd(PrettyTurnEnd)
+    /// The line after the owner's reply to a form request, from its `form_outcome` record.
+    case formOutcome(PrettyFormOutcome)
 
     var id: String {
         switch self {
@@ -427,6 +457,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .approval(let step): step.id + "#approval"
         case .card(let card): card.id
         case .turnEnd(let end): end.id + "#turn-end"
+        case .formOutcome(let outcome): outcome.id + "#form-outcome"
         }
     }
 
@@ -438,7 +469,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .plan(let plan): plan.entries
         case .live(let step), .approval(let step): step.entries
         case .card(let card): card.step.entries
-        case .turnEnd: []
+        case .turnEnd, .formOutcome: []
         }
     }
 }
@@ -585,6 +616,17 @@ enum ActivityWords {
             let answer = call.recordedAnswer ?? call.facts?.liveAnswer
             return wording("Waiting for a reply", answer.map { ActivitySentence("Got the answer: " + quote($0)) },
                            "Waited for a reply", "Couldn't wait for the reply", one: "waited for a reply")
+        case .withdrawQuestion:
+            // Withdrawn is said only on the request's own record. Any other result says what
+            // was asked, tagged uncertain.
+            let confirmed = call.result == nil || call.withdrawalConfirmed
+            let short = call.requestID.map { "Withdrew a question (request \(Identifier.short($0)))" }
+            return wording("Withdrawing the question",
+                           confirmed ? call.question.map { ActivitySentence("Withdrew the question: " + quote($0)) }
+                                     : ActivitySentence("Asked to withdraw a question"),
+                           short ?? "Withdrew a question", "Couldn't withdraw the question",
+                           one: "withdrew a question", many: "withdrew %d questions",
+                           tag: confirmed ? nil : ActivityTag(word: "uncertain", tone: .wait))
         case .reply:
             let answer = argument("answer")
             let confirmed = call.result == nil || call.replyConfirmsRequest
@@ -981,8 +1023,16 @@ enum ActivitySteps {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary,
                                                    owner: facts.approvalOwner)
         }
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: facts.record(entry.detailKey)),
+        let record = facts.record(entry.detailKey)
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
               to: &step, status: status, result: result)
+        // The stored result is an image. Only the full record says so, so the tag shows once
+        // that record has been read: nothing in the summary or the call's text is taken as one.
+        if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
+        // The same holds for the counts of a finished edit: they come from the full record's
+        // typed diff blocks, once it has been read, and only when they are exact. An interrupted
+        // edit is not a finished one.
+        if status == .done { step.change = record?.resultChanges?.counts }
         return step
     }
 
@@ -999,6 +1049,8 @@ enum ActivitySteps {
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
                 ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
             apply(wording, to: &step, status: status, result: result)
+            // The record kept under the result's exact tool call ID holds that call's diff.
+            if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
             return step
         }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
@@ -1065,11 +1117,16 @@ enum ActivitySteps {
             let short = CommanderCall.request(flow.calls[0].requestID ?? "")
             step.sentence = question.map { ActivitySentence("Asked: " + ActivityWords.quote($0)) }
                 ?? ActivitySentence(hasAsk ? "Asked a question (\(short))" : "Waited for a reply (\(short))")
-            let answered = status == .answered || status == .complete || answer != nil
+            // A cancelled request was never answered, whatever text a call carried.
+            let answered = status != .cancelled && (status == .answered || status == .complete || answer != nil)
+            // Withdrawn: the request is cancelled and a withdrawal's own record says so.
+            let withdrawn = status == .cancelled && calls.contains(where: \.withdrawalConfirmed)
+            if question == nil, !hasAsk, withdrawn { step.sentence = ActivitySentence("Withdrew a question (\(short))") }
+            let asked = answered ? "asked a question and got an answer"
+                : withdrawn ? "asked a question and withdrew it" : "asked a question"
             step.phrase = ActivityPhrase(key: "question",
-                                         one: hasAsk ? (answered ? "asked a question and got an answer" : "asked a question")
-                                                     : "waited for a reply",
-                                         many: hasAsk ? "asked %d questions" : "waited for %d replies")
+                                         one: hasAsk ? asked : withdrawn ? "withdrew a question" : "waited for a reply",
+                                         many: hasAsk ? "asked %d questions" : withdrawn ? "withdrew %d questions" : "waited for %d replies")
             let probes = calls.filter { $0.tool == .wait }.count
             switch status {
             case .waitingForReply:
@@ -1154,6 +1211,10 @@ enum ActivityConversation {
                 var merged = last
                 merged.entries += step.entries
                 merged.count += step.count
+                // The line's counts are of every call it stands for, or absent.
+                merged.change = last.change.flatMap { known in
+                    step.change.map { ChangeCounts(added: known.added + $0.added, removed: known.removed + $0.removed) }
+                }
                 if step.tag == nil { merged.tag = ActivityTag(word: "\(merged.count) times") }
                 if var group = open { group.lines[group.lines.count - 1] = merged; open = group }
                 return
@@ -1338,7 +1399,7 @@ enum ActivityConversation {
                 shown.append(item)
             case .report:
                 if index == earlierReport { shown.append(item) }
-            case .entry, .plan, .approval, .card, .turnEnd:
+            case .entry, .plan, .approval, .card, .turnEnd, .formOutcome:
                 break
             }
         }

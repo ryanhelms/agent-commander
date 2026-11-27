@@ -47,9 +47,26 @@ func runManagedWorker(ctx context.Context, j job, dir string, a *api, s *screen)
 		_ = a.request("POST", path+"/state", map[string]string{"state": "failed", "error": err.Error()}, nil)
 		return err
 	}
-	sessionID := newSessionID()
+	return managedClaudeTurns(ctx, j, dir, a, s)
+}
+
+func managedClaudeTurns(ctx context.Context, j job, dir string, a *api, s *screen) error {
+	path := "/v1/workers/" + j.Worker.ID
 	var message service.WorkerFollowUp
 	prompt := j.Worker.Task
+	var sessionID string
+	if j.Worker.Reattach == nil {
+		sessionID = newSessionID()
+	} else {
+		sessionID = j.Worker.Reattach.Ref.SessionID
+		next, ok := waitForFollowUp(ctx, a, path)
+		if !ok {
+			return ctx.Err()
+		}
+		message, prompt = next.WorkerFollowUp, next.Text
+		s.line("You: " + prompt)
+		s.event("user", "", "", prompt)
+	}
 	for {
 		state, turnErr := runManagedTurn(ctx, j, dir, a, s, path, sessionID, prompt, message.ID != "")
 		if ctx.Err() != nil {
@@ -113,7 +130,13 @@ func runManagedTurn(ctx context.Context, j job, dir string, a *api, s *screen, p
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 2 * time.Second
 	finished := make(chan error, 1)
-	go func() { finished <- runClaude(cmd, s) }()
+	go func() {
+		if j.Worker.Reattach != nil {
+			finished <- runClaude(cmd, s, verifyResumedClaude(sessionID))
+			return
+		}
+		finished <- runClaude(cmd, s)
+	}()
 
 	controlCtx, stopControl := context.WithCancel(ctx)
 	defer stopControl()

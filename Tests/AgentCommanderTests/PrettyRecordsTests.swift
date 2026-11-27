@@ -562,6 +562,79 @@ import Testing
         #expect(kept)
     }
 
+    /// The whole result of a real managed Claude ACP Read of a missing file; its error was "Tool failed.".
+    static let missingFileNote = "Note: your current working directory is /private/tmp/ac-read72.QFN76C/Read QA."
+    static let missingFile = "Tool failed.\n```\nFile does not exist. \(missingFileNote)\n```"
+
+    @Test func aFencedMissingFileReadsAsItsDiagnosticInTheTranscript() throws {
+        var wire = Wire()
+        wire.user("Read missing.txt.")
+        wire.call("Read", detail: "/private/tmp/ac-read72.QFN76C/Read QA/missing.txt", result: Self.missingFile, error: "Tool failed.")
+        let failures = Self.items(wire, []).flatMap { item -> [ActivityStep] in
+            if case .group(let group) = item { group.failures } else { [] }
+        }
+        let step = try #require(failures.first)
+        #expect(failures.count == 1 && step.tag == .failed && step.failure?.outcome == .failed)
+        #expect(step.failure?.reason == "File does not exist." && step.failure?.exact == "File does not exist.")
+        #expect(step.failure?.rest == Self.missingFileNote)
+        #expect(step.accessibilityLabel.hasSuffix("Failed, File does not exist."))
+        // The opened line, before its stored record arrives: the same failure, and Source holds
+        // the result as it arrived, fences included.
+        let source = ActivityResultSource(entry: try #require(step.entries.first), step: step, record: nil)
+        #expect(source.failure == step.failure && source.statusWord == "failed" && source.resultText == Self.missingFile)
+        // So does the entry Console and Terminal read.
+        let kept = TranscriptEntry.displayed(wire.entries, mode: .console).contains { entry in
+            if case .tool(_, _, let result?) = entry.kind { result.output == Self.missingFile && result.error == "Tool failed." } else { false }
+        }
+        #expect(kept)
+    }
+
+    @Test func onlyTheWholeFencedMissingFileResultIsUnwrapped() {
+        func read(_ text: String) -> ActivityFailure { ActivityFailureWords.read(ToolResult(output: text, error: "Tool failed."), status: .failed) }
+        #expect(read("Tool failed.\n```\nFile does not exist.\n```") == ActivityFailure(outcome: .failed, reason: "File does not exist.", exact: "File does not exist."))
+
+        // Everything else reads as it did before.
+        let unchanged: [(String, String)] = [
+            // Another diagnostic in the same wrapper, and one that only starts alike.
+            ("Tool failed.\n```\nPermission denied.\n```", "```"),
+            ("Tool failed.\n```\nFile does not exist.txt is a directory.\n```", "```"),
+            // Cut short, or closed by something else.
+            ("Tool failed.\n```\nFile does not exist. \(Self.missingFileNote)", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n~~~", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n````", "```"),
+            // A fence with a language, an indented one, or a fence inside.
+            ("Tool failed.\n```text\nFile does not exist.\n```", "```text"),
+            ("Tool failed.\n ```\nFile does not exist.\n ```", "```"),
+            ("Tool failed.\n```\nFile does not exist.\n```\nmore\n```", "```"),
+            // Text around the wrapper, or no service line before it.
+            ("Tool failed.\n```\nFile does not exist.\n```\nTry another path.", "```"),
+            ("Tool failed.\nRead:\n```\nFile does not exist.\n```", "Read:"),
+            ("```\nFile does not exist.\n```", "```"),
+            // A mention.
+            ("Tool failed.\ngrep: \"```\nFile does not exist.\n```\" not found", "grep: \"```"),
+        ]
+        for (text, first) in unchanged {
+            let failure = read(text)
+            #expect(failure.reason == first && failure.exact == first && failure.tag == .failed, Comment(rawValue: text))
+        }
+        // Without fences the diagnostic was already the first sentence.
+        #expect(read("Tool failed.\nFile does not exist. \(Self.missingFileNote)").rest == Self.missingFileNote)
+        // A declined request and a known denial keep their own words; a timeout is still a timeout.
+        #expect(ActivityFailureWords.read(ToolResult(output: Self.missingFile, error: "Tool declined."), status: .declined).reason == "You denied this.")
+        let denied = read("Tool failed.\n```\nFile does not exist. Permission to use Read has been denied.\n```")
+        #expect(denied.reason == "Permission to use this tool was denied." && denied.tag == .blocked)
+        #expect(read(Self.shellTimeout).reason == "Timed out.")
+
+        // A result that succeeded is not a failure, whatever it quotes.
+        var wire = Wire()
+        wire.call("Read", detail: "/tmp/notes.md", result: Self.missingFile)
+        let failed = Self.items(wire, []).contains { item in
+            if case .group(let group) = item { !group.failures.isEmpty } else { false }
+        }
+        #expect(!failed)
+    }
+
     // MARK: Cards
 
     @Test func aWaitingQuestionAPlanAndADeliverableStandInTheOpen() throws {
@@ -597,6 +670,95 @@ import Testing
                                   result: ToolResult(output: "https://a.example/x https://b.example/y")).files.first?.url == nil)
         // A failed question or plan is the failure line, never a card.
         #expect(PrettyToolCard.kind(name: "ExitPlanMode", result: ToolResult(output: "", error: "Tool failed."), summary: nil) == nil)
+    }
+
+    /// Issue #112. Two workers hold a plan under the same provider tool ID. Each approval line
+    /// shows only the plan its own console keeps for the call its permission names by exact ID.
+    @Test func aHeldPlanShowsItsOwnWorkersMarkdownBeforeTheDecision() throws {
+        var wire = Wire()
+        wire.user("Propose a plan.")
+        let earlier = wire.call("ExitPlanMode", result: "User has approved your plan.")
+        let held = wire.call("ExitPlanMode")
+        let heldEntry = try #require(wire.entries.last)
+        // Delta has two plan calls open at once.
+        var rival = Wire()
+        rival.user("Propose two plans.")
+        let first = rival.call("ExitPlanMode")
+        let second = rival.call("ExitPlanMode")
+        func input(_ plan: String) -> String { #"{"plan":"\#(plan)"}"# }
+        // Alpha and Bravo keep different plans under the same key; Bravo's feed names the call
+        // `<worker>:<tool ID>`. Charlie keeps nothing.
+        let store = ToolDetailStore(
+            summaries: ["alpha": try Self.summaries(Self.tool(held, 4, name: "ExitPlanMode")),
+                        "bravo": try Self.summaries(Self.tool(held, 4, name: "ExitPlanMode"))],
+            records: ["alpha": [ToolDetailRecord(key: held, kind: "tool", name: "ExitPlanMode", input: input("## PLAN_ALPHA")),
+                                ToolDetailRecord(key: earlier, kind: "tool", name: "ExitPlanMode", input: input("## EARLIER"))],
+                      "bravo": [ToolDetailRecord(key: held, kind: "tool", name: "ExitPlanMode", input: input("## PLAN_BRAVO"))],
+                      "delta": [ToolDetailRecord(key: first, kind: "tool", name: "ExitPlanMode", input: input("## FIRST")),
+                                ToolDetailRecord(key: second, kind: "tool", name: "ExitPlanMode", input: input("## SECOND"))]])
+        func items(_ worker: String, awaiting: String?, entries: [TranscriptEntry]? = nil) -> [PrettyItem] {
+            var facts = ActivityFacts(summaries: store.summaries(worker: worker), worker: worker)
+            facts.summary = { store.summary(worker: worker, key: $0) }
+            facts.record = { store.record(worker: worker, key: $0) }
+            let shown = TranscriptEntry.displayed(entries ?? wire.entries, mode: .pretty)
+            return ActivityConversation.items(ConversationActivity.items(shown, awaitingToolID: awaiting),
+                                              awaitingToolID: awaiting, facts: facts)
+        }
+        func heldStep(_ items: [PrettyItem]) -> ActivityStep? {
+            items.compactMap { item -> ActivityStep? in if case .approval(let step) = item { step } else { nil } }.first
+        }
+        /// `exact` is the call the permission names, as the request resolved it.
+        func plan(_ worker: String, _ step: ActivityStep, exact: String?, prefix: String = "") -> String? {
+            PrettyToolInput.pendingPlan(for: step, exactToolID: exact,
+                                        summary: { store.summary(worker: worker, key: prefix + $0) },
+                                        record: { store.record(worker: worker, key: prefix + $0) })
+        }
+
+        // The held call stays the approval line, with the generic sentence; the request form is as it was.
+        let alpha = try #require(heldStep(items("alpha", awaiting: heldEntry.id)))
+        #expect(alpha.sentence.plain == "Needs your approval to use ExitPlanMode")
+        #expect(plan("alpha", alpha, exact: heldEntry.id) == "## PLAN_ALPHA")
+        #expect(plan("bravo", alpha, exact: heldEntry.id) == "## PLAN_BRAVO")
+        #expect(plan("bravo", alpha, exact: heldEntry.id, prefix: "bravo:") == "## PLAN_BRAVO")
+        // A request that names no call marked this one as the one open call: the line stays,
+        // with no document.
+        #expect(plan("alpha", alpha, exact: nil) == nil)
+        // The permission names another call: the earlier one, or this raw ID under another worker.
+        #expect(plan("alpha", alpha, exact: earlier) == nil)
+        #expect(plan("alpha", alpha, exact: "bravo:" + held) == nil)
+        // No stored plan, an empty plan or an input cut short: no document, whatever another worker keeps.
+        #expect(plan("charlie", alpha, exact: heldEntry.id) == nil)
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", input: input("  ")) }) == nil)
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", input: #"{"plan":"Cut short"#) }) == nil)
+        // A record kept under the same ID for another tool is not this call's plan.
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", name: "Bash", input: input("## OTHER")) }) == nil)
+        // The earlier, approved plan keeps its card and is never the held call's text.
+        let cards = items("alpha", awaiting: heldEntry.id).compactMap { item -> PrettyToolCard? in
+            if case .card(let card) = item { card } else { nil }
+        }
+        #expect(cards.map(\.kind) == [.plan] && cards.first?.step.state == .done)
+        #expect(try plan("alpha", #require(cards.first?.step), exact: earlier) == nil)
+
+        // Two plan calls open at once: the named call shows its own plan, never the other's.
+        let named = try #require(heldStep(items("delta", awaiting: second, entries: rival.entries)))
+        #expect(named.entries.map(\.id) == [second])
+        #expect(plan("delta", named, exact: second) == "## SECOND")
+        #expect(plan("delta", named, exact: first) == nil)
+        let namedFirst = try #require(heldStep(items("delta", awaiting: first, entries: rival.entries)))
+        #expect(plan("delta", namedFirst, exact: first) == "## FIRST")
+
+        // Another held call shows no plan, even with a plan stored under its ID.
+        var other = Wire()
+        other.user("Run it.")
+        let shell = other.call("Bash", detail: "make test")
+        let bash = try #require(heldStep(items("alpha", awaiting: other.entries.last?.id, entries: other.entries)))
+        #expect(PrettyToolInput.pendingPlan(for: bash, exactToolID: shell, summary: { _ in nil },
+                                            record: { _ in ToolDetailRecord(key: shell, kind: "tool", input: input("## SHELL")) }) == nil)
+        // A plan call no request holds is the card, as before.
+        #expect(heldStep(items("alpha", awaiting: nil)) == nil)
     }
 
     // MARK: Pictures

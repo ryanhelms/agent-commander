@@ -1079,7 +1079,9 @@ struct CockpitScreen: View {
                 let sendMessage: ((String) -> Void)? = actions.messageCoordinator.map { send in { text in send(run.id, text) } }
                 CoordinatorConsole(coordinator: coordinator, assignment: run.task, startedAt: run.startedAt,
                                    awaiting: run.awaiting, isKeyFocused: paneFocus == coordinator.id,
-                                   sendMessage: sendMessage, source: sourceAccess(coordinator)) { request in
+                                   sendMessage: sendMessage, sendFollowUp: coordinatorFollowUp(coordinator),
+                                   source: sourceAccess(coordinator),
+                                   providerSession: providerSessionAccess(coordinator)) { request in
                     open(request)
                 }
                 .focusable()
@@ -1092,6 +1094,16 @@ struct CockpitScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    /// The owner's follow-up to this coordinator, when the feature model's gate is open for it.
+    /// The view asks the gate and holds none of its conditions; the model checks them again on
+    /// every send. Nil without the gate, so a fixture keeps `messageCoordinator`.
+    private func coordinatorFollowUp(_ coordinator: WorkerPresentation) -> ((String) async -> Bool)? {
+        guard let send = actions.sendFollowUp, actions.canSendCoordinatorFollowUp?(coordinator.id) == true
+        else { return nil }
+        let id = coordinator.id
+        return { text in await send(id, text) }
     }
 
     /// The wall or the focused worker, with the attention side panel beside either one.
@@ -1410,11 +1422,13 @@ struct CockpitScreen: View {
             send: { text, context in await sendContext(id, text, context) })
     }
 
-    /// Provider-session access for a worker console: a wall tile or the focused worker. Nil for a
-    /// worker without a bound session and where the service offers none. The reading is handed
-    /// over only when it is this worker's, and reattach always names this worker.
+    /// Provider-session access for a console: a wall tile, the focused worker or the coordinator.
+    /// Nil where `ProviderSessionAccess.isOffered` says the worker has no action and where the
+    /// service offers none. The reading is handed over only when it is this worker's, and reattach
+    /// always names this worker.
     private func providerSessionAccess(_ worker: WorkerPresentation) -> ProviderSessionAccess? {
-        guard !worker.isCoordinator, let session = worker.session, let intents = actions.providerSession else { return nil }
+        guard ProviderSessionAccess.isOffered(to: worker), let intents = actions.providerSession else { return nil }
+        let session = worker.session
         let id = worker.id
         let isPresented = Binding(
             get: { ui.providerSessionWorkerID == id },
@@ -1429,7 +1443,8 @@ struct CockpitScreen: View {
             discover: { intents.discover() },
             loadMore: { intents.loadMore() },
             reattach: { acknowledge in intents.reattach(id, acknowledge) },
-            copy: { text in copy(text) })
+            copy: { text in copy(text) },
+            isCoordinator: worker.isCoordinator)
         return ProviderSessionAccess(workerID: id, workerName: worker.name, client: worker.client, session: session,
                                      open: { ui.presentProviderSession(of: id) }, panel: panel)
     }
@@ -1948,6 +1963,8 @@ struct CockpitView: View {
             canControlWorker: { workerID in model.canControlWorker(workerID) },
             canInterruptWorker: { workerID in model.canInterruptWorker(workerID) },
             canStopWorker: { workerID in model.canStopWorker(workerID) },
+            // The model's one gate for the owner's text to a recovered coordinator.
+            canSendCoordinatorFollowUp: { workerID in model.canSendCoordinatorFollowUp(workerID) },
             workerIsBusy: { workerID in model.workerActions.contains(workerID) },
             // Source reads name only the worker. The service resolves its bound session.
             source: ConsoleSourceIntents(
@@ -1959,6 +1976,8 @@ struct CockpitView: View {
             // Entry fields come from the state the app already holds, for the named worker only.
             recordDetail: { workerID, entryID in model.recordDetail(workerID: workerID, entryID: entryID) },
             // A prompt's media is read by its own worker and turn. The model owns the read.
-            promptAttachments: model.promptAttachmentIntents)
+            promptAttachments: model.promptAttachmentIntents,
+            // A reported file is opened for the named worker only, and only on this Mac.
+            toolLocation: model.toolLocationIntents)
     }
 }

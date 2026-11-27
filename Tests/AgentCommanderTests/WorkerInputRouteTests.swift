@@ -108,6 +108,44 @@ private func presented(_ id: String, in content: RunContent) throws -> WorkerPre
         #expect(PrettyRunStatus(state: mine.state, entries: [], waitingOwner: mine.waitsOnOwner).word == "Waiting for you")
     }
 
+    /// The observed worker's console holds the exact call its coordinator approves. The permission
+    /// names `plan` while `rival` is also open, so the one-open-call rule could not pick it.
+    @Test func theObservedConsoleAnchorsTheExactPlanTheCoordinatorApproves() throws {
+        func call(_ id: String, _ name: String) -> AGUIMessage {
+            AGUIMessage(id: "m-\(id)", role: "assistant",
+                        toolCalls: [AGUIToolCall(id: "w:\(id)", function: .init(name: name, arguments: "{}"))])
+        }
+        let planner = Worker(id: "w", name: "w", role: "worker", parentID: "lead", runID: "r", state: "waiting",
+                             host: "localhost", worktree: "/tmp/w", task: "build", output: "",
+                             messages: [call("rival", "Bash"), call("plan", "ExitPlanMode")],
+                             control: control(held: false), nativeSession: session)
+        let permission = Question(id: "q-plan", workerID: "w", question: "Approve the plan?", status: "pending",
+                                  answer: "", choices: [QuestionChoice(id: "allow_once", label: "Allow once"),
+                                                        QuestionChoice(id: "reject", label: "Reject")],
+                                  providerToolCallID: "plan")
+        let tile = try presented("w", in: RunContent(run: run([planner], [permission])))
+        #expect(tile.transcript.map(\.id).contains("w:rival"))
+        let console = PrettyACPConsole(worker: tile, session: session)
+
+        // Nothing the developer can act on: no form, no reply context, no story request action.
+        #expect(console.request == nil && console.reply == nil)
+        #expect(console.stories.requests.isEmpty)
+        #expect(console.stories.focusRequest == nil && console.stories.openRequest == nil)
+
+        // The permission's exact call is the awaiting marker and the one call that shows its plan.
+        guard case .resolved(let awaiting) = console.awaitingApproval else {
+            Issue.record("The worker's console resolves its awaiting call from the anchoring request")
+            return
+        }
+        #expect(awaiting == "w:plan")
+        #expect(console.exactApprovalToolID == "w:plan")
+        #expect(console.choiceRequestPending)
+
+        // The coordinator owns the answer.
+        #expect(console.waitingOwner == WorkerInputOwner())
+        #expect(console.waitingOwner?.waitingLabel == "Waiting for coordinator")
+    }
+
     // MARK: Take control, then hand back
 
     @Test func takingControlRevealsTheExactRequestAndHandingBackRemovesIt() throws {

@@ -205,3 +205,33 @@ func TestHostConfigureClientSecret(t *testing.T) {
 		t.Fatal("secret not cleared")
 	}
 }
+
+func TestHostJSONListing(t *testing.T) {
+	dir := t.TempDir()
+	if err := hostmode.InitConfig(dir, hostmode.Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: hostmode.GoogleIssuer, ClientID: "desktop", Admins: []string{"admin@example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(input string) hostResult {
+		t.Helper()
+		var out bytes.Buffer
+		_ = hostJSON(&out, dir, "listing", []byte(input))
+		var result hostResult
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("%v: %s", err, out.String())
+		}
+		return result
+	}
+	result := run(`{"url":"Relay.Example.org"}`)
+	if !result.OK || result.Host == nil || result.Host.Listing == nil || result.Host.Listing.URL != "https://relay.example.org" {
+		t.Fatalf("turning on: %+v", result)
+	}
+	if result = run(`{"url":"http://insecure.example.org"}`); result.OK || !strings.Contains(result.Error, "https") {
+		t.Fatalf("http URL: %+v", result)
+	}
+	if result = run(`{"url":""}`); !result.OK || result.Host.Listing.URL != "" {
+		t.Fatalf("turning off: %+v", result)
+	}
+}

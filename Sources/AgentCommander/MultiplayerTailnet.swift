@@ -10,7 +10,7 @@ import SwiftUI
 // ATOMIC LEVELS in this file:
 //   values     MultiplayerTailnetStatus, MultiplayerTailnetRelay, MultiplayerTailnetDraft
 //   model      MultiplayerTailnetModel (owns the three verbs and the login poll)
-//   molecules  MultiplayerTailnetRelayRow, MultiplayerSecretField
+//   molecules  MultiplayerRelayRow (shared with Relays nearby), MultiplayerSecretField
 //   organism   MultiplayerTailnetBand
 
 // MARK: - Contract
@@ -411,63 +411,118 @@ final class MultiplayerTailnetModel {
 
 // MARK: - Molecules
 
-/// One relay on the tailnet: its mark, its name, its MagicDNS name, and whether it answers. The
-/// row is one button that fills the address and starts the check. A relay already in the server
-/// list shows an Added badge and is plain text.
-struct MultiplayerTailnetRelayRow: View {
-    let relay: MultiplayerTailnetRelay
-    /// The address field holds this relay's URL.
+/// One relay this Mac found: its mark, its name, where it is, and where it stands. The row is one
+/// button. The Tailnet band's row fills the address and starts the check; a Relays nearby row opens
+/// the relay's join checklist. A relay already in the server list shows an Added badge and is
+/// plain text. Both lists draw this row, each from its own value.
+struct MultiplayerRelayRow: View {
+    /// A small outlined word under the state: New, Open, Allowlist, Invite only.
+    struct Tag: Identifiable, Equatable {
+        let text: String
+        var tone: Tone = .neutral
+
+        var id: String { text }
+    }
+
+    let name: String
+    /// The relay's address, in the data face.
+    let address: String
+    /// Where it was found, before the address: Tailnet or Local network. Nil in a list of one source.
+    var source: String? = nil
+    var tags: [Tag] = []
+    let lamp: MultiplayerLamp.Kind
+    let state: String
+    var tone: Tone = .neutral
+    /// The relay is in the server list: an Added badge, and no button.
+    var isAdded = false
+    /// The relay can't be reached: its name steps back and `note` says why.
+    var isDimmed = false
+    var note: String? = nil
+    /// The row is the one chosen: the address field holds its URL, or its checklist is open.
     let isChosen: Bool
     let isEnabled: Bool
+    var help: String
+    var hint: String
     let onChoose: () -> Void
     @Environment(\.theme) private var theme
 
     var body: some View {
-        if relay.added {
+        if isAdded {
             content
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(relay.name), \(relay.dnsName), already in your list")
+                .accessibilityLabel("\(spoken), already in your list")
         } else {
             Button(action: onChoose) { content.contentShape(Rectangle()) }
                 .buttonStyle(MultiplayerRowButtonStyle())
                 .disabled(!isEnabled)
-                .help("Check \(relay.dnsName)")
-                .accessibilityLabel("\(relay.name), \(relay.dnsName), \(relay.online ? "online" : "offline")")
-                .accessibilityHint("Fills in this relay’s address and checks it")
+                .help(help)
+                .accessibilityLabel("\(spoken), \((tags.map(\.text) + [state]).joined(separator: ", ").lowercased())")
+                .accessibilityHint(hint)
                 .accessibilityAddTraits(isChosen ? .isSelected : [])
         }
     }
 
+    private var spoken: String { ([name] + (source.map { [$0] } ?? []) + [address]).joined(separator: ", ") }
+
     private var content: some View {
         HStack(spacing: Space.s) {
-            MultiplayerMark(symbol: "server.rack", tone: relay.added ? .neutral : relay.online ? .working : .neutral)
+            MultiplayerMark(symbol: "server.rack", tone: isAdded || isDimmed ? .neutral : tone == .working ? .working : .neutral)
             VStack(alignment: .leading, spacing: 1) {
-                Text(relay.name.multiplayerDisplay)
+                Text(name)
                     .font(MultiplayerTheme.name)
-                    .foregroundStyle(relay.added ? MultiplayerTheme.secondary : MultiplayerTheme.foreground)
+                    .foregroundStyle(isAdded || isDimmed ? MultiplayerTheme.secondary : MultiplayerTheme.foreground)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(relay.dnsName.multiplayerDisplay)
-                    .font(MultiplayerTheme.mono)
-                    .foregroundStyle(.inkSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: Space.xs) {
+                    if let source {
+                        Text(source).font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary).lineLimit(1).fixedSize()
+                    }
+                    Text(address)
+                        .font(MultiplayerTheme.mono)
+                        .foregroundStyle(.inkSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let note, !note.isEmpty {
+                    Text(note)
+                        .font(MultiplayerTheme.sub)
+                        .foregroundStyle(.inkSecondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if relay.added {
+            if isAdded {
                 MultiplayerBadge(text: "Added", symbol: "checkmark")
             } else {
-                MultiplayerStateLabel(lamp: relay.online ? .on : .off, text: relay.online ? "Online" : "Offline",
-                                      tone: relay.online ? .working : .neutral)
+                VStack(alignment: .trailing, spacing: 3) {
+                    MultiplayerStateLabel(lamp: lamp, text: state, tone: tone)
+                    if !tags.isEmpty {
+                        HStack(spacing: Space.xs) {
+                            ForEach(tags) { MultiplayerBadge(text: $0.text, tone: $0.tone) }
+                        }
+                    }
+                }
             }
         }
         .padding(.horizontal, Space.s)
         .frame(minHeight: theme.space.rowHeight)
         .padding(.vertical, 3)
-        .background { if isChosen, !relay.added { Rectangle().fill(MultiplayerTheme.selection) } }
+        .background { if isChosen, !isAdded { Rectangle().fill(MultiplayerTheme.selection) } }
         .overlay(alignment: .leading) {
-            if isChosen, !relay.added { Rectangle().fill(MultiplayerTheme.focus).frame(width: theme.line.selectedMarker) }
+            if isChosen, !isAdded { Rectangle().fill(MultiplayerTheme.focus).frame(width: theme.line.selectedMarker) }
         }
+    }
+}
+
+extension MultiplayerRelayRow {
+    /// A relay tagged on the tailnet, in the Tailnet band: Online or Offline, or Added.
+    init(relay: MultiplayerTailnetRelay, isChosen: Bool, isEnabled: Bool, onChoose: @escaping () -> Void) {
+        self.init(name: relay.name.multiplayerDisplay, address: relay.dnsName.multiplayerDisplay,
+                  lamp: relay.online ? .on : .off, state: relay.online ? "Online" : "Offline",
+                  tone: relay.online ? .working : .neutral, isAdded: relay.added,
+                  isChosen: isChosen, isEnabled: isEnabled, help: "Check \(relay.dnsName)",
+                  hint: "Fills in this relay’s address and checks it", onChoose: onChoose)
     }
 }
 
@@ -597,8 +652,8 @@ struct MultiplayerTailnetBand: View {
                         if index > 0 {
                             Rectangle().fill(MultiplayerTheme.hair).frame(height: 1).padding(.horizontal, Space.s)
                         }
-                        MultiplayerTailnetRelayRow(relay: relay, isChosen: Self.matches(address, relay),
-                                                   isEnabled: canChoose) { onChoose(relay) }
+                        MultiplayerRelayRow(relay: relay, isChosen: Self.matches(address, relay),
+                                            isEnabled: canChoose) { onChoose(relay) }
                     }
                 }
                 .padding(.horizontal, -Space.s)

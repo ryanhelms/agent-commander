@@ -132,3 +132,41 @@ func TestOptInDirectoryAndRequestReputation(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestEndedCoordinatorIsHiddenFromOptInDirectory(t *testing.T) {
+	s := newSocialFixture(t)
+	h := s.Handler()
+	call := func(who, method, path string, in any, status int) *httptest.ResponseRecorder {
+		t.Helper()
+		return socialRequest(t, h, who, who+"-device", method, path, in, status)
+	}
+	call("owner", "PUT", "/v1/profile", map[string]string{"handle": "owner"}, 200)
+	call("peer", "PUT", "/v1/profile", map[string]string{"handle": "peer"}, 200)
+	call("owner", "PUT", "/v1/resources/coordinator", map[string]any{
+		"kind": "agent", "name": "Opted-in coordinator", "actions": []string{"agent.message"}, "listed": true,
+	}, 200)
+	lease := shareResponse[leaseProof](t, call("owner", "POST", "/v1/session", nil, 200))
+	call("owner", "PUT", "/v1/session", lease, 200)
+	assertListed := func(listed bool) {
+		t.Helper()
+		result := shareResponse[struct {
+			Handles   []string
+			Resources []directoryHit
+		}](t, call("peer", "GET", "/v1/directory", nil, 200))
+		if slices.Contains(result.Handles, "owner") != listed ||
+			slices.ContainsFunc(result.Resources, func(r directoryHit) bool { return r.ID == "coordinator" }) != listed {
+			t.Fatalf("expected listed=%v: %+v", listed, result)
+		}
+	}
+	assertListed(true)
+	path := "/v1/resources/coordinator/coordinator-inbox"
+	call("owner", "PUT", path, map[string]any{"ended": true, "session": lease.Session, "generation": lease.Generation}, 200)
+	assertListed(false)
+	prior := lease
+	lease = shareResponse[leaseProof](t, call("owner", "POST", "/v1/session", nil, 200))
+	call("owner", "PUT", "/v1/session", lease, 200)
+	call("owner", "PUT", path, map[string]any{"ended": false, "session": prior.Session, "generation": prior.Generation}, 409)
+	assertListed(false)
+	call("owner", "PUT", path, map[string]any{"ended": false, "session": lease.Session, "generation": lease.Generation}, 200)
+	assertListed(true)
+}

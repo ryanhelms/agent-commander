@@ -702,6 +702,7 @@ struct TeamsAdminPage: View {
         let members = state.memberRows(on: server.id)
         return NetworkInspector(title: "Members and devices", serverID: server.id, serverName: server.name,
                                 note: "Each of these asks first and names who or what it cuts off.") {
+            if let requests = server.requests { requestsBand(requests, server: server) }
             MultiplayerBand {
                 VStack(alignment: .leading, spacing: 2) {
                     MultiplayerBandHeading(title: "Members", count: "\(members.count)") { EmptyView() }
@@ -726,6 +727,35 @@ struct TeamsAdminPage: View {
                     ForEach(Array(server.devices.enumerated()), id: \.element.id) { index, device in
                         if index > 0 { ThemeRule() }
                         deviceRow(device, server: server)
+                    }
+                }
+            }
+        }
+    }
+
+    /// People this relay turned away at sign-in who asked to be let in. Each is answered where it
+    /// is listed; an approval admits the person the next time they sign in.
+    private func requestsBand(_ requests: [MultiplayerMembershipRequest], server: TeamsPagesContent.Server) -> some View {
+        MultiplayerBand {
+            VStack(alignment: .leading, spacing: 2) {
+                MultiplayerBandHeading(title: "Membership requests", count: "\(requests.count)") { EmptyView() }
+                if requests.isEmpty {
+                    Text("No one is waiting to join.").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+                }
+                ForEach(Array(requests.enumerated()), id: \.element.id) { index, request in
+                    if index > 0 { ThemeRule() }
+                    let key = TeamsKey.make(request.id, on: server.id)
+                    let result = pages.result("request", key)
+                    MultiplayerNeedRow(color: MultiplayerTheme.swatch(for: server.id), title: request.shownEmail,
+                                       detail: Self.detail(request, now: pages.content.now),
+                                       declineTitle: "Deny", onDecline: { pages.send(.decideRequest(request.id, server: server.id, approve: false)) },
+                                       actionTitle: "Approve", isBusy: pages.isRunning("request", key) || pages.content.isBusy,
+                                       action: { pages.send(.decideRequest(request.id, server: server.id, approve: true)) })
+                        .accessibilityIdentifier("teams-request-\(request.id)")
+                    if let text = result?.rowText, result?.isDone == false {
+                        Text(text).font(MultiplayerTheme.sub).foregroundStyle(MultiplayerTheme.failure)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.leading, 28)
                     }
                 }
             }
@@ -811,6 +841,13 @@ struct TeamsAdminPage: View {
 }
 
 extension TeamsAdminPage {
+    /// A request's note in the person's own words, then when they asked.
+    static func detail(_ request: MultiplayerMembershipRequest, now: Date) -> String {
+        let asked = MultiplayerMembershipRequest.age(request.createdAt, now: now).map { "Asked \($0)." } ?? "Asked to join."
+        let note = request.shownNote
+        return note.isEmpty ? "\(asked) No note." : "“\(note)” \(asked)"
+    }
+
     static func owner(_ device: TeamsDevice) -> String { device.owner.isEmpty ? "a member without a handle" : device.owner.multiplayerDisplay }
 
     /// Whose device it is, its ID when it has a name of its own, and whether it is connected or

@@ -74,6 +74,28 @@ func TestWireToolDetailKeepsFullValues(t *testing.T) {
 	}
 }
 
+func TestWireToolDetailKeepsTheExactSingleLocation(t *testing.T) {
+	const prefix = `{"sessionUpdate":"tool_call_update","toolCallId":"read-1","rawOutput":"file text"`
+	capture := wireToolDetail([]byte(prefix + `,"locations":[{"path":"/private/tmp/Claude ACP proof/compact-1.txt","line":7}]}`))
+	want := service.ToolLocation{Path: "/private/tmp/Claude ACP proof/compact-1.txt", Line: 7}
+	if capture == nil || capture.Key != "read-1" || capture.Location == nil || *capture.Location != want {
+		t.Fatalf("captured location: %#v", capture)
+	}
+	if omitted := wireToolDetail([]byte(prefix + "}")); omitted == nil || omitted.Location != nil {
+		t.Fatalf("omitted location: %#v", omitted)
+	}
+	for _, locations := range []string{
+		`[]`, `null`, `{}`, `[null]`, `[{"path":"/a"}]`,
+		`[{"path":"relative","line":7}]`, `[{"path":"/a","line":0}]`,
+		`[{"path":"/a","line":7},{"path":"/b","line":8}]`,
+	} {
+		detail := wireToolDetail([]byte(prefix + `,"locations":` + locations + "}"))
+		if detail == nil || detail.Location == nil || *detail.Location != (service.ToolLocation{}) || detail.Result != "file text" {
+			t.Errorf("location %s spoiled the result or did not clear the target: %#v", locations, detail)
+		}
+	}
+}
+
 func TestLargeDetailsSplitBatches(t *testing.T) {
 	s := &screen{batches: make(chan outputBatch, 8)}
 	value := strings.Repeat("a", service.MaxToolDetailField+10)

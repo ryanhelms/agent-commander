@@ -6,6 +6,8 @@ The Go service owns domain operations. The native SwiftUI/AppKit cockpit, termin
 
 The local API service and multiplayer device helper each take operating-system locks on their state directory and configured socket before recovering a stale listener. Concurrent launchers join the running service, and separate profiles can run concurrently with distinct sockets.
 
+A coordinator's private inbox uses a Message Store and a bounded Polling Consumer. Its authenticated read can wait for a new note after a message ID while the recipient run stays active. A stored note never authorizes a provider turn.
+
 For the proposed multi-user Go relay, see the [multiplayer relay architecture](MULTIPLAYER-RELAY.md). A Recipient List gives each logical target an independent delivery. Competing Consumers distribute those deliveries across interchangeable dispatchers. A fenced device route directs each delivery to the edge holding its live tunnel. The [pattern library](../.context/design-patterns/index.md) describes these and their alternatives.
 
 ## First usable run
@@ -115,6 +117,8 @@ These scenarios group later work by milestone. Pick the relevant case as a featu
 | M5 · Coding, integration and recall | Reproducible baselines, candidate-specific tests and revision preconditions, search provenance, and retention expiry. |
 | M6 · Additional clients | An unfamiliar MCP client participates through the public API contract. A capability-dependent action returns a precise limitation or a resumable operation. |
 
+
+An ordinary question can be withdrawn by its authenticated requester using the existing Correlation Identifier. The Message Store retains the question as cancelled so history and retries can still resolve it. A wait timeout leaves the question pending. Provider approvals and answered questions keep their own lifecycle.
 
 ## Local SDK runtime
 
@@ -247,6 +251,8 @@ Commander keeps the runner’s 128-record admission queue separate from the work
 
 The [two-person multiplayer pilot](MULTIPLAYER-PILOT.md) keeps device identity, friendship and resource grants in the control plane. Addressed sealed work items use a transactional outbox, a shared JetStream pull consumer and fenced recipient claims. Local versioned capability handlers own execution. Each execution retains a receipt and relies on an owner-local grant and credential.
 
+Coordinator inbox availability uses the existing resource directory as a projection of owner-device run state. The device publishes observed end and reopen transitions independently of grants. Discovery separates ended inboxes from available targets. The receiving device still validates the addressed run under the original grant and retains the existing receipt for a previously delivered message.
+
 The OIDC identity adapter validates the signed token before handling Google's documented claim forms. Enrollment uses the provider and subject as the account key. Both Google issuer spellings select the same account, and existing device ownership survives enrollment through either form.
 
 The Google Desktop variant sources its OAuth client credentials from the device's private state. It checks the configured client ID against the relay's enrollment challenge and sends the client secret only to Google's token endpoint, with redirects disabled for that exchange. PKCE, the browser callback and the signed ID-token handoff use the existing identity adapter.
@@ -279,6 +285,8 @@ The coordinator MCP adapter forwards each network request to the private device 
 ### Reattaching an existing provider session
 
 An owner command reserves a new control generation and a fresh worker credential after the service verifies that the original worker is inactive. The provider adapter verifies the saved checkout and executable identity before bringing up a replacement runner. The runner reports the same native session identity before the service accepts follow-ups. Discovery uses the saved provider and checkout without establishing a new conversation. The Idempotent Receiver reuses the original reservation on command retry. An unresolved earlier operation keeps its delivery receipt and requires the owner's explicit acknowledgement before reattachment. A stopped-history load and reattachment for the same worker cannot overlap.
+
+The coordinator keeps its original run and owner-bound inbox when the native harness resumes. ACP loads the reserved session. The Claude CLI initializes `--resume` for the exact UUID and checks the provider-reported ID when a new turn begins. Older CLI coordinators can recover the binding from a unique local journal that matches the original assignment and includes the authenticated Commander status result for that run. Reattachment uses the owner's next explicit follow-up and retains the coordinator's existing tool policy.
 
 ## Multiplayer workspace membership and combined view
 
@@ -322,9 +330,13 @@ A deploy from the Mac is a Pipeline of checked steps: connect, pick the release,
 
 Full tool arguments, results, plan entries and thought times travel beside the console event, not inside it. This is a Claim Check: the console keeps its short preview, and the local app fetches the full record by tool ID or message ID. One boundary results. `ConsoleEvent` feeds run records, AG-UI snapshots, hosted clients and network hand-off, so none of them gains a value. `GET /v1/workers/{worker}/tool-details` answers only the local owner, and the hosted gateway does not route it.
 
-The runner sends details in the output batch, so the batch receipt makes a retry idempotent. The service keeps them in `tool-details/<worker>.jsonl`, outside `state.json`, with the latest 256 records or 16 MB per worker. One argument, result or content value is capped at 512 KB, even under "Keep everything as sent"; a cut value is listed in `truncated`. The transcript limit setting shortens string values and keeps JSON structure and key order. "Hide values that look like secrets" is stored by the service and applied by the app when it draws.
+A single ACP file location follows the same claim check and stays with the worker and call that supplied it. An omitted locations update preserves the last report. An explicit update with an empty, invalid or ambiguous location clears it. The Mac app checks the current local worker and canonical checkout before sending that file and the 1-based line as arguments to Xcode's line opener.
+
+The runner sends details in the output batch, so the batch receipt makes a retry idempotent. The service keeps them in `tool-details/<worker>.jsonl`, outside `state.json`, with the latest 256 records or 16 MB per worker. One argument, result or content value is capped at 512 KB, even under "Keep everything as sent"; a cut value is listed in `truncated`. The transcript limit setting shortens string values and keeps JSON structure and key order. Full detail records carry bounded JSON Pointers for string cuts and an empty pointer for a whole-value cut in `shortened`. Older records and ambiguous or oversized path sets still carry the value-level flag. "Hide values that look like secrets" is stored by the service and applied by the app when it draws.
 
 The app is the Claim Check's reader. `ToolDetailStore` holds one revision per worker and asks for summaries after it when that worker's transcript gains an entry or a call gains its result, never on a timer. It asks for a full record only when its line is opened, so a wall of tiles costs one small read each. A record stored before the service kept details has no entry, and the sentence uses its fallback wording. The four calls sit behind `ToolDetailSource`, so a view or a test never touches the socket.
+
+The owner's reply to an ACP form request leaves a `form_outcome` record under the same claim check: the request ID as its Correlation Identifier, in the `form-outcome:` key namespace only the service writes, and the decision. Pretty draws "Answered a form" from that record alone, placed by its console sequence, so the line is the same after a restart and is never a local echo of the reply. The reply may bring no console event, so `ElicitationModel` raises one Event Notification when the service accepts a form reply, and `CockpitModel` answers with one read of that worker's details. The service stores the record under its lock before it answers, so one read holds it; if a read was already in flight, one more runs after it from the revision it returned. No timer or poll setting changes.
 
 ## Pretty conversation
 

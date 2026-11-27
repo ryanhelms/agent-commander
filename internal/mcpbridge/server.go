@@ -33,6 +33,9 @@ type waitInput struct {
 	Request string `json:"request_id"`
 	Seconds int    `json:"timeout_seconds,omitempty" jsonschema:"maximum wait up to 45 seconds"`
 }
+type withdrawInput struct {
+	Request string `json:"request_id"`
+}
 type reply struct {
 	Request string `json:"request_id"`
 	Answer  string `json:"answer"`
@@ -110,10 +113,10 @@ func buildServer(ctx context.Context, c *localapi.Client, env map[string]string,
 	register(s, "commander_delegate", "Launch a managed worker under your assignment in this run.", func(ctx context.Context, in delegate) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", runPath+"/workers", map[string]string{"parent_id": actor, "name": in.Name, "task": in.Task, "client": in.Client, "host": in.Host, "kind": in.Kind, "idempotency_key": in.Key})
 	})
-	register(s, "commander_ask", "Escalate a question and obtain its request ID. Use commander_wait for the answer.", func(ctx context.Context, in ask) (json.RawMessage, error) {
+	register(s, "commander_ask", "Ask for a developer decision or action you need. Do not use this for progress updates or to wait for a peer. Use commander_wait for the answer.", func(ctx context.Context, in ask) (json.RawMessage, error) {
 		return c.Do(ctx, "POST", workerPath+"/questions", in)
 	})
-	register(s, "commander_wait", "Wait for a reply to your question. Call again when it is pending.", func(ctx context.Context, in waitInput) (json.RawMessage, error) {
+	register(s, "commander_wait", "Wait for your question to be answered or cancelled. A pending result means it is still open.", func(ctx context.Context, in waitInput) (json.RawMessage, error) {
 		id, err := localapi.Segment(in.Request)
 		if err != nil {
 			return nil, err
@@ -161,6 +164,13 @@ func buildServer(ctx context.Context, c *localapi.Client, env map[string]string,
 			case <-ticker.C:
 			}
 		}
+	})
+	register(s, "commander_withdraw_question", "Withdraw your own pending ordinary question when developer input is no longer needed. Keeps the original question in history.", func(ctx context.Context, in withdrawInput) (json.RawMessage, error) {
+		id, err := localapi.Segment(in.Request)
+		if err != nil {
+			return nil, err
+		}
+		return c.Do(ctx, "POST", workerPath+"/questions/"+id+"/withdraw", nil)
 	})
 	register(s, "commander_reply", "Answer a specific question from a worker you control.", func(ctx context.Context, in reply) (json.RawMessage, error) {
 		id, err := localapi.Segment(in.Request)

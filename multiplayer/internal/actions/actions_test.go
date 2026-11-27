@@ -419,7 +419,6 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 	active.Store(true)
 	srv := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" || r.URL.Path != "/v1/ag-ui/workers/pilot" {
-			t.Errorf("unexpected local request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 			return
 		}
@@ -437,6 +436,11 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 		t.Fatal(resource, e)
 	}
 	cfg := Config{CommanderSocket: socket, StateDir: dir, Resources: []Resource{resource}, Grants: []Grant{{ID: "post", Peer: "alice", Resource: "design", Action: "agent.message", ExpiresAt: time.Now().Add(time.Minute)}, {ID: "fake", Peer: "alice", Resource: "design", Action: "agent.ask", ExpiresAt: time.Now().Add(time.Minute)}}}
+	config := func() Config { return cfg }
+	unconfigured := func() Config { return Config{CommanderSocket: socket, StateDir: dir} }
+	if _, e := CoordinatorInbox(ctx, unconfigured, "pilot", "run-a", InboxQuery{}); !errors.Is(e, errInboxNotConfigured) {
+		t.Fatal(e)
+	}
 	msg := map[string]string{"text": "Review the estimate."}
 	for _, c := range []struct{ id, peer, action string }{{"outside", "bob", "agent.message"}, {"wrong", "alice", "agent.ask"}} {
 		if _, e := action(t, cfg, c.id, c.peer, "design", c.action, msg); !errors.Is(e, ErrDenied) {
@@ -451,11 +455,10 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 		}
 		delivered = out["messageId"].(string)
 	}
-	result, e := CoordinatorInbox(cfg, "pilot", "run-a")
+	box, e := CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{})
 	if e != nil {
 		t.Fatal(e)
 	}
-	box := result.(coordinatorMailbox)
 	if len(box.Messages) != 1 || box.Messages[0].ID != delivered || box.Messages[0].Text != msg["text"] || box.Messages[0].Peer != "alice" {
 		t.Fatal(box)
 	}
@@ -469,34 +472,94 @@ func TestCoordinatorMailboxBindsRunRoleAndSender(t *testing.T) {
 	if e = save(receiptPath, interrupted); e != nil {
 		t.Fatal(e)
 	}
+	active.Store(false)
+	ended, e := CoordinatorInboxEnded(ctx, socket, resource)
+	if e != nil || !ended {
+		t.Fatalf("completed inbox: ended=%v, error=%v", ended, e)
+	}
 	recovered, e := action(t, cfg, "m1", "alice", "design", "agent.message", msg)
 	if e != nil || recovered["messageId"] != delivered {
 		t.Fatal(recovered, e)
 	}
+	active.Store(true)
 	for i := 0; i < 32; i++ {
 		if _, e := action(t, cfg, fmt.Sprintf("note-%d", i), "alice", "design", "agent.message", map[string]string{"text": fmt.Sprint(i)}); e != nil {
 			t.Fatal(e)
 		}
 	}
-	result, e = CoordinatorInbox(cfg, "pilot", "run-a")
+	box, e = CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{})
 	if e != nil {
 		t.Fatal(e)
 	}
-	box = result.(coordinatorMailbox)
 	if !box.Truncated || len(box.Messages) != 32 || box.Messages[0].Text != "0" || box.Messages[31].Text != "31" {
 		t.Fatal("incorrect recent message window")
 	}
-	if _, e := CoordinatorInbox(cfg, "pilot", "run-b"); !errors.Is(e, ErrDenied) {
+	gap, e := CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{AfterMessageID: delivered})
+	if e != nil || !gap.Truncated || len(gap.Messages) != 32 {
+		t.Fatal(gap, e)
+	}
+	latest := box.Messages[len(box.Messages)-1].ID
+	empty, e := CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{AfterMessageID: latest, WaitSeconds: 1})
+	if e != nil || empty.Truncated || len(empty.Messages) != 0 || empty.Messages == nil {
+		t.Fatal(empty, e)
+	}
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, e := CoordinatorInbox(cancelCtx, config, "pilot", "run-a", InboxQuery{AfterMessageID: latest, WaitSeconds: 1}); !errors.Is(e, context.Canceled) {
 		t.Fatal(e)
 	}
-	if _, e := CoordinatorInbox(cfg, "stranger", "run-a"); !errors.Is(e, ErrDenied) {
+	type reply struct {
+		box coordinatorMailbox
+		err error
+	}
+	checking := make(chan struct{}, 1)
+	waiting := make(chan reply, 1)
+	go func() {
+		box, e := CoordinatorInbox(ctx, func() Config {
+			select {
+			case checking <- struct{}{}:
+			default:
+			}
+			return cfg
+		}, "pilot", "run-a", InboxQuery{AfterMessageID: latest, WaitSeconds: 2})
+		waiting <- reply{box, e}
+	}()
+	<-checking
+	arrival, e := action(t, cfg, "after-wait", "alice", "design", "agent.message", msg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	got := <-waiting
+	if got.err != nil || got.box.Truncated || len(got.box.Messages) != 1 || got.box.Messages[0].ID != arrival["messageId"] {
+		t.Fatal(got.box, got.err)
+	}
+	if _, e := CoordinatorInbox(ctx, config, "pilot", "run-b", InboxQuery{}); !errors.Is(e, ErrDenied) {
+		t.Fatal(e)
+	}
+	if _, e := CoordinatorInbox(ctx, config, "stranger", "run-a", InboxQuery{}); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
 	active.Store(false)
-	if _, e := CoordinatorInbox(cfg, "pilot", "run-a"); !errors.Is(e, ErrDenied) {
+	if _, e := CoordinatorInbox(ctx, config, "pilot", "run-a", InboxQuery{}); !errors.Is(e, ErrDenied) {
 		t.Fatal(e)
 	}
-	if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrDenied) {
+	for range 2 {
+		if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrCoordinatorInboxEnded) || FailureCode(e) != "coordinator_inbox_ended" {
+			t.Fatal(e)
+		}
+	}
+	if _, e := action(t, cfg, "no-grant-ended", "bob", "design", "agent.message", msg); !errors.Is(e, ErrDenied) {
+		t.Fatal(e)
+	}
+	active.Store(true)
+	ended, e = CoordinatorInboxEnded(ctx, socket, resource)
+	if e != nil || ended {
+		t.Fatalf("reopened inbox: ended=%v, error=%v", ended, e)
+	}
+	if _, e := action(t, cfg, "m3", "alice", "design", "agent.message", msg); !errors.Is(e, ErrCoordinatorInboxEnded) {
+		t.Fatalf("replay unexpectedly changed the original receipt: %v", e)
+	}
+	if _, e := action(t, cfg, "new-after-reopen", "alice", "design", "agent.message", msg); e != nil {
 		t.Fatal(e)
 	}
 }

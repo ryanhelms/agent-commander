@@ -88,6 +88,8 @@ type Question struct {
 	Answer   string           `json:"answer"`
 	Delivery string           `json:"delivery,omitempty"`
 	Choices  []QuestionChoice `json:"choices,omitempty"`
+	// The normalized console tool ID supplied by this provider permission.
+	ProviderToolCallID string `json:"provider_tool_call_id,omitempty"`
 }
 
 type Run struct {

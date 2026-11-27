@@ -217,8 +217,10 @@ func emailHash(email string) string { return hex.EncodeToString(digest(strings.T
 
 // Every credential path observes the same settings as enrollment, including
 // changes made by an administrator on another edge.
+// Invite mode controls who may join; existing members keep access. Open admits
+// every member and an allowlist only the members on it. Suspension always wins.
 const memberAccess = `EXISTS (SELECT FROM mp_membership_policy m
-	WHERE (m.mode='open' OR mp_auth_devices.email_hash=ANY(m.allowed_hashes))
+	WHERE (m.mode IN ('open','invite') OR mp_auth_devices.email_hash=ANY(m.allowed_hashes))
 	AND EXISTS (SELECT FROM mp_members WHERE user_id=mp_auth_devices.user_id AND NOT suspended))`
 
 func verifiedHash(email string, verified bool) string {
@@ -241,8 +243,11 @@ func admitMember(ctx context.Context, tx pgx.Tx, user, email, hash, invite strin
 		return fmt.Errorf("%w: %w", denied, errSuspended)
 	}
 	var allowed bool
+	// An existing member signs in again in invite mode without being listed:
+	// invites and requests govern only newcomers.
 	err = tx.QueryRow(ctx, `SELECT mode='open' OR $1=ANY(admin_hashes) OR
 		($1=ANY(allowed_hashes) AND (mode='allowlist' OR EXISTS (SELECT FROM mp_members WHERE user_id=$2))) OR
+		(mode='invite' AND EXISTS (SELECT FROM mp_members WHERE user_id=$2)) OR
 		($1<>'' AND EXISTS (SELECT FROM mp_membership_requests WHERE email_hash=$1 AND status='approved'))
 		FROM mp_membership_policy FOR UPDATE`, hash, user).Scan(&allowed)
 	if err != nil {

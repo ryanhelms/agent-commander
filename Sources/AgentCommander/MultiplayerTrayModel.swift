@@ -12,6 +12,7 @@ import Observation
 // - A changed certificate is trusted only from a fresh check of that server and a second confirmation.
 // - A read or an action that names its target never reads or moves `route`. The tray's own pages
 //   call the same functions with the target their route names.
+// - The relays nearby are read after each list read, open or closed (MultiplayerDiscovery.swift).
 // - Sessions poll only while a panel is open. With notifications available, the list and the feed
 //   are also read every other poll interval while it is closed (MultiplayerSocialModel.swift).
 
@@ -265,6 +266,11 @@ final class MultiplayerModel {
     let host: MultiplayerHostModel
     /// The tailnet this Mac is on and its relays, for the Add server form.
     let tailnet: MultiplayerTailnetModel
+    /// The relays nearby and the join checklist (MultiplayerDiscovery.swift).
+    let discovery: MultiplayerDiscoveryModel
+    /// Requests to join a relay: the person's own, and the ones waiting on them as an admin
+    /// (MultiplayerMembershipRequests.swift).
+    let requests: MultiplayerMembershipRequestModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -289,9 +295,11 @@ final class MultiplayerModel {
          now: @escaping () -> Date = { Date() },
          holdTimer: MultiplayerHoldTimer = .clock,
          relay: (any MultiplayerRelayControl)? = nil,
-         tailnetPoll: Duration = .seconds(2)) {
+         tailnetPoll: Duration = .seconds(2),
+         discoveryStore: MultiplayerDiscoveryStore = .scratch,
+         listingPoll: Duration = .seconds(5)) {
         self.client = client
-        self.host = MultiplayerHostModel(control: relay)
+        self.host = MultiplayerHostModel(control: relay, listingInterval: listingPoll)
         self.notifier = notifier
         self.setupFailure = setupFailure
         self.usesFixtureHelper = usesFixtureHelper
@@ -302,8 +310,12 @@ final class MultiplayerModel {
                                            answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.tailnet = MultiplayerTailnetModel(client: client, pollInterval: tailnetPoll)
+        self.discovery = MultiplayerDiscoveryModel(client: client, store: discoveryStore)
+        self.requests = MultiplayerMembershipRequestModel(client: client)
         self.share.tray = self
         self.remote.tray = self
+        self.discovery.tray = self
+        self.requests.tray = self
     }
 
     /// The one live model: the menu bar panel, the review window and invite links all use it.
@@ -319,7 +331,8 @@ final class MultiplayerModel {
             return MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
                              winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
-                             answeredHold: MultiplayerShareModel.answeredHold, relay: relay)
+                             answeredHold: MultiplayerShareModel.answeredHold, relay: relay,
+                             discoveryStore: MultiplayerDiscoveryStore(defaults: location.isFixture ? nil : .standard))
         case .failure(let failure):
             return MultiplayerModel(client: nil, setupFailure: failure, relay: relay)
         }
@@ -471,6 +484,8 @@ final class MultiplayerModel {
         cancelSocial()
         share.cancel()
         remote.cancel()
+        discovery.cancel()
+        requests.cancel()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -503,6 +518,8 @@ final class MultiplayerModel {
     func refreshAll() {
         refresh()
         sessions.values.forEach { $0.refresh() }
+        // The person asked: the device agent looks again instead of answering with its last pass.
+        discovery.refresh(force: true)
     }
 
     private func finishRefresh(_ result: Result<[MultiplayerServerSummary], MultiplayerFailure>, token: Int) {
@@ -517,6 +534,8 @@ final class MultiplayerModel {
             refreshSocial()
             share.refresh()
             remote.refresh()
+            discovery.refresh()
+            requests.refresh()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -896,8 +915,11 @@ final class MultiplayerModel {
     /// Waits until no helper call started by this model or its sessions is in flight.
     func settle() async {
         while true {
-            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first
-                ?? share.quietTask ?? share.pageTask ?? remote.quietTask {
+            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask {
+                await task.value
+                continue
+            }
+            if let task = sideTasks.values.first ?? share.quietTask ?? share.pageTask ?? remote.quietTask {
                 await task.value
                 continue
             }
@@ -910,12 +932,24 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = discovery.readTask ?? discovery.seenTask {
+                await task.value
+                continue
+            }
+            if let task = requests.quietTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
-            if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, tailnet.joinTask == nil, tailnet.readTask == nil,
-               share.live.quietTask == nil,
-               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
-               share.teams.pullRequestTask == nil { return }
+            // Split so the compiler checks each list in turn.
+            let own = actionTask == nil && refreshTask == nil && probeTask == nil && socialTask == nil
+                && membershipTask == nil && sideTasks.isEmpty
+            let shared = share.quietTask == nil && share.pageTask == nil && remote.quietTask == nil
+                && share.live.quietTask == nil && share.live.pageTask == nil && share.teams.quietTask == nil
+                && share.teams.pageTask == nil && share.teams.pullRequestTask == nil
+            let found = tailnet.joinTask == nil && tailnet.readTask == nil && discovery.readTask == nil
+                && discovery.seenTask == nil && requests.quietTask == nil
+            if own, shared, found { return }
         }
     }
 }

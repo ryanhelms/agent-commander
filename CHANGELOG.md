@@ -4,12 +4,20 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Added
+
+- See the relays near you at the top of the network tray and in Add server: each relay found on your tailnet or local network, how it admits people, and a checklist that walks you through joining it. A new relay marks the menu bar icon and posts one notification, which you can turn off on the Network tab.
+- Ask to join a relay that turned your sign-in away, with an optional note, and follow the request to its answer in the network tray. Relay admins approve or deny requests on the Admin page, and Hosting on this Mac can list your relay in the public directory under an https address.
+
 ### Changed
 
 - GitHub publishes pilot releases for public download. Source builds can fetch the pinned Go build inputs without a GitHub login.
 
 ### Fixed
 
+- Reattach a stopped coordinator to its original local provider session. Commander keeps the same run and inbox and uses ACP session load or Claude Code’s native resume.
+- Coordinator discovery identifies ended inboxes separately. An authorized message to an ended run gets a specific receipt, and reopening that run restores discovery under its existing grant.
+- Switching a relay to Invite membership no longer locks out the people who joined while it was Open. Invite now decides only who may join; Allowlist and suspension still remove access.
 - Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.
 
 ### Removed

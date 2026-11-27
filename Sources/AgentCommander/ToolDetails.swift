@@ -12,7 +12,8 @@ import Observation
 //                  PlanItem             one item of a task checklist
 //                  TranscriptSettings   what new records keep, and whether secrets are hidden
 //   Feature layer  ToolDetailStore      summaries by worker, read after the last revision seen;
-//                                       full records read one at a time, on request
+//                                       full records read one at a time, on request; one
+//                                       read after the owner's reply to a form request
 //   Boundary       ToolDetailSource     the four service calls, as closures
 //
 // The store never guesses: a record stored before the service kept details has no entry, and the
@@ -84,9 +85,12 @@ struct ToolDetailSummary: Decodable, Equatable, Sendable {
     var stopReason: String? = nil
     var terminalReason: String? = nil
     var isError: Bool? = nil
+    /// The one file and line an ACP tool reported for this call. Nil when the service sent
+    /// none; a member that is not one valid location holds no value (`ToolLocation.swift`).
+    var location: ToolLocationField? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case key, kind, sequence, name, title, plan, truncated, revision, fields, state
+        case key, kind, sequence, name, title, plan, truncated, revision, fields, state, location
         case toolKind = "tool_kind", startedAt = "started_at", endedAt = "ended_at"
         case inputBytes = "input_bytes", resultBytes = "result_bytes"
         case toolUseID = "tool_use_id", jobKind = "job_kind"
@@ -119,9 +123,19 @@ struct ToolDetailRecord: Decodable, Equatable, Sendable {
     var startedAt: String? = nil
     var endedAt: String? = nil
     var truncated: [String]? = nil
+    /// Where the service cut each value in `truncated`: JSON Pointers to the strings it
+    /// shortened, or one empty pointer for a cut at the end of the whole value. Absent from an
+    /// older record or service.
+    var shortened: [String: [String]]? = nil
+    /// The PNG images of `result` and `content`, read once by the store when it keeps the
+    /// record. Never sent by the service; nil on a record the store has not kept.
+    var images: ResultImages? = nil
+    /// The typed diff blocks of `content`, compared once by the store when it keeps the record.
+    /// Never sent by the service; nil on a record the store has not kept.
+    var changes: ResultChanges? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case key, kind, name, title, input, result, content, truncated
+        case key, kind, name, title, input, result, content, truncated, shortened
         case startedAt = "started_at", endedAt = "ended_at"
     }
 }
@@ -177,6 +191,8 @@ final class ToolDetailStore {
     private var records: [String: [String: ToolDetailRecord]] = [:]
     @ObservationIgnored private var revisions: [String: UInt64] = [:]
     @ObservationIgnored private var reading: Set<String> = []
+    /// Workers whose form reply arrived while their read was in flight: read once more after it.
+    @ObservationIgnored private var rereads: Set<String> = []
     @ObservationIgnored private var missing: Set<String> = []
     @ObservationIgnored var source: ToolDetailSource?
 
@@ -186,7 +202,9 @@ final class ToolDetailStore {
     init(summaries: [String: [ToolDetailSummary]], records: [String: [ToolDetailRecord]] = [:],
          settings: TranscriptSettings = TranscriptSettings()) {
         self.summaries = summaries.mapValues { Dictionary($0.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last }) }
-        self.records = records.mapValues { Dictionary($0.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last }) }
+        self.records = records.mapValues {
+            Dictionary($0.map { ($0.key, ToolDetailStore.kept($0)) }, uniquingKeysWith: { _, last in last })
+        }
         self.settings = settings
     }
 
@@ -207,23 +225,35 @@ final class ToolDetailStore {
 
     /// Reads the worker's summaries changed since the last revision seen. Called when its
     /// transcript gains an entry or its state changes, never on a timer.
-    func refresh(worker: String) async {
-        guard let source, !reading.contains(worker) else { return }
-        reading.insert(worker)
-        defer { reading.remove(worker) }
-        guard let page = try? await source.page(worker, revisions[worker] ?? 0) else { return }
-        // A lower revision means the service started again with fewer records.
-        if page.revision < (revisions[worker] ?? 0) { summaries[worker] = [:]; records[worker] = [:] }
-        revisions[worker] = page.revision
-        guard !page.records.isEmpty else { return }
-        var known = summaries[worker] ?? [:]
-        for record in page.records {
-            known[record.key] = record
-            // A changed record's full copy is stale.
-            records[worker]?[record.key] = nil
-            missing.remove(worker + "\u{1F}" + record.key)
+    ///
+    /// A call that arrives while a read is in flight starts no second one. With `afterInFlight`
+    /// (the read after a form reply), the worker is then read once more when that read ends,
+    /// from the revision it returned: it may have been answered before the reply's record was
+    /// stored. Any other overlapping call is dropped, as before.
+    func refresh(worker: String, afterInFlight: Bool = false) async {
+        guard let source else { return }
+        guard !reading.contains(worker) else {
+            if afterInFlight { rereads.insert(worker) }
+            return
         }
-        summaries[worker] = known
+        reading.insert(worker)
+        defer { reading.remove(worker); rereads.remove(worker) }
+        repeat {
+            rereads.remove(worker)
+            guard let page = try? await source.page(worker, revisions[worker] ?? 0) else { continue }
+            // A lower revision means the service started again with fewer records.
+            if page.revision < (revisions[worker] ?? 0) { summaries[worker] = [:]; records[worker] = [:] }
+            revisions[worker] = page.revision
+            guard !page.records.isEmpty else { continue }
+            var known = summaries[worker] ?? [:]
+            for record in page.records {
+                known[record.key] = record
+                // A changed record's full copy is stale.
+                records[worker]?[record.key] = nil
+                missing.remove(worker + "\u{1F}" + record.key)
+            }
+            summaries[worker] = known
+        } while rereads.contains(worker)
     }
 
     /// Reads one full record, when a line is opened. A record the service does not hold is asked
@@ -235,7 +265,26 @@ final class ToolDetailStore {
         reading.insert(id)
         defer { reading.remove(id) }
         guard let record = try? await source.record(worker, key) else { missing.insert(id); return }
-        records[worker, default: [:]][key] = record
+        records[worker, default: [:]][key] = ToolDetailStore.kept(record)
+    }
+
+    /// The record with its result's PNG images read, once, so a sentence's tag and an opened
+    /// line's thumbnails do not read the record's text again each time they are drawn.
+    nonisolated static func withImages(_ record: ToolDetailRecord) -> ToolDetailRecord {
+        guard record.kind == "tool", record.images == nil else { return record }
+        var kept = record
+        kept.images = ResultImages.read(result: record.result, content: record.content)
+        return kept
+    }
+
+    /// The record as the store keeps it: its images read and its diff blocks compared, once. The
+    /// comparison is bounded (`ResultChanges.Limits`), so keeping a record does not stall a frame.
+    nonisolated static func kept(_ record: ToolDetailRecord) -> ToolDetailRecord {
+        var kept = withImages(record)
+        guard kept.kind == "tool", kept.changes == nil else { return kept }
+        kept.changes = ResultChanges.read(content: record.content,
+                                          cut: StoredCut(record: record, field: "content", isStored: true))
+        return kept
     }
 
     /// Whether a drawn value that looks like a secret is hidden. Until the service in use has

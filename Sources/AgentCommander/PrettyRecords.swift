@@ -7,7 +7,13 @@ import Foundation
 //   turn_end   one per result envelope: duration, stop reason, error flag
 //   thought    a thought's times and text; this runner sends no console event for it
 //
+// And one record the service itself keeps, for a local ACP worker:
+//
+//   form_outcome   the owner's reply to a form request, under `form-outcome:` and the request
+//                  ID: accept, decline or cancel. The runner cannot write that namespace.
+//
 //   Value          PrettyTurnEnd          the end-of-turn line: words and ink
+//                  PrettyFormOutcome      the line after a form reply: "Answered a form"
 //                  PrettyToolCard         a call drawn as a card: choices, a plan, a deliverable
 //                  PrettyChoiceQuestion   one question of a choice card
 //                  PrettyDeliverable      a published artifact or a sent file
@@ -16,6 +22,9 @@ import Foundation
 //
 // A record is placed by its console sequence against entries whose own sequence is known. When
 // the neighbouring entry's sequence is not known, the record is left out. No client-side guess.
+// The one record with no sequence that is placed is the older runner's thought from before the
+// worker's first console event: it sits before console event 1 (`isBeforeFirstEvent`). A form
+// outcome from before the first event has sequence 0 and follows the same rule.
 
 // MARK: - Background jobs from `job` records
 
@@ -134,6 +143,68 @@ struct PrettyTurnEnd: Identifiable, Equatable {
     }
 }
 
+// MARK: - The form outcome line
+
+/// How the owner answered one ACP form request, from its `form_outcome` record. The record holds
+/// the request's ID and the decision only: no field value, address or message.
+struct PrettyFormOutcome: Identifiable, Equatable {
+    /// The namespace the service keeps these records in. A runner cannot write a key in it
+    /// (`formOutcomeKeyPrefix`, internal/service/elicitation.go).
+    static let keyPrefix = "form-outcome:"
+
+    /// The request's exact ID (`e-…`): the record's key after the namespace.
+    let id: String
+    let action: ElicitationAction
+    /// The last console event when the owner replied. Zero is before the worker's first event.
+    let sequence: Int
+    let revision: UInt64
+
+    /// Nil unless the record is a form outcome whose key is the namespace and a request ID
+    /// (`form-outcome:e-…`), with a sequence that is not negative and a decision of exactly
+    /// `accept`, `decline` or `cancel`. A bare request ID or any other key is not read.
+    init?(_ summary: ToolDetailSummary) {
+        guard summary.kind == "form_outcome", summary.key.hasPrefix(Self.keyPrefix),
+              case let request = String(summary.key.dropFirst(Self.keyPrefix.count)),
+              request.hasPrefix("e-"), request.count > 2,
+              let action = summary.name.flatMap(ElicitationAction.init(rawValue:)),
+              (summary.sequence ?? 0) >= 0 else { return nil }
+        id = request
+        self.action = action
+        sequence = summary.sequence ?? 0
+        revision = summary.revision ?? 0
+    }
+
+    /// The words of spec section H.
+    var sentence: ActivitySentence {
+        switch action {
+        case .accept: ActivitySentence("Answered a form")
+        case .decline: ActivitySentence("Declined a form")
+        case .cancel: ActivitySentence("Cancelled a form")
+        }
+    }
+
+    var spoken: String { sentence.plain }
+
+    /// A reply from before the worker's first console event is among `summaries`: a console
+    /// with no entries still has a line to draw.
+    static func hasReplyBeforeFirstEvent(_ summaries: [ToolDetailSummary]) -> Bool {
+        lines(summaries).contains { $0.sequence == 0 }
+    }
+
+    /// One line per request, in the service's order: sequence, then revision. Of several records
+    /// under one request ID the latest revision is read; when that one names no known decision
+    /// the request has no line.
+    static func lines(_ summaries: [ToolDetailSummary]) -> [PrettyFormOutcome] {
+        var latest: [String: ToolDetailSummary] = [:]
+        for summary in summaries where summary.kind == "form_outcome" {
+            if let kept = latest[summary.key], (kept.revision ?? 0) > (summary.revision ?? 0) { continue }
+            latest[summary.key] = summary
+        }
+        return latest.values.compactMap(PrettyFormOutcome.init)
+            .sorted { ($0.sequence, $0.revision, $0.id) < ($1.sequence, $1.revision, $1.id) }
+    }
+}
+
 // MARK: - Placement by console sequence
 
 enum PrettyRecordPlacement {
@@ -174,27 +245,65 @@ enum PrettyRecordPlacement {
         return index
     }
 
+    /// The key the older Claude runner gives a thought: `thought-` and the lowercase version 4
+    /// UUID it makes for each one. An ACP thought is kept under the provider's message ID.
+    static func isOlderRunnerThought(_ key: String) -> Bool {
+        let prefix = "thought-".utf8
+        guard key.utf8.count == prefix.count + 36, key.utf8.starts(with: prefix) else { return false }
+        for (index, byte) in key.utf8.dropFirst(prefix.count).enumerated() {
+            let isHex = (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+            switch index {
+            case 8, 13, 18, 23: guard byte == UInt8(ascii: "-") else { return false }
+            case 14: guard byte == UInt8(ascii: "4") else { return false }
+            case 19: guard "89ab".utf8.contains(byte) else { return false }
+            default: guard isHex else { return false }
+            }
+        }
+        return true
+    }
+
+    /// A thought the older runner recorded before the worker's first console event. The service
+    /// binds it to the event before the first, which is 0, and sends no sequence for it. Any
+    /// later thought of that runner has the sequence of the event it follows.
+    static func isBeforeFirstEvent(_ thought: ToolDetailSummary) -> Bool {
+        thought.kind == "thought" && (thought.sequence ?? 0) == 0 && isOlderRunnerThought(thought.key)
+    }
+
+    /// Console order, then the provider's own start time. The key keeps the order stable.
+    private static func inOrder(_ a: ToolDetailSummary, _ b: ToolDetailSummary) -> Bool {
+        (a.sequence ?? 0, a.startedAt ?? "", a.key) < (b.sequence ?? 0, b.startedAt ?? "", b.key)
+    }
+
     /// `entries` with the older runner's thought records placed in order. That runner sends no
     /// console event for a thought, so each record becomes an entry the thought line is built
     /// from. A console that carries its own thoughts is returned unchanged.
+    ///
+    /// A thought from before the first console event sits before the first entry, and only when
+    /// that entry is console event 1. A transcript that starts later, or whose first entry has no
+    /// known sequence, does not show the worker's start: the record is left out.
     static func withThoughts(_ entries: [TranscriptEntry], summaries: [ToolDetailSummary], worker: String,
                              summary: Summary, record: (String) -> ToolDetailRecord?) -> [TranscriptEntry] {
-        let thoughts = summaries.filter { $0.kind == "thought" && ($0.sequence ?? 0) > 0 }
-        guard !thoughts.isEmpty, !entries.contains(where: \.isThought) else { return entries }
+        let placeable = summaries.filter { $0.kind == "thought" && (($0.sequence ?? 0) > 0 || isBeforeFirstEvent($0)) }
+        guard !placeable.isEmpty, !entries.contains(where: \.isThought) else { return entries }
         let sequences = entries.map { sequence(of: $0, worker: worker, summary: summary) }
+        let startsAtFirstEvent = (sequences.first ?? nil) == 1
+        // Thoughts by the index of the entry each follows. `beforeFirst` is before every entry.
+        let beforeFirst = -1
         var after: [Int: [TranscriptEntry]] = [:]
-        for thought in thoughts.sorted(by: { ($0.sequence ?? 0, $0.startedAt ?? "", $0.key) < ($1.sequence ?? 0, $1.startedAt ?? "", $1.key) }) {
+        for thought in placeable.sorted(by: inOrder) {
             // A record with neither a time nor text says nothing.
             let text = record(thought.key)?.result ?? ""
-            guard thought.duration != nil || (thought.resultBytes ?? 0) > 0 || !text.isEmpty,
-                  let index = anchor(thought.sequence ?? 0, in: sequences) else { continue }
+            guard thought.duration != nil || (thought.resultBytes ?? 0) > 0 || !text.isEmpty else { continue }
+            let place = thought.sequence ?? 0
+            let start: Int? = startsAtFirstEvent ? beforeFirst : nil
+            guard let index = place > 0 ? anchor(place, in: sequences) : start else { continue }
             let origin = TranscriptOrigin(kind: ConversationChunks.thoughtKind, sourceIDs: [], messageID: thought.key)
             after[index, default: []].append(TranscriptEntry(id: worker + ":thought:" + thought.key,
                                                              kind: .other(role: "assistant", text: text), origin: origin))
         }
         guard !after.isEmpty else { return entries }
-        var out: [TranscriptEntry] = []
-        out.reserveCapacity(entries.count + thoughts.count)
+        var out: [TranscriptEntry] = after[beforeFirst] ?? []
+        out.reserveCapacity(entries.count + placeable.count)
         for (index, entry) in entries.enumerated() {
             out.append(entry)
             out += after[index] ?? []
@@ -202,10 +311,76 @@ enum PrettyRecordPlacement {
         return out
     }
 
-    /// The thought records whose text the console reads: the newest few that hold any.
+    /// The thought records whose text the console reads: the newest few that hold any. A thought
+    /// from before the first console event is the oldest, so it is the first one dropped.
     static func thoughtsToRead(_ summaries: [ToolDetailSummary], limit: Int = 12) -> [String] {
-        summaries.filter { $0.kind == "thought" && ($0.resultBytes ?? 0) > 0 && ($0.sequence ?? 0) > 0 }
-            .sorted { ($0.sequence ?? 0) < ($1.sequence ?? 0) }.suffix(limit).map(\.key)
+        summaries.filter { $0.kind == "thought" && ($0.resultBytes ?? 0) > 0 && (($0.sequence ?? 0) > 0 || isBeforeFirstEvent($0)) }
+            .sorted(by: inOrder).suffix(limit).map(\.key)
+    }
+
+    /// The entries `items` draw, in the order drawn, each with its console sequence when known,
+    /// the item that draws it and the turn it is in.
+    private static func drawn(_ items: [PrettyItem], worker: String,
+                              summary: Summary) -> [(sequence: Int?, item: Int, turn: Int)] {
+        var placed: [(sequence: Int?, item: Int, turn: Int)] = []
+        var turn = 0
+        for (index, item) in items.enumerated() {
+            for entry in item.entries {
+                if entry.isFromUser { turn += 1 }
+                placed.append((sequence(of: entry, worker: worker, summary: summary), index, turn))
+            }
+        }
+        return placed
+    }
+
+    /// `items` with one line per answered form, after the item that holds the last console event
+    /// its record names. Records are drawn in the service's order: sequence, then revision.
+    ///
+    /// - A record whose event is before the first entry shown (an older request, or one outside
+    ///   a recent window) is left out, as is one whose neighbouring entry has no known sequence.
+    /// - A reply from before the worker's first console event has sequence 0. Its line sits
+    ///   before the first entry, only when that entry is console event 1, or alone when the
+    ///   console draws no entry yet.
+    ///
+    /// Call it after `withTurnEnds`: a line then sits before its turn's end-of-turn line.
+    static func withFormOutcomes(_ items: [PrettyItem], summaries: [ToolDetailSummary], worker: String,
+                                 summary: Summary) -> [PrettyItem] {
+        let outcomes = PrettyFormOutcome.lines(summaries)
+        guard !outcomes.isEmpty else { return items }
+        let ordered = drawn(items, worker: worker, summary: summary)
+        let sequences = ordered.map(\.sequence)
+        // With no entry drawn, nothing has happened yet: a reply from before the first event stands alone.
+        let startsAtFirstEvent = sequences.isEmpty || (sequences.first ?? nil) == 1
+        // Lines by the index of the item each follows. `beforeFirst` is before every item.
+        let beforeFirst = -1
+        var after: [Int: [PrettyItem]] = [:]
+        for outcome in outcomes {
+            let index: Int?
+            if outcome.sequence > 0 {
+                index = anchor(outcome.sequence, in: sequences).map { ordered[$0].item }
+            } else {
+                index = startsAtFirstEvent ? beforeFirst : nil
+            }
+            guard let index else { continue }
+            after[index, default: []].append(.formOutcome(outcome))
+        }
+        guard !after.isEmpty else { return items }
+        var out: [PrettyItem] = after[beforeFirst] ?? []
+        out.reserveCapacity(items.count + outcomes.count)
+        for (index, item) in items.enumerated() {
+            out.append(item)
+            out += after[index] ?? []
+        }
+        return out
+    }
+
+    /// `items` apart from the form outcome lines it ends with. What the turn is doing now (an
+    /// open call, a thought in progress) is read from the first part: a reply's line after the
+    /// open call does not close it.
+    static func beforeTrailingOutcomes(_ items: [PrettyItem]) -> (items: [PrettyItem], outcomes: [PrettyItem]) {
+        var split = items.endIndex
+        while split > items.startIndex, case .formOutcome = items[split - 1] { split -= 1 }
+        return (Array(items[..<split]), Array(items[split...]))
     }
 
     /// `items` with one end-of-turn line per turn, after the item that holds the last console
@@ -215,18 +390,9 @@ enum PrettyRecordPlacement {
         let ends = summaries.filter { $0.kind == "turn_end" && ($0.sequence ?? 0) > 0 }
             .sorted { ($0.sequence ?? 0, $0.revision ?? 0, $0.key) < ($1.sequence ?? 0, $1.revision ?? 0, $1.key) }
         guard !ends.isEmpty else { return items }
-        // Entries in console order, each with the item that draws it and the turn it is in.
-        var placed: [(sequence: Int?, item: Int, turn: Int)] = []
-        var turn = 0
-        for (index, item) in items.enumerated() {
-            for entry in item.entries {
-                if entry.isFromUser { turn += 1 }
-                placed.append((sequence(of: entry, worker: worker, summary: summary), index, turn))
-            }
-        }
         // A workflow draws a later call in an earlier item; the anchor is still the last drawn
         // entry at or before the record.
-        let ordered = placed
+        let ordered = drawn(items, worker: worker, summary: summary)
         let sequences = ordered.map(\.sequence)
         var byTurn: [Int: (records: [ToolDetailSummary], item: Int)] = [:]
         for end in ends {
@@ -370,5 +536,26 @@ enum PrettyToolInput {
     static func plan(input: String?, summary: ToolDetailSummary?) -> String? {
         let text = (object(input)?["plan"] as? String) ?? summary?.field("plan")
         return text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    }
+
+    /// The plan a held `ExitPlanMode` call proposes, drawn before its decision. `exactToolID` is
+    /// the call the pending permission names (`RequestPresentation.exactApprovalToolID`), and the
+    /// held call must be that one: a call marked only because it is the one open call shows no
+    /// plan. `summary` and `record` read one console's stored details, so the plan is the one
+    /// kept by this worker under this call's own ID: never another worker's call with the same
+    /// ID, another call, or the latest plan. Nil for any other call, and when no usable plan is
+    /// stored: the approval line and the request form then stand alone.
+    static func pendingPlan(for step: ActivityStep, exactToolID: String?, summary: (String) -> ToolDetailSummary?,
+                            record: (String) -> ToolDetailRecord?) -> String? {
+        guard let exactToolID, step.state == .awaitingApproval, step.entries.count == 1,
+              let entry = step.entries.first, entry.id == exactToolID,
+              case .tool(let name, _, nil) = entry.kind, CommanderTool(name: name) == nil,
+              PrettyToolCard.kind(name: name, result: nil, summary: nil) == .plan else { return nil }
+        let stored = record(entry.detailKey), brief = summary(entry.detailKey)
+        // A record kept under this ID for a different tool is not this call's plan.
+        for kept in [stored?.name, brief?.name] {
+            if let kept, kept.caseInsensitiveCompare(name) != .orderedSame { return nil }
+        }
+        return plan(input: stored?.input, summary: brief)
     }
 }

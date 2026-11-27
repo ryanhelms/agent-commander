@@ -189,7 +189,12 @@ func (l *Local) Launch(ctx context.Context, w service.LaunchSpec) error {
 	if err != nil {
 		return err
 	}
-	if launch.localACP() {
+	if legacyCoordinatorJob(launch) {
+		launch.ProviderBinding, err = legacyCoordinatorFingerprint(launch.Worker.Path, launch.Claude)
+		if err != nil {
+			return err
+		}
+	} else if launch.localACP() {
 		launch.ProviderBinding, err = providerBindingFingerprint(launch)
 		if err != nil {
 			return err
@@ -213,7 +218,15 @@ func (l *Local) prepareLaunch(w service.LaunchSpec) (job, error) {
 	var registeredEnv map[string]string
 	var executable string
 	var builtinInstance, builtinID string
-	if w.Host != "" && w.Host != "localhost" {
+	if w.Reattach != nil && w.Reattach.Ref.HarnessInstance == service.LegacyClaudeHarness &&
+		w.Role == "coordinator" && (w.Host == "" || w.Host == "localhost") {
+		var err error
+		executable, err = executablePath("claude", "AGENT_COMMANDER_CLAUDE")
+		if err != nil {
+			return job{}, err
+		}
+		focused = false
+	} else if w.Host != "" && w.Host != "localhost" {
 		checkout, checkErr := l.WorkerCheckout(w.Host, w.Path, w.Client)
 		if checkErr != nil {
 			return job{}, checkErr
