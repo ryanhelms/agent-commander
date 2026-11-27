@@ -83,11 +83,12 @@ A changed certificate still blocks the connection, whatever the source.
 
 ## Sign-in without a file
 
-The relay's Google client is an installed-app client. Google documents that such a secret cannot be kept confidential. PKCE protects the authorization code. The relay can therefore publish it.
+The relay's Google client is an installed-app client. Google documents that such a secret cannot be kept confidential. PKCE protects the authorization code. The relay can therefore hand it out, but only to a device that already trusts the relay's key.
 
-- `GET /v1/info` gains `oauth`: `{ "issuer", "clientId", "clientSecret" (installed-app only), "scopes" }`.
-- The device uses it when no local file matches the relay's client ID. A local file, if present, still wins, so existing setups keep working.
-- `commander-relay host setup` and `deploy` take `--client-secret-file` once on the relay side.
+- The relay returns `client_secret` in its `POST /v1/auth/challenge` response. The device reads that over the connection that pins the relay's key and presents the device certificate.
+- `GET /v1/info` gains `clientSecretProvided` and never carries the secret, so the probe and discovery can say sign-in will work.
+- The device uses a matching local Google Desktop file when it has one, so existing setups keep working, and the relay's secret otherwise.
+- The operator sets it once: `commander-relay host configure --client-secret-file`, `deploy --client-secret-file` for a remote relay, or `client_secret_file` in an edge configuration. Hosting from the tray copies the Mac's own secret when its client matches. The relay reads it on each challenge, so no restart is needed.
 
 The Google client is still in Testing, so only listed test users can sign in. Publishing it, or moving a relay to another OIDC provider, is an operator task outside this proposal.
 
@@ -138,7 +139,7 @@ Frontend work under AGENTS.md: Fable with the `frontend-design` skill, [DESIGN.m
 ## Increments
 
 1. **Find.** `relay-discover` merging the tailnet and Bonjour sources with `/v1/info` badges. Bonjour advertising in host mode. Automatic pinning for verified tailnet relays. Tests with a fake `tailscale` CLI and a local Bonjour service.
-2. **Sign in without a file.** `oauth` in `/v1/info`, relay-side `--client-secret-file`, device fallback.
+2. **Sign in without a file.** The client secret in the pinned enrollment challenge, `clientSecretProvided` in `/v1/info`, relay-side `--client-secret-file`, device fallback.
 3. **Join.** The Relays nearby section, join checklist, background refresh and notifications (frontend).
 4. **Ask to join.** Limited sessions for people not yet admitted, membership requests and the admin approval flow in the tray.
 5. **Directory.** The bytedesk.ai directory service, relay registration and heartbeats, **List publicly**, and the directory as a discovery source.
@@ -147,7 +148,7 @@ Each increment ends with a working slice verified on this Mac and a second Mac o
 
 ## Security notes
 
-- `/v1/info` stays public and must not grow member, account or capacity data. Discovery is limited to what it already shows plus the public OAuth client.
+- `/v1/info` stays public and must not grow member, account or capacity data. Discovery adds only `clientSecretProvided`; the client secret travels in the pinned enrollment challenge.
 - Discovery never trusts a pin on its own outside the tailnet check. A LAN or directory pin is a hint shown next to the fingerprint.
 - Bonjour and directory entries are untrusted input: length-limit and sanitize names before showing them.
 - Membership requests are rate limited and reveal nothing about who is already a member.
