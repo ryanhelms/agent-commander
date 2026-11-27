@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pretty as a conversation</title>
+<style>
+/* Tokens: design/system/tokens.json, black-glass theme (the theme Pretty stays on). */
+:root{
+  --window:#090A0D; --panel:#14151A; --well:#0B0C10; --border:#383B44; --hair:rgba(255,255,255,.11);
+  --fg:#F5F5F9; --sec:#B7BAC6; --focus:#B5D6FF; --working:#A8E0C0; --attention:#F1C587;
+  --failure:#EC9B92; --selection:#283344; --on-accent:#101825; --mcp:#B596EF;
+  --r-tile:13px; --r-control:9px; --r-chip:5px;
+  --sys:-apple-system,BlinkMacSystemFont,system-ui,"Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--window);color:var(--fg);font:14px/1.5 var(--sys);-webkit-font-smoothing:antialiased}
+main{max-width:1500px;margin:0 auto;padding:32px 24px 64px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+h2{font-size:15px;font-weight:600;margin:0 0 2px}
+h3{font-size:12.5px;font-weight:600;margin:0 0 12px;color:var(--sec)}
+p.lede{margin:0 0 24px;color:var(--sec);max-width:76ch}
+.note{font-size:12.5px;color:var(--sec);margin:8px 0 0;max-width:76ch}
+.note b{color:var(--fg);font-weight:600}
+code,.m{font-family:var(--mono);font-size:.9em}
+code{background:rgba(255,255,255,.07);border-radius:4px;padding:1px 5px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:32px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:900px){.cols,.grid{grid-template-columns:1fr}}
+.pane{background:var(--panel);border:1px solid var(--hair);border-radius:var(--r-tile);overflow:hidden;min-width:0}
+.pane>header{padding:12px 16px;border-bottom:1px solid var(--hair);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.pane>header span{font-size:12.5px;color:var(--sec)}
+.convo{padding:16px 20px 20px;display:flex;flex-direction:column;gap:14px}
+.illus{font:600 10.5px var(--mono);color:var(--attention);border:1px solid rgba(241,197,135,.4);border-radius:var(--r-chip);padding:1px 6px}
+.svc{font:600 10.5px var(--mono);color:var(--focus);border:1px solid rgba(181,214,255,.4);border-radius:var(--r-chip);padding:1px 6px;white-space:nowrap}
+
+/* Conversation parts */
+.bubble{align-self:flex-end;max-width:82%;background:var(--selection);border-radius:var(--r-tile);padding:9px 14px}
+.prose{max-width:76ch}
+.prose p{margin:0 0 8px}.prose p:last-child{margin:0}
+.prose ul{margin:4px 0 0;padding-left:20px}
+table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+th{text-align:left;font-weight:600;padding:6px 12px 6px 0;border-bottom:1px solid var(--border)}
+td{padding:7px 12px 7px 0;border-bottom:1px solid var(--hair);vertical-align:top}
+a{color:var(--focus);text-underline-offset:3px}
+
+/* Activity group: one summary line, then a bordered list of lines */
+details>summary{list-style:none;cursor:pointer}
+details>summary::-webkit-details-marker{display:none}
+summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+.grp>summary{color:var(--sec);display:inline-flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.grp>summary:hover{color:var(--fg)}
+.chev::after{content:"›";display:inline-block;font-size:15px;line-height:1;transition:transform .12s}
+details[open]>summary>.chev::after{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.chev::after{transition:none}.spin{animation:none!important}}
+.list{margin-top:8px;border:1px solid var(--hair);border-radius:var(--r-control);overflow:hidden}
+.ln{border-top:1px solid var(--hair)}.ln:first-child{border-top:0}
+.ln>summary,.ln.flat{padding:9px 14px;color:var(--sec);display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.ln>summary:hover{background:rgba(255,255,255,.03);color:var(--fg)}
+.ln b{font-weight:500;color:var(--fg)}
+.tag{font:500 10.5px var(--mono);border:1px solid var(--hair);border-radius:var(--r-chip);padding:1px 6px;color:var(--sec);white-space:nowrap}
+.tag.ok{color:var(--working)}.tag.wait{color:var(--attention)}
+.raw{margin:0 14px 12px;background:var(--well);border:1px solid var(--border);border-radius:var(--r-chip);padding:8px 10px;font:11px/1.55 var(--mono);color:var(--sec);white-space:pre-wrap;overflow-wrap:anywhere}
+.raw .k{color:var(--fg)}
+
+/* Opened line: typed result renderers. No wire name, tool ID or raw JSON until Source is opened. */
+.d{padding:2px 14px 12px;font-size:13px;color:var(--fg)}
+.d>*+*{margin-top:10px}
+dl.f{display:grid;grid-template-columns:104px minmax(0,1fr);gap:5px 12px;margin:0}
+dl.f dt{color:var(--sec);font-size:12.5px}
+dl.f dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.lamp{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.lamp::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--sec);flex:none}
+.lamp.ok::before{background:var(--working)}.lamp.wait::before{background:var(--attention)}.lamp.bad::before{background:var(--failure)}
+.from{color:var(--sec);font-size:11.5px;margin-left:6px}
+.id{font:11px var(--mono);color:var(--sec);border:1px solid var(--hair);border-radius:var(--r-chip);padding:0 5px;white-space:nowrap}
+.pth{font:11.5px var(--mono);color:var(--sec)}.pth b{color:var(--fg);font-weight:500}
+.q{border-left:2px solid var(--border);padding-left:10px;color:var(--fg)}
+.empty{color:var(--sec)}
+.t{font-size:12.5px;margin:0}.t th{font-size:11.5px;color:var(--sec);font-weight:500;padding:4px 10px 4px 0}.t td{padding:5px 10px 5px 0}
+.sub>summary{color:var(--sec);font-size:12px;display:inline-flex;gap:6px;align-items:baseline}
+.sub>summary:hover{color:var(--fg)}
+.sub[open]>summary{margin-bottom:6px}
+.src{border-top:1px solid var(--hair);padding-top:8px}
+.src>summary{font:500 11px var(--mono);color:var(--sec);display:inline-flex;gap:6px}
+.rawj{background:var(--well);border:1px solid var(--border);border-radius:var(--r-chip);padding:8px 10px;font:11px/1.55 var(--mono);color:var(--sec);white-space:pre-wrap;overflow-wrap:anywhere;margin-top:6px}
+.rawj .k{color:var(--fg)}
+.file{background:var(--well);border:1px solid var(--border);border-radius:var(--r-chip);font:11.5px/1.6 var(--mono);padding:6px 0;margin:0}
+.file div{display:grid;grid-template-columns:34px 1fr}.file i{font-style:normal;color:var(--sec);text-align:right;padding-right:10px;opacity:.7}
+.term{background:var(--well);border:1px solid var(--border);border-radius:var(--r-chip);font:11.5px/1.55 var(--mono);padding:8px 10px;white-space:pre-wrap;color:var(--sec)}
+.term b{color:var(--fg);font-weight:500}
+.banner{border:1px solid rgba(241,197,135,.4);border-radius:var(--r-chip);padding:6px 10px;color:var(--attention);font-size:12.5px}
+.add{color:var(--working)}.del{color:var(--failure)}
+.tag.block{color:var(--failure);border-color:rgba(236,155,146,.4)}
+.failline .d{padding-top:0}
+
+/* Pretty chrome in the same language: status line, request form, composer */
+.bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--sec);font-size:12.5px;padding:10px 20px;border-bottom:1px solid var(--hair)}
+.bar .sp{margin-left:auto;font:11px var(--mono)}
+.chipx{font:11px var(--mono);background:rgba(255,255,255,.06);border-radius:var(--r-chip);padding:1px 6px;color:var(--sec)}
+.ask{border:1px solid rgba(241,197,135,.45);border-radius:var(--r-tile);padding:14px 16px;background:var(--well)}
+.ask .who{color:var(--sec);font-size:12.5px;margin-bottom:4px}
+.ask .opts{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.ask .opts button{text-align:left;font:13.5px var(--sys);color:var(--fg);background:transparent;border:1px solid var(--hair);border-radius:var(--r-control);padding:7px 12px}
+.ask .opts button:first-child{border-color:var(--focus)}
+.field{border:1px solid var(--hair);border-radius:var(--r-tile);background:var(--well);padding:10px 12px}
+.field .ph{color:var(--sec)}
+.field .rowx{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--sec);font-size:12.5px}
+.field .stop{margin-left:auto;width:26px;height:26px;border-radius:8px;background:var(--fg);display:grid;place-items:center}
+.field .stop::after{content:"";width:9px;height:9px;background:var(--panel);border-radius:2px}
+.queued{display:flex;gap:8px;align-items:baseline;color:var(--sec);font-size:12.5px;border:1px dashed var(--border);border-radius:var(--r-control);padding:6px 10px}
+.set{border:1px solid var(--hair);border-radius:var(--r-control);padding:12px 14px}
+.set label{display:flex;gap:10px;align-items:baseline;padding:4px 0}
+.set .rad{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--border);flex:none;transform:translateY(1px)}
+.set .rad.on{border:4px solid var(--focus)}
+.warn{color:var(--attention);font-size:12.5px;margin-top:8px}
+.clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+/* A failure is never folded into a count: it sits under the summary even when the group is closed */
+.fail{color:var(--failure)}
+.failline{border:1px solid rgba(236,155,146,.35);border-radius:var(--r-control)}
+.failline>summary{padding:9px 14px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.failline .why{color:var(--sec);flex-basis:100%;font-size:13px}
+.stack{display:flex;flex-direction:column;gap:8px}
+/* A reported result is quoted prose, not a tool row */
+.report{border-left:2px solid var(--border);padding-left:14px}
+.report>summary.to{margin-bottom:0}
+details.report{border-left:2px solid var(--border);padding-left:14px;margin-bottom:-8px}
+.report .to{color:var(--sec);font-size:12.5px;margin-bottom:4px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+/* Live line */
+.live{display:flex;gap:10px;align-items:center;color:var(--sec)}
+.live .t{font:11px var(--mono)}
+.spin{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--border);border-top-color:var(--working);animation:s 1.1s linear infinite;flex:none}
+/* Background work: one line per job that outlives its call */
+.bg{display:flex;flex-direction:column;gap:7px;border-top:1px solid var(--hair);padding-top:12px}
+.bgl>summary,.bgl.flat{display:flex;gap:10px;align-items:baseline;color:var(--sec);flex-wrap:wrap}
+.bgl>summary:hover{color:var(--fg)}
+.bgl b{font-weight:500;color:var(--fg)}
+.bgl .t{font:11px var(--mono)}
+.bgl .spin{align-self:center}
+.bgl .d{margin:8px 0 4px 22px;padding-left:12px;border-left:1px solid var(--hair);display:flex;flex-direction:column;gap:8px}
+.mk{width:12px;flex:none;display:inline-flex;justify-content:center;align-self:center}
+.mk::before{content:"";width:7px;height:7px;border-radius:50%;box-sizing:border-box}
+.mk.done::before{background:var(--sec)}
+.mk.unk::before{border:1.5px solid var(--sec)}
+.mk.wait::before{background:var(--attention)}
+.lnk{color:var(--focus);font:inherit;background:none;border:0;padding:0;text-decoration:underline;text-underline-offset:3px}
+.sub{font-size:12px;color:var(--sec);margin:6px 0 -4px}
+@keyframes s{to{transform:rotate(360deg)}}
+/* Plan checklist */
+.plan{border:1px solid var(--hair);border-radius:var(--r-control);padding:8px 14px;list-style:none;margin:0}
+.plan li{display:flex;gap:10px;align-items:center;padding:5px 0;color:var(--sec)}
+.plan li.now{color:var(--fg)}
+.dot{width:14px;height:14px;border-radius:50%;flex:none;border:1.5px dashed var(--border)}
+.dot.done{border:0;background:var(--sec);position:relative}
+.dot.done::after{content:"";position:absolute;left:4.5px;top:2.5px;width:3.5px;height:6.5px;border:solid var(--panel);border-width:0 1.6px 1.6px 0;transform:rotate(45deg)}
+.dot.now{border:1.5px solid var(--border);border-top-color:var(--working)}
+/* Request form stand-in (the existing PrettyRequestForm, unchanged) */
+.form{border:1px solid rgba(241,197,135,.45);border-radius:var(--r-control);padding:12px 14px;background:var(--well)}
+.form .q{margin-bottom:10px}
+.btn{font:500 13px var(--sys);padding:5px 12px;border-radius:var(--r-control);border:1px solid var(--border);background:transparent;color:var(--fg)}
+.btn.primary{background:var(--focus);color:var(--on-accent);border-color:var(--focus)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Current view (drawn after img/5.png and the ActivityStoryCard code) */
+.card{border:1px solid var(--border);border-radius:var(--r-control);background:var(--well);padding:9px 14px;display:flex;gap:10px;align-items:flex-start}
+.card .ic{color:var(--mcp);width:18px;text-align:center;flex:none}
+.card .ti{font-weight:600}.card .sub{font:12.5px var(--mono);color:var(--sec)}
+.card .st{margin-left:auto;font-weight:500;white-space:nowrap}
+.card .ch{color:var(--sec)}
+.rawblock{background:var(--well);border:1px solid var(--border);border-radius:var(--r-chip);padding:8px 10px;font:11px/1.5 var(--mono);color:var(--sec);overflow-wrap:anywhere}
+.rawblock small{display:block;font:10.5px var(--sys);margin-bottom:3px}
+/* Edge cases panel */
+.edge{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.edge>.convo+.convo{border-left:1px solid var(--hair)}
+@media (max-width:900px){.edge{grid-template-columns:1fr}.edge>.convo+.convo{border-left:0;border-top:1px solid var(--hair)}}
+.one{border:1px solid var(--hair);border-radius:var(--r-control)}
+.diff div.a{background:rgba(168,224,192,.09)}.diff div.r{background:rgba(236,155,146,.09)}
+.divider{display:flex;align-items:center;gap:12px;color:var(--sec);font-size:12.5px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--hair)}
+.endl{display:flex;gap:10px;align-items:baseline;color:var(--attention);font-size:13px}
+.endl.quiet{color:var(--sec)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chips button{font:12.5px var(--sys);color:var(--sec);background:transparent;border:1px solid var(--hair);border-radius:var(--r-control);padding:4px 10px}
+.thumb{width:176px;height:108px;border:1px solid var(--border);border-radius:var(--r-chip);background:linear-gradient(var(--panel) 0 14px,transparent 14px),linear-gradient(90deg,var(--well) 0 44px,transparent 44px),repeating-linear-gradient(180deg,rgba(255,255,255,.09) 0 5px,transparent 5px 14px),var(--window)}
+.ask .opts small{display:block;color:var(--sec);font-size:12px}
+.ask label.fl{display:block;color:var(--sec);font-size:12.5px;margin:10px 0 4px}
+.gapx{margin-left:auto}
+/* Densities */
+.compact{font-size:12.5px}.compact .convo{padding:10px 12px;gap:8px}
+.compact .ln>summary,.compact .ln.flat,.compact .failline>summary{padding:6px 10px}
+.pip{font-size:11.5px;max-width:340px}.pip .convo{padding:8px 10px;gap:6px}
+.pip .failline>summary{padding:5px 8px}.pip .why{font-size:11px}
+</style>
+</head>
+<body>
+<main>
+<h1>Pretty as a conversation</h1>
+<p class="lede">Tool activity reads as sentences in the agent's turn instead of one card per call. The left column is the view today; the right column is the proposal. Both show the same real run, <span class="m">r-30bb462d</span> (project acsmoke), coordinator console. Every line that has a chevron opens. Groups start closed.</p>
+<p class="lede"><b style="color:var(--fg)">Decided:</b> the service will keep full tool arguments, descriptions, plan items and start times. Anything marked "needs service change" below ships with that change; the fallback wording stays for older records.</p>
+
+<div class="cols">
+<!-- ============ CURRENT ============ -->
+<section class="pane" aria-label="Current view">
+  <header><h2>Current</h2><span>One card per call. The last three cards match the screenshot; the rest follows the code path.</span></header>
+  <div class="convo">
+    <div class="bubble">Read-only smoke test of Agent Commander tools. Do not create, edit, delete or commit any file, and use no network. 1) Call commander_status. 2) Call commander_delegate once to start a worker named reader … 5) Report a short pass/fail summary per tool with commander_result, then stop.</div>
+    <div class="rawblock"><small>Tool result</small>{"id":"r-30bb462ddf3db629d085eb0f3b948e90","project":"acsmoke","path":"/private/tmp/…/acsmoke","task":"Read-only smoke test of Agent Commander tools. …</div>
+    <div class="card"><span class="ch">›</span><span class="ic">⊕</span><div><div class="ti">Delegate worker</div><div class="sub">reader</div></div><span class="st" style="color:var(--sec)">Accepted</span></div>
+    <div class="rawblock"><small>Tool result</small>{"id":"r-30bb462ddf3db629d085eb0f3b948e90","project":"acsmoke","path":"/private/tmp/…/acsmoke","task":"Read-only smoke test of Agent Commander tools. …</div>
+    <div class="prose"><p>The worker reported. Now step 4.</p></div>
+    <div class="card"><span class="ch">›</span><span class="ic">◫</span><div><div class="ti">List extensions</div><div class="sub">0 tools</div></div><span class="st" style="color:var(--working)">✓ Complete</span></div>
+    <div class="card"><span class="ch">›</span><span class="ic">⚇</span><div><div class="ti">See who is online</div><div class="sub">Tool failed.</div></div><span class="st fail">✕ Failed</span></div>
+    <div class="card"><span class="ch">›</span><span class="ic">✪</span><div><div class="ti">Report result</div></div><span class="st" style="color:var(--working)">✓ Complete</span></div>
+    <div class="prose">
+      <p>Four of the five steps passed. <code>commander_network_online</code> failed because Claude Code is running in don't-ask mode and blocked the call, so the tool itself was never reached. No files were changed and no network was used.</p>
+      <table><tr><th>Tool</th><th>Result</th></tr>
+      <tr><td><code>commander_status</code></td><td>Pass. The 30-second wait returned as soon as the worker reported.</td></tr>
+      <tr><td><code>commander_delegate</code></td><td>Pass. It started the worker "reader". …</td></tr>
+      <tr><td>reader worker</td><td>Pass. It found 3 lines in <code>words.txt</code>: alpha, bravo, charlie.</td></tr>
+      <tr><td><code>commander_list_tools</code></td><td>Pass. It returned an empty list, meaning no extensions are granted to this project.</td></tr>
+      <tr><td><code>commander_network_online</code></td><td>Fail. Claude Code blocked the call before it reached the tool.</td></tr></table>
+      <p>To test <code>commander_network_online</code> properly, run it again with a permission mode that allows that tool. I've sent this summary with <code>commander_result</code>.</p>
+    </div>
+    <p class="note"><b>What is lost today.</b> The failure says only "Tool failed."; the reason is one more click away. The report, which is the most useful text in the run, is a closed card with no words. Four calls take four cards.</p>
+  </div>
+</section>
+
+<!-- ============ PROPOSED ============ -->
+<section class="pane" aria-label="Proposed view">
+  <header><h2>Proposed</h2><span>Sentences, grouped. Failures and the report stay in the open.</span></header>
+  <div class="convo">
+    <div class="bubble">Read-only smoke test of Agent Commander tools. Do not create, edit, delete or commit any file, and use no network. 1) Call commander_status. 2) Call commander_delegate once to start a worker named reader … 5) Report a short pass/fail summary per tool with commander_result, then stop.</div>
+
+    <details class="grp">
+      <summary>Delegated to reader, got 2 results with no recorded call <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln"><summary>Got a result whose call was not recorded <span class="chev"></span></summary>
+          <div class="d"><div class="empty">It reads as a run status.</div><dl class="f"><dt>Run</dt><dd>acsmoke <span class="lamp ok">Running</span></dd><dt>Folder</dt><dd><span class="pth">/private/tmp/…<b>acsmoke</b></span></dd><dt>Task</dt><dd><details class="sub"><summary>Read-only smoke test of Agent Commander tools. … <span class="chev"></span></summary>Read-only smoke test of Agent Commander tools. Do not create, edit, delete or commit any file, and use no network. 1) Call commander_status. 2) Call commander_delegate once to start a worker named reader (client claude, host local) whose task is: read words.txt, change nothing, and report the line count and the words with commander_result. 3) Wait with commander_status (wait_seconds 30) until the worker reports. 4) Call commander_list_tools and commander_network_online, and note any errors. 5) Report a short pass/fail summary per tool with commander_result, then stop.</details></dd></dl><table class="t"><tr><th>Worker</th><th>Role</th><th>State</th><th>Host</th><th>Result</th></tr><tr><td>Coordinator</td><td>coordinator</td><td><span class="lamp ok">Working</span></td><td>localhost</td><td class="empty">none yet</td></tr></table><div class="empty">No open requests.</div><details class="sub"><summary>3 more fields <span class="chev"></span></summary><dl class="f"><dt>Client</dt><dd>claude</dd><dt>Coordinator</dt><dd>Coordinator <span class="id">w-da0453…</span></dd><dt>Run ID</dt><dd><span class="id">r-30bb46…</span></dd></dl></details><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">result</span>  toolu_01EKn2fnd3yxMz1CG4rrYzqt  completed  1,723 characters
+{
+  "id": "r-30bb462ddf3db629d085eb0f3b948e90",
+  "project": "acsmoke",
+  "path": "/private/tmp/…/acsmoke",
+  "task": "Read-only smoke test …",
+  "client": "claude",
+  "coordinator_id": "w-da045371c3671b03b68accb481575127",
+  "status": "running",
+  "workers": [
+    {
+      "id": "w-da04…",
+      "role": "coordinator",
+      "name": "Coordinator",
+      "state": "working",
+      "host": "localhost",
+      …
+    }
+  ],
+  "requests": []
+}</div></details></div></details>
+        <details class="ln" open><summary>Delegated to a new worker, <b>reader</b> <span class="tag ok">completed</span> <span class="chev"></span></summary>
+          <div class="d"><dl class="f"><dt>Worker</dt><dd><b>reader</b>, a worker under Coordinator</dd><dt>State</dt><dd><span class="lamp wait">Starting</span><span class="from">when this call returned</span><br><span class="lamp ok">Completed</span><span class="from">now, from the run record</span></dd><dt>Task</dt><dd>Read words.txt in the project root. Do not create, edit, delete or commit any file, and use no network. Report the line count and the words with commander_result.</dd><dt>Runs on</dt><dd>localhost, with claude</dd><dt>Worktree</dt><dd><span class="pth">/private/tmp/…<b>acsmoke</b></span> on <span class="m">main</span></dd><dt>Created</dt><dd>27 Nov 2026, 00:30:33 UTC</dd></dl><details class="sub"><summary>3 more fields, 1 empty <span class="chev"></span></summary><dl class="f"><dt>Worker ID</dt><dd><span class="id">w-779b15a33e2ed37dbe74d7bab6d102bf</span></dd><dt>Parent</dt><dd>Coordinator <span class="id">w-da0453…</span></dd><dt>Run ID</dt><dd><span class="id">r-30bb46…</span></dd><dt>Output</dt><dd class="empty">empty</dd></dl></details><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_delegate</span>  toolu_01CWzRLoTjKDoDAC8MKtL7dC  completed
+<span class="k">call</span>    reader
+<span class="k">result</span>
+{
+  "id": "w-779b15a33e2ed37dbe74d7bab6d102bf",
+  "name": "reader",
+  "role": "worker",
+  "parent_id": "w-da045371c3671b03b68accb481575127",
+  "run_id": "r-30bb462ddf3db629d085eb0f3b948e90",
+  "state": "starting",
+  "host": "localhost",
+  "worktree": "/private/tmp/…/acsmoke",
+  "branch": "main",
+  "client": "claude",
+  "created_at": "2026-11-27T00:30:33Z",
+  "task": "Read words.txt in the project root. …",
+  "output": ""
+}</div></details></div></details>
+        <details class="ln"><summary>Got a result whose call was not recorded <span class="chev"></span></summary>
+          <div class="d"><div class="empty">It reads as a run status.</div><dl class="f"><dt>Run</dt><dd>acsmoke <span class="lamp ok">Running</span></dd><dt>Folder</dt><dd><span class="pth">/private/tmp/…<b>acsmoke</b></span></dd><dt>Task</dt><dd><details class="sub"><summary>Read-only smoke test of Agent Commander tools. … <span class="chev"></span></summary>Read-only smoke test of Agent Commander tools. Do not create, edit, delete or commit any file, and use no network. 1) Call commander_status. 2) Call commander_delegate once to start a worker named reader (client claude, host local) whose task is: read words.txt, change nothing, and report the line count and the words with commander_result. 3) Wait with commander_status (wait_seconds 30) until the worker reports. 4) Call commander_list_tools and commander_network_online, and note any errors. 5) Report a short pass/fail summary per tool with commander_result, then stop.</details></dd></dl><table class="t"><tr><th>Worker</th><th>Role</th><th>State</th><th>Host</th><th>Result</th></tr><tr><td>Coordinator</td><td>coordinator</td><td><span class="lamp ok">Working</span></td><td>localhost</td><td class="empty">none yet</td></tr><tr><td>reader</td><td>worker</td><td><span class="lamp ok">Working</span></td><td>localhost</td><td>words.txt has 3 lines: alpha, bravo, charlie. …</td></tr></table><div class="empty">No open requests.</div><details class="sub"><summary>3 more fields <span class="chev"></span></summary><dl class="f"><dt>Client</dt><dd>claude</dd><dt>Coordinator</dt><dd>Coordinator <span class="id">w-da0453…</span></dd><dt>Run ID</dt><dd><span class="id">r-30bb46…</span></dd></dl></details><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">result</span>  toolu_014Vy6CZThbmEeA23pKVQArX  completed  2,414 characters
+{
+  "id": "r-30bb462ddf3db629d085eb0f3b948e90",
+  "project": "acsmoke",
+  … "workers": [
+    {
+      …"name": "Coordinator",
+      "state": "working"…
+    },
+    {
+      …"name": "reader",
+      "state": "working",
+      "result": "words.txt has 3 lines: …"
+    }
+  ],
+  "requests": []
+}</div></details></div></details>
+      </div>
+    </details>
+    <p class="note" style="margin-top:-6px">The two unnamed results are the <code>commander_status</code> calls: this run recorded their results but not their calls, so the view cannot name them. With the call recorded <span class="svc">needs service change</span> this group reads "Checked worker progress twice, delegated to reader". The <span class="m">completed</span> tag is the worker's state in the run record now; the call itself only says the worker was accepted.</p>
+
+    <div class="prose"><p>The worker reported. Now step 4.</p></div>
+
+    <div class="stack">
+      <details class="grp">
+        <summary>Listed extensions, <span class="fail">1 blocked</span> <span class="chev"></span></summary>
+        <div class="list">
+          <details class="ln"><summary>Found no extensions granted <span class="chev"></span></summary>
+            <div class="d"><div class="empty">No extensions are granted.</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_list_tools</span>  toolu_012YdtpUHfvyFMDHxVVVCKvr  completed
+<span class="k">result</span>
+{
+  "tools": []
+}</div></details></div></details>
+        </div>
+      </details>
+      <details class="failline">
+        <summary><span class="fail">Couldn't see who is online</span> <span class="tag block">Blocked</span> <span class="chev fail"></span>
+          <span class="why">Claude Code is in don't-ask mode.</span></summary>
+        <div class="d"><dl class="f"><dt>Tried</dt><dd>See who is online</dd><dt>Outcome</dt><dd><span class="lamp bad">Blocked</span><span class="from">the provider refused permission; the tool never ran</span></dd><dt>Reason</dt><dd>Claude Code is in don't-ask mode.</dd><dt>Exact text</dt><dd>Permission to use mcp__commander__commander_network_online has been denied because Claude Code is running in don't ask mode.</dd></dl><details class="sub"><summary>Rest of the provider's message, written for the agent <span class="chev"></span></summary><div class="q">IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways … Let the user decide how to proceed.</div></details><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_network_online</span>  toolu_014gWtZcASBCCkqWedofuMcY  failed
+<span class="k">error</span>   Tool failed.
+Permission to use mcp__commander__commander_network_online has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt … Let the user decide how to proceed.</div></details></div>
+      </details>
+    </div>
+
+    <details class="report"><summary class="to">Reported the run result <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Reported by</dt><dd>Coordinator <span class="id">w-da0453…</span></dd><dt>Goes to</dt><dd>the run's result (a coordinator has no coordinator above it)</dd><dt>Tests, revision</dt><dd class="empty">none sent</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_result</span>  toolu_01DvU8Z4KhMJYzFSQKcqe62X  completed
+<span class="k">result</span>
+{
+  "id": "w-da045371c3671b03b68accb481575127",
+  "result": "Smoke test summary (read-only; no files changed, no network used):\n- commander_status: PASS. …"
+}</div></details></div></details><div class="report">
+      <div class="prose clamp">
+        <p>Smoke test summary (read-only; no files changed, no network used):</p>
+        <ul>
+          <li>commander_status: PASS. Returned the run and coordinator; the wait_seconds 30 call returned when the worker reported.</li>
+          <li>commander_delegate: PASS. Started worker "reader" (w-779b15a33e2ed37dbe74d7bab6d102bf, client claude, host localhost). I omitted the host argument because omitting it selects this Mac.</li>
+          <li>reader worker result: PASS. words.txt has 3 lines: alpha, bravo, charlie (it ends with a trailing newline).</li>
+          <li>commander_list_tools: PASS. No error; it returned an empty list, so no extensions are granted.</li>
+          <li>commander_network_online: FAIL (permission). Claude Code denied the call because it runs in don't-ask mode. The tool itself was never reached.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="report" style="border:0;padding:0;margin-top:-8px"><div class="to"><u>Show all</u> (the report is clamped because a closing message follows)</div></div>
+    <div class="prose">
+      <p>Four of the five steps passed. <code>commander_network_online</code> failed because Claude Code is running in don't-ask mode and blocked the call, so the tool itself was never reached. No files were changed and no network was used.</p>
+      <p class="note">The closing table and last paragraph are as in the left column.</p>
+    </div>
+  </div>
+</section>
+</div>
+
+<div class="cols">
+<section class="pane" aria-label="Proposed view, reader worker">
+  <header><h2>Proposed, the reader worker</h2><span>Same run, worker <span class="m">w-779b15a3</span>. Real content.</span></header>
+  <div class="convo">
+    <div class="bubble">Read words.txt in the project root. Do not create, edit, delete or commit any file, and use no network. Report the line count and the words with commander_result.</div>
+    <details class="ln" style="border:0"><summary style="padding:0">Read <b>words.txt</b> <span class="chev"></span></summary>
+      <div class="d"><dl class="f"><dt>File</dt><dd><span class="pth">/private/tmp/…/acsmoke/<b>words.txt</b></span></dd><dt>Read</dt><dd>4 numbered lines, the last one empty</dd></dl><div class="file"><div><i>1</i>alpha</div><div><i>2</i>bravo</div><div><i>3</i>charlie</div><div><i>4</i></div></div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Read</span>  toolu_01CMFCDDf7H5EJohh85sLukp  completed
+<span class="k">call</span>    /private/tmp/…/acsmoke/words.txt
+<span class="k">result</span>  1\talpha\n2\tbravo\n3\tcharlie\n4\t</div></details></div></details>
+    <details class="report"><summary class="to">Reported to the coordinator <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Reported by</dt><dd>reader <span class="id">w-779b15…</span></dd><dt>Goes to</dt><dd>Coordinator</dd><dt>Tests, revision</dt><dd class="empty">none sent</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_result</span>  toolu_017tPS8BFeAffdTqPQuGPb3q  completed
+<span class="k">result</span>
+{
+  "id": "w-779b15a33e2ed37dbe74d7bab6d102bf",
+  "result": "words.txt has 3 lines: alpha, bravo, charlie. …"
+}</div></details></div></details><div class="report">
+      <div class="prose"><p>words.txt has 3 lines: alpha, bravo, charlie. The file ends with a newline, so the reader showed an empty 4th line. That line holds no content. No files were created, edited, deleted or committed. No network was used.</p></div>
+    </div>
+    <div class="prose"><p><code>words.txt</code> has 3 lines: alpha, bravo and charlie. My file reader also showed an empty 4th line, which most likely means the file ends with a newline. I sent this to the coordinator with <code>commander_result</code>. I didn't change any files or use the network.</p></div>
+  </div>
+</section>
+<section class="pane" aria-label="Design choices">
+  <header><h2>Where this departs from DESIGN.md</h2><span>One answer each.</span></header>
+  <div class="convo">
+    <div class="prose">
+      <table>
+        <tr><th>Rule</th><th>Here</th><th>Why</th></tr>
+        <tr><td>No corner rounder than 2 pt</td><td>9 pt list, 13 pt bubble, 5 pt tags (black-glass <span class="m">radius.control</span>, <span class="m">tile</span>, <span class="m">chip</span>)</td><td>Pretty stays on the black-glass atoms; the console theme stops at its edge.</td></tr>
+        <tr><td>Data, states and actions are monospaced</td><td>Activity sentences are in the system face. IDs, paths, commands, elapsed time and state tags stay mono.</td><td>A sentence is prose; only the values inside it are data.</td></tr>
+        <tr><td>Activity lines are "never collapsed behind a count"</td><td>Completed calls collapse into one summary line</td><td>The rule protected failures and requests; those still never collapse.</td></tr>
+        <tr><td>Status word on every card</td><td>No "Complete" word. A state shows only when it is not plain success.</td><td>Past tense already says it finished.</td></tr>
+      </table>
+      <p class="note">Pretty's rendering is frozen in DESIGN.md. Building this needs that rule lifted for the activity rows, and DESIGN.md and ATOMIC-DESIGN.md updated in the same change.</p>
+    </div>
+  </div>
+</section>
+</div>
+
+
+<div class="cols">
+<section class="pane" aria-label="Proposed view, run 2">
+  <header><h2>Proposed, run 2 (network tools)</h2><span>Real content, run <span class="m">r-c7085325</span>. Three empty results, each said in words.</span></header>
+  <div class="convo">
+    <details class="grp" open><summary>Checked who is online, used the task board, read a thread <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln" open><summary>No contacts to show <span class="chev"></span></summary><div class="d"><div class="empty">The contact list is empty.</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_network_online</span>  toolu_01W6CrKYGsJnkR2hVvA1fg1H  completed
+<span class="k">result</span>
+{
+  "data": {
+    "friends": []
+  },
+  "ok": true
+}</div></details></div></details>
+        <details class="ln"><summary>Opened the task board: no workspaces <span class="chev"></span></summary><div class="d"><div class="empty">No workspaces.</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_network_board</span>  toolu_01WfhbadBm7p7uwKbvBJR2Fp  completed
+<span class="k">result</span>
+{
+  "data": {
+    "workspaces": []
+  },
+  "ok": true
+}</div></details></div></details>
+        <details class="ln"><summary>Read a request thread: no comments <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Request</dt><dd><span class="id">none-such</span></dd><dt>Comments</dt><dd class="empty">none</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_network_thread</span>  toolu_01MwWPp9PAT6E48Dg663wT3m  completed
+<span class="k">result</span>
+{
+  "data": {
+    "comments": [],
+    "request": "none-such"
+  },
+  "ok": true
+}</div></details></div></details>
+      </div></details>
+    <details class="report"><summary class="to">Reported the run result <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Reported by</dt><dd>Coordinator <span class="id">w-87897a…</span></dd><dt>Goes to</dt><dd>the run's result</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_result</span>  toolu_01PjX8omJnCYg1o1281t9F8X  completed</div></details></div></details>
+    <div class="report"><div class="prose"><p>All three tools were permitted. No files changed, no workers delegated, nothing claimed, completed or commented on. …</p></div></div>
+    <p class="note">The <span class="m">ok: true</span> wrapper is read, not shown: it is why these lines are not failures. <span class="m">ok: false</span> would draw the failure renderer.</p>
+  </div>
+</section>
+<section class="pane" aria-label="How an opened line is built">
+  <header><h2>How an opened line is built</h2><span>The same four parts every time.</span></header>
+  <div class="convo"><div class="prose">
+    <table>
+      <tr><th>Part</th><th>What it holds</th></tr>
+      <tr><td>Typed body</td><td>The result drawn by the renderer its shape selects: words, labelled fields, lists, tables, lamp and word.</td></tr>
+      <tr><td>State, with its origin</td><td>"when this call returned" is the call's own result. "now, from the run record" is read by exact ID and is newer. Both show when they differ.</td></tr>
+      <tr><td>More fields</td><td>Every property the renderer did not place, drawn by the generic renderer. Empty ones are counted and listed.</td></tr>
+      <tr><td>Source</td><td>One quiet action, closed by default: wire name, tool ID, the exact call and the exact result text.</td></tr>
+    </table>
+  </div></div>
+</section>
+</div>
+
+<h2>Renderers these runs do not exercise</h2>
+<p class="lede">Illustrative content. Each box is an opened line; Source is omitted here to keep the examples short.</p>
+<div class="grid">
+<section class="pane"><header><h2>Generic fallback, unknown object</h2><span class="illus">illustrative</span></header><div class="convo">
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Used <span class="m">create_pull_request</span> <span class="chev"></span></summary><div class="d">
+    <dl class="f"><dt>Number</dt><dd>63</dd><dt>Title</dt><dd>Allow the three network tools for coordinators</dd><dt>State</dt><dd><span class="lamp ok">Open</span></dd><dt>Draft</dt><dd>Yes</dd>
+    <dt>Url</dt><dd><a href="#">github.com/…/agent-commander/pull/63</a></dd><dt>Created at</dt><dd>26 Nov 2026, 19:02 <span class="from">2026-11-27T01:02:11Z</span></dd>
+    <dt>Labels</dt><dd>bug, harness</dd><dt>Merged at</dt><dd class="empty">none</dd><dt>Token</dt><dd><span class="m">ghs_EXAMPLE-NOT-A-TOKEN</span><span class="from">shown as sent; hidden only when the setting says so</span></dd></dl>
+    <details class="sub" open><summary>Head, 2 fields <span class="chev"></span></summary><dl class="f"><dt>Ref</dt><dd><span class="m">issue-62-5b3a08baae60</span></dd><dt>Sha</dt><dd><span class="id">cf74e1b…</span></dd></dl></details>
+    <details class="sub"><summary>Checks, 3 records <span class="chev"></span></summary><table class="t"><tr><th>Name</th><th>Status</th><th>Seconds</th></tr><tr><td>build</td><td><span class="lamp ok">Success</span></td><td>212</td></tr><tr><td>test</td><td><span class="lamp ok">Success</span></td><td>388</td></tr><tr><td>release</td><td><span class="lamp">Skipped</span></td><td class="empty">none</td></tr></table></details>
+  </div></details>
+  <p class="note">No renderer knows this tool. Labels are the keys in sentence case. Values are formatted by what they are: status word, yes or no, link, time, list, record table, nested record, hidden secret.</p>
+</div></section>
+
+<section class="pane"><header><h2>Shortened result</h2><span class="illus">illustrative</span></header><div class="convo">
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Checked the run: at least 6 workers <span class="chev"></span></summary><div class="d">
+    <div class="banner">Commander kept the first 16 KB of this result. The end is missing, so the list below may be incomplete.</div>
+    <dl class="f"><dt>Run</dt><dd>agent-commander <span class="lamp ok">Running</span></dd></dl>
+    <table class="t"><tr><th>Worker</th><th>State</th><th>Result</th></tr><tr><td>tracer</td><td><span class="lamp ok">Completed</span></td><td>Three paths read the allowlist. …</td></tr><tr><td>tester</td><td><span class="lamp ok">Working</span></td><td class="empty">none yet</td></tr><tr><td colspan="3" class="empty">4 more complete workers. <u>Show all</u></td></tr><tr><td>reviewer</td><td class="empty">cut off</td><td class="empty">cut off after "task"</td></tr></table>
+    <div class="empty">Requests: not received (after the cut).</div>
+  </div></details>
+  <p class="note">Whole properties before the cut render as usual. The one being written when the text ended is marked "cut off". If nothing can be read, the body says so and offers "Show as text".</p>
+</div></section>
+
+<section class="pane"><header><h2>Operation receipt, per target</h2><span class="illus">illustrative</span></header><div class="convo">
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Sent an operation to 2 resources <span class="tag wait">partial</span> <span class="chev"></span></summary><div class="d">
+    <dl class="f"><dt>Operation</dt><dd><span class="id">op-review-63</span></dd><dt>Status</dt><dd><span class="lamp wait">Partial</span><span class="from">from the latest receipt</span></dd></dl>
+    <table class="t"><tr><th>Resource</th><th>Action</th><th>Outcome</th><th>Result</th></tr><tr><td>ana/reviewer</td><td><span class="m">agent.message</span></td><td><span class="lamp ok">Delivered</span></td><td>Received.</td></tr><tr><td>ben/builder</td><td><span class="m">agent.message</span></td><td><span class="lamp bad">Refused</span></td><td>The resource does not grant this action.</td></tr></table>
+  </div></details>
+</div></section>
+
+<section class="pane"><header><h2>Record table and message list</h2><span class="illus">illustrative</span></header><div class="convo">
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Found 2 extensions <span class="chev"></span></summary><div class="d">
+    <table class="t"><tr><th>Extension</th><th>Version</th><th>Action</th><th>What it does</th></tr><tr><td><span class="m">jira.issue</span></td><td>2</td><td>read</td><td>Reads one issue by key.</td></tr><tr><td><span class="m">deploy.preview</span></td><td>1</td><td>write</td><td>Starts a preview deployment.</td></tr></table>
+    <details class="sub"><summary>Input of jira.issue, 1 field <span class="chev"></span></summary><dl class="f"><dt>key</dt><dd>text, required</dd></dl></details>
+  </div></details>
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Read the network inbox: 2 messages <span class="chev"></span></summary><div class="d">
+    <div><b>ana</b> <span class="from">via ana/reviewer, 18:41</span><div class="q">Review of 63 is done. One comment on the drift test.</div></div>
+    <div><b>ben</b> <span class="from">via ben/builder, 18:52</span><div class="q">Preview is up.</div></div>
+    <div class="empty">The inbox says nothing older was left out.</div>
+  </div></details>
+</div></section>
+
+<section class="pane"><header><h2>Task list and integration</h2><span class="illus">illustrative</span></header><div class="convo">
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Updated the plan: 3 items <span class="chev"></span></summary><div class="d">
+    <ul class="plan" style="border:0;padding:0"><li><span class="dot done"></span>Trace the permission path</li><li class="now"><span class="dot now"></span>Fix allowlist and add drift guard</li><li><span class="dot"></span>Open PR</li></ul>
+  </div></details>
+  <details class="ln" open style="border:1px solid var(--hair);border-radius:var(--r-control)"><summary>Asked to integrate 2 workers' changes <span class="tag wait">accepted</span> <span class="chev"></span></summary><div class="d">
+    <dl class="f"><dt>Workers</dt><dd>tracer, tester</dd><dt>Revisions</dt><dd><span class="id">1a2b3c4</span> <span class="id">9f8e7d6</span></dd><dt>Onto</dt><dd><span class="m">issue-62</span>, based on <span class="m">develop</span></dd>
+    <dt>Candidate</dt><dd><span class="lamp wait">Testing</span><span class="from">now, from the run record</span></dd></dl>
+    <div class="term"><b>Combined tests</b>
+ok  	agent-commander/internal/service	4.2s</div>
+  </div></details>
+</div></section>
+</div>
+
+<!-- ============ STATES NOT IN THESE RUNS ============ -->
+
+<h2>Decided after review: the frame around the transcript</h2>
+<p class="lede">Illustrative content. The run status line, the request form, the prompt bubble and the message box take the same language. Their function is unchanged: a request is answered by its ID, choices stay choices, offline and held states still block sending and say why.</p>
+<div class="grid">
+<section class="pane"><header><h2>Status line, bubble, live line, message box</h2><span class="illus">illustrative</span></header>
+  <div class="bar"><span class="chipx">Claude</span><span class="lamp ok">Working</span><span>3 prompts, 14 tool calls, 1 blocked</span><span class="sp">session 5f2c9a1e</span></div>
+  <div class="convo">
+    <div class="bubble">yes, fix this in AC so it doesnt happen in the future for any of our harnesses</div>
+    <details class="grp"><summary>Ran 5 commands <span class="chev"></span></summary><div class="list"><div class="ln flat">Ran <span class="m">gh issue create …</span></div></div></details>
+    <div class="prose"><p>Created issue 62; setting up its worktree and making the fix.</p></div>
+    <ul class="plan"><li><span class="dot done"></span>Trace every harness's tool permission path</li><li class="now"><span class="dot now"></span>Fix allowlist and add drift guard</li><li><span class="dot"></span>Commit and open PR</li></ul>
+    <div class="live"><span class="spin"></span>Running integration tests and checking live app state <span class="t">1m 58s</span></div>
+    <div class="queued"><span>Queued for the next turn:</span><span style="color:var(--fg)">also run the Codex path</span><span style="margin-left:auto">Remove</span></div>
+    <div class="field"><div class="ph">Message Coordinator. ⌘↩ queues it while the agent works.</div><div class="rowx"><span>＋ Add file</span><span>Queue</span><span class="stop" role="button" aria-label="Stop this turn"></span></div></div>
+    <p class="note">The checklist and the live line sit in the transcript, not in a pinned bar. Stop interrupts the current turn and keeps the conversation; it is the existing interrupt, not Stop worker. While nothing runs, the square is a Send arrow and ⌘↩ sends.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Request form and its blocked states</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <div class="ask"><div class="who">reader asks <span class="id">q-018</span></div><div>Should the client retry after response body bytes have already been delivered?</div>
+      <div class="opts"><button>Yes, retry idempotent requests only</button><button>No, never after the first byte</button></div>
+      <div class="field" style="padding:8px 12px"><span class="ph">Or type a reply</span></div></div>
+    <div class="ask"><div class="who">Needs your approval <span class="id">q-019</span></div><div>Run <span class="m">git push origin issue-62</span></div><div class="row" style="margin-top:10px"><button class="btn primary">Allow once</button><button class="btn">Deny</button></div></div>
+    <div class="ask" style="border-color:var(--border)"><div class="who">tester asks <span class="id">q-020</span></div><div>Use the fake clock for the lease test?</div><div class="warn">build-01 is offline. The reply field opens again when it reconnects; the question is kept.</div></div>
+    <div class="ask" style="border-color:var(--border)"><div class="who">tracer asks <span class="id">q-021</span></div><div>Which branch should this land on?</div><div class="warn">Mira holds input for this worker. Only Mira can answer here.</div></div>
+  </div></section>
+
+<section class="pane"><header><h2>Failure wording</h2><span class="illus">illustrative, except the first</span></header>
+  <div class="convo">
+    <details class="failline"><summary><span class="fail">Couldn't see who is online</span> <span class="tag block">Blocked</span> <span class="chev fail"></span><span class="why">Claude Code is in don't-ask mode.</span></summary><div class="d"><dl class="f"><dt>Exact text</dt><dd>Permission to use mcp__commander__commander_network_online has been denied because Claude Code is running in don't ask mode.</dd></dl></div></details>
+    <details class="failline"><summary><span class="fail"><span class="m">go test ./...</span> failed</span> <span class="tag block">Failed</span> <span class="chev fail"></span><span class="why">exit status 1: TestAllowlistDrift: missing commander_network_board</span></summary><div class="d"><div class="term">--- FAIL: TestAllowlistDrift (0.00s)
+    allowlist_test.go:41: missing commander_network_board
+FAIL</div></div></details>
+    <p class="note">A denial Commander recognises gets short plain words. Any other error shows the provider's first sentence. The exact text is always one click away.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Setting: what Commander keeps from tool calls</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <div class="set"><div style="font-weight:600;margin-bottom:6px">Tool calls in the transcript</div>
+      <label><span class="rad on"></span><span><b style="font-weight:500">Keep everything as sent</b> (default)<br><span class="empty">Full arguments and results, with no size limit.</span></span></label>
+      <label><span class="rad"></span><span><b style="font-weight:500">Hide values that look like secrets</b><br><span class="empty">Tokens, passwords and keys show as "Hidden" with Reveal.</span></span></label>
+      <label><span class="rad"></span><span><b style="font-weight:500">Limit large values</b> to <span class="m">16 KB</span><br><span class="empty">Longer values are shortened and marked.</span></span></label>
+      <div class="warn">With "Keep everything as sent", secrets an agent passes to a tool are stored and shown on every surface, including the PiP.</div></div>
+    <p class="note">Lives in Settings › Transcript. It applies to new records; records already stored keep what they have.</p>
+  </div></section>
+</div>
+
+<h2>States these runs do not contain</h2>
+<p class="lede">Everything below is illustrative content, written to show the pattern. The wording patterns are the ones in the spec.</p>
+<div class="grid">
+
+<section class="pane"><header><h2>Running, with elapsed time</h2><span class="illus">illustrative</span><span class="svc">elapsed time needs service change</span></header>
+  <div class="convo">
+    <div class="prose"><p>Created issue 62; setting up its worktree and making the fix.</p></div>
+    <details class="grp"><summary>Ran 2 commands, edited 2 files <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln"><summary>Ran <span class="m">agentflow start 62 --worktree</span> <span class="chev"></span></summary><div class="d"><div class="term"><b>$ agentflow start 62 --worktree</b>
+Created ~/.worktrees/agent-commander/issue-62-5b3a…</div><div class="lamp ok">Exit 0</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Bash</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Edited <b>allowlist.go</b> <span class="chev"></span></summary><div class="d"><div class="pth">internal/service/<b>allowlist.go</b></div><div class="term"><span class="del">- "commander_network_inbox",</span>
+<span class="add">+ "commander_network_inbox", "commander_network_online",</span>
+<span class="add">+ "commander_network_thread", "commander_network_board",</span></div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Edit</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Edited <b>allowlist_test.go</b> <span class="chev"></span></summary><div class="d"><div class="pth">internal/service/<b>allowlist_test.go</b></div><div class="empty">The provider sent no diff for this edit.</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Edit</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Ran <span class="m">go test ./internal/service/...</span> <span class="chev"></span></summary><div class="d"><div class="term"><b>$ go test ./internal/service/...</b>
+ok  	agent-commander/internal/service	4.212s</div><div class="lamp ok">Exit 0</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Bash</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+      </div></details>
+    <div class="live"><span class="spin"></span>Running <span class="m">make reload SERVICE=1</span> <span class="t">1m 58s</span></div>
+    <p class="note">The open call is the live line, below its group. When it finishes it joins the group and the summary updates. Events carry no time today, so the timer needs a start time on the call.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Question, wait and answer</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <details class="grp" open><summary>Asked a question and got an answer <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln"><summary>Asked: "Should the drift test also cover the Codex path?" <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Question</dt><dd class="q">Should the drift test also cover the Codex path?</dd><dt>Status</dt><dd><span class="lamp wait">Pending</span><span class="from">when this call returned</span></dd><dt>Asked by</dt><dd>tracer</dd><dt>Request</dt><dd><span class="id">q-7f3a…</span></dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_ask</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Waited for a reply <span class="tag">7 checks</span> <span class="chev"></span></summary><div class="d"><table class="t"><tr><th>Check</th><th>Status</th><th>Answer</th></tr><tr><td>1 to 6</td><td><span class="lamp wait">Pending</span></td><td class="empty">none yet</td></tr><tr><td>7</td><td><span class="lamp ok">Answered</span></td><td>Yes, all three paths.</td></tr></table><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_wait</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Got the answer: "Yes, all three paths." <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Question</dt><dd class="q">Should the drift test also cover the Codex path?</dd><dt>Answer</dt><dd class="q">Yes, all three paths.</dd><dt>Status</dt><dd><span class="lamp ok">Answered</span></dd><dt>Delivery</dt><dd>delivered</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_wait</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+      </div></details>
+    <p class="note">Linked only by the exact request ID. Seven wait probes are one line; each probe is inside it.</p>
+    <div class="form"><div class="q"><b>reader asks:</b> "words.txt has a 4th empty line. Count it?"</div><div class="row"><button class="btn primary">Reply</button><button class="btn">Open request</button></div></div>
+    <p class="note">A question that still needs a reply is never inside a group. It keeps the existing request form.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Delegation and follow-ups</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <details class="grp" open><summary>Delegated to 2 workers, sent a follow-up, asked to stop a worker <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln"><summary>Delegated to a new worker, <b>tracer</b> <span class="tag ok">running</span> <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Worker</dt><dd><b>tracer</b>, a worker under Coordinator</dd><dt>State</dt><dd><span class="lamp wait">Starting</span><span class="from">when this call returned</span><br><span class="lamp ok">Working</span><span class="from">now, from the run record</span></dd><dt>Task</dt><dd>Trace every harness's tool permission path.</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_delegate</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Delegated to a new worker, <b>tester</b> <span class="tag wait">accepted</span> <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Worker</dt><dd><b>tester</b>, a worker under Coordinator</dd><dt>State</dt><dd><span class="lamp wait">Starting</span><span class="from">when this call returned</span><br><span class="empty">The run record does not hold this worker yet, so nothing newer is known.</span></dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_delegate</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Sent <b>tracer</b> a follow-up <span class="tag wait">accepted</span> <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Follow-up</dt><dd class="q">Also check the Codex allowlist.</dd><dt>Status</dt><dd><span class="lamp wait">Queued</span><span class="from">runs when tracer is ready for a new turn</span></dd><dt>To</dt><dd>tracer</dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_send</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Asked to stop <b>tester</b> <span class="tag wait">accepted</span> <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Worker</dt><dd><b>tester</b></dd><dt>State</dt><dd><span class="lamp wait">Stopping</span><span class="from">when this call returned</span></dd></dl><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">commander_stop_worker</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+      </div></details>
+    <p class="note">The sentence says what was asked. The tag says what the run record states now. "Accepted" never turns into "done" on the call's word alone.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Permission request</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <details class="grp"><summary>Read 2 files <span class="chev"></span></summary><div class="list"><div class="ln flat">Read <b>Makefile</b></div><div class="ln flat">Read <b>reload.sh</b></div></div></details>
+    <div class="form"><div class="q"><b>Needs your approval</b> to run <span class="m">git push origin issue-62</span></div><div class="row"><button class="btn primary">Allow once</button><button class="btn">Deny</button></div></div>
+    <p class="note">The held call breaks the group and is drawn by the request form, restyled as shown above.</p>
+  </div></section>
+
+<section class="pane"><header><h2>Plan checklist</h2><span class="illus">illustrative</span><span class="svc">needs service change</span></header>
+  <div class="convo">
+    <ul class="plan">
+      <li><span class="dot done"></span>Trace every harness's tool permission path</li>
+      <li><span class="dot done"></span>Create issue and task worktree</li>
+      <li class="now"><span class="dot now"></span>Fix allowlist and add drift guard</li>
+      <li><span class="dot"></span>Test, including a live read-only run</li>
+      <li><span class="dot"></span>Commit and open PR</li>
+    </ul>
+    <p class="note">One card per turn, updated in place. Today the service keeps only "[ACP plan] 5 items", so until it passes the entries the view shows the line "Updated the plan: 5 items".</p>
+  </div></section>
+
+<section class="pane"><header><h2>Shell, files, search and web</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <details class="grp" open><summary>Ran 3 commands, read 2 files, ran a search and 2 more steps <span class="chev"></span></summary>
+      <div class="list">
+        <details class="ln"><summary>Ran <span class="m">git status --short</span> <span class="chev"></span></summary><div class="d"><div class="term"><b>$ git status --short</b>
+ M internal/service/allowlist.go</div><div class="lamp ok">Exit 0</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Bash</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Read <b>server.go</b> <span class="chev"></span></summary><div class="d"><div class="pth">internal/mcpbridge/<b>server.go</b></div><div class="file"><div><i>17</i>type statusInput struct {</div><div><i>18</i>&nbsp;&nbsp;Seconds int `json:"wait_seconds,omitempty"`</div><div><i>19</i>}</div></div><div class="empty">Lines 17 to 19 of 252 shown. <u>Show all</u></div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Read</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Read <b>network.go</b> <span class="chev"></span></summary><div class="d"><div class="pth">internal/mcpbridge/<b>network.go</b></div><div class="empty">140 lines. <u>Show</u></div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Read</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Searched for "AllowedTools" <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Looked for</dt><dd><span class="m">AllowedTools</span></dd><dt>Found in</dt><dd>3 files</dd></dl><table class="t"><tr><td><span class="pth">internal/service/<b>allowlist.go</b></span></td><td>4 lines</td></tr><tr><td><span class="pth">internal/provider/<b>acp.go</b></span></td><td>1 line</td></tr><tr><td><span class="pth">internal/provider/<b>runner.go</b></span></td><td>2 lines</td></tr></table><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Grep</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Searched the web for "claude code dontAsk permission mode" <span class="chev"></span></summary><div class="d"><table class="t"><tr><td><a href="#">Permission modes</a><br><span class="pth">docs.example.com/permissions</span></td></tr><tr><td><a href="#">Settings reference</a><br><span class="pth">docs.example.com/settings</span></td></tr></table><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">WebSearch</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Fetched <span class="m">docs.example.com/permissions</span> <span class="chev"></span></summary><div class="d"><dl class="f"><dt>Page</dt><dd><a href="#">Permission modes</a></dd><dt>Address</dt><dd><span class="pth">docs.example.com/permissions</span></dd><dt>Size</dt><dd>4,120 characters of text</dd></dl><details class="sub"><summary>Show the text <span class="chev"></span></summary><div class="q">In don't-ask mode a tool that is not on the allow list is refused without a prompt. …</div></details><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">WebFetch</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Ran <span class="m">go vet ./...</span> <span class="chev"></span></summary><div class="d"><div class="term"><b>$ go vet ./...</b></div><div class="lamp ok">Exit 0</div><div class="empty">The command printed nothing.</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Bash</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+        <details class="ln"><summary>Ran <span class="m">go test ./internal/mcpbridge/ -run Allow</span> <span class="chev"></span></summary><div class="d"><div class="term"><b>$ go test ./internal/mcpbridge/ -run Allow</b>
+ok  	agent-commander/internal/mcpbridge	0.412s</div><div class="lamp ok">Exit 0</div><details class="src"><summary>Source <span class="chev"></span></summary><div class="rawj"><span class="k">Bash</span>  tool ID, wire name and the exact call and result, as recorded</div></details></div></details>
+      </div></details>
+    <p class="note">A command reads as the command itself. Titles like "Created the task worktree" come from the model's Bash description, which Commander does not keep <span class="svc">needs service change</span>.</p>
+  </div></section>
+
+<section class="pane" id="background-work" style="grid-column:1/-1"><header><h2>Background work</h2><span class="illus">illustrative</span><span class="svc">provider children and most timers need service changes</span></header>
+  <div class="grid" style="gap:0">
+  <div class="convo">
+    <p class="sub">Regular, service connected</p>
+    <div class="prose"><p>Four workers are on it. I'll integrate when they report.</p></div>
+    <details class="grp"><summary>Delegated to 4 workers, sent a follow-up, <span class="fail">1 failed</span> <span class="chev"></span></summary></details>
+    <div class="bg" role="group" aria-label="Background work, 6 jobs, 1 failed">
+      <details class="failline" open><summary><span class="fail"><b style="color:inherit">tester</b> failed</span> <span class="tag block">Failed</span> <span class="chev fail"></span><span class="why">go test exited 1 in internal/service.</span></summary><div class="d" style="padding:0 14px 10px"><button class="lnk">Open tester</button></div></details>
+      <div class="bgl flat"><span class="mk wait"></span><span><b>reviewer</b> is waiting for your answer</span> <button class="lnk">Go to the question</button></div>
+      <details class="bgl" open><summary><span class="spin"></span><span><b>tracer</b>: Reading <span class="m">internal/provider/runner.go</span></span> <span class="t">4m 12s</span> <span class="chev"></span></summary>
+        <div class="d">
+          <details class="grp"><summary>Read 6 files, ran 2 commands <span class="chev"></span></summary></details>
+          <div class="live"><span class="spin"></span>Reading <span class="m">internal/provider/runner.go</span></div>
+          <button class="lnk" style="align-self:flex-start">Open tracer</button>
+        </div></details>
+      <details class="bgl"><summary><span class="spin"></span><span>Writing option C into DESIGN.md</span> <span class="svc">needs service change</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk unk"></span><span><b>builder</b>: lost contact with its host. Last known: working.</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk done"></span><span><b>reader</b> finished</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk"></span><span>and 2 more running</span> <span class="chev"></span></summary></details>
+    </div>
+    <div class="live"><span class="spin"></span>Waiting for workers</div>
+    <p class="note">The call's line stays where it happened, in the past tense. The job's live line sits here, above the agent's own live line. Order: failed, needs you, running, lost contact, finished. Three running lines, then a count. A failure is never counted away. The time on <b>tracer</b> runs from the worker's <span class="m">created_at</span>.</p>
+  </div>
+  <div class="convo" style="border-left:1px solid var(--hair)">
+    <p class="sub">Service disconnected: no spinner, no timer</p>
+    <div class="bg" style="border-top:0;padding-top:0">
+      <div class="bgl flat"><span class="mk unk"></span><span>Not connected to the service. This is the last state it sent.</span></div>
+      <details class="failline"><summary><span class="fail"><b style="color:inherit">tester</b> failed</span> <span class="tag block">Failed</span> <span class="chev fail"></span><span class="why">go test exited 1 in internal/service.</span></summary></details>
+      <details class="bgl"><summary><span class="mk unk"></span><span><b>tracer</b>: last known working</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk unk"></span><span><b>reader</b>: last known finished</span> <span class="chev"></span></summary></details>
+    </div>
+    <p class="sub">Other endings</p>
+    <div class="bg" style="border-top:0;padding-top:0">
+      <details class="bgl"><summary><span class="mk done"></span><span><b>tracer</b> was stopped</span> <span class="tag">cancelled</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk unk"></span><span>Follow-up to <b>tracer</b>: delivery unknown</span> <span class="tag wait">uncertain</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk wait"></span><span>Follow-up to <b>tracer</b> is queued</span> <span class="chev"></span></summary></details>
+      <details class="bgl"><summary><span class="mk unk"></span><span><b>writer</b>: no progress reported for 45s</span> <span class="chev"></span></summary></details>
+    </div>
+    <p class="sub">Compact (wall tile): two running lines, then a count</p>
+    <div class="bg" style="border-top:0;padding-top:0;font-size:12.5px">
+      <details class="failline"><summary style="padding:6px 10px"><span class="fail"><b style="color:inherit">tester</b> failed</span><span class="why">go test exited 1 in internal/service.</span></summary></details>
+      <details class="bgl"><summary><span class="spin"></span><span><b>tracer</b>: Reading <span class="m">runner.go</span></span> <span class="t">4m 12s</span></summary></details>
+      <details class="bgl"><summary><span class="mk"></span><span>and 3 more running</span> <span class="chev"></span></summary></details>
+    </div>
+    <p class="sub">PiP: every failure, then one count</p>
+    <div class="bg" style="border-top:0;padding-top:0;font-size:11.5px">
+      <details class="failline"><summary style="padding:5px 8px"><span class="fail"><b style="color:inherit">tester</b> failed</span><span class="why" style="font-size:11px">go test exited 1 in internal/service.</span></summary></details>
+      <details class="bgl"><summary><span class="spin"></span><span>4 running, 1 needs you</span> <span class="chev"></span></summary></details>
+    </div>
+    <p class="note">A spinner needs a record that says running, read by exact ID, over a live connection. Anything else gets a hollow mark and the words "last known".</p>
+  </div>
+  </div></section>
+
+<section class="pane" id="edge-cases" style="grid-column:1/-1"><header><h2>Edge cases</h2><span class="illus">illustrative</span><span class="svc">most rows need service changes: spec section H</span></header>
+<div class="edge">
+  <div class="convo">
+    <div class="bubble">Renew the lease earlier, and show me the change.</div>
+    <details class="ln one" open><summary>Edited <b>lease.go</b> <span class="m"><span class="add">+3</span> <span class="del">−1</span></span> <span class="chev"></span></summary><div class="d">
+      <div><span class="pth">internal/service/<b>lease.go</b></span> <button class="lnk" style="margin-left:8px;font-size:12.5px">Open at line 212</button></div>
+      <div class="file diff"><div><i>211</i><span>func (l *lease) renewAt() time.Time {</span></div><div class="r"><i>212</i><span class="del">−	return l.expires.Add(-time.Second)</span></div><div class="a"><i>212</i><span class="add">+	half := l.expires.Sub(l.granted) / 2</span></div><div class="a"><i>213</i><span class="add">+	// renew at half the lifetime</span></div><div class="a"><i>214</i><span class="add">+	return l.granted.Add(half)</span></div><div><i>215</i><span>}</span></div></div>
+    </div></details>
+    <details class="ln one" open><summary>Used app tool <b>screenshot</b> <span class="tag">image</span> <span class="chev"></span></summary><div class="d"><div class="thumb" role="img" aria-label="Thumbnail of the returned image"></div><div class="from" style="margin-left:0">image/png</div></div></details>
+    <div class="report"><div class="to">Message from <b style="color:var(--fg);font-weight:500">reviewer</b> <span class="id">w-41c0d2aa</span></div><div>The lease test still sleeps for two seconds. Use the fake clock.</div></div>
+    <div class="divider"><span>Conversation compacted</span><button class="lnk">Show the summary</button></div>
+    <div class="prose"><p>The lease now renews at half its lifetime. I switched the test to the fake clock and started the</p></div>
+    <div class="endl"><span class="mk wait"></span>Stopped: reached the output limit <span class="tag wait">max_tokens</span></div>
+    <div class="sub" style="margin:0">On a turn that ended normally, the same line reads:</div>
+    <div class="endl quiet"><span class="mk done"></span>Worked for 3m 12s <span class="svc gapx">needs a time from the service</span></div>
+    <p class="note">The diff and "Open at line" come from the call's own content and location. The end-of-turn line is the last item of a turn: a stop reason, or the time worked, never both. The divider removes nothing above it.</p>
+  </div>
+  <div class="convo">
+    <div class="ask"><div class="who">Needs your approval <span class="id">q-031</span></div><div>Run <span class="m">go test ./internal/service/...</span></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary">Allow once</button><button class="btn">Always allow go test</button><span class="gapx"></span><button class="btn">Deny</button><button class="btn">Always deny</button></div>
+      <div class="from" style="margin:8px 0 0;display:block">An always choice also answers later requests of this kind. Labels are the provider's.</div></div>
+    <div class="ask"><div class="who">Claude asks <span class="id">e-07</span></div><div>Which clock should the lease test use?</div>
+      <div class="opts"><button>Fake clock<small>Runs at once. The clock must be passed in.</small></button><button>Real clock, short lease<small>No code change. The test takes two seconds.</small></button></div>
+      <label class="fl">Lease length in seconds <span class="from">whole number</span></label>
+      <div class="field" style="padding:6px 12px;max-width:140px"><span class="m">30</span></div>
+      <div class="row" style="margin-top:12px"><button class="btn primary">Submit</button><button class="btn">Decline</button><button class="btn">Cancel</button></div></div>
+    <div class="endl quiet"><span class="mk unk"></span>Some history is missing here</div>
+    <div class="chips" aria-label="Suggested prompts"><button>Run the lease tests</button><button>Show the diff again</button><button>Open a pull request</button></div>
+    <div class="field"><div class="ph">Message Coordinator</div><div class="rowx"><span>＋ Add file</span><span style="margin-left:auto">Send</span></div></div>
+    <p class="note">Choices are ordered by kind: allow once, allow always, reject once, reject always. A provider question and an ACP form share the request form's block. A chip fills the message box; it does not send.</p>
+  </div>
+</div></section>
+
+<section class="pane compact"><header><h2>Compact (wall tile)</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <div class="prose"><p>The draft PR is open; checking its CI.</p></div>
+    <details class="grp"><summary>Ran 3 commands, used 2 other tools <span class="chev"></span></summary><div class="list"><div class="ln flat">Ran <span class="m">gh pr checks 63</span></div><div class="ln flat">Used <span class="m">bind_pr</span></div></div></details>
+    <details class="failline"><summary><span class="fail">Couldn't see who is online</span> <span class="chev fail"></span><span class="why">Permission … denied because Claude Code is running in don't ask mode.</span></summary></details>
+    <div class="live"><span class="spin"></span>Waiting for a reply <span class="t">0m 41s</span></div>
+    <p class="note">Same parts, tighter. Groups start closed. The reason wraps; it is not cut.</p>
+  </div></section>
+
+<section class="pane pip"><header><h2>PiP</h2><span class="illus">illustrative</span></header>
+  <div class="convo">
+    <details class="grp"><summary>Ran 3 commands, read 2 files <span class="chev"></span></summary></details>
+    <details class="failline"><summary><span class="fail">Couldn't see who is online</span><span class="why">Permission … denied (don't ask mode).</span></summary></details>
+    <div class="live"><span class="spin"></span>Running <span class="m">go test ./...</span> <span class="t">12s</span></div>
+    <p class="note">The latest group, any failure, the live line. An open group shows its first and latest three lines, then "Show all".</p>
+  </div></section>
+
+</div>
+</main>
+</body>
+</html>

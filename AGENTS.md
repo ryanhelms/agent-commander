@@ -47,7 +47,7 @@ When new or changed functionality is ready for the user to test, rebuild and res
 
 - Use its tokens and component inventory. Reuse an existing atom or molecule before adding one.
 - If a view needs something DESIGN.md does not cover, propose the addition and update DESIGN.md in the same change. Do not invent a one-off style.
-- Keep the console, terminal and pretty view rendering as it is. The design applies to everything around them.
+- Keep Console mode rendering as it is. In Terminal mode, leave the provider's output untouched; its well and frame may change only as the "Quiet theme" section of DESIGN.md describes. The design applies to everything around them. The Pretty transcript follows the "Pretty transcript" section of DESIGN.md.
 - When a change adds or alters a component, token or motion, update DESIGN.md in the same commit.
 
 ## Backend

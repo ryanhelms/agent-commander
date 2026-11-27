@@ -2,7 +2,9 @@
 
 This is the visual language for every Agent Commander surface: the main window, zoom, PiP and the Commander network tray. It is drawn from the network tray's redesign on `claude/commander-network-f774d6`. Implement new and restyled views from this document.
 
-The tray proves the language. The main window adopts it. The console, terminal and pretty view keep their current rendering; the language applies to everything around them.
+The tray proves the language. The main window adopts it. Console mode keeps its current rendering, and so does the provider's output in Terminal mode; the language applies to everything around them. The Pretty transcript has its own approved rules, in [Pretty transcript](#pretty-transcript-approved-target-not-yet-built).
+
+A third theme, `quiet`, is approved but not built: see [Quiet theme](#quiet-theme-two-speeds-approved-target-not-yet-built). It departs from several rules here on purpose. Until it is built, and afterwards for the Console and Black glass themes, the rules in this document apply as written.
 
 Sources of truth in code:
 
@@ -21,7 +23,7 @@ Sources of truth in code:
 | Teams pages (main window) | `TeamsPageMolecules.swift`, `TeamsPagesWorkspace.swift`, `TeamsPagesTools.swift`, `TeamsPagesModel.swift`, `TeamsPagesLive.swift` |
 | Harnesses mode (main window) | `Harnesses.swift`, `HarnessesPage.swift`, `HarnessTerminal.swift`; the API is in `design/HARNESSES.md` |
 
-The app has two themes. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. Console is the default. Black glass is chosen in Settings and kept under `appearance.theme`. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme.
+The app has two themes today. **Console** is the default and the language in this document. **Black glass** is the earlier main-window look, kept as an alternative with the same roles. Console is the default. Black glass is chosen in Settings and kept under `appearance.theme`. A component reads a role from `@Environment(\.theme)` and never branches on which theme is active. The console, terminal and pretty view read no theme. Pretty keeps its own `Palette` and `Term` roles and follows the Pretty transcript rules in section 3, in both themes. A third theme, `quiet`, is approved and not yet built; Console stays the default until the user decides otherwise ([Quiet theme](#quiet-theme-two-speeds-approved-target-not-yet-built)).
 
 The tray's components follow the same rule (see "Tray roles" below). Whatever the main window composes from them (a hosted composer, the dock's holder row, the remote worker zoom and group, an inspector's organism) takes the window's theme. The menu bar tray itself sets the console theme at its root (`MultiplayerPanel(model:theme:)`), so it looks the same whichever theme the window uses.
 | Remote band (increment 6) | `MultiplayerRemote.swift` |
@@ -30,7 +32,7 @@ The tray's components follow the same rule (see "Tray roles" below). Whatever th
 
 ## 1. Direction
 
-An operations console for an agent network.
+An operations console for an agent network. These seven rules describe the Console theme and bind everything built today. The approved `quiet` theme relaxes rules 1 and 2 on the surfaces it names, and keeps rules 3 to 7 ([Quiet theme](#quiet-theme-two-speeds-approved-target-not-yet-built)).
 
 1. **Hard lines.** Hairline grids and rules divide space. No corner is rounder than 2 pt. No soft cards, no large radii, no drop shadows, no glass.
 2. **Data is monospaced.** Prose uses the system face. Anything that is data, a state, a count, a label or an action is monospaced.
@@ -504,6 +506,105 @@ The tray keeps its own versions of these:
 - Status strip placement
 - The three-tab shell
 - The compact server and friend rows
+
+### Pretty transcript (approved target, not yet built)
+
+This section is the approved target for the Pretty view's transcript. It is not built yet: the app still draws activity story cards. Build from this section, the [spec](design/mockups/pretty-conversation.md) and the [mockup](design/mockups/pretty-conversation.html). Console mode stays as it is, and so does the provider's output in Terminal mode.
+
+It allows four departures from the rules above, inside the Pretty transcript only:
+
+| Rule elsewhere | In the Pretty transcript |
+|---|---|
+| No corner rounder than 2 pt | Pretty constants in `PrettyMetrics`: 9 pt for the activity list, 5 pt for tags and wells. The prompt bubble, code and raw blocks keep their corners. |
+| Data, states, counts, labels and actions are monospaced | Activity sentences and field labels use the system face. IDs, paths, commands, elapsed time and state tags stay monospaced. |
+| Activity lines are never collapsed behind a count | Finished calls fold into one summary line. The items listed under "Never collapsed" stay in the open. |
+| A status word on every row | Plain success shows no status word; the past tense says it. A tag shows only for another state. |
+
+**Sentences.** Each tool call is one sentence in the agent's turn: a present participle while it runs, past tense when it is done, "Couldn't …" with the reason when it fails. Each sentence has a fallback that needs no argument. Nothing is inferred: a value comes from the call, its result, or the run record by exact ID.
+
+**Grouping.** Consecutive finished calls in one turn fold into a summary line in secondary ink, one phrase per kind in order of first appearance ("Ran 3 commands, read 2 files"), at most three phrases, then "and N more steps". A group of one is its sentence alone. Groups start closed on every surface. The running call is a live line, inline in the transcript, with its elapsed time. A task checklist is an inline card at the point the plan was sent, updated in place. Usage, mode, session rows and thinking fold into the group.
+
+**Never collapsed.** A failed or blocked call, with its reason. A pending question or permission request, in the request form. A reported result, drawn as quoted prose: in full, or its first four lines with "Show all" when a closing message follows it. A plan checklist. A warning, harness stderr or a permission notice.
+
+**Failure words.** The tag is `Blocked` or `Failed`. A denial Commander recognises reads in short plain words from one fixed table ("Claude Code is in don't-ask mode."). Any other error shows the provider's first sentence. The exact text is one click away.
+
+**State tags.** Monospaced, beside the sentence: `accepted`, `starting`, `running`, `waiting`, `partial`, `uncertain`, `cancelled`, `Blocked`, `Failed`. `Blocked` means the provider refused permission and the tool never ran. A delegation, follow-up, stop, interrupt, integration or submit says what was asked; its tag is the run record's state, and `accepted` when the run record says nothing yet.
+
+**Background work.** A job that goes on after its call returns (a delegated worker, a follow-up or queued message, a stop or interrupt, a pending question, an integration, a network submit) keeps its past-tense line where the call happened and also gets a line in a stack at the bottom of the transcript, above the live line. Running: the name, then the child's own live sentence ("**tracer**: Reading `runner.go`"), with a spinner. Finished: "**reader** finished", linking to that worker, until the next prompt. Failed: a failure line with its reason; it never collapses and is never counted away. A spinner needs a record that says running, read by exact ID, over a live connection; otherwise a hollow dot and "last known …". Disconnected from the service: one line says so, and no spinner or timer shows. Up to three running lines, then "and N more running"; the wall tile shows two; the PiP shows every failure and one count line. A line opens in place to the child's latest group, any failure and its live line, then "Open tracer". Elapsed time shows only where the record holds a start time. Provider child sessions and background commands get a line once the service records them. Full rules: spec section G.
+
+**JSON is pretty-printed.** Wherever JSON text shows (Source, or output that is JSON), it is indented two spaces, one property per line, keys in the order sent. It is never shown as a one-line string. Copy keeps the exact original text.
+
+**Typed results.** An opened line draws its call and result by their properties: words, labelled fields, lists, tables, and a lamp with a word. A renderer is chosen by the result's shape, with a generic renderer for any other object or list. A state names its origin: "when this call returned" or "now, from the run record". Properties a renderer does not place are listed under "More fields". The wire name, tool ID and exact text sit behind one quiet Source action, closed by default. No raw JSON shows by default.
+
+**The frame.** The run status line, the prompt bubble, the request form and the message box take the same language. The status line is one quiet line: harness chip, lamp and word, counts as a sentence, the short session ID. The request form is a bordered block in the transcript: who asks, the question as prose, choices as buttons, then a reply field. It still answers by exact request ID, keeps one form per request, and in an offline, held, closed or sending state stays visible, disables input and says why. The message box is the follow-up composer with a rounded field; while a turn runs it queues the message ("⌘↩ queues it") and offers Stop, which interrupts the turn and keeps the conversation.
+
+**What is kept.** The service keeps full tool arguments, descriptions, plan items and start times. Settings › Transcript offers "Keep everything as sent" (the default), "Hide values that look like secrets" and "Limit large values", with one warning line under the default: secrets an agent passes to a tool are stored and shown on every surface, including the PiP.
+
+**Edge cases.** The spec's section H covers every other record seen in agent transcripts and ACP. Six parts are new. An end-of-turn line says why a turn stopped ("Stopped: reached the output limit") or how long it worked. A compaction divider reads "Conversation compacted" and removes nothing above it. A message line quotes a message from another session. A gap row reads "Some history is missing here". Suggestion chips sit above the message box and fill it without sending. A deliverable card names a published file or link. A permission request orders its choices allow once, allow always, reject once, reject always, with the provider's labels. A provider question and an ACP elicitation use the request form's language. A diff, terminal output, an image and a file location are drawn by the typed renderers. A case with no data shows its fallback, never a guess.
+
+**Type and colour.** `body` for prose and sentences; secondary ink for summaries and finished sentences; `failure` ink for a failed or blocked sentence; the terminal face for values. No new colours.
+
+**Components.** `ActivityGroup`, `ActivityGroupSummary`, `ActivityLine`, `ActivityFailureLine`, `PrettyReportBlock`, `PrettyLiveLine`, `PrettyPlanCard`, `BackgroundStack`, `BackgroundJobLine`, `ActivityResultView` and its renderers. They replace `ActivityStoryCard` and `ActivityStoryHeader`. The honesty rules in `ActivityStory.swift` stay.
+
+### Quiet theme, "Two speeds" (approved target, not yet built)
+
+Approved on 2026-11-26 as option C of the [app restyle proposal](design/mockups/app-restyle.md); [mockup](design/mockups/app-restyle.html). Nothing is in `tokens.json` or Swift. It is a third theme, working name `quiet`, beside Console and Black glass. **Console stays the default until the user decides otherwise** (rollout step 7). Every rule elsewhere in this document still governs Console, Black glass and everything built today. The values below are proposed, and the contrast of the new inks is not measured: measure it in step 1 and adjust before building views.
+
+**The rule.** A surface is for reading or for scanning, and each gets what it needs. Both share one type scale and one corner set.
+
+| Speed | Surfaces | Treatment |
+|---|---|---|
+| Reading | Transcripts (wall tile body, focused worker, PiP), Needs-you requests, page headers, forms in Setup, Hosts and Harnesses | No boxes round regions. One surface step, space between groups, prose in the system face |
+| Scanning | Data tables, the board, claims, the wall grid, the sidebar's rows, the tray | Columns and row height stay. Hairline row rules stay. Mono for values |
+
+**Foundations (proposed).**
+
+| Token | `quiet` value |
+|---|---|
+| Type, system face | `pageTitle` 20 semibold, `body` 13, `control` 13 medium, `label` 12, transcript 14. Words are in sentence case: no uppercase, no tracking |
+| Type, mono | 12 for values a person would copy (IDs, paths, branches, commands, times, counts in a table); 12.5 in the terminal well |
+| Colour | `window` `#16171B`, content surface (`panel`) `#1D1E23`, `well` `#101114`, `foreground` `#ECEDF1`, `secondary` `#A6A9B4`, `hair` white at 8%. `focus`, `working`, `attention` and `failure` are unchanged |
+| `tertiary` (new role, all three themes) | `#7E818C` in `quiet`: crumbs, group names, quiet counts. Console and Black glass need a value for it in step 1 |
+| Corners | 12 pt tile and panel, 7 pt control, 5 pt chip, 13 pt bubble, 8 pt mode-rail cell and board card |
+| Spacing | The existing scale (4, 8, 12, 16, 24, 32). Page gutter 24, row padding 9 |
+| Dividers | A hairline between table rows, under a tab bar and round a wall tile. None round regions |
+| Status lamp | A 7 pt dot plus the word in `body`. Chips are in secondary ink; colour is reserved for state. The spinner is unchanged |
+| Motion | Durations unchanged. A disclosure chevron turns 90° in `fast`. Only the spinner and a countdown move by themselves |
+
+**By surface.**
+
+| Surface | Changes | Stays |
+|---|---|---|
+| Mode rail | 28 pt cells, 8 pt corners, a soft `focus` wash on the selected cell, no cell borders | Hot counts, ⌘ numbers, the leading marker for VoiceOver |
+| Sidebar | No rules between groups; group names in 12 pt `tertiary`; the selected row is a wash with 7 pt corners | Counts (mono), place marks, 28 pt rows |
+| Page header | Sentence-case crumb in `tertiary`; 20 pt title; the readout is figures in a line, without cells; facts read as one sentence with mono values | The same figures and their tones |
+| Tabs | Text tabs on one hairline, 2 pt `focus` under the selected one | Counts, ⌘ numbers |
+| Data tables, board, claims | System face for names, mono for values, sentence-case headers, row rules at 8% | Columns, row height, selection, inline confirms |
+| Coordinator wall | Tiles on the content surface, 12 pt corners, one hairline edge. Header: name, harness chip, lamp and word. Body: the Pretty transcript. Footer: the ownership line | Group nesting, tile controls, the attention edge |
+| Focused worker | Transcript column 760 pt wide; status line, request form and message box as in the Pretty section | Mode switch, source inspector, record fields |
+| PiP | The same parts at 11.5 pt: latest group, any failure, request block, live line | Exact conversation height, arrival motion, attention edge |
+| Needs-you | Each item is the request block; queue order as a quiet count | Routing by exact request ID, keyboard next and previous |
+| Setup, Hosts, Harnesses | Forms as labelled lines without band boxes; one primary button per page; install and sign-in output in a terminal well | Field boxes, the secret field, state labels, confirm wells |
+| Network and Teams pages | As the tables and page header above; board cards get 8 pt corners and keep the 2 pt state rule | Badges, claims, holder cues, inline confirms |
+| Tray | Last, and the type change only. It keeps its grid | Everything else |
+
+**Kept, because it carries meaning.** A lamp plus a word for every state. Harness and model chips, server swatches, avatars. Ownership cues (who holds input). `attention` means "needs you" and nothing else. One primary action per region, `danger` for a destructive one. Native controls, focus rings, ⌘ shortcuts and VoiceOver labels. The Reduce Motion, Reduce Transparency and Increase Contrast overrides. Mono for real data and the terminal. Row rules on scanned surfaces.
+
+**Not copied.** Anthropic's typeface, the Claude mark, their spinner glyph and their window layout. Orange is not a brand accent: `harness.claude` stays as the Claude harness's identity only. The target is the reading quality, drawn with the system face and this app's inks.
+
+**Console mode and Terminal mode.** Console mode's rendering does not change. In Terminal mode the provider's output does not change and cannot: the TUI's layout, boxes, glyphs, wording and 24-bit colours are the provider's, so the well cannot be re-laid out or made to read like a conversation. This approval does cover the Terminal well and its frame: mono 12.5, more padding, the `quiet` `well` ground and default ink, the title bar and status line, and the 16 ANSI colours matched to the theme. Two things are unverified in the pinned SwiftTerm: setting the ANSI palette, and setting line height. Check both in step 5; drop whichever is unsupported.
+
+**The Pretty transcript under `quiet`.** Its rules above apply unchanged in all three themes, and it keeps its own `Palette` and `Term` roles. `quiet` changes the frame round it: the tile, the 760 pt column, the ground. Open question, to settle before step 4: Pretty says `body` (13 pt) and "no new colours", while `quiet` proposes a 14 pt transcript on a lifted ground. Until the user decides, build Pretty at 13 pt with its own inks, and check those inks on `#1D1E23`.
+
+**Rollout.** Each step compares captures with the demo images, and Console and Black glass must come out unchanged.
+
+1. Add the third `ThemeID` with the values above. Add `tertiary` and the lamp-with-body-type status mark to all three themes. Find any view that branches on a theme. No view changes. Check: `ThemeTests`.
+2. Main-window frame: mode rail, sidebar, page header, tabs.
+3. Data tables, board, claims, Hosts, Harnesses, setup forms.
+4. Wall tile, focused worker frame, PiP, Needs-you, together with the Pretty transcript work. Check against the approved wall and PiP screenshots.
+5. Terminal well: size, padding, ground, ANSI colours if supported. Check by reading a real Claude Code and Codex TUI in it.
+6. Tray: the type change only.
+7. The user decides the default theme. Update this document to describe it and keep Console selectable.
 
 ## 4. Layout patterns
 
