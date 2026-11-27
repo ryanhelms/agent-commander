@@ -13,7 +13,57 @@ import Testing
 
 let prettyRenderDirectory = ProcessInfo.processInfo.environment["PRETTY_RENDER_DIR"]
 
+@MainActor @Observable final class PrettyEntriesBox {
+    var entries: [TranscriptEntry] = []
+    init() {}
+}
+
+private struct PrettySwapHost: View {
+    let box: PrettyEntriesBox
+    let output: String
+    var body: some View {
+        ConsoleScrollback(consoleID: "c", entries: box.entries, rawOutput: output, density: .regular) { EmptyView() }
+    }
+}
+
 @MainActor @Suite struct PrettyRenderTests {
+    /// At launch the run list arrives first, without messages: Pretty shows the worker's
+    /// unformatted output, scrolled to its end. The workspace feed then brings the conversation.
+    /// A shorter conversation must be in view, not the empty space past its end.
+    @Test func aConversationThatReplacesLongUnformattedOutputIsInView() async throws {
+        _ = NSApplication.shared
+        let modes = ConsoleModeStore()
+        let box = PrettyEntriesBox()
+        let output = (1...400).map { "line \($0) of the terminal output" }.joined(separator: "\n")
+        let size = CGSize(width: 432, height: 400)
+        let host = NSHostingView(rootView: PrettySwapHost(box: box, output: output)
+            .frame(width: size.width, height: size.height).environment(modes).environment(ToolDetailStore()))
+        let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: size.width, height: size.height),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        func scroll(_ view: NSView) -> NSScrollView? {
+            (view as? NSScrollView) ?? view.subviews.lazy.compactMap(scroll).first
+        }
+        func settle() async throws {
+            for _ in 0..<4 {
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(80))
+            }
+        }
+        try await settle()
+        let raw = try #require(scroll(host))
+        let rawHeight = try #require(raw.documentView).frame.height
+        #expect(rawHeight > size.height * 4)
+        box.entries = Self.worker()
+        try await settle()
+        let conversation = try #require(scroll(host))
+        let document = try #require(conversation.documentView).frame
+        #expect(document.height < rawHeight)
+        let visible = conversation.documentVisibleRect
+        #expect(visible.minY <= max(0, document.height - visible.height) + 1)
+        window.contentView = nil
+    }
+
     static let denial = "Permission to use mcp__commander__commander_network_online has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. Let the user decide how to proceed."
     static let reader = "w-779b15a33e2ed37dbe74d7bab6d102bf"
     static let status = #"{"id":"r-30bb462ddf3db629d085eb0f3b948e90","project":"acsmoke","path":"/private/tmp/claude-501/acsmoke","task":"Read-only smoke test of Agent Commander tools.","client":"claude","coordinator_id":"w-da045371c3671b03b68accb481575127","status":"running","workers":[{"id":"w-da045371c3671b03b68accb481575127","role":"coordinator","name":"Coordinator","state":"working","host":"localhost"},{"id":"w-779b15a33e2ed37dbe74d7bab6d102bf","role":"worker","name":"reader","state":"working","host":"localhost","result":"words.txt has 3 lines: alpha, bravo, charlie."}],"requests":[]}"#

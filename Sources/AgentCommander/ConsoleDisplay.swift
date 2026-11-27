@@ -349,10 +349,17 @@ struct PrettyConsoleView: View {
         }
         .defaultScrollAnchor(.bottom)
         .defaultScrollAnchor(.top, for: .alignment)
+        // The unformatted output and the conversation are two scroll views. One kept across the
+        // change holds the old offset, which lies past the end of a shorter conversation.
+        .id(entries.isEmpty)
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
-        .task(id: detailRevision) { await details?.refresh(worker: consoleID) }
+        .task(id: detailRevision) {
+            await details?.refresh(worker: consoleID)
+            // A report's text may be only in its stored record: summaries leave out long values.
+            for key in ActivitySteps.reportsToRead(entries) { await details?.open(worker: consoleID, key: key) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
     }
