@@ -1,6 +1,6 @@
 # Pilot releases
 
-Use the private GitHub repository for source and pilot downloads. Before uploading source or build inputs, review both Direct access and Organization access under **Settings → Collaborators & teams**. GitHub organization owners retain access, and Nscale's organization permissions can also grant access to other members.
+Source and pilot downloads are available from the public [Agent Commander repository](https://github.com/ryanhelms/agent-commander).
 
 ## Maintain the changelog
 
@@ -21,11 +21,11 @@ git tag -a v0.1.0-pilot.1 -m 'Agent Commander pilot 1'
 git push origin v0.1.0-pilot.1
 ```
 
-## Supply the private Go build inputs
+## Supply the public Go build inputs
 
-The Linux and Mac release builds need the pinned `agent-acp` and `agent-acp-transport` Go proxy archives under `dist/sdk`. GitHub-hosted runners use the same archive versions as local builds. The module download checks each mirror against `go.sum`.
+The Linux and Mac release builds need the pinned `agent-acp` and `agent-acp-transport` Go proxy archives under `dist/sdk`. GitHub-hosted runners download the same public input bundle as local release builds. Go verifies each module against `go.sum`.
 
-When the pins change, pack the six required Go proxy files and publish them to an input prerelease on the approved private repository. This asset contains module source and its audience must be approved for those inputs. The input tag contains both versions and is independent of application release tags.
+When the pins change, pack the six required Go proxy files and publish them to an input prerelease on Agent Commander. The input tag contains both versions and is independent of application release tags.
 
 ```sh
 input_tag=$(python3 packaging/sdk-inputs.py tag)
@@ -55,7 +55,7 @@ After the release publishes, download its headless archive on a test host and ch
 gh release edit v0.1.0-pilot.5 --prerelease=false --latest
 ```
 
-The workflow does not request build attestations. GitHub refuses them for private repositories owned by a personal account. `SHA256SUMS` protects the downloads, and a deploy still verifies an attestation if one exists.
+Use `SHA256SUMS` to verify downloads. The headless deploy also verifies a build attestation when one is available.
 
 The ad hoc Mac build is for testing. Use the [Developer ID packaging procedure](design/MULTIPLAYER-PILOT.md#build-the-universal-macos-archive) for the notarized distribution archive.
 

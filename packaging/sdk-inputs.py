@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the exact private Go module proxy files needed by release CI."""
+"""Stage the public Go module proxy files pinned by go.mod."""
 
 import argparse
 import json
@@ -8,11 +8,13 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK_ROOT = ROOT / "dist" / "sdk"
 ASSET = "go-build-inputs.tar.gz"
+PUBLIC_REPOSITORY = "ryanhelms/agent-commander"
 MODULE_DIRECTORIES = {
     "agent-acp.local/sdks/go": "agent-acp",
     "agent-acp.local/transport": "agent-acp-transport",
@@ -50,7 +52,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("tag")
     commands.add_parser("pack").add_argument("archive", type=Path)
-    commands.add_parser("fetch").add_argument("repository")
+    commands.add_parser("fetch").add_argument("repository", nargs="?", default=PUBLIC_REPOSITORY)
     args = parser.parse_args()
     tag, expected = inputs()
     if args.command == "tag":
@@ -64,9 +66,11 @@ def main():
                 bundle.add(SDK_ROOT / name, arcname=name, recursive=False)
     else:
         with tempfile.TemporaryDirectory(prefix="commander-go-inputs-") as folder:
-            subprocess.run(["gh", "release", "download", tag, "--repo", args.repository, "--pattern", ASSET,
-                            "--dir", folder], check=True)
-            unpack(Path(folder) / ASSET, expected)
+            url = f"https://github.com/{args.repository}/releases/download/{tag}/{ASSET}"
+            archive = Path(folder) / ASSET
+            with urlopen(url, timeout=60) as response, archive.open("wb") as target:
+                shutil.copyfileobj(response, target)
+            unpack(archive, expected)
 
 
 if __name__ == "__main__":
