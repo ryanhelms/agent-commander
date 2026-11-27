@@ -76,17 +76,20 @@ type Agent struct {
 	lease        control.Lease
 	loginPending bool
 	problem      string
-	handle       string
-	friendsOn    int
-	incoming     int
-	lastOnline   time.Time
-	social       socialState
-	pending      map[string]claimedRequest
-	handovers    map[string]time.Time
-	ctx          context.Context
-	stop         context.CancelFunc
-	loginStop    context.CancelFunc
-	sessionStop  context.CancelFunc
+	// access is the membership-request state after a refused sign-in:
+	// "", requestable, pending, approved, denied or full.
+	access      string
+	handle      string
+	friendsOn   int
+	incoming    int
+	lastOnline  time.Time
+	social      socialState
+	pending     map[string]claimedRequest
+	handovers   map[string]time.Time
+	ctx         context.Context
+	stop        context.CancelFunc
+	loginStop   context.CancelFunc
+	sessionStop context.CancelFunc
 }
 
 func key(text string) string { sum := sha256.Sum256([]byte(text)); return hex.EncodeToString(sum[:]) }
@@ -296,6 +299,13 @@ func (a *Agent) startLogin(handle, invite string) (any, error) {
 		a.loginStop = nil
 		if e != nil {
 			a.problem = e.Error()
+		}
+		var refused identity.NotAdmittedError
+		switch {
+		case e == nil:
+			a.access = ""
+		case errors.As(e, &refused) && refused.Requestable && a.access != "pending":
+			a.access = "requestable"
 		}
 		a.mu.Unlock()
 		cancel()

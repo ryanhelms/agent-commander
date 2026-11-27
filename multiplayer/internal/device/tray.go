@@ -48,6 +48,8 @@ type input struct {
 	Attribution   string                `json:"attribution"`
 	Peer          string                `json:"peer"`
 	Reason        string                `json:"reason"`
+	Note          string                `json:"note"`
+	Decision      string                `json:"decision"`
 	Payload       json.RawMessage       `json:"payload"`
 	Request       string                `json:"request"`
 	Handoff       string                `json:"handoff"`
@@ -90,10 +92,10 @@ type trayGrant struct {
 func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	s := a.creds.Session
-	pending, why := a.loginPending, a.problem
+	pending, why, access := a.loginPending, a.problem, a.access
 	online := s.User != "" && time.Now().Before(a.lease.ExpiresAt)
 	a.mu.Unlock()
-	result := map[string]any{"signedIn": s.User != "", "online": online, "loginPending": pending, "handle": "", "friends": []any{}, "incoming": []any{}, "outgoing": []any{}, "grants": []any{}, "resources": []any{}, "shared": []any{}, "error": why}
+	result := map[string]any{"signedIn": s.User != "", "online": online, "loginPending": pending, "handle": "", "friends": []any{}, "incoming": []any{}, "outgoing": []any{}, "grants": []any{}, "resources": []any{}, "shared": []any{}, "error": why, "accessRequest": access}
 	if s.User == "" {
 		return result, nil
 	}
@@ -581,6 +583,10 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.status(ctx)
 	case "login":
 		return a.startLogin(in.Handle, in.Invite)
+	case "membership-request":
+		return a.requestMembership(ctx, in.Note)
+	case "membership-request-status":
+		return a.membershipRequestStatus(ctx)
 	case "presence":
 		return a.setPresenceMode(ctx, in.Presence)
 	case "relay":
@@ -614,7 +620,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
 	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs":
 		return a.teamVerb(ctx, s, verb, in)
-	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members":
+	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members", "admin-requests", "admin-request-decide":
 		return a.namedTeamRelay(ctx, s, verb, in)
 	case "workspace-combined":
 		return a.combinedWorkspace(ctx, s, in)
