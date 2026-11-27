@@ -29,15 +29,16 @@ const (
 	// MaxToolDetailField bounds one argument, result or content value. A longer
 	// value is shortened and listed in Truncated, whatever the settings say.
 	MaxToolDetailField = 512 << 10
-	toolDetailRecords  = 256
-	toolDetailBytes    = 16 << 20
-	toolDetailBatch    = 128
-	toolDetailSummary  = 512
-	shortenedMark      = "…[shortened]"
-	minTranscriptLimit = 1 << 10
+	// MaxToolDetailRecords bounds retained records per worker.
+	MaxToolDetailRecords = 256
+	toolDetailBytes      = 16 << 20
+	toolDetailBatch      = 128
+	toolDetailSummary    = 512
+	shortenedMark        = "…[shortened]"
+	minTranscriptLimit   = 1 << 10
 )
 
-// ToolDetail describes one tool call, thought or plan. A runner sends partial
+// ToolDetail describes a local transcript detail. A runner sends partial
 // records; later non-empty values replace earlier ones under the same key.
 type ToolDetail struct {
 	Key  string `json:"key,omitempty"`
@@ -57,11 +58,36 @@ type ToolDetail struct {
 	EndedAt   string          `json:"ended_at,omitempty"`
 	Truncated []string        `json:"truncated,omitempty"`
 	Revision  uint64          `json:"revision,omitempty"`
+	*JobDetail
+	*TurnEndDetail
+}
+
+// JobDetail is a snapshot. Empty open-tool fields clear the previous call.
+type JobDetail struct {
+	ToolUseID    string `json:"tool_use_id"`
+	JobKind      string `json:"job_kind"`
+	State        string `json:"state"`
+	OpenToolName string `json:"open_tool_name,omitempty"`
+	OpenToolArg  string `json:"open_tool_arg,omitempty"`
+}
+
+type TurnEndDetail struct {
+	DurationMS     *int64 `json:"duration_ms,omitempty"`
+	StopReason     string `json:"stop_reason,omitempty"`
+	TerminalReason string `json:"terminal_reason,omitempty"`
+	IsError        *bool  `json:"is_error,omitempty"`
 }
 
 // Size is the record's variable payload, used to bound batches and retention.
 func (d *ToolDetail) Size() int {
-	return len(d.Key) + len(d.Name) + len(d.Title) + len(d.Input) + len(d.Result) + len(d.Content) + len(d.Plan)
+	size := 0
+	if j := d.JobDetail; j != nil {
+		size += len(j.ToolUseID) + len(j.JobKind) + len(j.State) + len(j.OpenToolName) + len(j.OpenToolArg)
+	}
+	if t := d.TurnEndDetail; t != nil {
+		size += len(t.StopReason) + len(t.TerminalReason) + 16
+	}
+	return size + len(d.Key) + len(d.Name) + len(d.Title) + len(d.Input) + len(d.Result) + len(d.Content) + len(d.Plan)
 }
 
 // toolDetailSummaryView is the part a closed sentence needs.
@@ -153,7 +179,7 @@ func (l *toolDetailLog) put(record ToolDetail) {
 	l.records[record.Key] = &record
 	l.bytes += record.Size()
 	l.revision = max(l.revision, record.Revision)
-	for len(l.order) > 1 && (len(l.order) > toolDetailRecords || l.bytes > toolDetailBytes) {
+	for len(l.order) > 1 && (len(l.order) > MaxToolDetailRecords || l.bytes > toolDetailBytes) {
 		l.bytes -= l.records[l.order[0]].Size()
 		delete(l.records, l.order[0])
 		l.order = l.order[1:]
@@ -163,6 +189,7 @@ func (l *toolDetailLog) put(record ToolDetail) {
 func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 	merged := old
 	merged.Key, merged.Kind = next.Key, next.Kind
+	merged.JobDetail, merged.TurnEndDetail = next.JobDetail, next.TurnEndDetail
 	if merged.Sequence == 0 || next.Kind == "plan" {
 		merged.Sequence = next.Sequence
 	}
@@ -271,7 +298,27 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 			d.Sequence = events[offset].Sequence - 1
 		}
 		d.Event = nil
-		if d.Kind != "tool" && d.Kind != "thought" && d.Kind != "plan" {
+		switch d.Kind {
+		case "job":
+			j := d.JobDetail
+			if j == nil || j.ToolUseID == "" || len(j.ToolUseID) > 256 || (j.JobKind != "command" && j.JobKind != "agent") {
+				continue
+			}
+			j.OpenToolName, j.OpenToolArg = cutText(j.OpenToolName, 256), cutText(j.OpenToolArg, toolDetailSummary)
+			switch j.State {
+			case "running", "completed", "failed", "stopped", "unknown":
+			default:
+				continue
+			}
+			d.TurnEndDetail = nil
+		case "turn_end":
+			d.JobDetail = nil
+			if t := d.TurnEndDetail; t != nil {
+				t.StopReason, t.TerminalReason = cutText(t.StopReason, 256), cutText(t.TerminalReason, 256)
+			}
+		case "tool", "thought", "plan":
+			d.JobDetail, d.TurnEndDetail = nil, nil
+		default:
 			continue
 		}
 		if d.Key == "" {

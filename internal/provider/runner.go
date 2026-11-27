@@ -162,11 +162,16 @@ func (s *screen) recordDetailed(event service.ConsoleEvent, values *service.Tool
 
 const maxConsoleEventBytes = 16 * 1024
 
-func previewConsoleEvent(event service.ConsoleEvent) service.ConsoleEvent {
+func consoleToolID(id string) string {
 	const hashedID = "commander-sha256:"
-	if len(event.ToolID) > 256 || strings.HasPrefix(event.ToolID, hashedID) {
-		event.ToolID = fmt.Sprintf("%s%x", hashedID, sha256.Sum256([]byte(event.ToolID)))
+	if len(id) > 256 || strings.HasPrefix(id, hashedID) {
+		return fmt.Sprintf("%s%x", hashedID, sha256.Sum256([]byte(id)))
 	}
+	return id
+}
+
+func previewConsoleEvent(event service.ConsoleEvent) service.ConsoleEvent {
+	event.ToolID = consoleToolID(event.ToolID)
 	event.Name = previewPrefix(event.Name, 256)
 	event.Phase = previewPrefix(event.Phase, 64)
 	event.Text = previewText(event.Text)
@@ -555,6 +560,8 @@ func render(reader io.Reader, s *screen) error {
 	var checkingWorkerStatus bool
 	var failed error
 	var partials claudePartialText
+	var jobs claudeJobs
+	defer jobs.finish(s)
 	showText := func(text string) {
 		checkingWorkerStatus = false
 		lastAssistant = text
@@ -568,6 +575,8 @@ func render(reader io.Reader, s *screen) error {
 			return fmt.Errorf("invalid Claude stream record: %w", err)
 		}
 		switch e.Type {
+		case "system":
+			jobs.task(e.Subtype, scan.Bytes(), s)
 		case "stream_event":
 			partials.observe(e, showText)
 		case "assistant":
@@ -577,12 +586,9 @@ func render(reader io.Reader, s *screen) error {
 				case "text":
 					showText(b.Text)
 				case "thinking":
-					// No console event, and no time: this stream does not say when
-					// the thought began.
-					if b.Thinking != "" {
-						s.recordDetail(service.ToolDetail{Kind: "thought", Key: "thought-" + newSessionID(), Result: b.Thinking})
-					}
+					claudeThought(scan.Bytes(), b.Thinking, s)
 				case "tool_use":
+					jobs.child(e.Parent, b, s)
 					if b.Name == "mcp__commander__commander_status" {
 						statusCalls[b.ID] = true
 						s.recordDetail(service.ToolDetail{Kind: "tool", Key: b.ID, Name: "commander_status",
@@ -626,6 +632,7 @@ func render(reader io.Reader, s *screen) error {
 				if b.Type != "tool_result" {
 					continue
 				}
+				jobs.child(e.Parent, b, s)
 				result := &model.ToolActivity{CallId: b.ToolUseID, Phase: claudeResultPhase(b.IsError), Summary: resultText(b.Content)}
 				values := &service.ToolDetail{Kind: "tool", Result: result.Summary}
 				if statusCalls[b.ToolUseID] {
@@ -654,6 +661,7 @@ func render(reader io.Reader, s *screen) error {
 				s.line(e.Result)
 				s.event("text", "", "", e.Result)
 			}
+			claudeTurnEnd(scan.Bytes(), s)
 		}
 	}
 	partials.finishAll(showText)

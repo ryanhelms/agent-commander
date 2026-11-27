@@ -77,7 +77,7 @@ func (s *screen) addDetailLocked(d service.ToolDetail) {
 // recordDetail keeps a detail that has no console event of its own.
 func (s *screen) recordDetail(d service.ToolDetail) {
 	if d.Key != "" {
-		d.Key = previewConsoleEvent(service.ConsoleEvent{ToolID: d.Key}).ToolID
+		d.Key = consoleToolID(d.Key)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

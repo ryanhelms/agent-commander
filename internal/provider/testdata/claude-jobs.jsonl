@@ -1,0 +1,12 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"shell","name":"Bash","input":{"command":"echo ok","description":"Check sample","run_in_background":true}}]}}
+{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"shell","task_type":"local_bash","description":"Check sample","is_backgrounded":true}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"shell","content":"started"}]}}
+{"type":"system","subtype":"task_started","task_id":"t2","tool_use_id":"agent","task_type":"local_agent","description":"Inspect sample","is_backgrounded":true}
+{"type":"assistant","parent_tool_use_id":"agent","message":{"content":[{"type":"text","text":"Child prose."},{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"sample.go"}},{"type":"tool_use","id":"find","name":"Grep","input":{"pattern":"sample"}}]}}
+{"type":"user","parent_tool_use_id":"other","message":{"content":[{"type":"tool_result","tool_use_id":"find","content":"other"}]}}
+{"type":"user","parent_tool_use_id":"agent","message":{"content":[{"type":"tool_result","tool_use_id":"find","content":"found"},{"type":"tool_result","tool_use_id":"read","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-01-02T03:04:06.790Z","thinking_duration_ms":1057,"message":{"content":[{"type":"thinking","thinking":""}]}}
+{"type":"result","uuid":"one","duration_ms":5320,"stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"subtype":"success","result":"Done."}
+{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"completed","end_time":1767323047000}}
+{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"shell","status":"completed","summary":"Background command \"Check sample\" completed (exit code 0)"}
+{"type":"result","uuid":"two","duration_ms":9,"stop_reason":null,"is_error":false,"origin":{"kind":"task-notification"}}
