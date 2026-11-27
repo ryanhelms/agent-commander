@@ -44,20 +44,38 @@ private func connection(_ snapshots: [[AdapterUpdate]], end: Error) -> AsyncThro
 
 private struct Dropped: Error {}
 
-/// Waits until `condition` holds, woken by each change to the observable state it reads.
-@MainActor private func until(_ condition: @MainActor () -> Bool) async {
+/// Waits until `condition` holds, woken by each change to the observable state it reads. True
+/// when it holds; false when the calling task is cancelled first, as at a test's time limit.
+@MainActor private func until(_ condition: @MainActor () -> Bool) async -> Bool {
     while !condition() {
-        await withCheckedContinuation { (changed: CheckedContinuation<Void, Never>) in
-            withObservationTracking { _ = condition() } onChange: { changed.resume() }
+        // One buffered change, so a change made before the wait starts is not lost. A cancelled
+        // task ends the stream, and the wait returns nil as it does at the end of a stream.
+        let (changes, change) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        withObservationTracking { _ = condition() } onChange: {
+            change.yield()
+            change.finish()
         }
+        var waiting = changes.makeAsyncIterator()
+        guard await waiting.next(isolation: MainActor.shared) != nil else { return condition() }
     }
+    return true
 }
 
-/// Expects the next recorded event to be `expected`.
+/// What a failed wait had seen: the feed's state, every event recorded so far, and the
+/// connections still open.
+@MainActor private func progress(_ exchange: Exchange, _ feed: AdapterUpdateFeed) -> String {
+    "feed link \(feed.link) with \(feed.updates.count) update(s); \(exchange.progress)"
+}
+
+/// Expects the next recorded event to be `expected`. A failure reports the progress made before it.
 @MainActor private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ expected: Exchange.Event,
+                                   in exchange: Exchange, feed: AdapterUpdateFeed,
                                    sourceLocation: SourceLocation = #_sourceLocation) async {
     let event = await events.next(isolation: MainActor.shared)
-    #expect(event == expected, sourceLocation: sourceLocation)
+    // No event at all means the wait ended with the task: the time limit cancelled the test.
+    let arrival = event == nil ? "no event arrived before the test task was cancelled" : "a different event arrived"
+    #expect(event == expected, "waiting for \(expected): \(arrival); \(progress(exchange, feed))",
+            sourceLocation: sourceLocation)
 }
 
 @Suite struct AdapterUpdateSnapshotTests {
@@ -198,25 +216,28 @@ private struct Dropped: Error {}
             await feed.follow()
             exchange.returned("old")
         }
-        await expectNext(&events, .opened(1))
+        defer { old.cancel() }
+        await expectNext(&events, .opened(1), in: exchange, feed: feed)
 
         old.cancel()
         let replacement = Task.immediate { @MainActor in
             await feed.follow()
             exchange.returned("replacement")
         }
+        defer { replacement.cancel() }
         // The replacement waits for the cancelled call to let go, then connects once.
-        await expectNext(&events, .closed(1))
-        await expectNext(&events, .returned("old"))
-        await expectNext(&events, .opened(2))
+        await expectNext(&events, .closed(1), in: exchange, feed: feed)
+        await expectNext(&events, .returned("old"), in: exchange, feed: feed)
+        await expectNext(&events, .opened(2), in: exchange, feed: feed)
         #expect(exchange.live == 1)
 
         exchange.send([fixture])
-        await until { feed.updates == [fixture] && feed.link == .live }
+        let read = await until { feed.updates == [fixture] && feed.link == .live }
+        #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
 
         replacement.cancel()
-        await expectNext(&events, .closed(2))
-        await expectNext(&events, .returned("replacement"))
+        await expectNext(&events, .closed(2), in: exchange, feed: feed)
+        await expectNext(&events, .returned("replacement"), in: exchange, feed: feed)
         #expect(exchange.live == 0)
     }
 
@@ -234,35 +255,65 @@ private struct Dropped: Error {}
         let first = follow("first")
         let second = follow("second")
         let third = follow("third")
-        await expectNext(&events, .opened(1))
+        // A failed wait below must not leave a call following the feed after the test.
+        defer { for call in [first, second, third] { call.cancel() } }
+        await expectNext(&events, .opened(1), in: exchange, feed: feed)
         #expect(exchange.live == 1)
 
         // A waiting call that is cancelled returns without ever connecting.
         second.cancel()
-        await expectNext(&events, .returned("second"))
+        await expectNext(&events, .returned("second"), in: exchange, feed: feed)
         #expect(exchange.live == 1)
 
         // The next waiting call connects once the owner has let go.
         first.cancel()
-        await expectNext(&events, .closed(1))
-        await expectNext(&events, .returned("first"))
-        await expectNext(&events, .opened(2))
+        await expectNext(&events, .closed(1), in: exchange, feed: feed)
+        await expectNext(&events, .returned("first"), in: exchange, feed: feed)
+        await expectNext(&events, .opened(2), in: exchange, feed: feed)
         #expect(exchange.live == 1)
         exchange.send([fixture, other])
-        await until { feed.updates == [fixture, other] }
+        let read = await until { feed.updates == [fixture, other] }
+        #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
 
         third.cancel()
-        await expectNext(&events, .closed(2))
-        await expectNext(&events, .returned("third"))
+        await expectNext(&events, .closed(2), in: exchange, feed: feed)
+        await expectNext(&events, .returned("third"), in: exchange, feed: feed)
         #expect(exchange.live == 0)
 
-        // Nothing still holds the feed: a later call connects at once.
+        // Nothing still holds the feed: a later call connects at once. It is cancelled as soon as
+        // its connection opens, before it has read anything.
         let again = follow("again")
-        await expectNext(&events, .opened(3))
+        defer { again.cancel() }
+        await expectNext(&events, .opened(3), in: exchange, feed: feed)
         again.cancel()
-        await expectNext(&events, .closed(3))
-        await expectNext(&events, .returned("again"))
-        #expect(exchange.live == 0)
+        await expectNext(&events, .closed(3), in: exchange, feed: feed)
+        await expectNext(&events, .returned("again"), in: exchange, feed: feed)
+        #expect(exchange.live == 0, "\(progress(exchange, feed))")
+    }
+
+    /// The comparison for the cancel straight after `opened` above: here the call has provably
+    /// read from its connection before it is cancelled. If only the immediate cancel stalls, the
+    /// stall lies between a connection opening and its first read.
+    @Test(.timeLimit(.minutes(1))) func aCallCancelledAfterItsFirstSnapshotLetsGo() async {
+        let exchange = Exchange()
+        var events = exchange.events.makeAsyncIterator()
+        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
+        let call = Task.immediate { @MainActor in
+            await feed.follow()
+            exchange.returned("ready")
+        }
+        defer { call.cancel() }
+        await expectNext(&events, .opened(1), in: exchange, feed: feed)
+
+        // The feed starts empty, so this set can only come from the open connection.
+        exchange.send([other])
+        let read = await until { feed.updates == [other] && feed.link == .live }
+        #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
+
+        call.cancel()
+        await expectNext(&events, .closed(1), in: exchange, feed: feed)
+        await expectNext(&events, .returned("ready"), in: exchange, feed: feed)
+        #expect(exchange.live == 0, "\(progress(exchange, feed))")
     }
 
     @Test func noticeLabelsNameTheCountAndBothVersions() {
@@ -300,6 +351,8 @@ private final class Exchange: @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [Int: AsyncThrowingStream<[AdapterUpdate], Error>.Continuation] = [:]
     private var opened = 0
+    /// Every event in the order it was recorded, whether or not the test has read it yet.
+    private var history: [Event] = []
 
     init() {
         let stream = AsyncStream.makeStream(of: Event.self)
@@ -310,6 +363,23 @@ private final class Exchange: @unchecked Sendable {
     /// Connections the feed holds open now.
     var live: Int { lock.withLock { lines.count } }
 
+    /// For a failure message: the events recorded so far and the connections still open.
+    var progress: String {
+        lock.withLock {
+            let open = lines.keys.sorted()
+            return "events recorded so far \(history); "
+                + (open.isEmpty ? "no connection open" : "connection(s) still open \(open)")
+        }
+    }
+
+    private func record(_ event: Event) {
+        // Under one lock, so the history and the stream always agree on the order.
+        lock.withLock {
+            history.append(event)
+            _ = emit.yield(event)
+        }
+    }
+
     func connect() -> AsyncThrowingStream<[AdapterUpdate], Error> {
         AsyncThrowingStream { line in
             let id = lock.withLock {
@@ -319,9 +389,9 @@ private final class Exchange: @unchecked Sendable {
             }
             line.onTermination = { [self] _ in
                 lock.withLock { lines[id] = nil }
-                emit.yield(.closed(id))
+                record(.closed(id))
             }
-            emit.yield(.opened(id))
+            record(.opened(id))
         }
     }
 
@@ -329,5 +399,5 @@ private final class Exchange: @unchecked Sendable {
         for line in lock.withLock({ Array(lines.values) }) { line.yield(updates) }
     }
 
-    func returned(_ call: String) { emit.yield(.returned(call)) }
+    func returned(_ call: String) { record(.returned(call)) }
 }
