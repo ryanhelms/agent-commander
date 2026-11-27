@@ -1269,6 +1269,73 @@ enum ActivityConversation {
         return out
     }
 
+    /// What a bounded request surface (the PiP) shows of a conversation, chosen from the finished
+    /// items so grouping, attribution and failures read exactly as they do on the focused worker.
+    /// Only the current turn is read: the items after the developer's latest prompt.
+    ///
+    /// - The latest group that holds work (a call, a workflow or a result), and everything after
+    ///   it as it is: replies, the report, the turn's end, a card, the live line.
+    /// - Before that group: every failure of the turn, as failure lines without their group's
+    ///   finished calls; the turn's latest report, when none follows; a pending question's line
+    ///   and a live line.
+    /// - From any turn: a call awaiting approval, and every item holding an entry in `keeping`
+    ///   (the request's own workflow), so the request is never cut off.
+    ///
+    /// A turn with no such group shows its latest `fallback` items instead, the prompt included
+    /// when it is among them. Earlier turns are otherwise left out, so they never crowd the latest.
+    static func recent(_ items: [PrettyItem], keeping: Set<String> = [],
+                       fallback: Int = TranscriptEntry.recentWindow) -> [PrettyItem] {
+        func isPrompt(_ item: PrettyItem) -> Bool {
+            if case .entry(let entry) = item { return entry.isFromUser }
+            return false
+        }
+        func isPendingQuestion(_ group: ActivityGroup) -> Bool {
+            group.isSingle && group.lines[0].tag?.word == "waiting"
+        }
+        func holdsWork(_ item: PrettyItem) -> Bool {
+            guard case .group(let group) = item, !isPendingQuestion(group) else { return false }
+            return group.lines.contains { $0.kind == .call || $0.kind == .workflow || $0.kind == .orphanResult }
+        }
+        func isKept(_ item: PrettyItem) -> Bool {
+            if case .approval = item { return true }
+            return !keeping.isEmpty && item.entries.contains { keeping.contains($0.id) }
+        }
+        func isReport(_ item: PrettyItem) -> Bool {
+            if case .report = item { return true }
+            return false
+        }
+
+        let prompt = items.lastIndex(where: isPrompt)
+        let turn = prompt.map { $0 + 1 } ?? 0
+        let start = items[turn...].lastIndex(where: holdsWork)
+            ?? max(prompt ?? 0, items.count - max(fallback, 0))
+        let reportFollows = items[start...].contains(where: isReport)
+        // Without a group the fallback may open on the prompt, one item before the turn.
+        let earlierReport = reportFollows || start <= turn ? nil : (turn..<start).last { isReport(items[$0]) }
+
+        var shown: [PrettyItem] = []
+        for index in 0..<start {
+            let item = items[index]
+            if isKept(item) { shown.append(item); continue }
+            guard index >= turn else { continue }
+            switch item {
+            case .group(let group):
+                if isPendingQuestion(group) {
+                    shown.append(item)
+                } else if !group.failures.isEmpty {
+                    shown.append(.group(ActivityGroup(id: group.id, failures: group.failures)))
+                }
+            case .live:
+                shown.append(item)
+            case .report:
+                if index == earlierReport { shown.append(item) }
+            case .entry, .plan, .approval, .card, .turnEnd:
+                break
+            }
+        }
+        return shown + items[start...]
+    }
+
     static func isPlanEvent(_ entry: TranscriptEntry) -> Bool {
         guard case .other = entry.kind else { return false }
         return entry.origin?.kind == "plan"

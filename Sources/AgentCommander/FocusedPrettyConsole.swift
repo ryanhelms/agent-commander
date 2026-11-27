@@ -192,7 +192,7 @@ struct PrettyACPMetrics {
         case .compact:
             self.inset = inset ?? 11; barHeight = 26; barSize = 11.5; showsSession = false; showsCounts = true
         case .pip:
-            // The PiP's transcript is a recent window, so whole-run counts would mislead.
+            // The PiP holds one turn and shows part of it, so whole-run counts would mislead.
             self.inset = inset ?? 11; barHeight = 22; barSize = 10.5; showsSession = false; showsCounts = false
         }
     }
@@ -231,6 +231,8 @@ struct PrettyACPConsole: View {
     var stories = ActivityStoryContext()
     /// The PiP's request workflow linked over the whole transcript, so its Ask stays in the window.
     var anchor: CommanderWorkflow? = nil
+    /// The PiP: `entries` is the worker's current turn, shown as `ActivityConversation.recent`.
+    var showsRecent = false
     /// The jobs this console's calls started, for the background stack.
     var background: [BackgroundJob] = []
     /// The service says the turn is still running (`WorkerPresentation.turnIsRunning`).
@@ -272,6 +274,7 @@ struct PrettyACPConsole: View {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
                               awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
+                              showsRecent: showsRecent,
                               live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
                                                reportedPhase: reportedPhase, turnIsRunning: turnIsRunning),
                               reportsAsCoordinator: isCoordinator, background: background)
@@ -306,19 +309,21 @@ extension PrettyACPConsole {
                   background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning)
     }
 
-    /// The asking worker's console in the PiP: its recent window and the request it answers. The
-    /// request's own story is anchored from the whole transcript, so the Ask is never cut off.
+    /// The asking worker's console in the PiP: its current turn, grouped as on the focused worker
+    /// and then cut to the latest group, the turn's failures, the report and the live line; and
+    /// the request it answers. The request's own story is anchored from the whole transcript, so
+    /// the Ask is never cut off.
     init(request: RequestPresentation, session: NativeSession, reply: ReplyContext,
          inset: CGFloat? = nil, conversationHeight: CGFloat? = nil) {
         self.init(consoleID: request.workerID, name: request.workerName, client: request.client,
-                  state: request.workerState, entries: request.contextEntries, session: session,
+                  state: request.workerState, entries: request.prettyEntries, session: session,
                   request: request, reply: reply, density: .pip, inset: inset,
                   conversationHeight: conversationHeight,
-                  // The PiP holds a recent window, which cannot rule out an older open call, so
-                  // it shows the call its request resolved from the whole transcript.
+                  // The PiP holds one turn, which cannot rule out an older open call, so it
+                  // shows the call its request resolved from the whole transcript.
                   awaitingApproval: .resolved(request.awaitingApprovalToolID),
                   stories: .form(for: request, reply: reply),
-                  anchor: request.requestWorkflow,
+                  anchor: request.requestWorkflow, showsRecent: true,
                   background: request.workerBackgroundJobs, turnIsRunning: request.workerTurnIsRunning)
     }
 }
