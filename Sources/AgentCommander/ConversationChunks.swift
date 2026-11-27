@@ -47,6 +47,11 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on a developer's prompt whose reference says it carried media. Pretty uses it to keep
     /// the service's marker out of the prompt's text; see `PromptMediaIndicator`.
     var promptMedia: PromptMediaIndicator? = nil
+    /// The provider's own message ID, when the reference carries one. A thought's stored times
+    /// are kept under it.
+    var messageID: String? = nil
+    /// How many items the reference counts, such as a plan's entries.
+    var itemCount: Int? = nil
 }
 
 enum ConversationChunks {
@@ -144,6 +149,8 @@ extension TranscriptOrigin {
         chunk = key.map { Chunk(text: message.content ?? "", joinsPrevious: $0 == previous) }
         summary = message.role == "user" || message.role == "assistant" ? nil : Self.operationalSummary(kind: kind, acp: acp)
         promptMedia = message.role == "user" ? PromptMediaIndicator(acp: acp) : nil
+        messageID = acp["messageId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        itemCount = acp["itemCount"]?.intValue
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.

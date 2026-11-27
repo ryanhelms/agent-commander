@@ -723,6 +723,12 @@ enum CommanderActivity {
                 facts.liveOperationStatus = status
             } else if call.tool == .integrate, let id = call.operationID, let status = live.integrations[id] {
                 facts.liveOperationStatus = status
+            } else if call.tool == .delegate, let id = call.field("id"), let state = live.workers[id] {
+                // The delegated worker's state now, by the exact ID the call returned.
+                facts.liveOperationStatus = state
+            } else if call.tool == .interrupt || call.tool == .stopWorker, let id = call.targetWorker,
+                      let state = live.workers[id] {
+                facts.liveOperationStatus = state
             } else {
                 return entry
             }
@@ -745,13 +751,17 @@ struct CommanderLiveState: Equatable {
     var integrations: [String: String] = [:]
     /// Worker ID → follow-up message ID → status, from each worker's `control.messages`.
     var followUps: [String: [String: String]] = [:]
+    /// Worker ID → the worker's state as the service writes it.
+    var workers: [String: String] = [:]
 
-    var isEmpty: Bool { requests.isEmpty && integrations.isEmpty && followUps.isEmpty }
+    var isEmpty: Bool { requests.isEmpty && integrations.isEmpty && followUps.isEmpty && workers.isEmpty }
 
-    init(requests: [Question] = [], integrations: [String: String] = [:], followUps: [String: [String: String]] = [:]) {
+    init(requests: [Question] = [], integrations: [String: String] = [:], followUps: [String: [String: String]] = [:],
+         workers: [String: String] = [:]) {
         self.requests = Dictionary(requests.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         self.integrations = integrations
         self.followUps = followUps
+        self.workers = workers
     }
 
     init(run: Run) {
@@ -767,6 +777,8 @@ struct CommanderLiveState: Equatable {
                 followUps[worker.id, default: [:]][message.id] = message.status
             }
         }
-        self.init(requests: run.requests ?? [], integrations: integrations, followUps: followUps)
+        var states: [String: String] = [:]
+        for worker in run.workers ?? [] where !worker.state.isEmpty { states[worker.id] = worker.state }
+        self.init(requests: run.requests ?? [], integrations: integrations, followUps: followUps, workers: states)
     }
 }
