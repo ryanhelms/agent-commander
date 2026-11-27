@@ -60,13 +60,13 @@ func (s *Service) directory(ctx context.Context, _ Principal, r *http.Request) (
 		if err := tx.QueryRow(ctx, `SELECT ARRAY(SELECT handle FROM mp_profiles p
 			WHERE handle IS NOT NULL AND strpos(lower(handle),lower($1))>0
 			AND NOT EXISTS(SELECT FROM mp_members m WHERE m.user_id=p.user_id AND m.suspended)
-			AND ($1<>'' OR EXISTS(SELECT FROM mp_resources r WHERE r.owner_id=p.user_id AND r.listed AND cardinality(r.actions)>0))
+			AND ($1<>'' OR EXISTS(SELECT FROM mp_resources r WHERE r.owner_id=p.user_id AND r.listed AND NOT r.coordinator_inbox_ended AND cardinality(r.actions)>0))
 			ORDER BY handle)`, q).Scan(&result.Handles); err != nil {
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT r.id,coalesce(p.handle,''),r.name,r.kind,r.actions,r.capabilities,`+resourceEndorsements+`
 			FROM mp_resources r JOIN mp_profiles p ON p.user_id=r.owner_id
-			WHERE r.listed AND cardinality(r.actions)>0
+			WHERE r.listed AND NOT r.coordinator_inbox_ended AND cardinality(r.actions)>0
 			AND NOT EXISTS(SELECT FROM mp_members m WHERE m.user_id=p.user_id AND m.suspended)
 			AND (
 				strpos(lower(r.name),lower($1))>0 OR strpos(lower(p.handle),lower($1))>0 OR
