@@ -1961,6 +1961,8 @@ struct CockpitView: View {
             // Entry fields come from the state the app already holds, for the named worker only.
             recordDetail: { workerID, entryID in model.recordDetail(workerID: workerID, entryID: entryID) },
             // A prompt's media is read by its own worker and turn. The model owns the read.
-            promptAttachments: model.promptAttachmentIntents)
+            promptAttachments: model.promptAttachmentIntents,
+            // A reported file is opened for the named worker only, and only on this Mac.
+            toolLocation: model.toolLocationIntents)
     }
 }

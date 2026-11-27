@@ -664,11 +664,18 @@ struct PrettyConsoleView: View {
     private func result(_ entry: TranscriptEntry, step: ActivityStep, metrics: PrettyMetrics) -> some View {
         let record = details?.record(worker: consoleID, key: entry.detailKey)
         let summary = details?.summary(worker: consoleID, key: entry.detailKey)
-        return ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
-                                  metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
-            .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-            // The full record is read only now that the line is open.
-            .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.detailKey) }
+        return VStack(alignment: .leading, spacing: 0) {
+            // The file and line this worker's own call reported, from its latest stored summary.
+            if let location = summary?.openableLocation, let intents = access?.toolLocation {
+                ToolLocationAction(workerID: consoleID, detailKey: entry.detailKey, location: location, intents: intents,
+                                   metrics: metrics)
+            }
+            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+                               metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
+                .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+        }
+        // The full record is read only now that the line is open.
+        .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.detailKey) }
     }
 
     private func reportDetail(_ report: ActivityReport, metrics: PrettyMetrics) -> some View {

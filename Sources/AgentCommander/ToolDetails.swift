@@ -84,9 +84,12 @@ struct ToolDetailSummary: Decodable, Equatable, Sendable {
     var stopReason: String? = nil
     var terminalReason: String? = nil
     var isError: Bool? = nil
+    /// The one file and line an ACP tool reported for this call. Nil when the service sent
+    /// none; a member that is not one valid location holds no value (`ToolLocation.swift`).
+    var location: ToolLocationField? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case key, kind, sequence, name, title, plan, truncated, revision, fields, state
+        case key, kind, sequence, name, title, plan, truncated, revision, fields, state, location
         case toolKind = "tool_kind", startedAt = "started_at", endedAt = "ended_at"
         case inputBytes = "input_bytes", resultBytes = "result_bytes"
         case toolUseID = "tool_use_id", jobKind = "job_kind"

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"agentcommander/internal/hosted"
@@ -68,9 +69,23 @@ type ToolDetail struct {
 	// by a runner, by an older service, or in more places than the bounds keep.
 	// Only the service writes it.
 	Shortened map[string][]string `json:"shortened,omitempty"`
-	Revision  uint64              `json:"revision,omitempty"`
+	// A nil location leaves an earlier value alone. An explicit empty location
+	// clears it, so an ambiguous provider update cannot keep an old target.
+	Location *ToolLocation `json:"location,omitempty"`
+	Revision uint64        `json:"revision,omitempty"`
 	*JobDetail
 	*TurnEndDetail
+}
+
+// ToolLocation is the single file and line an ACP tool reported for its call.
+type ToolLocation struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+}
+
+func (l ToolLocation) Valid() bool {
+	return l.Line > 0 && uint64(l.Line) <= 1<<32-1 && len(l.Path) <= 4096 &&
+		filepath.IsAbs(l.Path) && !strings.ContainsFunc(l.Path, unicode.IsControl)
 }
 
 // JobDetail is a snapshot. Empty open-tool fields clear the previous call.
@@ -92,6 +107,9 @@ type TurnEndDetail struct {
 // Size is the record's variable payload, used to bound batches and retention.
 func (d *ToolDetail) Size() int {
 	size := 0
+	if l := d.Location; l != nil {
+		size += len(l.Path) + 8
+	}
 	if j := d.JobDetail; j != nil {
 		size += len(j.ToolUseID) + len(j.JobKind) + len(j.State) + len(j.OpenToolName) + len(j.OpenToolArg)
 	}
@@ -247,6 +265,12 @@ func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 	if len(next.Plan) != 0 {
 		merged.Plan = next.Plan
 	}
+	if next.Kind != "tool" || next.Location != nil {
+		merged.Location = nil
+		if next.Kind == "tool" && next.Location != nil && next.Location.Valid() {
+			merged.Location = next.Location
+		}
+	}
 	if merged.StartedAt == "" {
 		merged.StartedAt = next.StartedAt
 	}
@@ -351,6 +375,11 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 			d.JobDetail, d.TurnEndDetail = nil, nil
 		default:
 			continue
+		}
+		if d.Kind != "tool" {
+			d.Location = nil
+		} else if d.Location != nil && !d.Location.Valid() {
+			d.Location = &ToolLocation{}
 		}
 		if d.Key == "" {
 			if d.Sequence == 0 {
