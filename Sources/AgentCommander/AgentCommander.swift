@@ -35,6 +35,7 @@ struct AgentCommander: App {
                 }
             }
             .environment(consoleModes)
+            .environment(model.toolDetails)
             .environment(nativeTerminals)
             .appTheme()
             .frame(minWidth: 800, minHeight: 540)
@@ -50,6 +51,7 @@ struct AgentCommander: App {
         // Agent Commander > Settings… (⌘,) from the system command.
         Settings {
             SingleInstanceSettingsPage()
+                .environment(model.toolDetails)
                 .singleInstanceAuxiliaryScene()
         }
 

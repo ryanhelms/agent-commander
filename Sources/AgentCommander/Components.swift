@@ -44,6 +44,14 @@ enum TaskState: Equatable {
     case disconnected
     case unknown(String)
 
+    /// A turn is in progress: the worker is starting, running or working.
+    var isActiveTurn: Bool {
+        switch self {
+        case .running, .working, .starting: true
+        default: false
+        }
+    }
+
     /// The service's worker state for a lost connection. A contract value.
     static let apiDisconnected = "disconnected"
 
@@ -284,6 +292,12 @@ struct TranscriptEntry: Identifiable, Equatable {
     /// the live request state the projection matched to it. Nil for every other entry. Pretty
     /// links Commander calls only through it and the calls' own exact IDs; see `CommanderActivity`.
     var commander: CommanderCallFacts? = nil
+    /// For a result whose call the service did not send: the tool call ID the result names, when
+    /// it names one. Stored details are kept under it.
+    var toolCallID: String? = nil
+
+    /// The key the entry's stored details are kept under: the call's ID.
+    var detailKey: String { toolCallID ?? id }
 
     var isFromUser: Bool {
         if case .prose(_, let fromUser) = kind { return fromUser }
@@ -396,6 +410,8 @@ struct WorkerPresentation: Identifiable, Equatable {
     var transcript: [TranscriptEntry] = []
     /// Follow-ups the service has accepted for this worker and not yet delivered to it.
     var queuedFollowUps = 0
+    /// The follow-ups the service holds for this worker's next turn, oldest first, as written.
+    var queuedMessages: [QueuedFollowUp] = []
     /// Every follow-up receipt of a managed local Claude worker, from the service's durable
     /// `control.messages`, with what a queued one waits for. Nil for every other worker and while
     /// the service lists none; those keep the `queuedFollowUps` cue.
@@ -550,6 +566,8 @@ struct CockpitActions {
     var takeControl: (@MainActor (_ workerID: String) -> Void)? = nil
     var interruptWorker: (@MainActor (_ workerID: String) -> Void)? = nil
     var stopWorker: (@MainActor (_ workerID: String) -> Void)? = nil
+    /// Takes back a follow-up that is still queued, by its exact message ID.
+    var cancelFollowUp: (@MainActor (_ workerID: String, _ messageID: String) -> Void)? = nil
     /// Whether each operation applies to a given worker right now. Nil means it applies wherever
     /// the action exists, which is what the design fixtures use.
     var canControlWorker: (@MainActor (_ workerID: String) -> Bool)? = nil
@@ -913,7 +931,7 @@ extension TranscriptEntry {
                 // are reached from the entry, which says that it has no text.
                 entries.append(TranscriptEntry(
                     id: message.id, kind: result.hasText ? .output(result) : .other(role: message.role, text: ""),
-                    origin: origin))
+                    origin: origin, toolCallID: message.toolCallID))
                 continue
             }
             let text = (message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1045,6 +1063,7 @@ extension RunContent {
                 startedAt: Timestamp.clock(worker.createdAt, seconds: true),
                 transcript: transcript,
                 queuedFollowUps: (worker.control?.messages ?? []).filter { $0.status == "queued" }.count,
+                queuedMessages: isCoordinator ? [] : QueuedFollowUp.queued(worker.control),
                 // Only a managed local Claude worker, the same scope as its progress track.
                 followUpReceipts: claudeProgress == nil ? nil
                     : FollowUpReceipts(control: worker.control, workerID: worker.id, workerName: worker.name,

@@ -9,11 +9,14 @@ struct WorkerFollowUp: Decodable, Identifiable, Equatable, Sendable {
     let status: String
     /// The control generation the follow-up was accepted under. Nil from an older service.
     let generation: Int?
+    /// The message as written. Nil from an older service.
+    let text: String?
 
-    init(id: String, status: String, generation: Int? = nil) {
+    init(id: String, status: String, generation: Int? = nil, text: String? = nil) {
         self.id = id
         self.status = status
         self.generation = generation
+        self.text = text
     }
 }
 
@@ -82,7 +85,9 @@ extension WorkerFollowUp {
     init(projection value: AGUIValue) throws {
         guard case .object(let fields) = value else { throw AGUIValueError("A follow-up is not an object") }
         self.init(id: try fields.string("id"), status: try fields.string("status"),
-                  generation: try fields.optionalInt("generation"))
+                  generation: try fields.optionalInt("generation"),
+                  // Shown only in the message box, as "Queued for the next turn". A receipt never reads it.
+                  text: try fields.optionalString("text"))
     }
 }
 
@@ -767,6 +772,42 @@ actor ServiceClient {
     func sendFollowUp(to workerID: String, body: Data, operationID: String) throws {
         _ = try Self.send(socket: socket, path: "/v1/workers/\(workerID)/messages", body: body,
                           operationID: operationID)
+    }
+
+    /// Takes back a follow-up that is still queued. The service refuses once it has started.
+    func cancelFollowUp(_ workerID: String, messageID: String) throws {
+        _ = try request("/v1/workers/\(Self.percentEncoded(workerID))/messages/\(Self.percentEncoded(messageID))/cancel",
+                        fields: [String: String]())
+    }
+
+    // MARK: Tool details (internal/service/tool_details.go). Owner socket only.
+
+    /// The worker's tool-detail summaries changed after `revision`. Not queued behind this
+    /// client's other requests, and cancellable.
+    nonisolated func toolDetails(_ workerID: String, after revision: UInt64) async throws -> ToolDetailPage {
+        try JSONDecoder().decode(ToolDetailPage.self, from: await read(Self.toolDetailsPath(workerID, after: revision), timeout: 6))
+    }
+
+    /// One full record, read when its line is opened.
+    nonisolated func toolDetail(_ workerID: String, key: String) async throws -> ToolDetailRecord {
+        try JSONDecoder().decode(ToolDetailRecord.self, from: await read(Self.toolDetailPath(workerID, key: key), timeout: 10))
+    }
+
+    nonisolated func transcriptSettings() async throws -> TranscriptSettings {
+        try JSONDecoder().decode(TranscriptSettings.self, from: await read("/v1/settings/transcript", timeout: 6))
+    }
+
+    /// Applies to records stored from now on. Returns what the service kept.
+    func setTranscriptSettings(_ settings: TranscriptSettings) throws -> TranscriptSettings {
+        try JSONDecoder().decode(TranscriptSettings.self, from: try request("/v1/settings/transcript", fields: settings))
+    }
+
+    nonisolated static func toolDetailsPath(_ workerID: String, after revision: UInt64) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/tool-details?after=\(revision)"
+    }
+
+    nonisolated static func toolDetailPath(_ workerID: String, key: String) -> String {
+        "/v1/workers/\(percentEncoded(workerID))/tool-details?key=\(percentEncoded(key))"
     }
 
     // MARK: Provider session

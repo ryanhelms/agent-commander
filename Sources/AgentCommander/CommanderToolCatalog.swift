@@ -169,15 +169,8 @@ enum CommanderTool: String, CaseIterable, Sendable {
         }
     }
 
-    /// What the running indicator says while this tool's call is open.
-    var runningPhrase: String {
-        switch self {
-        case .wait: "Waiting for reply"
-        case .ask: "Asking"
-        case .status: "Checking worker status"
-        default: label
-        }
-    }
+    // What Pretty says while a call is open, when it is done and when it fails is in
+    // `ActivityWords.commander` (ActivitySentence.swift), for all 23 tools.
 }
 
 // MARK: - Payload

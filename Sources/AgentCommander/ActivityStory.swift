@@ -619,15 +619,20 @@ struct ProviderTool: Equatable {
     /// The fact a headline leads with: the first known field of structured arguments (a list,
     /// such as a command's argv, joined by spaces), or a plain detail's first line. Nil for JSON
     /// without a known field and for an ACP placeholder: the arguments stay in Tool details.
-    func fact(from detail: String?) -> String? {
+    /// `whole` keeps the first line at its full length, for a value that is shortened later by
+    /// its own rule (a path to its file name, a command through its middle). A headline is
+    /// capped at 160 characters.
+    func fact(from detail: String?, whole: Bool = false) -> String? {
+        func line(_ text: String) -> String { whole ? ToolDetailText.wholeLine(text) : CommanderCall.firstLine(text) }
+        func headline(_ text: String) -> String? { ToolDetailText.headline(text).map { _ in line(text.trimmingCharacters(in: .whitespacesAndNewlines)) } }
         guard let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
-        guard let value = CommanderPayload.value(text) else { return ToolDetailText.headline(text) }
-        if let string = value.stringValue { return ToolDetailText.headline(string) }
+        guard let value = CommanderPayload.value(text) else { return headline(text) }
+        if let string = value.stringValue { return headline(string) }
         guard let object = value.objectValue else { return nil }
         for key in factKeys {
-            if let scalar = CommanderCall.text(object[key]) { return CommanderCall.firstLine(scalar) }
+            if let scalar = CommanderCall.text(object[key]) { return line(scalar) }
             let parts = (object[key]?.arrayValue ?? []).compactMap { CommanderCall.text($0) }
-            if !parts.isEmpty { return CommanderCall.firstLine(parts.joined(separator: " ")) }
+            if !parts.isEmpty { return line(parts.joined(separator: " ")) }
         }
         return nil
     }
@@ -663,6 +668,19 @@ enum ToolDetailText {
 
     static func isPlaceholder(_ text: String) -> Bool {
         placeholders.contains(text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// The first line at its full length.
+    static func wholeLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+    }
+
+    /// A call's plain text as the value it names (a path, a command), at its full length. Nil for
+    /// an ACP placeholder.
+    static func subject(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isPlaceholder(trimmed) else { return nil }
+        return wholeLine(trimmed)
     }
 
     static func headline(_ text: String) -> String? {
@@ -717,10 +735,22 @@ extension CommanderCall {
 
     var delivery: String? { responseIsThisRequest ? field("delivery") : nil }
 
-    /// The text a result reported, exactly as sent.
-    var reportText: String? {
+    /// The text a result reported, exactly as sent: the call's own text, else the text the
+    /// service returned with the worker's record.
+    var reportText: String? { statedReport ?? returnedReport }
+
+    /// The report as the call itself carries it, in its arguments or its plain detail.
+    var statedReport: String? {
         guard tool == .result else { return nil }
         return argument("result") ?? plainDetail
+    }
+
+    /// The report as the service's response repeats it (`{"id":…,"result":…}`). The older runner
+    /// keeps no arguments on the event, so this is then the only copy. A failed call has no
+    /// response: its error text is never a report.
+    var returnedReport: String? {
+        guard tool == .result, toolStatus == .done else { return nil }
+        return field("result")
     }
 
     var tests: [(command: String, outcome: String?)] {
