@@ -130,6 +130,9 @@ struct ToolDetailRecord: Decodable, Equatable, Sendable {
     /// The PNG images of `result` and `content`, read once by the store when it keeps the
     /// record. Never sent by the service; nil on a record the store has not kept.
     var images: ResultImages? = nil
+    /// The typed diff blocks of `content`, compared once by the store when it keeps the record.
+    /// Never sent by the service; nil on a record the store has not kept.
+    var changes: ResultChanges? = nil
 
     private enum CodingKeys: String, CodingKey {
         case key, kind, name, title, input, result, content, truncated, shortened
@@ -200,7 +203,7 @@ final class ToolDetailStore {
          settings: TranscriptSettings = TranscriptSettings()) {
         self.summaries = summaries.mapValues { Dictionary($0.map { ($0.key, $0) }, uniquingKeysWith: { _, last in last }) }
         self.records = records.mapValues {
-            Dictionary($0.map { ($0.key, ToolDetailStore.withImages($0)) }, uniquingKeysWith: { _, last in last })
+            Dictionary($0.map { ($0.key, ToolDetailStore.kept($0)) }, uniquingKeysWith: { _, last in last })
         }
         self.settings = settings
     }
@@ -262,7 +265,7 @@ final class ToolDetailStore {
         reading.insert(id)
         defer { reading.remove(id) }
         guard let record = try? await source.record(worker, key) else { missing.insert(id); return }
-        records[worker, default: [:]][key] = ToolDetailStore.withImages(record)
+        records[worker, default: [:]][key] = ToolDetailStore.kept(record)
     }
 
     /// The record with its result's PNG images read, once, so a sentence's tag and an opened
@@ -271,6 +274,16 @@ final class ToolDetailStore {
         guard record.kind == "tool", record.images == nil else { return record }
         var kept = record
         kept.images = ResultImages.read(result: record.result, content: record.content)
+        return kept
+    }
+
+    /// The record as the store keeps it: its images read and its diff blocks compared, once. The
+    /// comparison is bounded (`ResultChanges.Limits`), so keeping a record does not stall a frame.
+    nonisolated static func kept(_ record: ToolDetailRecord) -> ToolDetailRecord {
+        var kept = withImages(record)
+        guard kept.kind == "tool", kept.changes == nil else { return kept }
+        kept.changes = ResultChanges.read(content: record.content,
+                                          cut: StoredCut(record: record, field: "content", isStored: true))
         return kept
     }
 

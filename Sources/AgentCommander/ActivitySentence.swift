@@ -289,6 +289,9 @@ struct ActivityStep: Identifiable, Equatable {
     var duration: TimeInterval? = nil
     /// A thought's text, or a quiet row's event. Empty when the provider sent none.
     var text: String = ""
+    /// The lines a finished call added and removed, from its stored record's typed diff blocks.
+    /// Exact, or nil: never an estimate, and nil until that record has been read.
+    var change: ChangeCounts? = nil
 
     /// Whether the line opens: every call does; a thought only when it has text.
     var opens: Bool {
@@ -301,6 +304,7 @@ struct ActivityStep: Identifiable, Equatable {
 
     var accessibilityLabel: String {
         var parts = [sentence.plain]
+        if let change { parts.append(change.spoken) }
         if let tag { parts.append(tag.word) }
         if let failure { parts.append(failure.reason) }
         return parts.joined(separator: ", ")
@@ -1017,6 +1021,10 @@ enum ActivitySteps {
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
         if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
+        // The same holds for the counts of a finished edit: they come from the full record's
+        // typed diff blocks, once it has been read, and only when they are exact. An interrupted
+        // edit is not a finished one.
+        if status == .done { step.change = record?.resultChanges?.counts }
         return step
     }
 
@@ -1033,6 +1041,8 @@ enum ActivitySteps {
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
                 ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
             apply(wording, to: &step, status: status, result: result)
+            // The record kept under the result's exact tool call ID holds that call's diff.
+            if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
             return step
         }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
@@ -1192,6 +1202,10 @@ enum ActivityConversation {
                 var merged = last
                 merged.entries += step.entries
                 merged.count += step.count
+                // The line's counts are of every call it stands for, or absent.
+                merged.change = last.change.flatMap { known in
+                    step.change.map { ChangeCounts(added: known.added + $0.added, removed: known.removed + $0.removed) }
+                }
                 if step.tag == nil { merged.tag = ActivityTag(word: "\(merged.count) times") }
                 if var group = open { group.lines[group.lines.count - 1] = merged; open = group }
                 return

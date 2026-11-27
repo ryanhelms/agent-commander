@@ -590,7 +590,7 @@ enum ResultShape: Equatable {
             // Text results: a provider tool names its renderer; anything else is quoted as sent.
             switch provider?.kind {
             case .read?: return Selection(shape: text.isEmpty ? .empty("The file is empty.") : .textFile)
-            case .edit?, .write?: return Selection(shape: text.isEmpty ? .empty("The provider sent no diff for this edit.") : .change)
+            case .edit?, .write?: return Selection(shape: text.isEmpty ? .empty(ResultChanges.absentSentence) : .change)
             case .shell?: return Selection(shape: text.isEmpty ? .empty("The command printed nothing.") : .terminal)
             case .search?: return Selection(shape: text.isEmpty ? .empty("Nothing matched.") : .searchResults)
             case .web?: return Selection(shape: text.isEmpty ? .empty("No results.") : .webResults)
