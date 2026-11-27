@@ -27,6 +27,68 @@ private struct PrettySwapHost: View {
 }
 
 @MainActor @Suite struct PrettyRenderTests {
+    /// A conversation taller than its column opens at its latest content, as Console does, and
+    /// new content keeps the end in view. A short one sits at the top of its column.
+    @Test func aTallConversationOpensAtItsEndAndFollowsIt() async throws {
+        _ = NSApplication.shared
+        let box = PrettyEntriesBox()
+        var wire = Wire()
+        wire.user("Check each tool once and report.")
+        wire.call("Read", detail: "/a/words.txt", result: "1\talpha")
+        wire.say("Four of the five steps passed.\n\n| Tool | Result |\n|---|---|\n"
+                 + (1...12).map { "| `commander_tool_\($0)` | Pass. It returned as soon as the worker reported, and nothing else changed. |" }.joined(separator: "\n")
+                 + "\n\nNo files were changed and no network was used.")
+        box.entries = wire.entries
+        let size = CGSize(width: 432, height: 400)
+        let host = NSHostingView(rootView: PrettySwapHost(box: box, output: "")
+            .frame(width: size.width, height: size.height).environment(ConsoleModeStore()).environment(ToolDetailStore()))
+        let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: size.width, height: size.height),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        func scroll(_ view: NSView) -> NSScrollView? {
+            (view as? NSScrollView) ?? view.subviews.lazy.compactMap(scroll).first
+        }
+        func settle() async throws -> (visible: CGRect, height: CGFloat) {
+            for _ in 0..<4 {
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(80))
+            }
+            let view = try #require(scroll(host))
+            return (view.documentVisibleRect, try #require(view.documentView).frame.height)
+        }
+        func grow() {
+            wire.user("And one more check.")
+            wire.say(String(repeating: "The extra check passed and nothing else changed. ", count: 12))
+            box.entries = wire.entries
+        }
+        // Short: the content fills the column from its top, with nothing to scroll.
+        box.entries = Array(wire.entries.prefix(1))
+        let short = try await settle()
+        #expect(short.visible.minY == 0 && abs(short.height - size.height) <= 1)
+        box.entries = wire.entries
+        let opened = try await settle()
+        #expect(opened.height > size.height + 40)
+        #expect(abs(opened.visible.maxY - opened.height) <= 1)
+
+        grow()
+        let followed = try await settle()
+        #expect(followed.height > opened.height + 40)
+        #expect(abs(followed.visible.maxY - followed.height) <= 1)
+
+        window.contentView = nil
+    }
+
+    @Test func onlyTheReadersOwnMoveDecidesWhetherTheEndIsFollowed() {
+        let atEnd = PrettyScrollEnd(offset: 600, column: 400, content: 1000)
+        // Scrolled up, then back to within reach of the end.
+        #expect(PrettyScrollEnd(offset: 300, column: 400, content: 1000).follows(after: atEnd) == false)
+        #expect(PrettyScrollEnd(offset: 580, column: 400, content: 1000).follows(after: atEnd) == true)
+        // The content grew or the column was resized: the reader did not move.
+        #expect(PrettyScrollEnd(offset: 600, column: 400, content: 1300).follows(after: atEnd) == nil)
+        #expect(PrettyScrollEnd(offset: 700, column: 300, content: 1000).follows(after: atEnd) == nil)
+        #expect(atEnd.follows(after: atEnd) == nil)
+    }
+
     /// At launch the run list arrives first, without messages: Pretty shows the worker's
     /// unformatted output, scrolled to its end. The workspace feed then brings the conversation.
     /// A shorter conversation must be in view, not the empty space past its end.

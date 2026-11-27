@@ -264,11 +264,46 @@ enum PrettyContent {
 
 // MARK: - Pretty renderer
 
+/// Where a conversation's scroll view stands: how far its end is below the column's lower edge.
+struct PrettyScrollEnd: Equatable {
+    var offset: CGFloat
+    var column: CGFloat
+    var content: CGFloat
+
+    /// The end counts as in view within this distance.
+    static let reach: CGFloat = 24
+
+    init(offset: CGFloat, column: CGFloat, content: CGFloat) {
+        self.offset = offset
+        self.column = column
+        self.content = content
+    }
+
+    init(_ geometry: ScrollGeometry) {
+        self.init(offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                  column: geometry.containerSize.height - geometry.contentInsets.top - geometry.contentInsets.bottom,
+                  content: geometry.contentSize.height)
+    }
+
+    var isAtEnd: Bool { content - (offset + column) <= Self.reach }
+
+    /// Whether the view follows its end from now on, or nil to leave that as it is. Only a move
+    /// of the reader's own decides it: when the content or the column changed size, the offset
+    /// moved with them and says nothing about where the reader wants to be.
+    func follows(after old: PrettyScrollEnd) -> Bool? {
+        guard abs(content - old.content) < 0.5, abs(column - old.column) < 0.5, offset != old.offset else { return nil }
+        return isAtEnd
+    }
+}
+
 struct PrettyConsoleView: View {
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
     @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
+    /// The reader is at the end of the conversation, so new content keeps the end in view.
+    @State private var followsEnd = true
+    @State private var position = ScrollPosition()
 
     let consoleID: String
     let entries: [TranscriptEntry]
@@ -327,6 +362,7 @@ struct PrettyConsoleView: View {
         let scope = stories.scope(canOpenSource: access?.openSource != nil)
         let layout = layout()
         let shown = layout.items
+        GeometryReader { column in
         ScrollView(.vertical) {
             // One conversation column. It fills a tile, and stops widening in a broad console so
             // a prompt stays within reach of the answer beneath it.
@@ -345,10 +381,26 @@ struct PrettyConsoleView: View {
             .frame(maxWidth: metrics.columnWidth, alignment: .leading)
             .padding(.horizontal, horizontalInset)
             .padding(.vertical, metrics.verticalInset)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // The content is never shorter than the column, and a short conversation sits at its
+            // top. The scroll view's own top alignment is not used: with it, a lazy stack whose
+            // first rows measure shorter than the column opens at the top and stays there.
+            .frame(maxWidth: .infinity, minHeight: column.size.height, alignment: .topLeading)
         }
-        .defaultScrollAnchor(.bottom)
-        .defaultScrollAnchor(.top, for: .alignment)
+        // Opens at the latest content. A change of size leaves what is in view where it is; while
+        // the reader is at the end, the view then moves to the new end. Once they scroll up it
+        // does not, whatever arrives.
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(.bottom, for: .alignment)
+        .defaultScrollAnchor(.top, for: .sizeChanges)
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: PrettyScrollEnd.self) { PrettyScrollEnd($0) } action: { old, new in
+            if let follows = new.follows(after: old) {
+                followsEnd = follows
+            } else if followsEnd, !new.isAtEnd {
+                position.scrollTo(edge: .bottom)
+            }
+        }
+        }
         // The unformatted output and the conversation are two scroll views. One kept across the
         // change holds the old offset, which lies past the end of a shorter conversation.
         .id(entries.isEmpty)
