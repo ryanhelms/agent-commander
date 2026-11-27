@@ -68,7 +68,7 @@ Marks used below:
 | `TodoWrite` (older Claude runner's task list) | Raw `TranscriptToolRow` | Updating the plan | Checklist card (SVC: keep the todos from the call's input) | Couldn't update the plan | Updated the plan | none: the card stands alone |
 | Unknown or other MCP tool | Raw `TranscriptToolRow` | Using `tool` | Used `tool` (wire name without the server prefix; full name in help) | `tool` failed | same; the wire name is always present | used another tool / used N other tools |
 | Result with no recorded call | Raw "Tool result" block | none | Got a result whose call was not recorded | Failed result: stays a visible failure line with its reason | same | got N results with no recorded call |
-| Thinking | "Thinking" disclosure | Thinking, in the live line | Thought: *first line*, italic. Opens to the full text | none | Thought | none; a group of only thoughts reads "Thought" |
+| Thinking | "Thinking" disclosure | Thinking *elapsed*, in the live line. Opens while it runs to the thought text as it streams (section B) | Thought for *duration*. Opens to the full text | none | No start time: "Thinking", "Thought". No text: no chevron | none; a group of only thoughts reads "Thought for *total*", or "Thought" when any of them lacks a time |
 | Usage, mode, commands, session lines | One visible mono line each | none | Folded into the surrounding group as its own line, wording unchanged ("Context …", "Mode …") | none | unchanged | none; a group of only these reads "N session updates" |
 | stderr, permission notice, other attention-tone events | Visible line in attention ink | none | Unchanged, and never folded | none | unchanged | none: breaks the group |
 | Plan | Provider line "[ACP plan] N items" | none | Checklist card: done, in progress, pending. One per turn, updated in place (SVC: pass plan entries) | none | Line "Updated the plan: N items" | none: the card stands alone |
@@ -88,12 +88,15 @@ Marks used below:
 | Default state | Closed, everywhere. A non-success tag inside a closed group is named on the summary line. Open state is kept per console by the first call's ID, as today (`ConsoleModeStore`). |
 | Live behaviour | The open call is the live line under the group: spinner, sentence, elapsed time. When it ends it joins the group and the summary recounts. The summary never animates. Nothing else moves. |
 | Elapsed time | SVC: events carry no time. Until then the live line shows no time. It does not show a client-side guess. |
-| Second level | A line opens to a typed view of its call and result (section E): words, labelled fields, lists, tables, lamp and word. No wire name, tool ID or raw JSON by default. A workflow line opens to its milestone timeline first, then each call's typed view. |
+| Thinking, live | The live line reads "Thinking *elapsed* ›": spinner, the word, the time, a chevron. Closed by default. Opened, the thought text shows under it in italic beside a rule, grows as it streams and keeps its latest lines in view. The time is monospaced: "52s", then "1m 52s". |
+| Thinking, done | The line changes in place to "Thought for *duration*" and folds into the group like any finished line. It opens to the full text. Its open state is kept by the thought's message ID, so a thought opened while live is still open when its group is opened. This replaces the former "Thought: *first line*": the first line of a thought is rarely a summary, and the live and finished rows now read alike. A duration under one second reads "1s". |
+| Thinking, missing data | No start time on the record: "Thinking" and "Thought", with no time. No end time: "Thought". No thought text from the provider: the row and its time show with no chevron; the row is plain text, not a button. Service disconnected: a hollow dot in place of the spinner, "Last known: thinking", no time; text already received still opens. |
+| Second level | A thought opens to its text only, exactly as sent, with Copy; nothing else is recorded for it, so it has no Source. Any other line opens to a typed view of its call and result (section E): words, labelled fields, lists, tables, lamp and word. No wire name, tool ID or raw JSON by default. A workflow line opens to its milestone timeline first, then each call's typed view. |
 | Regular (coordinator, focused worker) | Everything above. Report shown in full. |
-| Compact (wall tile) | Same parts, tighter spacing. Report clamps to 6 lines with "Show all". Failure reason wraps. |
-| PiP | The latest group, every failure, the report (clamped to 3 lines), the live line. An open group shows its first and latest three lines, then "Show all N". |
-| Keyboard | Summary and lines are native buttons in tab order. Space or Return toggles. Right opens, Left closes, as a native disclosure. Option-click opens every level beneath. |
-| VoiceOver | Summary: "Activity, 4 steps, 1 failed. Ran 3 commands, read 2 files", value "Collapsed" or "Expanded". Line: its sentence, then its tag, then "failed" and the reason. The live line is announced politely once, not on every tick. |
+| Compact (wall tile) | Same parts, tighter spacing. Report clamps to 6 lines with "Show all". Failure reason wraps. An opened thought, live or done, clamps to its latest 6 lines with "Show all". |
+| PiP | The latest group, every failure, the report (clamped to 3 lines), the live line. An open group shows its first and latest three lines, then "Show all N". The Thinking live line keeps its time and chevron; opened, it shows the latest 3 lines of the thought, then "Show all". |
+| Keyboard | Summary and lines are native buttons in tab order. Space or Return toggles. Right opens, Left closes, as a native disclosure. Option-click opens every level beneath. The Thinking and Thought lines follow the same rule when they have text; without text they are not in tab order. |
+| VoiceOver | Summary: "Activity, 4 steps, 1 failed. Ran 3 commands, read 2 files", value "Collapsed" or "Expanded". Line: its sentence, then its tag, then "failed" and the reason. The live line is announced politely once, not on every tick. Thinking: "Thinking, 1 minute 52 seconds", value "Collapsed" or "Expanded"; the time is read on focus, and streaming thought text is not announced as it arrives. Done: "Thought for 1 minute 52 seconds". Without text the line is static text with no value. |
 | Raw detail stays reachable | Every opened view ends with one quiet **Source** action. It shows the wire name, tool ID, the call and the result text (JSON pretty-printed; Copy keeps the exact text) (the existing `TranscriptToolRow` and `RecordFieldsPanel`). Nothing is dropped from `ActivityStory.evidence`. |
 
 ## C. Components
@@ -111,12 +114,12 @@ Marks used below:
 | Molecule | `ActivityGroupSummary` | New | The secondary-ink summary line and its "N failed". |
 | Molecule | `ActivityFailureLine` | New | Sentence in failure ink, `Blocked` or `Failed` tag, reason beneath, opens to the failure renderer. |
 | Molecule | `PrettyReportBlock` | New | Heading line and the result as Markdown through `PrettyAssistantTurn`'s blocks. Copy keeps the exact text. |
-| Molecule | `PrettyLiveLine` | Change of `PrettyRunningIndicator` | Same position and spinner; sentence from `ActivitySentence`; elapsed time when the service sends a start time. |
+| Molecule | `PrettyLiveLine` | Change of `PrettyRunningIndicator` | Same position and spinner; sentence from `ActivitySentence`; elapsed time when the service sends a start time. While thinking it takes a chevron and opens to the thought text. |
 | Molecule | `PrettyPlanCard` | New, SVC | Checklist from ACP plan entries. |
 | Molecule | `ActivityMilestoneTimeline`, `ActivityRelationList`, `ActivityActionGroup` | Reuse | Inside an opened line. |
 | Molecule | `ActivityToolDetails` | Change | Becomes the opened line's body; the "Tool details" label goes. |
 | Molecule | `TranscriptToolRow`, `ToolResultStatusLine`, `PrettyRawBlock` | Reuse | Behind Source only. |
-| Molecule | `PrettyThinkingRow` | Change | Drawn as an `ActivityLine` ("Thought: …"); the open state keeps its italic text and rule. |
+| Molecule | `PrettyThinkingRow` | Change | Done: an `ActivityLine`, "Thought for *duration*". Live: the body under `PrettyLiveLine`. Both open states keep its italic text and rule. No chevron without text. |
 | Molecule | `PrettyActivityRow`, `PrettyActivityRun` | Change | Rows stay for attention events and inside groups; the run wrapper retires. |
 | Organism | `ActivityGroup` | New | Summary, list of lines, failure lines beneath. |
 | Organism | `ActivityStoryCard`, `ActivityStoryHeader` | Retire | Replaced by `ActivityGroup` and `ActivityLine`. |
@@ -244,6 +247,7 @@ These override anything above that says otherwise.
 | 7 | Live line and checklist | Inline in the transcript, at the point they belong to. Not pinned. |
 | 8 | Service keeps everything | Full tool arguments, descriptions, plan items and start times. Every "SVC" row above ships with that change. The fallback column is for records stored before it. Hiding and size limits become a setting, default off. |
 | 9 | Build order | One change: service fields, sentences, grouping, renderers, frame. |
+| 10 | Thinking is timed and openable | Live: "Thinking *elapsed* ›". Done: "Thought for *duration*", in place of "Thought: *first line*". Both open to the thought text. Rules in section B; provider facts under "Thinking: what the providers send". |
 
 ### Known-denial table (decision 3)
 
@@ -408,6 +412,22 @@ Section H lists its own data needs row by row.
 | Keep `revision` and `tests` on a reported result | Revision and test lines under the report | Report text only |
 | A record per provider child session and background command: ID, parent tool call ID, description, state, start and end time. Checked in code: `ClaudeProgress` holds only `phase` and `updated_at`; `parent_tool_use_id` is parsed in `internal/provider/runner.go` but only used to match partial blocks; the journal reader skips sidechain rows; nothing reads `run_in_background`. Over ACP, `subagent_update` becomes the text "Provider child session" with an optional title, and a scoped child update carries no ID | Lines for Claude subagents, background commands and ACP child sessions (section G) | Those jobs get no line. The parent's call reads as an ordinary finished call |
 | Start and end times on follow-ups, integrations and network operations | Elapsed time on those lines | No time shown |
+| A start time and an end time on each thinking record (one record per thought message ID). `ConsoleEvent` has no time field today | "Thinking *elapsed*" and "Thought for *duration*" | "Thinking" and "Thought", with no time |
+| A `thinking` event from the older Claude runner, with the thought text when the provider sends it | The Thinking row for those workers | No thinking row; the live line reads "Thinking" only while `ClaudeProgress.phase` says so |
+
+### Thinking: what the providers send
+
+Checked in `internal/provider` and `internal/service` on 2026-11-26. "Unverified" means I did not confirm it in code or in a real record.
+
+| Path | Thinking event | Thought text | Checked |
+|---|---|---|---|
+| ACP workers (`acp_activity.go`, `acp_v2.go`) | Yes: an `agent_thought_chunk` becomes a console event of kind `thinking` | Yes, when the chunk's content is text. Chunks append by message ID | Verified in code |
+| Older Claude stream runner (`runner.go`, `claude_stream.go`) | No. It records only `text`, `tool_call` and `output`, and reads only `text_delta` | No | Verified in code |
+| `ClaudeProgress` | The phase `thinking`, with `updated_at` only. It is not a console event | No | Verified in code |
+| Codex journal (`vendor_journal.go`) | `reasoning` and `agent_reasoning` rows are kept as source records | Whether they reach Pretty as `thinking` | Unverified |
+| Pi history (`pi_history.go`) | I found no thinking case in its reader | | Unverified |
+| Which ACP agents send thought chunks, and whether the text is full, summarised or empty | | | Unverified: no real record read |
+| Times | No console event carries a time (`ConsoleEvent` in `internal/service/store.go`) | | Verified in code |
 
 ## D. Open questions
 
