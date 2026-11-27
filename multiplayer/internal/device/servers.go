@@ -82,6 +82,13 @@ type ManagerConfig struct {
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 	// Tailscale overrides the tailscale CLI path.
 	Tailscale string
+	// DNSSD overrides the dns-sd path used to browse for relays.
+	DNSSD string
+	// Discover refreshes relay discovery in the background every DiscoverEvery
+	// (default one minute). BonjourWindow is how long each pass browses.
+	Discover      bool
+	DiscoverEvery time.Duration
+	BonjourWindow time.Duration
 }
 
 // Manager runs one Agent per enabled server and serves the tray.
@@ -96,6 +103,7 @@ type Manager struct {
 	certChanged map[string]bool
 	rs          *remoteServer
 	tailnet     tailnetState
+	disc        discoveryState
 }
 
 func (m *Manager) listPath() string { return filepath.Join(m.cfg.Dir, "servers.json") }
@@ -140,6 +148,9 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 	}
 	if !c.NoPresence {
 		go m.presenceLoop()
+	}
+	if c.Discover {
+		go m.discoveryLoop()
 	}
 	return m, nil
 }
@@ -340,11 +351,13 @@ type Probe struct {
 
 // RelayInfo is the unauthenticated relay description at /v1/info.
 type RelayInfo struct {
-	Version  string `json:"version"`
-	Mode     string `json:"mode"`
-	Issuer   string `json:"issuer"`
-	ClientID string `json:"clientId"`
-	Name     string `json:"name"`
+	Version      string `json:"version"`
+	Mode         string `json:"mode"`
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"clientId"`
+	Name         string `json:"name"`
+	Membership   string `json:"membership"`
+	AdminContact string `json:"adminContact"`
 }
 
 func fingerprint(c *x509.Certificate) string {
@@ -685,6 +698,17 @@ func (m *Manager) Handler() http.Handler {
 				return
 			}
 			res, e := m.tailnetVerb(r.Context(), verb, in)
+			reply(w, res, e)
+			return
+		case "relay-discover", "relay-discover-seen", "relay-join":
+			var in discoveryInput
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.DisallowUnknownFields()
+			if e = d.Decode(&in); e != nil {
+				reply(w, nil, errors.New("invalid request"))
+				return
+			}
+			res, e := m.discoveryVerb(r.Context(), verb, in)
 			reply(w, res, e)
 			return
 		}
