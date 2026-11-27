@@ -128,7 +128,7 @@ func simulatedBrowser(raw string) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		return HTTPError{res.StatusCode}
+		return HTTPError{Status: res.StatusCode}
 	}
 	return nil
 }

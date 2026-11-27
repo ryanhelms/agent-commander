@@ -30,7 +30,21 @@ type Client struct {
 	// Invite is an optional relay invite code sent with the enrollment challenge.
 	Invite string
 }
-type HTTPError struct{ Status int }
+type HTTPError struct {
+	Status int
+	// Requestable is set on a sign-in refusal the person may turn into a
+	// membership request from this device.
+	Requestable bool
+}
+
+// NotAdmittedError is a sign-in the relay refused. Requestable means the
+// device can ask to join with RequestMembership.
+type NotAdmittedError struct {
+	Message     string
+	Requestable bool
+}
+
+func (e NotAdmittedError) Error() string { return e.Message }
 
 func (e HTTPError) Error() string { return fmt.Sprintf("device authorization HTTP %d", e.Status) }
 func (c Client) request(ctx context.Context, method, path, access string, in, out any) error {
@@ -64,7 +78,16 @@ func (c Client) request(ctx context.Context, method, path, access string, in, ou
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
-		return HTTPError{res.StatusCode}
+		herr := HTTPError{Status: res.StatusCode}
+		if res.StatusCode == http.StatusForbidden {
+			var refusal struct {
+				Requestable bool `json:"requestable"`
+			}
+			if json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&refusal) == nil {
+				herr.Requestable = refusal.Requestable
+			}
+		}
+		return herr
 	}
 	if out == nil {
 		return nil
@@ -199,8 +222,15 @@ func (c Client) Login(ctx context.Context, keys *devicekeys.Keys, openBrowser fu
 	var sess Session
 	err = c.request(ctx, "POST", "/v1/auth/finish", "", map[string]string{"id_token": idToken}, &sess)
 	var refusal HTTPError
-	if ch.Issuer == googleIssuer && errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
-		return Session{}, errors.New("This Google account or device needs access to the relay. To switch accounts, sign in again and choose the invited account.")
+	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
+		msg := "This account or device needs access to the relay."
+		if ch.Issuer == googleIssuer {
+			msg = "This Google account or device needs access to the relay. To switch accounts, sign in again and choose the invited account."
+		}
+		if refusal.Requestable {
+			msg += " You can ask the relay's admins to let you in."
+		}
+		return Session{}, NotAdmittedError{Message: msg, Requestable: refusal.Requestable}
 	}
 	if err == nil && (sess.Device != pub.Device || sess.User == "" || len(sess.AccessToken) != 43 || len(sess.RefreshToken) != 43) {
 		return Session{}, errors.New("invalid device session returned by relay")
@@ -242,4 +272,19 @@ func (c Client) Revoke(ctx context.Context, access, device string) error {
 		return err
 	}
 	return c.request(ctx, "DELETE", path, access, nil, nil)
+}
+
+// RequestMembership asks the relay's admins to let this device's refused
+// account in. It needs a refusal from this device in the last 15 minutes.
+func (c Client) RequestMembership(ctx context.Context, note string) (MembershipRequest, error) {
+	var out MembershipRequest
+	err := c.request(ctx, "POST", "/v1/membership-requests", "", map[string]string{"note": note}, &out)
+	return out, err
+}
+
+// MyMembershipRequest reports the latest membership request made from this device.
+func (c Client) MyMembershipRequest(ctx context.Context) (MembershipRequest, error) {
+	var out MembershipRequest
+	err := c.request(ctx, "GET", "/v1/membership-requests/mine", "", nil, &out)
+	return out, err
 }
