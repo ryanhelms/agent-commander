@@ -102,6 +102,10 @@ private func model(_ service: ScriptedService) -> ProviderSessionModel {
         #expect(noResume.reattachUnavailableReason == "This provider cannot resume a session.")
         let busy = try status(#"{"peer_capabilities":{"can_resume":true},"can_reattach":false,"generation":3}"#)
         #expect(busy.reattachUnavailableReason?.hasPrefix("Reattach is offered for a stopped") == true)
+        // A coordinator is not told about the worker limit, and keeps every other reason.
+        let coordinator = busy.reattachUnavailableReason(isCoordinator: true)
+        #expect(coordinator == "The coordinator’s provider session must be inactive before reattach is available.")
+        #expect(noResume.reattachUnavailableReason(isCoordinator: true) == "This provider cannot resume a session.")
         // The service may allow it, but without a generation there is nothing to send.
         let noGeneration = try status(#"{"peer_capabilities":{"can_resume":true},"can_reattach":true}"#)
         #expect(!noGeneration.reattachIsOffered)

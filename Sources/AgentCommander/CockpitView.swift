@@ -1443,7 +1443,8 @@ struct CockpitScreen: View {
             discover: { intents.discover() },
             loadMore: { intents.loadMore() },
             reattach: { acknowledge in intents.reattach(id, acknowledge) },
-            copy: { text in copy(text) })
+            copy: { text in copy(text) },
+            isCoordinator: worker.isCoordinator)
         return ProviderSessionAccess(workerID: id, workerName: worker.name, client: worker.client, session: session,
                                      open: { ui.presentProviderSession(of: id) }, panel: panel)
     }

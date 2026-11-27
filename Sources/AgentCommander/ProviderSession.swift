@@ -183,11 +183,19 @@ struct ProviderSessionStatus: Decodable, Equatable, Sendable {
     }
 
     /// Why reattach is not offered, in words. Nil when it is.
-    var reattachUnavailableReason: String? {
+    var reattachUnavailableReason: String? { reattachUnavailableReason(isCoordinator: false) }
+
+    /// Why reattach is not offered to a worker or to the run's coordinator. Only the last reason
+    /// differs: a coordinator reattaches once its provider session is inactive, and the delegated
+    /// worker limit does not count it.
+    func reattachUnavailableReason(isCoordinator: Bool) -> String? {
         if reattachIsOffered { return nil }
         guard let peerCapabilities else { return "The provider has not reported what this session can do." }
         guard peerCapabilities.canResume else { return "This provider cannot resume a session." }
         if generation == nil { return "This worker has no control record to reattach under." }
+        if isCoordinator {
+            return "The coordinator’s provider session must be inactive before reattach is available."
+        }
         return "Reattach is offered for a stopped or exited local worker with no queued follow-up, its input not held, and room under the run's worker limit."
     }
 }
@@ -548,6 +556,8 @@ struct ProviderSessionAccess {
         /// Reattach this worker, acknowledging unresolved delivery when true.
         let reattach: (_ acknowledgeDeliveryUnknown: Bool) -> Void
         let copy: (String) -> Void
+        /// The worker is the run's coordinator. Selects the reason reattach is not offered.
+        var isCoordinator = false
     }
 
     let workerID: String
@@ -978,7 +988,7 @@ struct ProviderSessionPanel: View {
     /// Why reattach is not offered. Without a projected session there is nothing this panel can
     /// name to resume, and the reason says that instead of describing a session.
     private func reattachUnavailableReason(_ status: ProviderSessionStatus) -> String? {
-        guard let reason = status.reattachUnavailableReason else { return nil }
+        guard let reason = status.reattachUnavailableReason(isCoordinator: panel.isCoordinator) else { return nil }
         return session == nil
             ? "The service has not reported a provider session for \(workerName), so there is nothing to reattach to yet."
             : reason

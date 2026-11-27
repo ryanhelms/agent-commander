@@ -357,17 +357,32 @@ struct PrettyRunStatusBar: View {
     let client: AgentClient
     var metrics = PrettyACPMetrics(.regular)
 
+    /// The one binding that resumes through Claude's own CLI (`--resume`), not over ACP.
+    static let claudeCLIHarness = "local-claude-cli"
+
+    /// The chip's accessibility label. Every other binding, and an unbound session, reads as ACP.
+    static func harnessLabel(client: AgentClient, harnessInstance: String) -> String {
+        harnessInstance == claudeCLIHarness ? "Harness Claude CLI" : "Harness \(client.displayName), over ACP"
+    }
+
+    /// The chip's help sentence, before the session detail.
+    static func harnessHelp(harnessInstance: String) -> String {
+        harnessInstance == claudeCLIHarness
+            ? "Structured transcript from the provider session through Claude CLI."
+            : "Structured transcript from the provider session over ACP."
+    }
+
     var body: some View {
         let harness = session.harnessInstance.isEmpty ? client.displayName : session.harnessInstance
         let sessionHelp = "Session \(session.sessionID) · \(harness)"
         HStack(spacing: metrics.showsSession ? 12 : 8) {
-            Text(verbatim: client.displayName.lowercased())
+            Text(verbatim: session.harnessInstance == Self.claudeCLIHarness ? "claude cli" : client.displayName.lowercased())
                 .font(Term.font(metrics.barSize - 1.5)).foregroundStyle(.inkSecondary)
                 .lineLimit(1).fixedSize()
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .help("Structured transcript from the provider session over ACP. " + sessionHelp)
-                .accessibilityLabel("Harness \(client.displayName), over ACP")
+                .help(Self.harnessHelp(harnessInstance: session.harnessInstance) + " " + sessionHelp)
+                .accessibilityLabel(Self.harnessLabel(client: client, harnessInstance: session.harnessInstance))
             HStack(spacing: 6) {
                 Circle().fill(status.ink).frame(width: 7, height: 7)
                 Text(status.word).font(.system(size: metrics.barSize)).foregroundStyle(.inkSecondary)
