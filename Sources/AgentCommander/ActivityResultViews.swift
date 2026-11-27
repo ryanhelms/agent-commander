@@ -13,6 +13,7 @@ import SwiftUI
 //              ResultWell               file lines or terminal output in the terminal face
 //              ResultEmptyState         the sentence an empty result reads as
 //              ResultTruncationBanner   a result the service cut short
+//              ResultShortenedTag       "Shortened", beside one value the service shortened
 //              SecretValue              "Hidden, N characters" with Reveal
 //              SecretText               prose with its secret-looking values hidden, with Reveal
 //              ResultDisclosure         a quiet nested disclosure ("3 more fields, 1 empty")
@@ -34,8 +35,9 @@ struct ActivityResultSource: Equatable {
     var failure: ActivityFailure?
     /// The state now, from the run record by exact ID. Nil when the run record does not hold it.
     var liveState: String?
-    /// The stored values the service shortened: `input`, `result`.
-    var cut: [String] = []
+    /// Where the service cut the call and result texts in hand.
+    var callCut = StoredCut.unrecorded
+    var resultCut = StoredCut.unrecorded
     /// The stored short values of the call's arguments. They are exact, so they are read before
     /// the call's own text, which is the console's preview.
     var fields: [String: AGUIValue]? = nil
@@ -50,12 +52,13 @@ struct ActivityResultSource: Equatable {
         callIsStored = record?.input.map { !$0.isEmpty } ?? false
         failure = step.entries.count == 1 || step.entries.last?.id == entry.id ? step.failure : nil
         liveState = nil
-        cut = record?.truncated ?? []
         switch entry.kind {
         case .tool(let name, let detail, let result):
             self.name = name
             callText = record?.input.flatMap { $0.isEmpty ? nil : $0 } ?? detail
             resultText = record?.result.flatMap { $0.isEmpty ? nil : $0 } ?? result?.output
+            callCut = StoredCut(record: record, field: "input", isStored: callIsStored)
+            resultCut = StoredCut(record: record, field: "result", isStored: record?.result.map { !$0.isEmpty } ?? false)
             statusWord = result == nil ? "running" : (result?.error == nil ? "completed" : ToolStatus(result: result).word)
             if failure == nil, let result, result.error != nil {
                 failure = ActivityFailureWords.read(result, status: ToolStatus(result: result))
@@ -75,6 +78,7 @@ struct ActivityResultSource: Equatable {
             let stored = entry.toolCallID == nil ? nil : (record?.name ?? summary?.name)
             name = stored ?? ""
             callText = entry.toolCallID == nil ? nil : record?.input.flatMap { $0.isEmpty ? nil : $0 }
+            callCut = StoredCut(record: record, field: "input", isStored: callText != nil)
             resultText = result.output
             statusWord = result.error == nil ? "completed" : ToolStatus(result: result).word
             tried = stored.map { CommanderTool(name: $0)?.label ?? ProviderTool(name: $0)?.label ?? "Use " + ActivityWords.bareName($0) }
@@ -150,6 +154,22 @@ struct ResultTruncationBanner: View {
                     .strokeBorder(Palette.attention.opacity(0.4), lineWidth: 1)
             }
     }
+}
+
+/// The mark on one value the service shortened: the existing tag atom in the waiting tone. It
+/// sits with the value, so the row reads "Label, value, Shortened".
+struct ResultShortenedTag: View {
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        ActivityTagView(tag: .shortened, metrics: metrics)
+            .help("Commander kept only the first part of this value.")
+            .textSelection(.disabled)
+    }
+}
+
+extension ActivityTag {
+    static let shortened = ActivityTag(word: "Shortened", tone: .wait)
 }
 
 struct ResultQuote: View {
@@ -360,7 +380,19 @@ struct ResultFieldList: View {
         }
     }
 
+    /// The value by its kind, with the tag beneath it when the service shortened it.
     @ViewBuilder private func value(_ row: ResultField) -> some View {
+        if row.isShortened || (row.kind == .scalarList && !row.shortened.isEmpty) {
+            VStack(alignment: .leading, spacing: 4) {
+                typed(row)
+                ResultShortenedTag(metrics: metrics)
+            }
+        } else {
+            typed(row)
+        }
+    }
+
+    @ViewBuilder private func typed(_ row: ResultField) -> some View {
         let size = metrics.detailSize + 0.5
         switch row.kind {
         case .status:
@@ -406,15 +438,17 @@ struct ResultFieldList: View {
                 .fixedSize(horizontal: false, vertical: true)
         case .longText:
             let text = row.value.string ?? ""
-            // A string that is itself JSON is read and nested.
-            if depth < 4, let inner = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines))?.value,
+            // A string that is itself JSON is read and nested. A shortened one is not whole JSON.
+            if !row.isShortened, depth < 4, let inner = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines))?.value,
                inner.members != nil {
                 ResultFieldList(rows: ResultField.rows(inner), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
             } else {
                 ResultQuote(text: text, metrics: metrics)
             }
         case .scalarList:
-            let items = (row.value.items ?? []).compactMap(\.scalarText)
+            let items = (row.value.items ?? []).enumerated().compactMap { index, item in
+                row.shortened.under(index).isHere ? item.scalarText.map(ShortenedPaths.unmarked) : item.scalarText
+            }
             if items.count <= 6 {
                 Text(verbatim: items.joined(separator: ", ")).font(.system(size: size)).foregroundStyle(Palette.foreground)
                     .fixedSize(horizontal: false, vertical: true)
@@ -428,12 +462,19 @@ struct ResultFieldList: View {
         case .table:
             let items = row.value.items ?? []
             if ResultShape.uniform(items), items.count > 1 {
-                ResultRecordTable(items: items, metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultRecordTable(items: items, metrics: metrics, hidesSecrets: hidesSecrets, shortened: row.shortened)
             } else if depth < 4 {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         if item.members != nil {
-                            ResultFieldList(rows: ResultField.rows(item), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
+                            ResultFieldList(rows: ResultField.rows(item, shortened: row.shortened.under(index)), metrics: metrics,
+                                            hidesSecrets: hidesSecrets, depth: depth + 1)
+                        } else if row.shortened.under(index).isHere, let text = item.string {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: "\(index + 1). " + ShortenedPaths.unmarked(text)).font(.system(size: size))
+                                    .foregroundStyle(Palette.foreground)
+                                ResultShortenedTag(metrics: metrics)
+                            }
                         } else {
                             Text(verbatim: "\(index + 1). " + (item.scalarText ?? "list")).font(.system(size: size))
                                 .foregroundStyle(Palette.foreground)
@@ -451,7 +492,8 @@ struct ResultFieldList: View {
                 // Open when it has four or fewer scalar fields.
                 ResultDisclosure(title: members.count == 1 ? "1 field" : "\(members.count) fields", metrics: metrics,
                                  startsOpen: members.filter { $0.value.isScalar }.count <= 4 && members.count <= 4) {
-                    ResultFieldList(rows: ResultField.rows(row.value), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
+                    ResultFieldList(rows: ResultField.rows(row.value, shortened: row.shortened), metrics: metrics,
+                                    hidesSecrets: hidesSecrets, depth: depth + 1)
                 }
             }
         case .secret:
@@ -474,23 +516,11 @@ struct ResultRecordTable: View {
     /// Columns a renderer names. Nil picks them from the records.
     var columns: [String]? = nil
     var limit = 12
+    /// The strings the service shortened in `items`, as paths from the list.
+    var shortened = ShortenedPaths.none
     @State private var showsAll = false
 
-    static let identifying = ["name", "title", "id", "label", "peer", "resource"]
-
-    static func columns(of items: [OrderedJSON]) -> [String] {
-        var seen: [String] = []
-        for item in items {
-            for member in item.members ?? [] where member.value.isScalar && !seen.contains(member.key) {
-                seen.append(member.key)
-            }
-        }
-        if let lead = identifying.first(where: seen.contains) {
-            seen.removeAll { $0 == lead }
-            seen.insert(lead, at: 0)
-        }
-        return Array(seen.prefix(5))
-    }
+    static func columns(of items: [OrderedJSON]) -> [String] { ResultShape.columns(of: items) }
 
     var body: some View {
         let keys = columns ?? Self.columns(of: items)
@@ -503,10 +533,21 @@ struct ResultRecordTable: View {
                             .foregroundStyle(.inkSecondary).lineLimit(1)
                     }
                 }
-                ForEach(Array(shown.enumerated()), id: \.offset) { _, item in
+                ForEach(Array(shown.enumerated()), id: \.offset) { index, item in
                     Rectangle().fill(Palette.hairline).frame(height: 1).gridCellUnsizedAxes(.horizontal)
                     GridRow {
-                        ForEach(keys, id: \.self) { key in cell(key, item[key]) }
+                        ForEach(keys, id: \.self) { key in
+                            if shortened.under(index).under(key).isHere, let text = item[key]?.string {
+                                // The cell's own value was shortened: the tag sits in the cell.
+                                VStack(alignment: .leading, spacing: 4) {
+                                    cell(key, .string(ShortenedPaths.unmarked(text)))
+                                    ResultShortenedTag(metrics: metrics)
+                                }
+                                .accessibilityElement(children: .combine)
+                            } else {
+                                cell(key, item[key])
+                            }
+                        }
                     }
                 }
             }
@@ -549,8 +590,8 @@ struct ResultSourceDisclosure: View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(Palette.hairline).frame(height: 1).padding(.bottom, 8)
             ResultDisclosure(title: "Source", metrics: metrics, mono: true) {
-                let call = part(source.callText)
-                let result = part(source.resultText)
+                let call = part(source.callText, cut: source.callCut)
+                let result = part(source.resultText, cut: source.resultCut)
                 let hidden = call.hidden + result.hidden
                 VStack(alignment: .leading, spacing: 6) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -565,8 +606,8 @@ struct ResultSourceDisclosure: View {
                             Text(source.failure == nil ? "result" : "error").foregroundStyle(Palette.foreground)
                             Text(verbatim: text).fixedSize(horizontal: false, vertical: true)
                         }
-                        if call.isCut || result.isCut || !source.cut.isEmpty {
-                            Text("The text ends here: it was cut short before it was stored.").foregroundStyle(Palette.attention)
+                        if let note = Self.note(call: call.cut, result: result.cut) {
+                            Text(verbatim: note).foregroundStyle(Palette.attention)
                         }
                     }
                     .font(Term.font(metrics.codeSize - 0.5))
@@ -603,13 +644,35 @@ struct ResultSourceDisclosure: View {
         }
     }
 
+    /// How one text of Source was cut, from the service's record and the text's own end.
+    enum Cut: Equatable { case none, end, values }
+
+    static func cut(_ formatted: PrettyJSON.Formatted, stored: StoredCut) -> Cut {
+        switch stored {
+        case .complete: .none
+        case .unrecorded: formatted.isCut ? .end : .none
+        case .end: .end
+        // Listed with no path. Whole JSON was shortened inside; any other text lost its end.
+        case .unlocated: formatted.isJSON && !formatted.isCut ? .values : .end
+        case .strings: .values
+        }
+    }
+
+    /// The line that ends Source's text when the service shortened the call or the result.
+    static func note(call: Cut, result: Cut) -> String? {
+        if call == .end || result == .end { return "The text ends here: it was cut short before it was stored." }
+        if call == .values || result == .values { return "One or more values were shortened before this text was stored." }
+        return nil
+    }
+
     /// One text as Source shows it: JSON indented, secrets hidden unless revealed.
-    private func part(_ text: String?) -> (text: String?, hidden: Int, isCut: Bool) {
-        guard let text, text.contains(where: { !$0.isWhitespace }) else { return (nil, 0, false) }
-        let formatted = PrettyJSON.format(text)
-        guard hidesSecrets else { return (formatted.text, 0, formatted.isCut) }
+    private func part(_ text: String?, cut: StoredCut) -> (text: String?, hidden: Int, cut: Cut) {
+        guard let text, text.contains(where: { !$0.isWhitespace }) else { return (nil, 0, .none) }
+        let formatted = PrettyJSON.format(text, cut: cut)
+        let how = Self.cut(formatted, stored: cut)
+        guard hidesSecrets else { return (formatted.text, 0, how) }
         let masked = SecretValues.masked(text: formatted.text)
-        return (isRevealed ? formatted.text : masked.text, masked.count, formatted.isCut)
+        return (isRevealed ? formatted.text : masked.text, masked.count, how)
     }
 }
 
@@ -624,17 +687,17 @@ struct ActivityResultView: View {
     var copy: (String) -> Void = { _ in }
 
     var body: some View {
-        let payload = ResultPayload.read(source.resultText)
+        let payload = ResultPayload.read(source.resultText, cut: source.resultCut)
         let failed = source.failure != nil
         let selection = ResultShape.select(tool: source.name, payload: payload, resultText: source.resultText, failed: failed)
         VStack(alignment: .leading, spacing: 10) {
-            if !failed, payload.isCut || source.cut.contains("result") {
-                ResultTruncationBanner(text: "Commander kept only the first part of this result. The end is missing.",
-                                       metrics: metrics)
+            // The end of the result is gone, or values were shortened that no tag below marks.
+            if !failed, let sentence = ResultShape.notice(selection, payload: payload).sentence {
+                ResultTruncationBanner(text: sentence, metrics: metrics)
             }
             typed(selection, payload: payload)
             if let value = payload.value, !selection.remaining.isEmpty {
-                let rows = ResultField.rows(value, keys: selection.remaining)
+                let rows = ResultField.rows(value, keys: selection.remaining, shortened: payload.shortened)
                 let empty = rows.filter { $0.kind == .empty }.count
                 ResultDisclosure(title: (rows.count == 1 ? "1 more field" : "\(rows.count) more fields")
                                  + (empty > 0 ? ", \(empty) empty" : ""), metrics: metrics) {
@@ -670,7 +733,8 @@ struct ActivityResultView: View {
         case .checklist(let key):
             PrettyPlanCard(items: PlanItem.items(key.flatMap { value[$0] } ?? value) ?? [], metrics: metrics)
         case .recordTable(let key):
-            ResultRecordTable(items: (key.flatMap { value[$0] } ?? value).items ?? [], metrics: metrics, hidesSecrets: hidesSecrets)
+            ResultRecordTable(items: (key.flatMap { value[$0] } ?? value).items ?? [], metrics: metrics, hidesSecrets: hidesSecrets,
+                              shortened: key.map { payload.shortened.under($0) } ?? payload.shortened)
         case .messageList(let key):
             messages((key.flatMap { value[$0] } ?? value).items ?? [], truncated: value["truncated"]?.bool == true)
         case .runRoster:
@@ -678,13 +742,14 @@ struct ActivityResultView: View {
         case .report:
             ResultFieldList(rows: ResultField.rows(value, keys: ["id"]), metrics: metrics, labels: ["id": "Reported by"])
         case .workerCard, .questionCard, .acknowledgement, .operationReceipt, .followUp, .controlState:
-            ResultFieldList(rows: ResultField.rows(value, keys: selection.placed), metrics: metrics, hidesSecrets: hidesSecrets,
-                            liveState: source.liveState, labels: Self.labels(selection.shape))
+            ResultFieldList(rows: ResultField.rows(value, keys: selection.placed, shortened: payload.shortened), metrics: metrics,
+                            hidesSecrets: hidesSecrets, liveState: source.liveState, labels: Self.labels(selection.shape))
         case .generic:
             if value.members != nil {
-                ResultFieldList(rows: ResultField.rows(value), metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultFieldList(rows: ResultField.rows(value, shortened: payload.shortened), metrics: metrics, hidesSecrets: hidesSecrets)
             } else if let items = value.items {
-                ResultFieldList(rows: [ResultField(key: "items", value: .array(items))], metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultFieldList(rows: [ResultField(key: "items", value: .array(items), shortened: payload.shortened)], metrics: metrics,
+                                hidesSecrets: hidesSecrets)
             } else {
                 ResultEmptyState(sentence: "This result could not be read as data. Its text is in Source.", metrics: metrics)
             }

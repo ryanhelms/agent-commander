@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,6 +37,9 @@ const (
 	toolDetailSummary    = 512
 	shortenedMark        = "…[shortened]"
 	minTranscriptLimit   = 1 << 10
+	// A value's shortened paths are kept only while they fit these bounds.
+	maxShortenedPaths     = 64
+	maxShortenedPathBytes = 4 << 10
 )
 
 // ToolDetail describes a local transcript detail. A runner sends partial
@@ -57,7 +61,14 @@ type ToolDetail struct {
 	StartedAt string          `json:"started_at,omitempty"`
 	EndedAt   string          `json:"ended_at,omitempty"`
 	Truncated []string        `json:"truncated,omitempty"`
-	Revision  uint64          `json:"revision,omitempty"`
+	// Shortened says where the service cut each value listed in Truncated:
+	// JSON Pointers (RFC 6901) to the strings it shortened inside the stored
+	// JSON, or one empty pointer when it cut the end off the whole value. A
+	// value listed in Truncated with no entry here was cut somewhere unrecorded:
+	// by a runner, by an older service, or in more places than the bounds keep.
+	// Only the service writes it.
+	Shortened map[string][]string `json:"shortened,omitempty"`
+	Revision  uint64              `json:"revision,omitempty"`
 	*JobDetail
 	*TurnEndDetail
 }
@@ -86,6 +97,12 @@ func (d *ToolDetail) Size() int {
 	}
 	if t := d.TurnEndDetail; t != nil {
 		size += len(t.StopReason) + len(t.TerminalReason) + 16
+	}
+	for name, paths := range d.Shortened {
+		size += len(name)
+		for _, path := range paths {
+			size += len(path) + 1
+		}
 	}
 	return size + len(d.Key) + len(d.Name) + len(d.Title) + len(d.Input) + len(d.Result) + len(d.Content) + len(d.Plan)
 }
@@ -190,6 +207,8 @@ func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 	merged := old
 	merged.Key, merged.Kind = next.Key, next.Kind
 	merged.JobDetail, merged.TurnEndDetail = next.JobDetail, next.TurnEndDetail
+	// The stored record shares old's map, so changes go to a copy.
+	merged.Shortened = maps.Clone(old.Shortened)
 	if merged.Sequence == 0 || next.Kind == "plan" {
 		merged.Sequence = next.Sequence
 	}
@@ -212,6 +231,18 @@ func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 		if slices.Contains(next.Truncated, field.name) {
 			merged.Truncated = append(merged.Truncated, field.name)
 		}
+		// A replaced value takes its own paths, or none: the old ones point
+		// into text that is gone.
+		delete(merged.Shortened, field.name)
+		if paths := next.Shortened[field.name]; len(paths) != 0 && slices.Contains(next.Truncated, field.name) {
+			if merged.Shortened == nil {
+				merged.Shortened = map[string][]string{}
+			}
+			merged.Shortened[field.name] = paths
+		}
+	}
+	if len(merged.Shortened) == 0 {
+		merged.Shortened = nil
 	}
 	if len(next.Plan) != 0 {
 		merged.Plan = next.Plan
@@ -337,19 +368,29 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 			}
 		}
 		d.Truncated = slices.DeleteFunc(d.Truncated, func(v string) bool { return v != "input" && v != "result" && v != "content" })
+		// Paths are the service's own account of its cuts, never a runner's.
+		d.Shortened = nil
 		for _, field := range []struct {
 			value *string
 			name  string
 		}{{&d.Input, "input"}, {&d.Result, "result"}, {&d.Content, "content"}} {
 			cut := false
+			var paths []string
 			if s.settings.LimitBytes > 0 {
-				*field.value, cut = shortenValues(*field.value, s.settings.LimitBytes)
+				*field.value, paths, cut = shortenValues(*field.value, s.settings.LimitBytes)
 			}
 			if len(*field.value) > MaxToolDetailField {
-				*field.value, cut = cutText(*field.value, MaxToolDetailField)+shortenedMark, true
+				// The end of the whole value goes, and any earlier path with it.
+				*field.value, paths, cut = cutText(*field.value, MaxToolDetailField)+shortenedMark, []string{""}, true
 			}
 			if cut && !slices.Contains(d.Truncated, field.name) {
 				d.Truncated = append(d.Truncated, field.name)
+			}
+			if cut && len(paths) != 0 {
+				if d.Shortened == nil {
+					d.Shortened = map[string][]string{}
+				}
+				d.Shortened[field.name] = paths
 			}
 		}
 		if len(d.Plan) > 64<<10 || (len(d.Plan) != 0 && !json.Valid(d.Plan)) {
@@ -371,35 +412,70 @@ func cutText(value string, limit int) string {
 }
 
 // shortenValues cuts every string longer than limit. JSON keeps its structure
-// and key order, so a shortened record stays readable.
-func shortenValues(value string, limit int) (string, bool) {
+// and key order, so a shortened record stays readable. paths names what was
+// cut: a JSON Pointer to each shortened string, or one empty pointer when the
+// end of the whole value was cut. It is nil when the cuts pass the bounds.
+func shortenValues(value string, limit int) (string, []string, bool) {
 	if len(value) <= limit {
-		return value, false
+		return value, nil, false
 	}
 	trimmed := strings.TrimSpace(value)
 	if trimmed != "" && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
 		decoder := json.NewDecoder(strings.NewReader(trimmed))
 		decoder.UseNumber()
 		var out bytes.Buffer
-		cut := false
-		if err := copyJSON(decoder, &out, limit, &cut); err == nil {
-			if !cut {
-				return value, false
+		cuts := shortenedPaths{}
+		if err := copyJSON(decoder, &out, limit, "", &cuts); err == nil {
+			if cuts.count == 0 {
+				return value, nil, false
 			}
-			return out.String(), true
+			return out.String(), cuts.kept(), true
 		}
 	}
-	return cutText(value, limit) + shortenedMark, true
+	return cutText(value, limit) + shortenedMark, []string{""}, true
 }
 
-func copyJSON(decoder *json.Decoder, out *bytes.Buffer, limit int, cut *bool) error {
+// shortenedPaths collects the pointers of one value's cut strings.
+type shortenedPaths struct {
+	paths     []string
+	count     int
+	bytes     int
+	ambiguous bool
+}
+
+func (c *shortenedPaths) fits() bool {
+	return !c.ambiguous && c.count <= maxShortenedPaths && c.bytes <= maxShortenedPathBytes
+}
+
+func (c *shortenedPaths) add(path string) {
+	c.count++
+	c.bytes += len(path)
+	if c.fits() {
+		c.paths = append(c.paths, path)
+	} else {
+		// Every path is kept, or none: a partial list would pass for a whole one.
+		c.paths = nil
+	}
+}
+
+func (c *shortenedPaths) kept() []string {
+	if !c.fits() {
+		return nil
+	}
+	return c.paths
+}
+
+var pointerEscape = strings.NewReplacer("~", "~0", "/", "~1")
+
+func copyJSON(decoder *json.Decoder, out *bytes.Buffer, limit int, path string, cuts *shortenedPaths) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
 	scalar := func(v any) error {
 		if text, ok := v.(string); ok && len(text) > limit {
-			v, *cut = cutText(text, limit)+shortenedMark, true
+			v = cutText(text, limit) + shortenedMark
+			cuts.add(path)
 		}
 		var raw bytes.Buffer
 		encoder := json.NewEncoder(&raw)
@@ -415,10 +491,17 @@ func copyJSON(decoder *json.Decoder, out *bytes.Buffer, limit int, cut *bool) er
 		return scalar(token)
 	}
 	out.WriteRune(rune(open))
-	for first := true; decoder.More(); first = false {
-		if !first {
+	// Past the bounds no path is kept, so none is built either.
+	tracked := func() bool { return cuts.fits() && len(path) <= maxShortenedPathBytes }
+	var seen map[string]struct{}
+	if open == '{' && tracked() {
+		seen = make(map[string]struct{})
+	}
+	for index := 0; decoder.More(); index++ {
+		if index > 0 {
 			out.WriteByte(',')
 		}
+		child := path
 		if open == '{' {
 			key, err := decoder.Token()
 			if err != nil {
@@ -431,8 +514,19 @@ func copyJSON(decoder *json.Decoder, out *bytes.Buffer, limit int, cut *bool) er
 			}
 			out.Write(raw)
 			out.WriteByte(':')
+			if tracked() {
+				if _, duplicate := seen[name]; duplicate {
+					// A JSON Pointer cannot address one of two members with the same name.
+					cuts.ambiguous, cuts.paths = true, nil
+				} else {
+					seen[name] = struct{}{}
+					child = path + "/" + pointerEscape.Replace(name)
+				}
+			}
+		} else if tracked() {
+			child = path + "/" + strconv.Itoa(index)
 		}
-		if err := copyJSON(decoder, out, limit, cut); err != nil {
+		if err := copyJSON(decoder, out, limit, child, cuts); err != nil {
 			return err
 		}
 	}
@@ -519,7 +613,7 @@ func (s *service) readToolDetails(req *http.Request, actor string) (outcome, err
 		}
 		view := toolDetailSummaryView{ToolDetail: *record, Fields: shortFields(record.Input),
 			InputBytes: len(record.Input), ResultBytes: len(record.Result)}
-		view.Input, view.Result, view.Content = "", "", ""
+		view.Input, view.Result, view.Content, view.Shortened = "", "", "", nil
 		records = append(records, view)
 	}
 	return read(map[string]any{"revision": current.revision, "records": records}), nil

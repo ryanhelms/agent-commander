@@ -7,6 +7,8 @@ import Foundation
 //
 //   Values   OrderedJSON      JSON with its keys in the order sent, read as far as a cut text goes
 //            PrettyJSON       the two-space, one-property-per-line form of JSON text
+//            StoredCut        where the service says it cut a stored value
+//            ShortenedPaths   the strings of a drawn value that the service shortened
 //            ResultPayload    a result unwrapped from MCP content and the network wrapper
 //            ResultShape      which renderer a result selects, from its properties alone
 //            ResultField      one labelled value of the generic renderer, with its value kind
@@ -229,12 +231,16 @@ enum PrettyJSON {
     }
 
     /// The service's marks on a shortened value: the console preview's and the stored record's.
-    static let shortenedMarks = ["\n[Output shortened]", "…[shortened]"]
+    static let shortenedMarks = ["\n[Output shortened]", storedMark]
+    /// The mark the service ends a shortened stored value with.
+    static let storedMark = "…[shortened]"
 
-    static func format(_ source: String) -> Formatted {
+    /// `cut` is what the service recorded about this text. A text it kept whole, or shortened
+    /// only inside its strings, ends in no mark of the service's: its last characters are its own.
+    static func format(_ source: String, cut: StoredCut = .unrecorded) -> Formatted {
         var text = source.trimmingCharacters(in: .whitespacesAndNewlines)
         var marked = false
-        for mark in shortenedMarks where text.hasSuffix(mark.trimmingCharacters(in: .newlines)) {
+        for mark in cut.endMarks where text.hasSuffix(mark.trimmingCharacters(in: .newlines)) {
             text = String(text.dropLast(mark.trimmingCharacters(in: .newlines).count))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             marked = true
@@ -293,6 +299,118 @@ enum PrettyJSON {
     }
 }
 
+/// Where the service says it cut one stored value: a call's input or its result. The record's
+/// `truncated` list says that a value was cut; its `shortened` paths say where. A string is
+/// never taken for a cut one because of the characters it ends in.
+enum StoredCut: Equatable, Sendable {
+    /// No stored record holds this text, so only the text's own end mark can say.
+    case unrecorded
+    /// The record holds the text and does not list it: it is whole, whatever it ends in.
+    case complete
+    /// Listed with no path: an older record, an older service, a runner's cut, or more cuts than
+    /// the service keeps paths for. Which values were cut is not known.
+    case unlocated
+    /// The end of the whole text was cut.
+    case end
+    /// These strings inside the JSON were shortened, each a path of keys and list positions.
+    /// Everything else in the text is whole.
+    case strings([[String]])
+
+    /// `field` is the record's name for the value: `input` or `result`. `isStored` is whether
+    /// the text in hand is the record's.
+    init(record: ToolDetailRecord?, field: String, isStored: Bool) {
+        guard let record, isStored else { self = .unrecorded; return }
+        guard record.truncated?.contains(field) == true else { self = .complete; return }
+        guard let pointers = record.shortened?[field], !pointers.isEmpty else { self = .unlocated; return }
+        if pointers.contains("") { self = .end; return }
+        var paths: [[String]] = []
+        for pointer in pointers {
+            guard let path = Self.path(pointer) else { self = .unlocated; return }
+            paths.append(path)
+        }
+        self = .strings(paths)
+    }
+
+    /// A JSON Pointer (RFC 6901) as its steps. Nil when it is not one.
+    static func path(_ pointer: String) -> [String]? {
+        guard pointer.hasPrefix("/") else { return nil }
+        return pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false).map {
+            $0.replacingOccurrences(of: "~1", with: "/").replacingOccurrences(of: "~0", with: "~")
+        }
+    }
+
+    /// The marks that may end a text cut this way.
+    var endMarks: [String] {
+        switch self {
+        case .unrecorded: PrettyJSON.shortenedMarks
+        case .unlocated, .end: [PrettyJSON.storedMark]
+        case .complete, .strings: []
+        }
+    }
+}
+
+/// The shortened strings of a drawn value, as paths from it.
+struct ShortenedPaths: Equatable, Sendable {
+    var paths: Set<[String]> = []
+
+    static let none = ShortenedPaths()
+
+    var isEmpty: Bool { paths.isEmpty }
+    /// The value itself is a shortened string.
+    var isHere: Bool { paths.contains([]) }
+
+    /// The paths under one key or list position, from there.
+    func under(_ step: String) -> ShortenedPaths {
+        guard !paths.isEmpty else { return self }
+        return ShortenedPaths(paths: Set(paths.compactMap { $0.first == step ? Array($0.dropFirst()) : nil }))
+    }
+
+    func under(_ index: Int) -> ShortenedPaths { under(String(index)) }
+
+    /// A shortened string as it is drawn: without the service's mark. Source keeps the mark.
+    static func unmarked(_ text: String) -> String {
+        text.hasSuffix(PrettyJSON.storedMark) ? String(text.dropLast(PrettyJSON.storedMark.count)) : text
+    }
+
+    /// The shortened string at `path`, or nil when the path does not lead to one: a step that is
+    /// missing or names two members, or a string that does not end in the service's mark.
+    static func string(at path: [String], in value: OrderedJSON) -> String? {
+        var at = value
+        for step in path {
+            switch at {
+            case .object(let members):
+                let found = members.filter { $0.key == step }
+                guard found.count == 1 else { return nil }
+                at = found[0].value
+            case .array(let items):
+                guard let index = Int(step), String(index) == step, items.indices.contains(index) else { return nil }
+                at = items[index]
+            default:
+                return nil
+            }
+        }
+        guard let text = at.string, text.hasSuffix(PrettyJSON.storedMark) else { return nil }
+        return text
+    }
+}
+
+/// What an opened result says about shortening, above its body.
+enum ShorteningNotice: Equatable {
+    case none
+    /// The end of the result is gone: plain text, or JSON that stops before it closes.
+    case endMissing
+    /// Values inside a whole result were shortened and not every one is marked where it is drawn.
+    case valuesShortened
+
+    var sentence: String? {
+        switch self {
+        case .none: nil
+        case .endMissing: "Commander kept only the first part of this result. The end is missing."
+        case .valuesShortened: "Commander shortened one or more values in this result before storing it."
+        }
+    }
+}
+
 /// A result's data, read through what wraps it.
 struct ResultPayload: Equatable {
     /// The data itself. Nil when the text is not JSON.
@@ -300,15 +418,20 @@ struct ResultPayload: Equatable {
     /// The network wrapper said `ok: false`, or carried a non-empty `error`.
     var wrapperError: String? = nil
     var isCut = false
+    /// The strings of `value` the service shortened, by its own record.
+    var shortened = ShortenedPaths.none
+    /// What the text and the service's record say about shortening, before the renderer is known.
+    var notice = ShorteningNotice.none
 
     /// Step 1 of selection: an MCP content list, `structuredContent`, a JSON string, a code fence,
-    /// then the network wrapper `{"ok":true,"data":…}`.
-    static func read(_ text: String?) -> ResultPayload {
+    /// then the network wrapper `{"ok":true,"data":…}`. `cut` is the service's record of what it
+    /// shortened in this text.
+    static func read(_ text: String?, cut: StoredCut = .unrecorded) -> ResultPayload {
         guard var text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
             return ResultPayload(value: nil)
         }
         var marked = false
-        for mark in PrettyJSON.shortenedMarks {
+        for mark in cut.endMarks {
             let trimmedMark = mark.trimmingCharacters(in: .newlines)
             if text.hasSuffix(trimmedMark) {
                 text = String(text.dropLast(trimmedMark.count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -320,48 +443,104 @@ struct ResultPayload: Equatable {
             if let newline = body.firstIndex(of: "\n") { body = body[body.index(after: newline)...] }
             text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        guard let reading = OrderedJSON.read(text) else { return ResultPayload(value: nil) }
-        var value = unwrap(reading.value, depth: 0)
+        guard let reading = OrderedJSON.read(text) else {
+            // Text that is not data. The record alone says whether it was cut.
+            let notice: ShorteningNotice = switch cut {
+            case .unrecorded, .complete: .none
+            case .unlocated, .end: .endMissing
+            case .strings: .valuesShortened
+            }
+            return ResultPayload(value: nil, notice: notice)
+        }
+        var unwrapper = Unwrapper()
+        if case .strings(let paths) = cut { unwrapper.paths = paths }
+        var value = unwrapper.unwrap(reading.value, depth: 0)
         var error: String?
         if let members = value.members, let ok = value["ok"]?.bool, members.count <= 3 {
             if let message = value["error"]?.scalarText, !message.isEmpty { error = message }
             else if !ok { error = "The network reported a failure." }
-            if let data = value["data"] { value = data }
+            if let data = value["data"] {
+                unwrapper.enter("data")
+                value = data
+            }
         }
-        return ResultPayload(value: value, wrapperError: error, isCut: reading.isCut || marked)
+        // A path counts only when it leads to a string that ends in the service's mark.
+        let found = unwrapper.paths.filter { ShortenedPaths.string(at: $0, in: value) != nil }
+        let lost = unwrapper.lost || found.count != unwrapper.paths.count
+        let ended = reading.isCut || marked
+        let notice: ShorteningNotice = switch cut {
+        case .complete: .none
+        case .unrecorded: ended ? .endMissing : .none
+        case .end: .endMissing
+        case .unlocated: ended ? .endMissing : .valuesShortened
+        case .strings: ended || unwrapper.innerCut ? .endMissing : (lost ? .valuesShortened : .none)
+        }
+        return ResultPayload(value: value, wrapperError: error, isCut: ended || unwrapper.innerCut,
+                             shortened: ShortenedPaths(paths: Set(found)), notice: notice)
     }
 
-    private static func unwrap(_ value: OrderedJSON, depth: Int) -> OrderedJSON {
-        guard depth < 4 else { return value }
-        func text(of parts: [OrderedJSON]) -> String? {
+    /// Unwraps a result and carries the service's paths to the value that is drawn.
+    private struct Unwrapper {
+        /// Paths from the value in hand.
+        var paths: [[String]] = []
+        /// A path led somewhere the drawn value does not hold.
+        var lost = false
+        /// The text the data was read from was itself a shortened string: its end is missing.
+        var innerCut = false
+
+        /// Steps into the member `key`: its paths stay, from there.
+        mutating func enter(_ key: String) {
+            if paths.contains(where: { $0.first != key }) { lost = true }
+            paths = paths.compactMap { $0.first == key ? Array($0.dropFirst()) : nil }
+        }
+
+        /// The joined text of MCP text parts. `prefix` is the path of the list.
+        private mutating func text(of parts: [OrderedJSON], prefix: [String]) -> String? {
             guard !parts.isEmpty else { return nil }
             var texts: [String] = []
             for part in parts {
                 guard part["type"]?.string == "text", let text = part["text"]?.string else { return nil }
                 texts.append(text)
             }
+            // The data is read from these strings, so a shortened one ends the data early.
+            for path in paths {
+                guard path.count == prefix.count + 2, Array(path.prefix(prefix.count)) == prefix, path.last == "text",
+                      let index = Int(path[prefix.count]), texts.indices.contains(index),
+                      texts[index].hasSuffix(PrettyJSON.storedMark) else { lost = true; continue }
+                texts[index] = ShortenedPaths.unmarked(texts[index])
+                innerCut = true
+            }
+            paths = []
             return texts.joined(separator: "\n")
         }
-        func reread(_ text: String) -> OrderedJSON {
+
+        private mutating func reread(_ text: String, depth: Int) -> OrderedJSON {
             guard let inner = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines)),
                   inner.value.string == nil else { return .string(text) }
             return unwrap(inner.value, depth: depth + 1)
         }
-        switch value {
-        case .string(let text):
-            let inner = reread(text)
-            return inner.string == nil ? inner : value
-        case .object:
-            if let structured = value["structuredContent"], structured.members != nil {
-                return unwrap(structured, depth: depth + 1)
+
+        mutating func unwrap(_ value: OrderedJSON, depth: Int) -> OrderedJSON {
+            guard depth < 4 else { return value }
+            switch value {
+            case .string(let text):
+                let inner = reread(text, depth: depth)
+                return inner.string == nil ? inner : value
+            case .object:
+                if let structured = value["structuredContent"], structured.members != nil {
+                    enter("structuredContent")
+                    return unwrap(structured, depth: depth + 1)
+                }
+                if let parts = value["content"]?.items, let text = text(of: parts, prefix: ["content"]) {
+                    return reread(text, depth: depth)
+                }
+                return value
+            case .array(let items):
+                if let text = text(of: items, prefix: []) { return reread(text, depth: depth) }
+                return value
+            default:
+                return value
             }
-            if let parts = value["content"]?.items, let text = text(of: parts) { return reread(text) }
-            return value
-        case .array(let items):
-            if let text = text(of: items) { return reread(text) }
-            return value
-        default:
-            return value
         }
     }
 }
@@ -502,6 +681,35 @@ enum ResultShape: Equatable {
         return Selection(shape: .generic, remaining: [])
     }
 
+    /// What the opened result says above its body. The reading's own notice stands; a whole
+    /// result with shortened strings adds one only when a string is not marked where it is drawn.
+    static func notice(_ selection: Selection, payload: ResultPayload) -> ShorteningNotice {
+        guard payload.notice == .none, let value = payload.value else { return payload.notice }
+        let marked = payload.shortened.paths.allSatisfy { marks($0, in: value, selection: selection) }
+        return marked ? .none : .valuesShortened
+    }
+
+    /// Whether the selected renderer marks the shortened string at `path` of the result.
+    static func marks(_ path: [String], in value: OrderedJSON, selection: Selection) -> Bool {
+        guard let first = path.first else { return false }
+        let rest = path.dropFirst()
+        func field() -> Bool { ResultField.marks(path[...], inRowsOf: value, depth: 0) }
+        switch selection.shape {
+        case .generic:
+            // An object's fields, or a list drawn as one field holding it.
+            return value.items != nil ? ResultField.marks(path[...], inRow: value, depth: 0) : field()
+        case .workerCard, .questionCard, .acknowledgement, .operationReceipt, .followUp, .controlState:
+            return field()
+        case .recordTable(let key):
+            guard let key else { return ResultField.marksCell(rest, of: value.items ?? []) }
+            if first == key { return ResultField.marksCell(rest.dropFirst(), of: value[key]?.items ?? []) }
+            return selection.remaining.contains(first) && field()
+        default:
+            // The renderer's own properties are drawn without marks; "More fields" has them.
+            return selection.remaining.contains(first) && field()
+        }
+    }
+
     /// Objects that share most keys: every item is an object and each holds more than half of
     /// the first item's keys.
     static func uniform(_ items: [OrderedJSON]) -> Bool {
@@ -510,6 +718,24 @@ enum ResultShape: Equatable {
             guard let keys = item.members?.map(\.key) else { return false }
             return keys.filter { first.contains($0) }.count * 2 > first.count
         }
+    }
+
+    static let identifying = ["name", "title", "id", "label", "peer", "resource"]
+
+    /// The columns a record table shows: up to five scalar properties in first-seen order, the
+    /// identifying one first.
+    static func columns(of items: [OrderedJSON]) -> [String] {
+        var seen: [String] = []
+        for item in items {
+            for member in item.members ?? [] where member.value.isScalar && !seen.contains(member.key) {
+                seen.append(member.key)
+            }
+        }
+        if let lead = identifying.first(where: seen.contains) {
+            seen.removeAll { $0 == lead }
+            seen.insert(lead, at: 0)
+        }
+        return Array(seen.prefix(5))
     }
 
     static func checklist(_ items: [OrderedJSON]) -> Bool {
@@ -536,22 +762,76 @@ struct ResultField: Identifiable, Equatable {
     /// Sentence case from the key: `created_at` reads "Created at".
     let label: String
     let kind: Kind
+    /// The value as drawn: a shortened string is held without the service's mark.
     let value: OrderedJSON
+    /// The strings the service shortened in this value, as paths from it.
+    let shortened: ShortenedPaths
     var id: String { key }
+
+    /// The value itself is a string the service shortened.
+    var isShortened: Bool { shortened.isHere }
 
     static let statusKeys: Set<String> = ["state", "status", "phase", "outcome", "presence", "delivery"]
 
-    init(key: String, value: OrderedJSON) {
+    init(key: String, value: OrderedJSON, shortened: ShortenedPaths = .none) {
         self.key = key
-        self.value = value
+        self.shortened = shortened
         label = Self.label(key)
-        kind = Self.kind(key: key, value: value)
+        guard shortened.isHere, let text = value.string else {
+            self.value = value
+            kind = Self.kind(key: key, value: value)
+            return
+        }
+        // Its kind is read without the mark. A value that looked secret as stored stays one.
+        let drawn = OrderedJSON.string(ShortenedPaths.unmarked(text))
+        self.value = drawn
+        kind = Self.kind(key: key, value: value) == .secret ? .secret : Self.kind(key: key, value: drawn)
     }
 
-    static func rows(_ value: OrderedJSON, keys: [String]? = nil) -> [ResultField] {
+    /// `shortened` holds the paths from `value`, so each row takes the ones under its key.
+    static func rows(_ value: OrderedJSON, keys: [String]? = nil, shortened: ShortenedPaths = .none) -> [ResultField] {
         guard let members = value.members else { return [] }
-        if let keys { return keys.compactMap { key in value[key].map { ResultField(key: key, value: $0) } } }
-        return members.map { ResultField(key: $0.key, value: $0.value) }
+        if let keys {
+            return keys.compactMap { key in value[key].map { ResultField(key: key, value: $0, shortened: shortened.under(key)) } }
+        }
+        return members.map { ResultField(key: $0.key, value: $0.value, shortened: shortened.under($0.key)) }
+    }
+
+    /// Whether the shortened string at `path` is marked where it is drawn, for a field list at
+    /// `depth` that draws `object`'s members as its rows. It follows what `ResultFieldList` and
+    /// `ResultRecordTable` draw: a string, a short list's items, a table's shown columns, and
+    /// nested records and objects down to four levels.
+    static func marks(_ path: ArraySlice<String>, inRowsOf object: OrderedJSON, depth: Int) -> Bool {
+        guard let key = path.first, let members = object.members, let member = members.first(where: { $0.key == key }) else {
+            return false
+        }
+        return marks(path.dropFirst(), inRow: member.value, depth: depth)
+    }
+
+    /// The same for one row's value. `path` starts at the value.
+    static func marks(_ path: ArraySlice<String>, inRow value: OrderedJSON, depth: Int) -> Bool {
+        guard let step = path.first else { return value.string != nil }
+        switch value {
+        case .object:
+            // Past four levels the row reads "Deeper values are in Source."
+            return depth < 4 && marks(path, inRowsOf: value, depth: depth + 1)
+        case .array(let items):
+            guard let index = Int(step), items.indices.contains(index) else { return false }
+            let rest = path.dropFirst()
+            if items.allSatisfy(\.isScalar) { return rest.isEmpty && items[index].string != nil }
+            if ResultShape.uniform(items), items.count > 1 { return marksCell(rest, of: items) }
+            guard depth < 4 else { return false }
+            if items[index].members != nil { return marks(rest, inRowsOf: items[index], depth: depth + 1) }
+            return rest.isEmpty && items[index].string != nil
+        default:
+            return false
+        }
+    }
+
+    /// A table marks the cells of the columns it shows.
+    static func marksCell(_ path: ArraySlice<String>, of items: [OrderedJSON], columns: [String]? = nil) -> Bool {
+        guard path.count == 1, let key = path.first else { return false }
+        return (columns ?? ResultShape.columns(of: items)).contains(key)
     }
 
     static func label(_ key: String) -> String {
