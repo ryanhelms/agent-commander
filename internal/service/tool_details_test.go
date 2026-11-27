@@ -18,19 +18,19 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 	coordinator := f.run()
 	worker := f.delegate(coordinator, "detailed")
 	path := "/v1/workers/" + worker.ID
-	const secret = "MARKER-only-in-details"
+	const marker = "MARKER-only-in-details"
 	zero := 0
 	long := strings.Repeat("x", 600)
 	f.call("POST", path+"/output", worker.Token, map[string]any{
 		"stream_id": "s", "batch": 1, "text": "",
 		"events": []ConsoleEvent{{Kind: "tool_call", ToolID: "t1", Name: "Bash", Text: "preview"}},
 		"details": []ToolDetail{{Kind: "tool", Key: "t1", Event: &zero, Name: "Bash",
-			Input:     `{"command":"echo ` + secret + `","description":"Say it","long":"` + long + `","n":{"a":1}}`,
+			Input:     `{"command":"echo ` + marker + `","description":"Say it","long":"` + long + `","n":{"a":1}}`,
 			StartedAt: "2026-01-02T03:04:05Z"}},
 	}, 200, "")
 	f.call("POST", path+"/output", worker.Token, map[string]any{
 		"stream_id": "s", "batch": 2, "text": "",
-		"details": []ToolDetail{{Kind: "tool", Key: "t1", Result: secret + " result", EndedAt: "2026-01-02T03:04:07Z"}},
+		"details": []ToolDetail{{Kind: "tool", Key: "t1", Result: marker + " result", EndedAt: "2026-01-02T03:04:07Z"}},
 	}, 200, "")
 
 	var list detailList
@@ -40,12 +40,12 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 	got := list.Records[0]
 	if got.Sequence != 1 || got.Input != "" || got.Result != "" || got.ResultBytes == 0 ||
 		got.StartedAt != "2026-01-02T03:04:05Z" || got.EndedAt != "2026-01-02T03:04:07Z" ||
-		string(got.Fields) != `{"command":"echo `+secret+`","description":"Say it"}` {
+		string(got.Fields) != `{"command":"echo `+marker+`","description":"Say it"}` {
 		t.Fatalf("summary: %+v %s", got, got.Fields)
 	}
 	var full ToolDetail
 	if err := json.Unmarshal(f.call("GET", path+"/tool-details?key=t1", "", nil, 200, ""), &full); err != nil ||
-		!strings.Contains(full.Input, long) || !strings.Contains(full.Result, secret) {
+		!strings.Contains(full.Input, long) || !strings.Contains(full.Result, marker) {
 		t.Fatalf("full record: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 	f.call("GET", path+"/tool-details", worker.Token, nil, 403, "")
 	f.call("GET", path+"/tool-details", coordinator.Token, nil, 403, "")
 	for _, shared := range []string{"/v1/runs", "/v1/runs/" + worker.RunID, "/v1/runs/" + worker.RunID + "?view=ag-ui", "/v1/ag-ui" + strings.TrimPrefix(path, "/v1")} {
-		if body := f.call("GET", shared, "", nil, 200, ""); strings.Contains(string(body), secret) || strings.Contains(string(body), "started_at") {
+		if body := f.call("GET", shared, "", nil, 200, ""); strings.Contains(string(body), marker) || strings.Contains(string(body), "started_at") {
 			t.Fatalf("%s carries tool details", shared)
 		}
 	}
@@ -64,7 +64,7 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.api = restarted
-	if err := json.Unmarshal(f.call("GET", path+"/tool-details?key=t1", "", nil, 200, ""), &full); err != nil || !strings.Contains(full.Result, secret) {
+	if err := json.Unmarshal(f.call("GET", path+"/tool-details?key=t1", "", nil, 200, ""), &full); err != nil || !strings.Contains(full.Result, marker) {
 		t.Fatalf("after restart: %v", err)
 	}
 }
