@@ -102,8 +102,8 @@ struct ActivityFailure: Equatable {
     }
 }
 
-/// The fixed table of denials (spec section F, decision 3). An entry is added only for text seen
-/// in a real record, and is matched on its whole phrase.
+/// The fixed table of denials (spec section F, decision 3) and known failures (section H). An
+/// entry is added only for text seen in a real record, and is matched on its whole phrase.
 enum ActivityFailureWords {
     static let table: [(phrase: String, words: String)] = [
         ("has been denied because Claude Code is running in don't ask mode", "Claude Code is in don't-ask mode."),
@@ -129,6 +129,35 @@ enum ActivityFailureWords {
         return end.isEmpty || message.range(of: end, range: from.upperBound..<message.endIndex) != nil
     }
 
+    /// A shell command Claude Code ended at its time limit. The whole result, from a real
+    /// `is_error` record (Bash, `sleep 2`, a 100 ms limit), was "Exit code 143", a newline, then
+    /// "Command timed out after 0s". Both lines must be there whole, first and in that order, with
+    /// a duration as Claude Code writes one. The exit code alone is an ordinary SIGTERM, and the
+    /// phrase anywhere else is a mention.
+    static let timedOut = "Timed out."
+    private static let timeoutExit = "Exit code 143"
+    private static let timeoutPhrase = "Command timed out after "
+
+    static func isShellTimeout(_ message: String) -> Bool {
+        let lines = message.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        guard lines.count >= 2, lines[0] == timeoutExit, lines[1].hasPrefix(timeoutPhrase) else { return false }
+        return isDuration(lines[1].dropFirst(timeoutPhrase.count))
+    }
+
+    /// "0s", "2m 0s", "1h 0m 0s": whole numbers with a unit, largest unit first, one space apart.
+    private static func isDuration(_ text: Substring) -> Bool {
+        let units: [Character] = ["d", "h", "m", "s"]
+        var smallest = -1
+        let parts = text.split(separator: " ", omittingEmptySubsequences: false)
+        for part in parts {
+            guard let unit = part.last, let rank = units.firstIndex(of: unit), rank > smallest else { return false }
+            let digits = part.dropLast()
+            guard !digits.isEmpty, digits.count <= 9, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+            smallest = rank
+        }
+        return !parts.isEmpty
+    }
+
     static let noReason = "No reason was given."
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
@@ -150,6 +179,9 @@ enum ActivityFailureWords {
         }
         for entry in framed where matches(message, start: entry.start, end: entry.end) {
             return ActivityFailure(outcome: entry.outcome, reason: entry.words, exact: first, rest: rest)
+        }
+        if isShellTimeout(message) {
+            return ActivityFailure(outcome: .failed, reason: timedOut, exact: first, rest: rest)
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)

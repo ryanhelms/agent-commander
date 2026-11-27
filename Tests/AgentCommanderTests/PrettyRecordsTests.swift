@@ -475,11 +475,91 @@ import Testing
         #expect(read("Claude requested permissions to write to /tmp/a.txt but you haven't granted it yet.").tag == .blocked)
         let interrupted = read("[Tool call interrupted: the session ended before this call's result was recorded]")
         #expect(interrupted.reason == "Interrupted." && interrupted.tag == ActivityTag(word: "cancelled", tone: .wait))
-        // A timeout has no real phrase, so it keeps the provider's own first sentence.
-        let timeout = read("Command timed out after 2m 0s")
-        #expect(timeout.reason == "Command timed out after 2m 0s" && timeout.tag == .failed)
         // Half a framed phrase is not a match.
         #expect(read("PreToolUse:Bash ran fine").tag == .failed)
+    }
+
+    /// The whole `is_error` result of a real Claude Code Bash call: `sleep 2` under a 100 ms limit.
+    static let shellTimeout = "Exit code 143\nCommand timed out after 0s"
+
+    @Test func aShellTimeoutReadsFromItsRealResult() {
+        func read(_ text: String) -> ActivityFailure { ActivityFailureWords.read(ToolResult(output: text, error: "Tool failed."), status: .failed) }
+        let timeout = read(Self.shellTimeout)
+        #expect(timeout.reason == "Timed out." && timeout.tag == .failed && timeout.outcome == .failed)
+        // The provider's own text is kept exactly, one click away.
+        #expect(timeout.exact == "Exit code 143" && timeout.rest == "Command timed out after 0s")
+        // The same result when the service sends it as the error text.
+        #expect(ActivityFailureWords.read(ToolResult(output: "", error: Self.shellTimeout), status: .failed).reason == "Timed out.")
+        // Longer limits, as Claude Code writes a duration, and output the command left behind.
+        #expect(read("Exit code 143\nCommand timed out after 2m 0s").reason == "Timed out.")
+        #expect(read("Exit code 143\nCommand timed out after 1h 0m 0s").reason == "Timed out.")
+        let withOutput = read("Exit code 143\nCommand timed out after 30s\nstep 1 of 4")
+        #expect(withOutput.reason == "Timed out." && withOutput.rest == "Command timed out after 30s\nstep 1 of 4")
+
+        // Everything else keeps the provider's first sentence and the `Failed` tag.
+        let unchanged: [(String, String)] = [
+            // The phrase without the exit line it arrived with.
+            ("Command timed out after 2m 0s", "Command timed out after 2m 0s"),
+            // An ordinary SIGTERM.
+            ("Exit code 143", "Exit code 143"),
+            ("Exit code 143\nTerminated: 15", "Exit code 143"),
+            // Another exit code, or the lines in another order or apart.
+            ("Exit code 1\nCommand timed out after 0s", "Exit code 1"),
+            ("Exit code 1433\nCommand timed out after 0s", "Exit code 1433"),
+            ("Command timed out after 0s\nExit code 143", "Command timed out after 0s"),
+            ("Exit code 143\nstep 1 of 4\nCommand timed out after 0s", "Exit code 143"),
+            ("Exit code 143 Command timed out after 0s", "Exit code 143 Command timed out after 0s"),
+            // A mention: quoted, or inside a longer line.
+            ("Exit code 143\n\u{201C}Command timed out after 0s\u{201D}", "Exit code 143"),
+            ("Exit code 143\necho: Command timed out after 0s", "Exit code 143"),
+            (#"grep: "Exit code 143" then "Command timed out after 0s" not found"#,
+             #"grep: "Exit code 143" then "Command timed out after 0s" not found"#),
+            // Not a duration.
+            ("Exit code 143\nCommand timed out after", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after a while", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 0s.", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 0s and was killed", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 0s 2m", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 2m  0s", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after -1s", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 1.5s", "Exit code 143"),
+            ("Exit code 143\nCommand timed out after 120000ms", "Exit code 143"),
+            ("Exit code 143\ncommand timed out after 0s", "Exit code 143"),
+        ]
+        for (text, first) in unchanged {
+            let failure = read(text)
+            let note = Comment(rawValue: text)
+            #expect(failure.reason == first && failure.exact == first && failure.tag == .failed, note)
+        }
+        // A permission error that mentions a timeout is still the denial it states.
+        let denied = read("Permission to use Bash has been denied.\nExit code 143\nCommand timed out after 0s")
+        #expect(denied.reason == "Permission to use this tool was denied." && denied.tag == .blocked)
+        // A declined request keeps its own words whatever its text holds.
+        #expect(ActivityFailureWords.read(ToolResult(output: Self.shellTimeout, error: "Tool declined."), status: .declined).reason
+                == "You denied this.")
+    }
+
+    @Test func aShellTimeoutIsAFailureLineInTheTranscript() throws {
+        var wire = Wire()
+        wire.user("Wait two seconds.")
+        let slept = wire.call("Bash", detail: "sleep 2", result: Self.shellTimeout, error: "Tool failed.")
+        let records = try Self.summaries(Self.tool(slept, 2, fields: #"{"command":"sleep 2","timeout":100}"#))
+        let failures = Self.items(wire, records).flatMap { item -> [ActivityStep] in
+            if case .group(let group) = item { group.failures } else { [] }
+        }
+        let step = try #require(failures.first)
+        #expect(failures.count == 1 && step.tag == .failed)
+        #expect(step.failure?.reason == "Timed out." && step.failure?.exact == "Exit code 143")
+        #expect(step.failure?.rest == "Command timed out after 0s")
+        #expect(step.accessibilityLabel.hasSuffix("Failed, Timed out."))
+        // The entry Console and Terminal read still holds the provider's text as it arrived.
+        let kept = TranscriptEntry.displayed(wire.entries, mode: .console).contains { entry in
+            switch entry.kind {
+            case .tool(_, _, let result?), .output(let result): result.output == Self.shellTimeout
+            default: false
+            }
+        }
+        #expect(kept)
     }
 
     // MARK: Cards
