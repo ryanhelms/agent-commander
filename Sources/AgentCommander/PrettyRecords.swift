@@ -16,6 +16,8 @@ import Foundation
 //
 // A record is placed by its console sequence against entries whose own sequence is known. When
 // the neighbouring entry's sequence is not known, the record is left out. No client-side guess.
+// The one record with no sequence that is placed is the older runner's thought from before the
+// worker's first console event: it sits before console event 1 (`isBeforeFirstEvent`).
 
 // MARK: - Background jobs from `job` records
 
@@ -174,27 +176,65 @@ enum PrettyRecordPlacement {
         return index
     }
 
+    /// The key the older Claude runner gives a thought: `thought-` and the lowercase version 4
+    /// UUID it makes for each one. An ACP thought is kept under the provider's message ID.
+    static func isOlderRunnerThought(_ key: String) -> Bool {
+        let prefix = "thought-".utf8
+        guard key.utf8.count == prefix.count + 36, key.utf8.starts(with: prefix) else { return false }
+        for (index, byte) in key.utf8.dropFirst(prefix.count).enumerated() {
+            let isHex = (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+            switch index {
+            case 8, 13, 18, 23: guard byte == UInt8(ascii: "-") else { return false }
+            case 14: guard byte == UInt8(ascii: "4") else { return false }
+            case 19: guard "89ab".utf8.contains(byte) else { return false }
+            default: guard isHex else { return false }
+            }
+        }
+        return true
+    }
+
+    /// A thought the older runner recorded before the worker's first console event. The service
+    /// binds it to the event before the first, which is 0, and sends no sequence for it. Any
+    /// later thought of that runner has the sequence of the event it follows.
+    static func isBeforeFirstEvent(_ thought: ToolDetailSummary) -> Bool {
+        thought.kind == "thought" && (thought.sequence ?? 0) == 0 && isOlderRunnerThought(thought.key)
+    }
+
+    /// Console order, then the provider's own start time. The key keeps the order stable.
+    private static func inOrder(_ a: ToolDetailSummary, _ b: ToolDetailSummary) -> Bool {
+        (a.sequence ?? 0, a.startedAt ?? "", a.key) < (b.sequence ?? 0, b.startedAt ?? "", b.key)
+    }
+
     /// `entries` with the older runner's thought records placed in order. That runner sends no
     /// console event for a thought, so each record becomes an entry the thought line is built
     /// from. A console that carries its own thoughts is returned unchanged.
+    ///
+    /// A thought from before the first console event sits before the first entry, and only when
+    /// that entry is console event 1. A transcript that starts later, or whose first entry has no
+    /// known sequence, does not show the worker's start: the record is left out.
     static func withThoughts(_ entries: [TranscriptEntry], summaries: [ToolDetailSummary], worker: String,
                              summary: Summary, record: (String) -> ToolDetailRecord?) -> [TranscriptEntry] {
-        let thoughts = summaries.filter { $0.kind == "thought" && ($0.sequence ?? 0) > 0 }
-        guard !thoughts.isEmpty, !entries.contains(where: \.isThought) else { return entries }
+        let placeable = summaries.filter { $0.kind == "thought" && (($0.sequence ?? 0) > 0 || isBeforeFirstEvent($0)) }
+        guard !placeable.isEmpty, !entries.contains(where: \.isThought) else { return entries }
         let sequences = entries.map { sequence(of: $0, worker: worker, summary: summary) }
+        let startsAtFirstEvent = (sequences.first ?? nil) == 1
+        // Thoughts by the index of the entry each follows. `beforeFirst` is before every entry.
+        let beforeFirst = -1
         var after: [Int: [TranscriptEntry]] = [:]
-        for thought in thoughts.sorted(by: { ($0.sequence ?? 0, $0.startedAt ?? "", $0.key) < ($1.sequence ?? 0, $1.startedAt ?? "", $1.key) }) {
+        for thought in placeable.sorted(by: inOrder) {
             // A record with neither a time nor text says nothing.
             let text = record(thought.key)?.result ?? ""
-            guard thought.duration != nil || (thought.resultBytes ?? 0) > 0 || !text.isEmpty,
-                  let index = anchor(thought.sequence ?? 0, in: sequences) else { continue }
+            guard thought.duration != nil || (thought.resultBytes ?? 0) > 0 || !text.isEmpty else { continue }
+            let place = thought.sequence ?? 0
+            let start: Int? = startsAtFirstEvent ? beforeFirst : nil
+            guard let index = place > 0 ? anchor(place, in: sequences) : start else { continue }
             let origin = TranscriptOrigin(kind: ConversationChunks.thoughtKind, sourceIDs: [], messageID: thought.key)
             after[index, default: []].append(TranscriptEntry(id: worker + ":thought:" + thought.key,
                                                              kind: .other(role: "assistant", text: text), origin: origin))
         }
         guard !after.isEmpty else { return entries }
-        var out: [TranscriptEntry] = []
-        out.reserveCapacity(entries.count + thoughts.count)
+        var out: [TranscriptEntry] = after[beforeFirst] ?? []
+        out.reserveCapacity(entries.count + placeable.count)
         for (index, entry) in entries.enumerated() {
             out.append(entry)
             out += after[index] ?? []
@@ -202,10 +242,11 @@ enum PrettyRecordPlacement {
         return out
     }
 
-    /// The thought records whose text the console reads: the newest few that hold any.
+    /// The thought records whose text the console reads: the newest few that hold any. A thought
+    /// from before the first console event is the oldest, so it is the first one dropped.
     static func thoughtsToRead(_ summaries: [ToolDetailSummary], limit: Int = 12) -> [String] {
-        summaries.filter { $0.kind == "thought" && ($0.resultBytes ?? 0) > 0 && ($0.sequence ?? 0) > 0 }
-            .sorted { ($0.sequence ?? 0) < ($1.sequence ?? 0) }.suffix(limit).map(\.key)
+        summaries.filter { $0.kind == "thought" && ($0.resultBytes ?? 0) > 0 && (($0.sequence ?? 0) > 0 || isBeforeFirstEvent($0)) }
+            .sorted(by: inOrder).suffix(limit).map(\.key)
     }
 
     /// `items` with one end-of-turn line per turn, after the item that holds the last console
