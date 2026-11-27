@@ -12,7 +12,8 @@ import Observation
 //                  PlanItem             one item of a task checklist
 //                  TranscriptSettings   what new records keep, and whether secrets are hidden
 //   Feature layer  ToolDetailStore      summaries by worker, read after the last revision seen;
-//                                       full records read one at a time, on request
+//                                       full records read one at a time, on request; one
+//                                       read after the owner's reply to a form request
 //   Boundary       ToolDetailSource     the four service calls, as closures
 //
 // The store never guesses: a record stored before the service kept details has no entry, and the
@@ -190,6 +191,8 @@ final class ToolDetailStore {
     private var records: [String: [String: ToolDetailRecord]] = [:]
     @ObservationIgnored private var revisions: [String: UInt64] = [:]
     @ObservationIgnored private var reading: Set<String> = []
+    /// Workers whose form reply arrived while their read was in flight: read once more after it.
+    @ObservationIgnored private var rereads: Set<String> = []
     @ObservationIgnored private var missing: Set<String> = []
     @ObservationIgnored var source: ToolDetailSource?
 
@@ -222,23 +225,35 @@ final class ToolDetailStore {
 
     /// Reads the worker's summaries changed since the last revision seen. Called when its
     /// transcript gains an entry or its state changes, never on a timer.
-    func refresh(worker: String) async {
-        guard let source, !reading.contains(worker) else { return }
-        reading.insert(worker)
-        defer { reading.remove(worker) }
-        guard let page = try? await source.page(worker, revisions[worker] ?? 0) else { return }
-        // A lower revision means the service started again with fewer records.
-        if page.revision < (revisions[worker] ?? 0) { summaries[worker] = [:]; records[worker] = [:] }
-        revisions[worker] = page.revision
-        guard !page.records.isEmpty else { return }
-        var known = summaries[worker] ?? [:]
-        for record in page.records {
-            known[record.key] = record
-            // A changed record's full copy is stale.
-            records[worker]?[record.key] = nil
-            missing.remove(worker + "\u{1F}" + record.key)
+    ///
+    /// A call that arrives while a read is in flight starts no second one. With `afterInFlight`
+    /// (the read after a form reply), the worker is then read once more when that read ends,
+    /// from the revision it returned: it may have been answered before the reply's record was
+    /// stored. Any other overlapping call is dropped, as before.
+    func refresh(worker: String, afterInFlight: Bool = false) async {
+        guard let source else { return }
+        guard !reading.contains(worker) else {
+            if afterInFlight { rereads.insert(worker) }
+            return
         }
-        summaries[worker] = known
+        reading.insert(worker)
+        defer { reading.remove(worker); rereads.remove(worker) }
+        repeat {
+            rereads.remove(worker)
+            guard let page = try? await source.page(worker, revisions[worker] ?? 0) else { continue }
+            // A lower revision means the service started again with fewer records.
+            if page.revision < (revisions[worker] ?? 0) { summaries[worker] = [:]; records[worker] = [:] }
+            revisions[worker] = page.revision
+            guard !page.records.isEmpty else { continue }
+            var known = summaries[worker] ?? [:]
+            for record in page.records {
+                known[record.key] = record
+                // A changed record's full copy is stale.
+                records[worker]?[record.key] = nil
+                missing.remove(worker + "\u{1F}" + record.key)
+            }
+            summaries[worker] = known
+        } while rereads.contains(worker)
     }
 
     /// Reads one full record, when a line is opened. A record the service does not hold is asked

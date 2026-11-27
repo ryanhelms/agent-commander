@@ -70,6 +70,11 @@ final class CockpitModel {
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
+        // An accepted form reply has a stored record and may bring no console event. The service
+        // stores it before it answers, so one read now holds it.
+        elicitations.formReplied = { [toolDetails] workerID, _ in
+            Task { await toolDetails.refresh(worker: workerID, afterInFlight: true) }
+        }
         hosts.serviceChanged = { [weak self] in self?.serviceChanged() }
         hosts.serviceInterrupted = { [weak self] in self?.serviceInterrupted(host: $0) }
         hosts.serviceResumed = { [weak self] in self?.serviceResumed() }

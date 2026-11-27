@@ -209,6 +209,7 @@ struct PrettyACPMetrics {
 }
 
 struct PrettyACPConsole: View {
+    @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     let consoleID: String
     let name: String
     let client: AgentClient
@@ -283,7 +284,11 @@ struct PrettyACPConsole: View {
     private func conversation(status: PrettyRunStatus, metrics: PrettyACPMetrics) -> some View {
         // Structured ACP entries only. `rawOutput` is empty on purpose: PTY text is never
         // shown here as if it were the conversation.
-        if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
+        // A form reply from before the worker's first event is a line of its own. The PiP's
+        // window is not the worker's whole transcript, so it draws none from an empty one.
+        let repliedBeforeFirstEvent = entries.isEmpty && !showsRecent
+            && PrettyFormOutcome.hasReplyBeforeFirstEvent(Array((details?.summaries(worker: consoleID) ?? [:]).values))
+        if repliedBeforeFirstEvent || PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
                               awaitingToolID: awaitingToolID(status), exactApprovalToolID: exactApprovalToolID,
@@ -295,6 +300,8 @@ struct PrettyACPConsole: View {
         } else {
             PrettyEmptyConversation(status: status, workerName: name, hasEntries: !entries.isEmpty,
                                     density: density, inset: metrics.inset)
+                // The conversation view reads the stored details; with none drawn, read them here.
+                .task(id: consoleID) { await details?.refresh(worker: consoleID) }
         }
     }
 
