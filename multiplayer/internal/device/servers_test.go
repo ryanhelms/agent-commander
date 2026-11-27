@@ -84,7 +84,7 @@ func TestServerListLifecycle(t *testing.T) {
 		t.Fatal(e)
 	}
 	json.Unmarshal(data, &b)
-	if a.State != "signedOut" || a.Name != "alpha" || b.Name != "Beta" || b.URL != "https://beta.example.test:9443" {
+	if a.State != "connecting" || a.Name != "alpha" || b.Name != "Beta" || b.URL != "https://beta.example.test:9443" {
 		t.Fatalf("unexpected summaries %+v %+v", a, b)
 	}
 	if _, e = call(t, h, "server-add", map[string]any{"url": "https://alpha.example.test"}); e == "" {
@@ -99,6 +99,8 @@ func TestServerListLifecycle(t *testing.T) {
 	if len(list.Servers) != 2 || list.Servers[0].ID != a.ID || !list.Servers[0].Favorite {
 		t.Fatalf("favorites should sort first: %+v", list.Servers)
 	}
+	waitManagerAgent(t, m, a.ID)
+	waitManagerAgent(t, m, b.ID)
 	// Per-server verbs route by id; status works while signed out.
 	data, e = call(t, h, "status", map[string]any{"server": b.ID})
 	if e != "" || !strings.Contains(string(data), `"signedIn":false`) {
@@ -159,9 +161,7 @@ func TestProbeAndPinMismatch(t *testing.T) {
 	}
 	var s ServerSummary
 	json.Unmarshal(data, &s)
-	m.mu.Lock()
-	a := m.agents[s.ID]
-	m.mu.Unlock()
+	a := waitManagerAgent(t, m, s.ID)
 	resp, err := a.http.Get(relay.URL + "/v1/info")
 	if err == nil {
 		resp.Body.Close()
@@ -183,3 +183,18 @@ func TestProbeAndPinMismatch(t *testing.T) {
 }
 
 func testSleep() { <-time.After(10 * time.Millisecond) }
+
+func waitManagerAgent(t *testing.T, m *Manager, id string) *Agent {
+	t.Helper()
+	end := time.Now().Add(3 * time.Second)
+	for {
+		a, err := m.agentUse(id, false)
+		if err == nil {
+			return a
+		}
+		if time.Now().After(end) {
+			t.Fatalf("server did not finish startup: %v", err)
+		}
+		testSleep()
+	}
+}

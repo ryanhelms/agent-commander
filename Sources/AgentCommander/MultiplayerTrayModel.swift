@@ -113,6 +113,7 @@ struct MultiplayerFriendGroup: Equatable, Identifiable {
             case .certChanged: return "blocked, friends hidden"
             case .signedOut: return "signed out"
             case .connecting: return "connecting"
+            case .keychainPending: return "waiting for Keychain"
             default: return "offline, friends not shown"
             }
         }
@@ -363,7 +364,7 @@ final class MultiplayerModel {
     var friendGroups: [MultiplayerFriendGroup] {
         servers.map { server in
             let session = sessions[server.id]
-            let status = server.state == .certChanged || session?.isOnline != true ? nil : session?.status
+            let status = !server.showsSession || session?.isOnline != true ? nil : session?.status
             return MultiplayerFriendGroup(server: server,
                                           friends: MultiplayerFriendGroup.sorted(status?.friends ?? []),
                                           incoming: status?.incoming ?? [],
@@ -379,6 +380,27 @@ final class MultiplayerModel {
     /// A server's own problem text, made safe to draw.
     nonisolated static func problemText(_ raw: String) -> String {
         MultiplayerSessionModel.serviceText(raw) ?? "This server reported a problem. Refresh to check again."
+    }
+
+    /// What to do while a server waits for Keychain: the device agent's sentence when it is safe to show.
+    nonisolated static func keychainText(_ raw: String) -> String {
+        MultiplayerSessionModel.serviceText(raw) ?? MultiplayerServerSummary.keychainWaitingText
+    }
+
+    /// What a server's session reads while the list says the device agent holds none for it: the
+    /// wait for Keychain, or the problem that stopped its start. Nil for every other server.
+    nonisolated static func listedHold(_ server: MultiplayerServerSummary) -> MultiplayerPresence? {
+        guard server.hasNoSession else { return nil }
+        if server.state == .keychainPending { return .keychainPending(detail: keychainText(server.error)) }
+        return .serviceError(MultiplayerSessionModel.serviceErrorText(server.error))
+    }
+
+    /// The line under a server's row: what to do while it waits for Keychain, why it is still
+    /// reconnecting, or its problem. Nil when the row needs none.
+    nonisolated static func problemLine(_ server: MultiplayerServerSummary) -> String? {
+        guard let problem = server.shownProblem else { return nil }
+        if server.state == .keychainPending { return keychainText(problem) }
+        return server.isReconnecting ? reconnectText(problem) : problemText(problem)
     }
 
     /// Why a reconnecting server has no session yet. A timeout or refused connection reads as the
@@ -493,7 +515,9 @@ final class MultiplayerModel {
 
     private func tick() -> Duration {
         if !isBusy { refresh() }
-        let settling = servers.contains { $0.state == .connecting } || sessions.values.contains { $0.awaitingBrowser }
+        // A wait for Keychain ends when the person answers macOS, so the list is read as often as while connecting.
+        let settling = servers.contains { $0.state == .connecting || $0.state == .keychainPending }
+            || sessions.values.contains { $0.awaitingBrowser }
         return settling ? fastPoll : steadyPoll
     }
 
@@ -566,6 +590,9 @@ final class MultiplayerModel {
                                                   steadyPoll: steadyPoll, fastPoll: fastPoll, now: clock)
             sessions[id] = session
             if viewers > 0 { session.open() }
+        }
+        for server in servers {
+            sessions[server.id]?.hold(Self.listedHold(server))
         }
         if let id = route.serverID, !ids.contains(id) { go(.home) }
         me = me.filter { ids.contains($0.key) }
@@ -886,7 +913,11 @@ final class MultiplayerModel {
 
     // MARK: Per-server session intents, from the home list
 
-    func signIn(_ id: String) { sessions[id]?.signIn() }
+    /// A server waiting for Keychain has no sign-in to start: the device agent continues on its own.
+    func signIn(_ id: String) {
+        guard server(id)?.state != .keychainPending else { return }
+        sessions[id]?.signIn()
+    }
     func signOut(_ id: String) { sessions[id]?.signOut() }
 
     func accept(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.accept(request) }
@@ -907,7 +938,7 @@ final class MultiplayerModel {
 
     /// Servers a friend can be added on now.
     var friendServers: [MultiplayerServerSummary] {
-        servers.filter { $0.state != .certChanged && sessions[$0.id]?.isOnline == true }
+        servers.filter { $0.showsSession && sessions[$0.id]?.isOnline == true }
     }
 
     // MARK: - Testing support

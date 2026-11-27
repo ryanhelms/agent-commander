@@ -274,7 +274,7 @@ final class MultiplayerMembershipRequestModel {
 
     /// The status word of a server the person isn't signed in to.
     private func word(_ server: String) -> MultiplayerMembershipAsk {
-        guard let tray, let saved = tray.server(server), !saved.signedIn, saved.state != .certChanged else { return .none }
+        guard let tray, let saved = tray.server(server), !saved.signedIn, saved.showsSession else { return .none }
         return tray.session(server)?.status?.membershipAsk ?? .none
     }
 
@@ -286,7 +286,7 @@ final class MultiplayerMembershipRequestModel {
 
     /// The person's request on a server, or nil when there is nothing to ask or to show.
     func status(for server: String) -> MultiplayerMembershipRequestStatus? {
-        guard let tray, let saved = tray.server(server), !saved.signedIn, saved.state != .certChanged else { return nil }
+        guard let tray, let saved = tray.server(server), !saved.signedIn, saved.showsSession else { return nil }
         let phase: MultiplayerMembershipRequestStatus.Phase
         if sending.contains(server) {
             phase = .sending

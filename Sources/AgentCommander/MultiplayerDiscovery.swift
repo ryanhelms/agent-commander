@@ -327,6 +327,8 @@ struct MultiplayerDiscovery: Decodable, Equatable, Sendable {
 enum MultiplayerJoinSignIn: Equatable, Sendable {
     case idle
     case waitingForBrowser
+    /// The server waits for macOS Keychain: there is no sign-in to start. Carries what to do.
+    case waitingForKeychain(String)
     case failed(String)
 }
 
@@ -439,6 +441,9 @@ struct MultiplayerJoinChecklist: Equatable {
         // A request stands only for a relay in the list that hasn't let the person in, and not
         // while a new sign-in is under way.
         let asked = standing == .signIn && signIn != .waitingForBrowser ? request : nil
+        // The device agent holds no session for the saved server (it waits for Keychain, or its
+        // start failed): a sign-in would do nothing, so no step offers one.
+        let held = server?.hasNoSession ?? false
         self.contact = contact
         self.request = asked
 
@@ -481,7 +486,8 @@ struct MultiplayerJoinChecklist: Equatable {
 
         // 3. Signed in
         let signedIn: Step
-        var signInWaits = false
+        // The step waits on something outside the checklist; this is the line that says on what.
+        var signInWaits: String?
         switch standing {
         case .unreachable, .confirm:
             signedIn = Step(stage: .signIn, mark: .waiting, detail: "")
@@ -502,10 +508,17 @@ struct MultiplayerJoinChecklist: Equatable {
             case nil:
             switch signIn {
             case .waitingForBrowser:
-                signInWaits = true
+                signInWaits = "Finish signing in in your browser."
                 signedIn = Step(stage: .signIn, mark: .current, detail: "Finish signing in in your browser.")
+            case .waitingForKeychain(let detail):
+                signInWaits = "Waiting for Keychain…"
+                signedIn = Step(stage: .signIn, mark: .current, detail: detail)
             case .failed(let reason):
                 signedIn = Step(stage: .signIn, mark: .failed, detail: reason)
+            case .idle where held:
+                // The server's own problem, with its way back, stands in for the browser line.
+                signedIn = Step(stage: .signIn, mark: .failed,
+                                detail: server.flatMap(MultiplayerModel.problemLine) ?? Self.heldHint)
             case .idle:
                 let issuer = MultiplayerServerAddress.host(relay.issuer).multiplayerDisplay
                 signedIn = Step(stage: .signIn, mark: .current,
@@ -575,8 +588,8 @@ struct MultiplayerJoinChecklist: Equatable {
                 action = nil
                 hint = "Waiting for the relay’s admins."
             case .approved?:
-                action = .signIn
-                hint = "Sign in to finish."
+                action = held ? nil : .signIn
+                hint = held ? Self.heldHint : "Sign in to finish."
             case .denied?:
                 action = nil
                 hint = "The relay’s admins declined this request."
@@ -584,9 +597,11 @@ struct MultiplayerJoinChecklist: Equatable {
                 action = nil
                 hint = contact.isEmpty ? "Ask one of the relay’s admins directly." : "Ask \(contact) directly."
             case nil:
-                action = signInWaits ? nil : .signIn
-                if signInWaits {
-                    hint = "Finish signing in in your browser."
+                action = signInWaits == nil && !held ? .signIn : nil
+                if let signInWaits {
+                    hint = signInWaits
+                } else if held {
+                    hint = Self.heldHint
                 } else {
                     switch relay.membership {
                     case .allowlist, .invite: hint = "Sign in. If the relay turns you away, you can request access."
@@ -595,8 +610,11 @@ struct MultiplayerJoinChecklist: Equatable {
                 }
             }
         }
-        offersSignInAgain = asked.map { $0.offersSignIn && $0.phase != .approved } ?? false
+        offersSignInAgain = !held && (asked.map { $0.offersSignIn && $0.phase != .approved } ?? false)
     }
+
+    /// The line under the steps while the saved server has no session, so no sign-in to offer.
+    static let heldHint = "You can sign in once this server starts."
 }
 
 // MARK: - Preferences
@@ -696,7 +714,10 @@ final class MultiplayerDiscoveryModel {
     func checklist(for relay: MultiplayerDiscoveredRelay) -> MultiplayerJoinChecklist {
         let saved = server(for: relay)
         var signIn = MultiplayerJoinSignIn.idle
-        if let saved, !saved.signedIn, let session = tray?.session(saved.id) {
+        if let saved, saved.state == .keychainPending {
+            // Sign in would do nothing here, so the step waits and offers no button.
+            signIn = .waitingForKeychain(MultiplayerModel.problemLine(saved) ?? MultiplayerServerSummary.keychainWaitingText)
+        } else if let saved, !saved.signedIn, let session = tray?.session(saved.id) {
             switch session.presence {
             case .waitingForBrowser: signIn = .waitingForBrowser
             case .signInIncomplete(let detail): signIn = .failed(detail ?? "The sign-in didn’t finish. Try again.")

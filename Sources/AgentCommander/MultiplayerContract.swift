@@ -254,11 +254,15 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
     let directory: [MultiplayerDirectoryEntry]?
     /// Where a request to join this relay stands, after a refused sign-in (`accessRequest`).
     let membershipAsk: MultiplayerMembershipAsk
+    /// The phase the device agent names when it answers for a server that has no connection yet:
+    /// `keychainPending`, `connecting` or `error`. Nil from a connected server and from an older helper.
+    let activation: MultiplayerServerState?
 
     private enum CodingKeys: String, CodingKey {
         case online, signedIn, handle, loginPending, error, friends, outgoing, incoming, grants, resources, shared
         case displayName, statusMessage, hasAvatar, directory
         case membershipAsk = "accessRequest"
+        case activation = "state"
     }
 
     init(from decoder: any Decoder) throws {
@@ -283,6 +287,7 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
         hasAvatar = (try? container.decodeIfPresent(Bool.self, forKey: .hasAvatar)) ?? false
         directory = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerDirectoryEntry>.self, forKey: .directory)) ?? nil)?.items
         membershipAsk = MultiplayerMembershipAsk(word: ((try? container.decodeIfPresent(String.self, forKey: .membershipAsk)) ?? nil) ?? "")
+        activation = (try? container.decodeIfPresent(MultiplayerServerState.self, forKey: .activation)) ?? nil
     }
 
     /// Friends' resources: the relay's directory, or the older list of what was shared with you.

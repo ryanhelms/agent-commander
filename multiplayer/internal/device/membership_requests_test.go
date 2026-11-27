@@ -40,6 +40,7 @@ func TestMembershipRequestVerbs(t *testing.T) {
 	}
 	var s ServerSummary
 	json.Unmarshal(data, &s)
+	waitManagerAgent(t, m, s.ID)
 	accessState := func() string {
 		t.Helper()
 		data, e := call(t, h, "status", map[string]any{"server": s.ID})

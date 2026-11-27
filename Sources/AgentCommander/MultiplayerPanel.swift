@@ -73,6 +73,13 @@ struct MultiplayerAccountCard: View {
                 Text("Asking the network helper…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
             }
             .accessibilityElement(children: .combine)
+        case .keychainPending:
+            // Nothing to press here: macOS asks, and the device agent continues on its own.
+            HStack(spacing: Space.s) {
+                MultiplayerSpinner()
+                Text("Waiting for macOS…").font(MultiplayerTheme.sub).foregroundStyle(.inkSecondary)
+            }
+            .accessibilityElement(children: .combine)
         case .offline:
             trailingButton(hasStatus ? "Check again" : "Check status", prominent: !hasStatus, action: onCheck)
         case .signedOut, .signInIncomplete:
@@ -123,6 +130,7 @@ struct MultiplayerAccountCard: View {
         case .offline, .checking: "wifi.slash"
         case .signedOut: "person.crop.circle"
         case .waitingForBrowser: "safari"
+        case .keychainPending: "key"
         case .signInIncomplete: "person.crop.circle.badge.exclamationmark"
         case .needsHandle: "at"
         case .serviceError: "exclamationmark.icloud"
@@ -137,6 +145,7 @@ struct MultiplayerAccountCard: View {
         case .checking: "Checking your network status"
         case .signedOut: "Sign in to the network"
         case .waitingForBrowser: "Finish signing in in your browser"
+        case .keychainPending: "Waiting for Keychain…"
         case .signInIncomplete: "Sign-in didn’t finish"
         case .needsHandle: "Choose your handle"
         case .serviceError: "The network service reported a problem"
@@ -154,6 +163,7 @@ struct MultiplayerAccountCard: View {
         case .checking: "This takes a moment."
         case .signedOut: "Your browser opens to sign in. You’ll show as online once the network confirms it."
         case .waitingForBrowser: "This panel checks every few seconds and updates when sign-in is complete."
+        case .keychainPending(let detail): detail
         case .signInIncomplete(let detail):
             detail ?? "The browser sign-in ended without signing you in. Start it again when you’re ready."
         case .needsHandle: "You’re signed in. Claim a handle so friends can find you."

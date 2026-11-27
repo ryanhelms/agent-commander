@@ -102,8 +102,10 @@ type Manager struct {
 	edit        sync.Mutex
 	servers     []Server
 	agents      map[string]*Agent
-	problems    map[string]string
+	activations map[string]*serverActivation
+	problems    map[string]error
 	certChanged map[string]bool
+	closed      bool
 	rs          *remoteServer
 	tailnet     tailnetState
 	disc        discoveryState
@@ -122,7 +124,8 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 	if c.Dial == nil {
 		c.Dial = (&net.Dialer{Timeout: 5 * time.Second}).DialContext
 	}
-	m := &Manager{cfg: c, ctx: ctx, agents: map[string]*Agent{}, problems: map[string]string{}, certChanged: map[string]bool{}}
+	m := &Manager{cfg: c, ctx: ctx, agents: map[string]*Agent{}, activations: map[string]*serverActivation{},
+		problems: map[string]error{}, certChanged: map[string]bool{}}
 	b, e := os.ReadFile(m.listPath())
 	switch {
 	case e == nil:
@@ -146,9 +149,11 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 	default:
 		return nil, e
 	}
+	m.mu.Lock()
 	for _, s := range m.servers {
 		m.start(s)
 	}
+	m.mu.Unlock()
 	if !c.NoPresence {
 		go m.presenceLoop()
 	}
@@ -162,9 +167,9 @@ func NewManager(ctx context.Context, c ManagerConfig) (*Manager, error) {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for id, a := range m.agents {
-		a.Close()
-		delete(m.agents, id)
+	m.closed = true
+	for id := range m.activations {
+		m.stop(id)
 	}
 }
 
@@ -210,52 +215,36 @@ func NormalizeRelay(raw string) (string, error) {
 	return "https://" + strings.ToLower(host), nil
 }
 
+// start schedules one activation per saved server. All callers hold m.mu.
 func (m *Manager) start(s Server) {
+	if m.closed || m.activations[s.ID] != nil {
+		return
+	}
 	if s.ID == m.servers[0].ID {
 		if err := migrateQueue(m.cfg.Dir, s.ID); err != nil {
-			m.problems[s.ID] = err.Error()
+			m.problems[s.ID] = err
 			return
 		}
 	}
 	if !s.AutoConnect {
 		return
 	}
-	dir := filepath.Join(m.cfg.Dir, "servers", s.ID)
-	if e := os.MkdirAll(filepath.Dir(dir), 0700); e != nil {
-		m.problems[s.ID] = e.Error()
-		return
-	}
-	secrets, e := m.cfg.Secrets(s.URL)
-	if e != nil {
-		m.problems[s.ID] = e.Error()
-		return
-	}
-	id := s.ID
-	a, e := New(m.ctx, Config{
-		ServerID: s.ID, Relay: s.URL, Dir: dir, CommanderSocket: m.cfg.CommanderSocket, Secrets: secrets, Roots: m.cfg.Roots,
-		OIDCHTTP: m.cfg.OIDCHTTP, OpenBrowser: m.cfg.OpenBrowser, Pin: s.Pin,
-		GoogleDesktopConfig: filepath.Join(m.cfg.Dir, "google-desktop-client.json"),
-		OnPinMismatch: func() {
-			go func() {
-				m.mu.Lock()
-				defer m.mu.Unlock()
-				m.certChanged[id] = true
-				if a := m.agents[id]; a != nil {
-					a.Close()
-					delete(m.agents, id)
-				}
-			}()
-		},
-	})
-	if e != nil {
-		m.problems[s.ID] = e.Error()
-		return
-	}
+	ctx, cancel := context.WithCancel(m.ctx)
+	attempt := &serverActivation{ctx: ctx, cancel: cancel, starting: true, done: make(chan struct{})}
 	delete(m.problems, s.ID)
-	m.agents[s.ID] = a
+	m.activations[s.ID] = attempt
+	go m.activate(ctx, s, attempt)
 }
 
 func (m *Manager) stop(id string) {
+	if attempt := m.activations[id]; attempt != nil {
+		attempt.cancel()
+		// A canceled native Keychain operation may still be running. Keep its
+		// slot until it returns so the next activation cannot overlap it.
+		if !attempt.starting {
+			delete(m.activations, id)
+		}
+	}
 	if a := m.agents[id]; a != nil {
 		a.Close()
 		delete(m.agents, id)
@@ -267,7 +256,7 @@ func (m *Manager) find(id string) int {
 }
 
 func (m *Manager) summary(s Server) ServerSummary {
-	out := ServerSummary{Server: s, State: "offline", Error: m.problems[s.ID]}
+	out := ServerSummary{Server: s, State: "offline"}
 	if m.certChanged[s.ID] {
 		out.State = "certChanged"
 		out.Error = ErrPinMismatch.Error()
@@ -275,8 +264,14 @@ func (m *Manager) summary(s Server) ServerSummary {
 	}
 	a := m.agents[s.ID]
 	if a == nil {
-		if out.Error != "" {
-			out.State = "error"
+		var pending *serverActivationStatus
+		if problem := m.activationProblem(s); errors.As(problem, &pending) {
+			out.State = pending.state
+			if pending.state != "connecting" {
+				out.Error = pending.detail
+			}
+		} else if problem != nil {
+			out.State, out.Error = "error", problem.Error()
 		}
 		return out
 	}
@@ -539,7 +534,8 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 	if i < 0 {
 		return nil, errors.New("unknown server")
 	}
-	s := m.servers[i]
+	previous := m.servers[i]
+	s := previous
 	switch verb {
 	case "server-update":
 		if in.Name != "" {
@@ -554,6 +550,7 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 		}
 		m.servers[i] = s
 		if e := m.persist(); e != nil {
+			m.servers[i] = previous
 			return nil, e
 		}
 		if restart {
@@ -570,6 +567,7 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 		s.Pin = in.Pin
 		m.servers[i] = s
 		if e := m.persist(); e != nil {
+			m.servers[i] = previous
 			return nil, e
 		}
 		delete(m.certChanged, s.ID)
@@ -579,6 +577,9 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 		}
 		return m.summary(s), nil
 	case "server-remove":
+		if attempt := m.activations[s.ID]; attempt != nil && attempt.starting {
+			return nil, errors.New("Wait for the server to finish starting before removing it.")
+		}
 		if a := m.agents[s.ID]; a != nil {
 			m.mu.Unlock()
 			_ = a.signout(ctx)
@@ -606,6 +607,10 @@ func (m *Manager) agentFor(id string) (*Agent, error) { return m.agentUse(id, tr
 func (m *Manager) agentUse(id string, bump bool) (*Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.agentUseLocked(id, bump)
+}
+
+func (m *Manager) agentUseLocked(id string, bump bool) (*Agent, error) {
 	if id == "" {
 		if len(m.servers) != 1 {
 			return nil, errors.New("name a server")
@@ -621,8 +626,8 @@ func (m *Manager) agentUse(id string, bump bool) (*Agent, error) {
 	}
 	a := m.agents[id]
 	if a == nil {
-		if p := m.problems[id]; p != "" {
-			return nil, errors.New(p)
+		if problem := m.activationProblem(m.servers[i]); problem != nil {
+			return nil, problem
 		}
 		return nil, errors.New("this server is not connected; turn on auto-connect")
 	}
@@ -741,6 +746,19 @@ func (m *Manager) Handler() http.Handler {
 		_ = json.Unmarshal(raw, &target)
 		a, e := m.agentUse(target.Server, !readOnlyVerbs[verb])
 		if e != nil {
+			var starting *serverActivationStatus
+			if verb == "status" && errors.As(e, &starting) {
+				// The authorized local status schema also applies before an
+				// active server exists.
+				r.Body = io.NopCloser(bytes.NewReader(raw))
+				var in input
+				if e = body(r, &in); e != nil {
+					reply(w, nil, e)
+					return
+				}
+				reply(w, starting.status(), nil)
+				return
+			}
 			reply(w, nil, e)
 			return
 		}
@@ -750,6 +768,12 @@ func (m *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /coordinator/{verb}", func(w http.ResponseWriter, r *http.Request) {
 		a, e := m.coordinatorAgent(r.Header.Get("X-Commander-Server"))
 		if e != nil {
+			var starting *serverActivationStatus
+			if errors.As(e, &starting) {
+				if denied := proofCoordinator(r.Context(), m.cfg.CommanderSocket, r.Header); denied != nil {
+					e = denied
+				}
+			}
 			reply(w, nil, e)
 			return
 		}

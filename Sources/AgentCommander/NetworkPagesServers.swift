@@ -58,6 +58,8 @@ struct NetworkServerTable: View {
                 }
             }
             .padding(.vertical, Space.xs)
+            // The row has no line of its own for it: what to do while it waits for Keychain is its help.
+            .help(summary.state == .keychainPending ? MultiplayerModel.problemLine(summary) ?? "" : "")
             .accessibilityIdentifier("network-server-\(server.id)")
         }
     }
@@ -80,6 +82,8 @@ struct NetworkServerTable: View {
         if server.signedIn, !server.handle.isEmpty { parts.append("signed in as \(server.handle.multiplayerDisplay)") }
         // The state already says a changed certificate; it is said once.
         if server.incoming > 0 { parts.append(MultiplayerPlural.count(server.incoming, "friend request")) }
+        // The same sentence the tray shows under the row and the inspector shows under its header.
+        if server.state == .keychainPending, let line = MultiplayerModel.problemLine(server) { parts.append(line) }
         return parts.joined(separator: ", ")
     }
 }
@@ -120,6 +124,19 @@ struct NetworkServerInspector: View {
             NetworkInspector(title: summary.displayName, serverID: server.id, serverName: summary.host, state: header,
                              note: summary.signedIn && !summary.handle.isEmpty ? "Signed in as \(summary.handle.multiplayerDisplay)" : nil,
                              close: actions.close) {
+                // Only for a server with no session (waiting for Keychain, or refused by macOS):
+                // the tray's line under the row, above the switch that is the way out of it.
+                if summary.hasNoSession, let problem = MultiplayerModel.problemLine(summary) {
+                    MultiplayerBand {
+                        Text(problem)
+                            .font(MultiplayerTheme.sub)
+                            .foregroundStyle(summary.state == .error ? MultiplayerTheme.failure : MultiplayerTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .accessibilityIdentifier("network-server-problem")
+                }
                 if !summary.pin.isEmpty {
                     MultiplayerBand {
                         MultiplayerHashChip(label: "Server key", hash: summary.pin, trust: .pinned)

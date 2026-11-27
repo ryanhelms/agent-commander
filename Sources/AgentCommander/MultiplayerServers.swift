@@ -7,8 +7,13 @@ import Foundation
 
 /// The device agent's word on one server's connection. A word this build does not know reads as
 /// `unknown`, never as online.
+///
+/// `keychainPending` is its own phase: the device agent is waiting for macOS to let it read or
+/// save this Mac's credential for the server. It is not `connecting` and not a browser sign-in:
+/// the server is not signed in, nothing of it is online, and the only thing to do is answer the
+/// macOS prompt.
 enum MultiplayerServerState: String, Codable, Sendable, Equatable {
-    case signedOut, connecting, online, offline, certChanged, error, unknown
+    case signedOut, connecting, keychainPending, online, offline, certChanged, error, unknown
 
     init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -19,6 +24,7 @@ enum MultiplayerServerState: String, Codable, Sendable, Equatable {
         switch self {
         case .signedOut: "Signed out"
         case .connecting: "Connecting…"
+        case .keychainPending: "Waiting for Keychain…"
         case .online: "Online"
         case .offline: "Offline"
         case .certChanged: "Certificate changed"
@@ -30,7 +36,7 @@ enum MultiplayerServerState: String, Codable, Sendable, Equatable {
     var tone: Tone {
         switch self {
         case .online: .working
-        case .connecting: .focus
+        case .connecting, .keychainPending: .focus
         case .certChanged, .error: .failure
         case .signedOut, .offline, .unknown: .neutral
         }
@@ -164,10 +170,24 @@ struct MultiplayerServerSummary: Codable, Equatable, Sendable, Identifiable {
     }
 
     /// The reason the last attempt failed, shown under the row while it reconnects or after an error.
+    /// While the server waits for Keychain it is what the person can do, and is never empty.
     var shownProblem: String? {
+        if state == .keychainPending { return error.isEmpty ? Self.keychainWaitingText : error }
         guard !error.isEmpty, state == .error || isReconnecting else { return nil }
         return error
     }
+
+    /// What to do while a server waits for Keychain, when the device agent's own sentence can't be shown.
+    static let keychainWaitingText = "Respond to the macOS Keychain prompt if one appears. Agent Commander will continue when access is ready."
+
+    /// The device agent holds no session for this server: it waits for Keychain, or the server's
+    /// start failed before anyone was signed in (macOS refused the credential). The list says so
+    /// first; the server's own status can still read as it did while it was connected.
+    var hasNoSession: Bool { state == .keychainPending || (state == .error && !signedIn) }
+
+    /// Whether this server's session may be drawn and acted on. A changed certificate hides it, and
+    /// so does a server with no session: what the session last read belongs to another phase.
+    var showsSession: Bool { state != .certChanged && !hasNoSession }
 
     /// Favorites first, then most recently used. A server never used sorts after one that was;
     /// the name, then the ID, settle ties so rows don't swap between refreshes.
