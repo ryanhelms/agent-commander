@@ -119,6 +119,7 @@ func deployCommand(ctx context.Context, args []string) error {
 	fs.Var(&hostnames, "hostname", "DNS name or IP clients use; the first forms the URL; repeatable")
 	fs.StringVar(&o.Config.Issuer, "issuer", "", "HTTPS OIDC issuer")
 	fs.StringVar(&o.Config.ClientID, "client-id", "", "OIDC client ID of the desktop app")
+	fs.StringVar(&o.ClientSecretFile, "client-secret-file", "", "Google Desktop OAuth file or bare installed-app secret the relay hands to devices at sign-in")
 	fs.Var(&admins, "admin", "administrator email; repeatable")
 	fs.Var(&allow, "allow-email", "allowed member email; repeatable")
 	fs.StringVar(&o.Config.Name, "name", "", "display name; defaults to the first hostname")

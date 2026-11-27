@@ -72,6 +72,17 @@ func (a *Agent) namedTeamRelay(ctx context.Context, s identity.Session, verb str
 		method, path = "GET", "/v1/"+verb
 	case "admin-members":
 		method, path = "GET", "/v1/admin/members"
+	case "admin-requests":
+		method, path = "GET", "/v1/admin/membership-requests"
+	case "admin-request-decide":
+		id, err := segment(in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if in.Decision != "approve" && in.Decision != "deny" {
+			return nil, errors.New(`decision must be "approve" or "deny"`)
+		}
+		method, path = "POST", "/v1/admin/membership-requests/"+id+"/"+in.Decision
 	case "workspace-edit", "workspace-leave":
 		workspace, err := segment(cmp.Or(in.Workspace, in.ID))
 		if err != nil {

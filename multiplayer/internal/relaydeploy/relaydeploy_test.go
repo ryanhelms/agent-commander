@@ -1,6 +1,9 @@
 package relaydeploy
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"agentcommander.network/pilot/internal/hostmode"
@@ -40,5 +43,36 @@ func TestInitFlagsRoundTrip(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("flags %q, want %q", got, want)
 		}
+	}
+}
+
+func TestClientSecretInstall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "client.json")
+	if err := os.WriteFile(path, []byte(`{"installed":{"client_id":"desktop","client_secret":"GOCSPX-x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readClientSecret(path, "desktop"); err != nil || got != "GOCSPX-x" {
+		t.Fatalf("read: %q %v", got, err)
+	}
+	if _, err := readClientSecret(path, "other"); err == nil {
+		t.Fatal("accepted another client's file")
+	}
+	if _, err := readClientSecret(filepath.Join(dir, "missing"), "desktop"); err == nil {
+		t.Fatal("accepted a missing file")
+	}
+	if got := dockerSecretCommand("docker"); got != "docker run --rm -i -v agent-commander-relay:/data agent-commander-relay:current configure --client-secret-file=-" {
+		t.Fatalf("docker: %s", got)
+	}
+	got := systemdSecretCommand("sudo -n ")
+	for _, want := range []string{"sudo -n sh -c ", "/usr/local/bin/commander-relay host --dir /var/lib/agent-commander/relay configure --client-secret-file=-",
+		"chown agent-commander: ", "/var/lib/agent-commander/relay/oauth-client-secret"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("systemd command %q lacks %q", got, want)
+		}
+	}
+	// No secret file means nothing to send.
+	if err := installClientSecret(t.Context(), Options{}, nil, "unused"); err != nil {
+		t.Fatal(err)
 	}
 }
