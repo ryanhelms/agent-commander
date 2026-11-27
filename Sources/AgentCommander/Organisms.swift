@@ -1036,7 +1036,7 @@ struct AttentionStack: View {
                                                    terminal: NativeTerminalTarget(request: current))
                     }
                     if let session = prettySession {
-                        // Pretty on an ACP-bound worker: its recent structured window and this
+                        // Pretty on an ACP-bound worker: the recent part of its current turn and this
                         // request's one reply form, at PiP density.
                         PrettyACPConsole(request: current, session: session, reply: reply,
                                          inset: 11, conversationHeight: conversationHeight ?? 92)

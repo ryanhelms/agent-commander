@@ -301,6 +301,15 @@ extension TranscriptEntry {
         }
         return Array(entries[start...])
     }
+
+    /// The current conversation turn: the developer's latest prompt and everything after it, or
+    /// every entry when there is no prompt. A prompt is never a chunk of a streamed reply, so the
+    /// turn never opens inside one. Pretty in the PiP reads its items from this
+    /// (`ActivityConversation.recent`); Console and Terminal keep `recent(_:count:)`.
+    static func currentTurn(_ entries: [TranscriptEntry]) -> [TranscriptEntry] {
+        guard let prompt = entries.lastIndex(where: \.isFromUser), prompt > 0 else { return entries }
+        return Array(entries[prompt...])
+    }
 }
 
 extension ConsoleRecordDetail {

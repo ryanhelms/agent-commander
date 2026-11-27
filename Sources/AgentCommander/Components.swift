@@ -325,6 +325,14 @@ struct RequestPresentation: Identifiable, Equatable {
     /// The worker's most recent structured transcript entries, when the service sends structured
     /// messages. Empty otherwise, and the surface shows `contextTail`.
     var contextEntries: [TranscriptEntry] = []
+    /// The asking worker's current conversation turn (`TranscriptEntry.currentTurn`), from that
+    /// worker's own transcript. Pretty in the PiP groups it as the focused worker does and then
+    /// shows a bounded part (`ActivityConversation.recent`), so a failure or the latest group is
+    /// never lost to the four-entry cut. Console and Terminal keep `contextEntries`.
+    var turnEntries: [TranscriptEntry] = []
+    /// What Pretty in the PiP reads: the current turn, or the recent entries where a request was
+    /// built without one.
+    var prettyEntries: [TranscriptEntry] { turnEntries.isEmpty ? contextEntries : turnEntries }
     /// Set while the worker that asked is disconnected, with the service's explanation. The
     /// request stays pending and readable. It cannot be answered until the service has reconciled
     /// the worker, so every reply surface is closed and says why.
@@ -1059,6 +1067,7 @@ extension RunContent {
                     platform: platform, inputHolder: isCoordinator ? worker.name : holder,
                     contextTail: Self.tail(of: worker.output),
                     contextEntries: TranscriptEntry.recent(transcript),
+                    turnEntries: TranscriptEntry.currentTurn(transcript),
                     disconnectReason: disconnectReason,
                     hostIsReconnecting: reconnecting,
                     workerBackgroundJobs: background,

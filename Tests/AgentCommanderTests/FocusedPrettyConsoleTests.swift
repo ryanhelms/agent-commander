@@ -105,5 +105,10 @@ private func approvalContent(openCalls: [String]) throws -> RunContent {
     #expect(!trimmed.contextEntries.contains { $0.id == "call-a" })
     #expect(trimmed.contextEntries.contains { $0.id == "call-b" })
     #expect(trimmed.awaitingApprovalToolID == nil)
+    // Console and Terminal keep the four-entry window. Pretty reads the worker's current turn,
+    // which here is the whole transcript: no prompt opens a later one.
+    #expect(trimmed.contextEntries == TranscriptEntry.recent(trimmed.turnEntries))
+    #expect(trimmed.turnEntries.contains { $0.id == "call-a" })
+    #expect(trimmed.prettyEntries == trimmed.turnEntries)
     #expect(ToolStatus.awaitingApproval.word == "Awaiting approval")
 }
