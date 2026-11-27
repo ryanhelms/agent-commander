@@ -333,6 +333,9 @@ func writeMCPConfig(dir string, servers map[string]mcpServer) (string, error) {
 	return path, nil
 }
 
+// coordinatorTools is what every harness lets a coordinator call without asking;
+// managed sessions deny the rest. TestManagedPolicyCoversRegisteredTools fails
+// until a new Commander tool is listed here or withheld there.
 var coordinatorTools = []string{
 	"mcp__commander__commander_delegate", "mcp__commander__commander_reply", "mcp__commander__commander_send",
 	"mcp__commander__commander_interrupt", "mcp__commander__commander_stop_worker",
@@ -340,6 +343,7 @@ var coordinatorTools = []string{
 	"mcp__commander__commander_integrate",
 	"mcp__commander__commander_list_tools", "mcp__commander__commander_call_tool",
 	"mcp__commander__commander_network_discover", "mcp__commander__commander_network_submit", "mcp__commander__commander_network_receipt", "mcp__commander__commander_network_inbox",
+	"mcp__commander__commander_network_online", "mcp__commander__commander_network_thread", "mcp__commander__commander_network_board",
 }
 
 func agentPolicy(j job) (map[string]mcpServer, string, string) {
