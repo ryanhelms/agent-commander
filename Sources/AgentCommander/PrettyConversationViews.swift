@@ -328,15 +328,46 @@ extension View {
     }
 }
 
+/// What a pointer press of a group's summary button asks for, read from the event the app is
+/// handling. Only the pointer comes here: the keyboard's keys and the accessibility press have
+/// their own handlers, which toggle the group alone.
+enum PrettySummaryPress: Equatable {
+    /// Open or close the group alone.
+    case toggle
+    /// Open or close the group and every step beneath it: an Option-click.
+    case everyStep
+
+    /// Only a primary click's own mouse-up that carries Option opens every step. The Option
+    /// state is the event's, not the keyboard's at the time of reading
+    /// (`NSEvent.modifierFlags`), which a posted click does not change.
+    static func of(type: NSEvent.EventType?, modifiers: NSEvent.ModifierFlags) -> PrettySummaryPress {
+        type == .leftMouseUp && modifiers.contains(.option) ? .everyStep : .toggle
+    }
+
+    /// The press the app is handling now.
+    @MainActor static func current() -> PrettySummaryPress {
+        let event = NSApp?.currentEvent
+        return of(type: event?.type, modifiers: event?.modifierFlags ?? [])
+    }
+}
+
 /// The secondary-ink line that stands for a run of finished calls. It never animates.
 struct ActivityGroupSummary: View {
     let summary: ActivityGroup.Summary
     let isExpanded: Bool
     let metrics: PrettyMetrics
+    /// Opens or closes the group alone: a plain click, the keyboard and the accessibility press.
     let toggle: () -> Void
+    /// Opens or closes the group and every step beneath it: an Option-click.
+    let toggleEveryStep: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
+        Button {
+            switch PrettySummaryPress.current() {
+            case .toggle: toggle()
+            case .everyStep: toggleEveryStep()
+            }
+        } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 (Text(verbatim: ([summary.text] + summary.notes).filter { !$0.isEmpty }.joined(separator: ", "))
                     .foregroundColor(Palette.secondary)
@@ -354,6 +385,9 @@ struct ActivityGroupSummary: View {
         .textSelection(.disabled)
         .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
         .help("Option-click opens every step")
+        // The accessibility press toggles the group alone, as the keys do. Left to the button's
+        // action it would be read from whatever event was last current: an earlier Option-click.
+        .accessibilityAction { toggle() }
         .accessibilityLabel(summary.accessibilityLabel)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
@@ -703,7 +737,7 @@ struct ActivityGroupView<Detail: View>: View {
     let metrics: PrettyMetrics
     let isExpanded: (String) -> Bool
     let toggle: (String) -> Void
-    /// Opens or closes the group and every line beneath it (Option-click).
+    /// Opens or closes the group and every step that opens, its failures among them (Option-click).
     let setAll: ([String], Bool) -> Void
     @ViewBuilder let detail: (ActivityStep) -> Detail
     @State private var showsEveryLine = false
@@ -714,13 +748,9 @@ struct ActivityGroupView<Detail: View>: View {
                 single(group.lines[0])
             } else if !group.lines.isEmpty {
                 let open = isExpanded(group.id)
-                ActivityGroupSummary(summary: group.summary, isExpanded: open, metrics: metrics) {
-                    if NSEvent.modifierFlags.contains(.option) {
-                        setAll([group.id] + group.lines.filter(\.opens).map(\.id), !open)
-                    } else {
-                        toggle(group.id)
-                    }
-                }
+                ActivityGroupSummary(summary: group.summary, isExpanded: open, metrics: metrics,
+                                     toggle: { toggle(group.id) },
+                                     toggleEveryStep: { setAll(group.everyStepIDs, !open) })
                 if open { list }
             }
             ForEach(group.failures) { failure in

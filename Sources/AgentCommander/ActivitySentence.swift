@@ -383,6 +383,14 @@ struct ActivityGroup: Identifiable, Equatable {
                        steps: lines.reduce(0) { $0 + $1.count } + failures.count)
     }
 
+    /// What an Option-click on the summary opens or closes: the group, each line that opens, and
+    /// each failure drawn beneath the list. A line that does not open is left out, so it keeps
+    /// no open state. Every line counts, shown or not: a step the PiP holds behind "Show all"
+    /// is already open when it is revealed.
+    var everyStepIDs: [String] {
+        [id] + lines.filter(\.opens).map(\.id) + failures.map(\.id)
+    }
+
     /// The lines an opened group shows on a bounded surface: the first and the latest three,
     /// with how many are left out until "Show all".
     func shownLines(limit: Int?) -> (lines: [ActivityStep], hidden: Int) {

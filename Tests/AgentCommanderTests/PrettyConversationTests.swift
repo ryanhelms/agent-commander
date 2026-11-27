@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import AgentCommander
@@ -602,6 +603,62 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         let shown = group.shownLines(limit: 4)
         #expect(shown.hidden == 3 && shown.lines.map(\.sentence.plain) == ["Read f0.txt", "Read f4.txt", "Read f5.txt", "Read f6.txt"])
         #expect(group.shownLines(limit: nil).hidden == 0)
+    }
+
+    private static func step(_ id: String, kind: ActivityStep.Kind = .call, text: String = "",
+                             failure: ActivityFailure.Outcome? = nil) -> ActivityStep {
+        ActivityStep(id: id, kind: kind, entries: [], state: failure == nil ? .done : .failed,
+                     sentence: ActivitySentence(id),
+                     failure: failure.map { ActivityFailure(outcome: $0, reason: "No.", exact: "No.") }, text: text)
+    }
+
+    @Test func anOptionClickTakesTheGroupEveryLineThatOpensAndEveryFailure() {
+        let group = ActivityGroup(
+            id: "ran#group",
+            lines: [Self.step("ran"), Self.step("mode", kind: .quiet, text: "gearshape"),
+                    Self.step("silent", kind: .thought), Self.step("thought", kind: .thought, text: "Check the lock."),
+                    Self.step("read")],
+            failures: [Self.step("failed", failure: .failed), Self.step("blocked", failure: .blocked)])
+        // The failures are drawn outside the list and are still taken. A line that does not
+        // open (a session row, a thought with no text) is not.
+        #expect(group.everyStepIDs == ["ran#group", "ran", "thought", "read", "failed", "blocked"])
+    }
+
+    @Test func anOptionClickTakesTheLinesABoundedSurfaceHolds() {
+        let group = ActivityGroup(id: "s0#group", lines: (0..<7).map { Self.step("s\($0)") },
+                                  failures: [Self.step("failed", failure: .failed)])
+        // The PiP still shows four lines; the three behind "Show all" are open when revealed.
+        let shown = group.shownLines(limit: 4)
+        #expect(shown.hidden == 3 && shown.lines.map(\.id) == ["s0", "s4", "s5", "s6"])
+        #expect(group.everyStepIDs == ["s0#group", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "failed"])
+    }
+}
+
+/// A pointer press of a group's summary (DESIGN.md, "Keyboard"): only a primary click's own
+/// mouse-up that carries Option opens every step.
+@Suite struct PrettySummaryPressTests {
+    private func press(_ type: NSEvent.EventType?, _ modifiers: NSEvent.ModifierFlags = []) -> PrettySummaryPress {
+        PrettySummaryPress.of(type: type, modifiers: modifiers)
+    }
+
+    @Test func anOptionClickOpensEveryStep() {
+        #expect(press(.leftMouseUp, .option) == .everyStep)
+        #expect(press(.leftMouseUp, [.option, .shift]) == .everyStep)
+    }
+
+    @Test func anOrdinaryClickTogglesTheGroupAlone() {
+        #expect(press(.leftMouseUp) == .toggle)
+        #expect(press(.leftMouseUp, .command) == .toggle)
+        // The button acts on the mouse-up of a primary click, never on another pointer event.
+        #expect(press(.leftMouseDown, .option) == .toggle)
+        #expect(press(.rightMouseUp, .option) == .toggle)
+    }
+
+    @Test func anEventThatIsNotAClickTogglesTheGroupAlone() {
+        #expect(press(.keyDown) == .toggle)
+        #expect(press(.keyDown, .option) == .toggle)
+        #expect(press(.flagsChanged, .option) == .toggle)
+        #expect(press(nil) == .toggle)
     }
 }
 
