@@ -88,3 +88,29 @@ func TestSetAdvertise(t *testing.T) {
 		t.Fatal("accepted maybe")
 	}
 }
+
+func TestSetPublicListing(t *testing.T) {
+	dir := t.TempDir()
+	if err := InitConfig(dir, Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: "https://issuer.example.test", ClientID: "commander", Admins: []string{"admin@example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetPublicListing(dir, "Relay.Example.org:443", "directory.example.org"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadConfig(dir)
+	if err != nil || got.PublicListing != "https://relay.example.org" || got.DirectoryURL != "https://directory.example.org" {
+		t.Fatalf("listing: %+v %v", got, err)
+	}
+	if err := SetPublicListing(dir, "http://insecure.example.org", ""); err == nil {
+		t.Fatal("accepted an http URL")
+	}
+	if err := SetPublicListing(dir, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = ReadConfig(dir); got.PublicListing != "" || got.DirectoryURL != "https://directory.example.org" {
+		t.Fatalf("after turning off: %+v", got)
+	}
+}

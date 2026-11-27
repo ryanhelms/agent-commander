@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,7 +52,8 @@ type DiscoveredRelay struct {
 	// address belongs to a tagged node of this tailnet.
 	Verified    string `json:"verified,omitempty"`
 	TailnetNode string `json:"tailnetNode,omitempty"`
-	// AdvertisedPin is the pin a Bonjour TXT record claimed. It is a hint only.
+	// AdvertisedPin is the pin a Bonjour TXT record or the directory claimed.
+	// It is a hint only.
 	AdvertisedPin        string `json:"advertisedPin,omitempty"`
 	AdvertisedPinMatches bool   `json:"advertisedPinMatches,omitempty"`
 
@@ -87,7 +89,7 @@ type Discovery struct {
 }
 
 type relayCandidate struct {
-	source        string // "tailnet" or "bonjour"
+	source        string // "tailnet", "bonjour" or "directory"
 	url           string // https origin shown to the person
 	dial          string // host:port to connect to
 	sni           string
@@ -180,6 +182,11 @@ func (m *Manager) Discover(ctx context.Context, refresh bool) (Discovery, error)
 	bc, bs := m.bonjourCandidates(ctx)
 	cands = append(append(cands, tc...), bc...)
 	sources = append(sources, ts, bs)
+	if m.cfg.DirectoryURL != "" {
+		dc, ds := m.directoryCandidates(ctx)
+		cands = append(cands, dc...)
+		sources = append(sources, ds)
+	}
 
 	type probed struct {
 		c        relayCandidate
@@ -603,4 +610,70 @@ func (m *Manager) joinDiscovered(ctx context.Context, in discoveryInput) (any, e
 		lastErr = errors.New("the relay is unreachable")
 	}
 	return nil, lastErr
+}
+
+// directoryCandidates lists the relays in the public directory. The directory
+// is reached with ordinary system trust; the pins it lists are hints, and each
+// relay is still probed and confirmed on its own.
+func (m *Manager) directoryCandidates(ctx context.Context) ([]relayCandidate, DiscoverySource) {
+	src := DiscoverySource{Name: "directory"}
+	base, e := NormalizeRelay(m.cfg.DirectoryURL)
+	if e != nil {
+		src.Detail = "the directory address is invalid"
+		return nil, src
+	}
+	client := &http.Client{Timeout: relayProbeTimeout, Transport: &http.Transport{
+		DialContext: m.cfg.Dial, TLSClientConfig: &tls.Config{RootCAs: m.cfg.Roots, MinVersion: tls.VersionTLS12},
+	}}
+	defer client.CloseIdleConnections()
+	req, e := http.NewRequestWithContext(ctx, "GET", base+"/v1/relays", nil)
+	if e != nil {
+		src.Detail = e.Error()
+		return nil, src
+	}
+	resp, e := client.Do(req)
+	if e != nil {
+		src.Detail = "cannot reach the directory"
+		return nil, src
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Relays []struct {
+			URL  string `json:"url"`
+			Name string `json:"name"`
+			Pin  string `json:"pin"`
+		} `json:"relays"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&list) != nil {
+		src.Detail = "the directory's answer is unreadable"
+		return nil, src
+	}
+	src.OK = true
+	var out []relayCandidate
+	for _, r := range list.Relays {
+		if len(out) >= 200 {
+			break
+		}
+		u, e := NormalizeRelay(r.URL)
+		if e != nil {
+			continue
+		}
+		parsed, e := url.Parse(u)
+		if e != nil {
+			continue
+		}
+		port := parsed.Port()
+		if port == "" {
+			port = "443"
+		}
+		pin := r.Pin
+		if !strings.HasPrefix(pin, "sha256/") {
+			pin = ""
+		}
+		out = append(out, relayCandidate{
+			source: "directory", url: u, dial: net.JoinHostPort(parsed.Hostname(), port), sni: parsed.Hostname(),
+			name: r.Name, advertisedPin: pin,
+		})
+	}
+	return out, src
 }
