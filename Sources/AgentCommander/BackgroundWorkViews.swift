@@ -257,7 +257,14 @@ struct BackgroundStack: View {
                 origin(job, "from \(job.name)'s record, by message ID")
             case .integration:
                 origin(job, "from the run's record, by integration ID")
-            case .question, .providerChild, .command:
+            case .providerChild, .command:
+                // The exit summary the full record holds, then where the state was read from.
+                if let result = job.result, !row.line.isFailure {
+                    Text(verbatim: result).font(metrics.body).foregroundStyle(.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                origin(job, "from this console's records, by tool call ID")
+            case .question:
                 EmptyView()
             }
             if let worker = job.workerID, !job.name.isEmpty, let open = access.openWorker {

@@ -678,7 +678,7 @@ struct ActivityResultView: View {
                 row("Tried") { Text(verbatim: source.tried).foregroundStyle(Palette.foreground) }
                 row("Outcome") {
                     HStack(spacing: 6) {
-                        StatusLamp(word: failure.outcome == .blocked ? "Blocked" : "Failed", size: metrics.detailSize + 0.5)
+                        StatusLamp(word: failure.tag.word, size: metrics.detailSize + 0.5)
                         Text(verbatim: failure.meaning).font(.system(size: metrics.detailSize - 1)).foregroundStyle(.inkSecondary)
                     }
                 }

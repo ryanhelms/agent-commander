@@ -312,8 +312,8 @@ Each state is read from the named record by exact ID. No record, no line.
 | Question awaiting an answer | `Question` by request ID | `pending` (attention mark, no spinner) | `answered`, `cancelled`; `delivery` `unknown` or `unconfirmed` reads "delivery unknown" |
 | Integration | `Integration` by integration ID, `candidate.status` | SVC: status values not yet mapped | the same |
 | Network submit | Operation receipt by operation ID | `queued`, `processing` | `completed`, `failed`, `cancelled` |
-| Provider child session (Claude Task or Agent tool, ACP `subagent_update`) | SVC: none today | | |
-| Background shell command (`run_in_background`) | SVC: none today | | |
+| Provider child session (Claude Task or Agent tool, ACP `subagent_update`) | Older Claude runner: `job` record, `job_kind` `agent`, by `tool_use_id`. ACP: none today | `running` | `completed`, `failed`, `stopped`; `unknown` reads "lost contact" |
+| Background shell command (`run_in_background`) | Older Claude runner: `job` record, `job_kind` `command`, by `tool_use_id` | `running` | as above |
 
 ### The line
 

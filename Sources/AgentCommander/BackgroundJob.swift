@@ -25,10 +25,10 @@ struct BackgroundJob: Identifiable, Equatable {
         case question
         /// An integration: `candidate.status` by integration ID.
         case integration
-        /// A provider's own child session. The service keeps no record yet; a later slice
-        /// builds these jobs from it. Nothing in this file creates one.
+        /// A provider's own child session: a `job` record of kind `agent`, by the tool call ID
+        /// that started it (`ProviderJobs`).
         case providerChild
-        /// A background shell command. As `providerChild`.
+        /// A background shell command: a `job` record of kind `command`. As `providerChild`.
         case command
     }
 
@@ -62,6 +62,9 @@ struct BackgroundJob: Identifiable, Equatable {
     var progress: ClaudeProgressTrack? = nil
     /// A follow-up's text or a provider child's own description.
     var text: String? = nil
+    /// A provider job's own record key, for its full copy, and the exit summary that copy holds.
+    var detailKey: String? = nil
+    var result: String? = nil
     /// The child's latest turn, drawn when the line opens.
     var console: [TranscriptEntry] = []
     /// Its call came after this console's last prompt. An ended job shows only while this holds.
@@ -95,10 +98,14 @@ struct BackgroundJob: Identifiable, Equatable {
     /// The subject of the sentence: "**tracer**", "Follow-up to **tracer**", "Integration".
     private var subject: [ActivitySentence.Part] {
         switch kind {
-        case .worker, .stop, .question: [.strong(name)]
-        case .followUp: [.text("Follow-up to "), .strong(name)]
-        case .integration: [.text("Integration")]
-        case .providerChild, .command: []
+        case .worker, .stop, .question: return [.strong(name)]
+        case .followUp: return [.text("Follow-up to "), .strong(name)]
+        case .integration: return [.text("Integration")]
+        case .providerChild, .command:
+            // The provider's own description, as sent. Without one, what the record says it is.
+            let title = text ?? ""
+            if title.isEmpty { return [.text(kind == .command ? "A background command" : "A child agent")] }
+            return [.text(ActivityWords.quote(title))]
         }
     }
 
@@ -210,10 +217,31 @@ struct BackgroundJob: Identifiable, Equatable {
                             tag: ActivityTag(word: "uncertain", tone: .wait))
             }
         case .providerChild, .command:
-            // The seam for the service's records: its own description, with a spinner only once
-            // a record is behind it.
-            return Line(rank: .running, mark: evidence == .record ? .spinner : .hollow,
-                        sentence: ActivitySentence(text ?? Self.plain(state)), started: startedAt)
+            // The runner's own state word. A spinner needs a record that says running.
+            switch word {
+            case "running":
+                let mark: Mark = evidence == .record ? .spinner : .hollow
+                // The provider's description is the sentence: "Writing option C into DESIGN.md".
+                let title = (text ?? "").isEmpty ? subject : [.text(text ?? "")]
+                if let liveSentence {
+                    return Line(rank: .running, mark: mark,
+                                sentence: ActivitySentence(parts: title + [.text(": ")] + liveSentence.parts), started: startedAt)
+                }
+                return Line(rank: .running, mark: mark, sentence: ActivitySentence(parts: title), started: startedAt)
+            case "completed":
+                return Line(rank: .finished, mark: .solid, sentence: sentence(" finished"))
+            case "failed":
+                let reason = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return Line(rank: .failed, mark: .solid, sentence: sentence(" failed"), tag: .failed,
+                            reason: reason.isEmpty ? nil : reason)
+            case "stopped":
+                return Line(rank: .finished, mark: .solid, sentence: sentence(" was stopped"), tag: ActivityTag(word: "cancelled"))
+            case "unknown":
+                // The stream ended while the job ran: no end was recorded, so none is claimed.
+                return Line(rank: .lostContact, mark: .hollow, sentence: sentence(": lost contact. Last known: running."))
+            default:
+                return Line(rank: .lostContact, mark: .hollow, sentence: sentence(": " + Self.plain(state)))
+            }
         }
     }
 

@@ -184,7 +184,7 @@ struct WorkerTile: View {
     private var terminalWell: some View {
         ZStack(alignment: .topLeading) {
             Term.background
-            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact,
+            ConsoleScrollback(worker: worker, density: .compact,
                               terminal: NativeTerminalTarget(worker: worker),
                               live: PrettyLive(state: worker.state, workerName: worker.name, reportsProgress: worker.claudeProgress != nil,
                                                reportedPhase: worker.claudeProgress?.evidence?.phase)) {
@@ -231,8 +231,7 @@ struct WorkerTile: View {
                 // as a native form inside it.
                 PrettyACPConsole(worker: worker, session: session, reply: reply)
             } else {
-                ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output,
-                                  density: .regular, horizontalInset: 21,
+                ConsoleScrollback(worker: worker, density: .regular, horizontalInset: 21,
                                   terminal: NativeTerminalTarget(worker: worker),
                                   live: PrettyLive(state: worker.state, workerName: worker.name, reportsProgress: worker.claudeProgress != nil,
                                                reportedPhase: worker.claudeProgress?.evidence?.phase)) {
@@ -824,8 +823,7 @@ struct CoordinatorConsole: View {
                             .padding(.bottom, 9)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript,
-                                      rawOutput: coordinator.output, density: .regular, horizontalInset: 0,
+                    ConsoleScrollback(worker: coordinator, density: .regular, horizontalInset: 0,
                                       terminal: NativeTerminalTarget(worker: coordinator),
                                       live: PrettyLive(state: coordinator.state, workerName: coordinator.name),
                                       reportsAsCoordinator: true) {
@@ -1047,8 +1045,7 @@ struct AttentionStack: View {
                         VStack(spacing: 0) {
                             NativeTerminalRegion(consoleID: current.workerID, target: NativeTerminalTarget(request: current),
                                                  hasTranscript: !current.contextEntries.isEmpty || !current.contextTail.isEmpty) {
-                                ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
-                                                  rawOutput: current.contextTail.joined(separator: "\n"), density: .pip,
+                                ConsoleScrollback(request: current, density: .pip,
                                                   horizontalInset: 8, terminal: NativeTerminalTarget(request: current),
                                                   live: PrettyLive(state: current.workerState, workerName: current.workerName)) {
                                     if !current.contextEntries.isEmpty {
