@@ -9,6 +9,8 @@ import Foundation
 struct NeedsYouItem: Identifiable, Equatable, Sendable {
     enum Kind: String, CaseIterable, Sendable {
         case workerQuestion, workerApproval, networkApproval, accessRequest, friendRequest
+        /// A harness on this Mac that was signed in and no longer is.
+        case harnessSignIn
 
         /// The word on the row's kind tag.
         var tag: String {
@@ -17,10 +19,13 @@ struct NeedsYouItem: Identifiable, Equatable, Sendable {
             case .workerApproval, .networkApproval: "approval"
             case .accessRequest: "access"
             case .friendRequest: "friend"
+            case .harnessSignIn: "sign-in"
             }
         }
 
         var isLocal: Bool { self == .workerQuestion || self == .workerApproval }
+        /// This Mac's own: neither a worker's request nor the network's.
+        var isDevice: Bool { self == .harnessSignIn }
     }
 
     /// Where the request came from.
@@ -74,6 +79,7 @@ struct NeedsYouItem: Identifiable, Equatable, Sendable {
         case .workerApproval, .networkApproval: return [.deny, .approve]
         case .accessRequest: return [.decline, .review]
         case .friendRequest: return [.decline, .accept]
+        case .harnessSignIn: return [.signIn]
         }
     }
 }
@@ -81,11 +87,13 @@ struct NeedsYouItem: Identifiable, Equatable, Sendable {
 /// An answer a row can offer.
 enum NeedsYouVerb: String, Sendable {
     case approve, deny, decline, review, accept, reply
+    /// Opens the harness's own sign-in. Like Reply, it decides nothing by itself.
+    case signIn
 
-    var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+    var title: String { self == .signIn ? "Sign in" : rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
 
     /// The row's one primary answer.
-    var isPrimary: Bool { self == .approve || self == .review || self == .accept || self == .reply }
+    var isPrimary: Bool { self == .approve || self == .review || self == .accept || self == .reply || self == .signIn }
 
     /// The decision the verb makes at once. Reply first needs the text.
     var decision: NeedsYouDecision? {
@@ -95,7 +103,7 @@ enum NeedsYouVerb: String, Sendable {
         case .decline: .declined
         case .review: .inReview
         case .accept: .accepted
-        case .reply: nil
+        case .reply, .signIn: nil
         }
     }
 }
@@ -166,7 +174,8 @@ struct NeedsYouInbox: Equatable, Sendable {
     var pending: [NeedsYouItem] { items.filter(\.isPending) }
     var pendingCount: Int { pending.count }
     var localCount: Int { pending.filter(\.kind.isLocal).count }
-    var networkCount: Int { pendingCount - localCount }
+    var deviceCount: Int { pending.filter(\.kind.isDevice).count }
+    var networkCount: Int { pendingCount - localCount - deviceCount }
 
     func pendingCount(of kind: NeedsYouItem.Kind) -> Int { pending.filter { $0.kind == kind }.count }
 
@@ -178,6 +187,7 @@ struct NeedsYouInbox: Equatable, Sendable {
         var parts: [String] = []
         if localCount > 0 { parts.append("\(localCount) from your workers") }
         if networkCount > 0 { parts.append("\(networkCount) from the network") }
+        if deviceCount > 0 { parts.append(deviceCount == 1 ? "1 sign-in" : "\(deviceCount) sign-ins") }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
@@ -190,7 +200,7 @@ struct NeedsYouInbox: Equatable, Sendable {
     static func rank(_ item: NeedsYouItem) -> Int {
         if let left = item.expiresIn, left < closing { return 0 }
         switch item.kind {
-        case .workerApproval, .workerQuestion: return 1
+        case .workerApproval, .workerQuestion, .harnessSignIn: return 1
         case .networkApproval: return 2
         case .accessRequest: return 3
         case .friendRequest: return 4

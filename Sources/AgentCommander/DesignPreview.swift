@@ -91,6 +91,18 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case teamsKnowledge = "teams-knowledge"
     case teamsDirectory = "teams-directory"
     case teamsAdmin = "teams-admin"
+    // The Harnesses mode, in sidebar B (HarnessesPage.swift), from HarnessFixture.
+    case harnesses = "harnesses"
+    case harnessesAvailable = "harnesses-available"
+
+    /// The Harnesses place a scenario opens on.
+    var harnessPlace: String? {
+        switch self {
+        case .harnesses: HarnessPlace.installed
+        case .harnessesAvailable: HarnessPlace.available
+        default: nil
+        }
+    }
 
     struct Info {
         let title: String
@@ -119,7 +131,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     }
 
     /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
-    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil }
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil || harnessPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -273,6 +285,12 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         case .teamsAdmin:
             Info(title: "Teams · Admin", group: "Main window redesign", crumbs: ["Team tools", "Admin"], active: "Admin",
                  summary: "A relay’s policy, and its members and devices.")
+        case .harnesses:
+            Info(title: "Harnesses · Installed", group: "Main window redesign", crumbs: ["Harnesses", "Installed"], active: "Installed",
+                 summary: "The harnesses on this Mac, with the chosen one’s install, sign-in, adapter and settings.")
+        case .harnessesAvailable:
+            Info(title: "Harnesses · Available", group: "Main window redesign", crumbs: ["Harnesses", "Available"], active: "Available",
+                 summary: "Harnesses that aren’t installed yet, each with its own install command.")
         }
     }
 
@@ -656,7 +674,8 @@ struct PreviewCanvas: View {
              .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
              .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
              .networkThreads, .networkAudit, .networkFanout, .networkShared, .people,
-             .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin:
+             .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin,
+             .harnesses, .harnessesAvailable:
             // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }

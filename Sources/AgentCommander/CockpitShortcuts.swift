@@ -14,7 +14,8 @@ import SwiftUI
 
 /// Something a key can ask the cockpit window to do.
 enum CockpitCommand: Hashable, Sendable {
-    /// The mode at this place on the rail, counting from zero: Agents, Network, People, Teams, Settings.
+    /// The mode at this place on the rail, counting from zero: Agents, Network, People, Teams,
+    /// Harnesses, Settings.
     case mode(Int)
     case focusCoordinator, zoomWorker, returnToWall, nextRequest, newRun
 }
@@ -47,8 +48,8 @@ struct CockpitShortcut: Identifiable, Hashable, Sendable {
 }
 
 enum CockpitShortcuts {
-    /// The modes on the rail, in order. ⌥⌘1 to ⌥⌘5.
-    static let modeTitles = ["Agents", "Network", "People", "Teams", "Settings"]
+    /// The modes on the rail, in order. ⌥⌘1 to ⌥⌘6.
+    static let modeTitles = ["Agents", "Network", "People", "Teams", "Harnesses", "Settings"]
 
     static let modes: [CockpitShortcut] = modeTitles.enumerated().map { index, title in
         CockpitShortcut(.mode(index), title, Character("\(index + 1)"), LiveShell.modeModifiers)
@@ -65,10 +66,10 @@ enum CockpitShortcuts {
     /// Every shortcut the cockpit's hidden buttons bind.
     static let all: [CockpitShortcut] = modes + [focusCoordinator, zoomWorker, returnToWall, nextRequest, newRun]
 
-    /// The key codes of the digit row's 1 to 5, for a layout whose digits need Shift.
-    private static let digitKeyCodes: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4]
+    /// The key codes of the digit row's 1 to 6, for a layout whose digits need Shift.
+    private static let digitKeyCodes: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5]
 
-    /// The mode a key press asks for: ⌥⌘ and a digit from 1 to 5, and no other modifier.
+    /// The mode a key press asks for: ⌥⌘ and a digit from 1 to 6, and no other modifier.
     /// `characters` is the key without its modifiers; the key code decides where that isn't a digit.
     static func modeCommand(characters: String?, keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> CockpitCommand? {
         guard modifiers.intersection([.command, .option, .control, .shift]) == [.command, .option] else { return nil }
@@ -85,7 +86,7 @@ enum CockpitShortcuts {
 
 /// Hears the mode keys for the window it sits in, before the window looks for a key equivalent.
 /// The hidden buttons bind the same keys, but ⌥⌘3 stopped reaching its button in a running window
-/// while the other four still did (design/demos/main-window-4/verify/REPORT.md). The monitor takes
+/// while the others still did (design/demos/main-window-4/verify/REPORT.md). The monitor takes
 /// the press first, so each mode key acts the same way whatever else in the window wants the chord.
 struct CockpitModeKeys: NSViewRepresentable {
     let press: (CockpitCommand) -> Void

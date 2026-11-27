@@ -30,6 +30,8 @@ final class CockpitModel {
     /// Staged adapter updates, followed on their own subscription. A change of the set never
     /// touches `runs`.
     let adapterUpdates: AdapterUpdateFeed
+    /// The harnesses this Mac can run, followed on their own subscription (Harnesses.swift).
+    let harnesses: HarnessFeed
     /// The provider session of the one worker whose panel is open, and the developer's reattach.
     let providerSessions: ProviderSessionModel
     /// The structured requests of the one worker whose panel is open, and the owner's replies.
@@ -43,6 +45,20 @@ final class CockpitModel {
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
+        harnesses = HarnessFeed(api: HarnessAPI(
+            watch: { reader.watchHarnesses() },
+            check: { try await reader.checkHarness($0) },
+            start: { try await reader.startHarnessSession($0, purpose: $1) },
+            saveSettings: { try await reader.saveHarnessSettings($0, $1) }))
+        // A harness that was signed in and no longer is: tell the person outside the window too.
+        if let notifier = MultiplayerUserNotifier.forThisProcess() {
+            harnesses.notify = { alert in
+                Task {
+                    await notifier.post(id: "harness-\(alert.harnessID)", title: alert.title,
+                                        body: "Sign in again in Agent Commander to keep using \(alert.name).")
+                }
+            }
+        }
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
