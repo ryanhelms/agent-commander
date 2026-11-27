@@ -67,6 +67,16 @@ struct PrettyLive: Equatable {
     }
 }
 
+extension PrettyLive {
+    /// When the open call started, for the live line's time: the stored record's own start,
+    /// while the worker is active over a live connection and the record has not ended. Nil in
+    /// every other case, so the line then shows no time. Never the moment the app saw the call.
+    func callStart(_ record: ToolDetailSummary?) -> Date? {
+        guard isActive, !isDisconnected, let record, record.endedAt == nil else { return nil }
+        return record.started
+    }
+}
+
 // MARK: - Atoms
 
 struct ActivityTagView: View {
@@ -479,6 +489,8 @@ struct PrettyLiveLine: View {
     let live: PrettyLive
     let isExpanded: Bool
     let metrics: PrettyMetrics
+    /// When the open call started, from its stored record (`PrettyLive.callStart`). Nil shows no time.
+    var callStarted: Date? = nil
     var copy: ((String) -> Void)? = nil
     let toggle: () -> Void
 
@@ -523,7 +535,7 @@ struct PrettyLiveLine: View {
                         .font(metrics.body)
                 } else {
                     ActivitySentenceText(sentence: step.sentence, metrics: metrics)
-                    elapsed(since: nil)
+                    elapsed(since: callStarted)
                 }
             case .thinking(_, let started):
                 if live.isDisconnected || !live.isActive {
@@ -557,7 +569,9 @@ struct PrettyLiveLine: View {
 
     private var spoken: String {
         switch subject {
-        case .call(let step): return (live.isActive ? "" : "Last known: ") + step.sentence.plain
+        case .call(let step):
+            guard live.isActive, !live.isDisconnected else { return "Last known: " + step.sentence.plain }
+            return step.sentence.plain + (callStarted.map { ", " + ElapsedTime.spoken(max(0, Date().timeIntervalSince($0))) } ?? "")
         case .thinking(_, let started):
             guard live.isActive, !live.isDisconnected else { return "Last known: thinking" }
             return started.map { "Thinking, " + ElapsedTime.spoken(max(0, Date().timeIntervalSince($0))) } ?? "Thinking"

@@ -171,8 +171,19 @@ final class ToolDetailStore {
         self.settings = settings
     }
 
-    func summary(worker: String, key: String) -> ToolDetailSummary? { summaries[worker]?[key] }
-    func record(worker: String, key: String) -> ToolDetailRecord? { records[worker]?[key] }
+    /// The key the service keeps a record under. The workspace feed names a tool call
+    /// `<worker ID>:<tool ID>`; the service keeps its details under the tool ID alone.
+    nonisolated static func storedKey(worker: String, key: String) -> String {
+        let prefix = worker + ":"
+        return key.hasPrefix(prefix) && key.count > prefix.count ? String(key.dropFirst(prefix.count)) : key
+    }
+
+    func summary(worker: String, key: String) -> ToolDetailSummary? {
+        summaries[worker]?[Self.storedKey(worker: worker, key: key)]
+    }
+    func record(worker: String, key: String) -> ToolDetailRecord? {
+        records[worker]?[Self.storedKey(worker: worker, key: key)]
+    }
     func summaries(worker: String) -> [String: ToolDetailSummary] { summaries[worker] ?? [:] }
 
     /// Reads the worker's summaries changed since the last revision seen. Called when its
@@ -199,6 +210,7 @@ final class ToolDetailStore {
     /// Reads one full record, when a line is opened. A record the service does not hold is asked
     /// for once.
     func open(worker: String, key: String) async {
+        let key = Self.storedKey(worker: worker, key: key)
         let id = worker + "\u{1F}" + key
         guard let source, records[worker]?[key] == nil, !reading.contains(id), !missing.contains(id) else { return }
         reading.insert(id)

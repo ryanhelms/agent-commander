@@ -292,6 +292,12 @@ struct TranscriptEntry: Identifiable, Equatable {
     /// the live request state the projection matched to it. Nil for every other entry. Pretty
     /// links Commander calls only through it and the calls' own exact IDs; see `CommanderActivity`.
     var commander: CommanderCallFacts? = nil
+    /// For a result whose call the service did not send: the tool call ID the result names, when
+    /// it names one. Stored details are kept under it.
+    var toolCallID: String? = nil
+
+    /// The key the entry's stored details are kept under: the call's ID.
+    var detailKey: String { toolCallID ?? id }
 
     var isFromUser: Bool {
         if case .prose(_, let fromUser) = kind { return fromUser }
@@ -925,7 +931,7 @@ extension TranscriptEntry {
                 // are reached from the entry, which says that it has no text.
                 entries.append(TranscriptEntry(
                     id: message.id, kind: result.hasText ? .output(result) : .other(role: message.role, text: ""),
-                    origin: origin))
+                    origin: origin, toolCallID: message.toolCallID))
                 continue
             }
             let text = (message.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

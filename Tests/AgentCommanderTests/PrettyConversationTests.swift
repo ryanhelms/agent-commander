@@ -305,6 +305,89 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(clamped.closingMessageFollows && clamped.heading == "Reported the run result")
     }
 
+    /// Run r-f4af52ff: the path is 172 characters. A headline's 160-character cap cut it before
+    /// its file name, and the stored fields, kept under the bare tool ID, were never found.
+    @Test func aCallsValueKeepsItsLengthAndTheStoredValueWinsOverThePreview() {
+        let path = "/private/tmp/claude-501/-Users-ryan-GitHub-agent-commander--claude-worktrees-suspicious-jackson-eddc88/29515b22-3db8-4269-9a95-34d2a9075528/scratchpad/detailcheck/notes.txt"
+        var wire = Wire()
+        let read = wire.call("Read", detail: path, result: "1\tThe launch code word is heron.")
+        #expect(groups(prettyItems(wire))[0].lines[0].sentence.plain == "Read notes.txt")
+
+        // The console's preview is cut; the stored values are exact.
+        wire = Wire()
+        let cut = wire.call("Read", detail: String(path.prefix(159)) + "…", result: "1\talpha")
+        let shell = wire.call("Bash", detail: "swift te…", result: "ok")
+        let search = wire.call("Grep", detail: "retr…", result: "a.swift")
+        let fetch = wire.call("WebFetch", detail: "https://example.com/do…", result: "ok")
+        #expect(groups(prettyItems(wire))[0].lines[0].sentence.plain == "Read detailch…")
+        func summary(_ key: String, _ name: String, _ fields: [String: AGUIValue]) -> ToolDetailSummary {
+            ToolDetailSummary(key: key, kind: "tool", name: name, fields: fields)
+        }
+        let facts = ActivityFacts(summaries: [
+            cut: summary(cut, "Read", ["file_path": .string(path)]),
+            shell: summary(shell, "Bash", ["command": .string("swift test --filter Retry")]),
+            search: summary(search, "Grep", ["pattern": .string("retryBudget"), "path": .string("/a")]),
+        ], records: [fetch: ToolDetailRecord(key: fetch, kind: "tool", name: "WebFetch", input: #"{"url":"https://example.com/docs/page"}"#)])
+        let lines = groups(prettyItems(wire, facts: facts))[0].lines.map(\.sentence.plain)
+        #expect(lines == ["Read notes.txt", "Ran swift test --filter Retry", "Searched for “retryBudget”", "Fetched example.com/docs/page"])
+        // The opened line's fields read the stored value too, before the full record arrives.
+        let entry = wire.entries[0]
+        let step = groups(prettyItems(wire, facts: facts))[0].lines[0]
+        let source = ActivityResultSource(entry: entry, step: step, record: nil, summary: facts.summary(cut))
+        #expect(source.fields?["file_path"] == .string(path) && !source.callIsStored)
+        #expect(ActivityWords.fact("Read", detail: String(path.prefix(159)) + "…", summary: facts.summary(cut)) == path)
+        _ = read
+    }
+
+    @Test @MainActor func storedDetailsAreFoundByTheFeedsWorkerPrefixedCallID() {
+        let store = ToolDetailStore(summaries: ["w-1": [ToolDetailSummary(key: "toolu_01", kind: "tool", name: "Read")]],
+                                    records: ["w-1": [ToolDetailRecord(key: "toolu_01", kind: "tool", input: "{}")]])
+        #expect(store.summary(worker: "w-1", key: "w-1:toolu_01")?.name == "Read")
+        #expect(store.summary(worker: "w-1", key: "toolu_01")?.name == "Read")
+        #expect(store.record(worker: "w-1", key: "w-1:toolu_01")?.input == "{}")
+        // Another worker's prefix is not removed, and a key that is only the prefix stays whole.
+        #expect(store.summary(worker: "w-1", key: "w-2:toolu_01") == nil)
+        #expect(ToolDetailStore.storedKey(worker: "w-1", key: "w-1:") == "w-1:")
+        #expect(ToolDetailStore.storedKey(worker: "w-1", key: "event-7") == "event-7")
+    }
+
+    @Test func aResultWithNoRecordedCallIsNamedOnlyByTheRecordUnderItsExactToolID() {
+        let status = #"{"id":"r-1","project":"detailcheck","status":"running","workers":[{"name":"Coordinator","state":"working"}],"requests":[]}"#
+        var wire = Wire()
+        wire.messages.append(AGUIMessage(id: "m-3", role: "tool", content: status, toolCallID: "w-1:toolu_01KCj"))
+        wire.messages.append(AGUIMessage(id: "m-4", role: "tool", content: status))
+        let entries = wire.entries
+        #expect(entries[0].toolCallID == "w-1:toolu_01KCj" && entries[0].detailKey == "w-1:toolu_01KCj" && entries[1].toolCallID == nil)
+
+        let named = ActivityFacts(summaries: ["w-1:toolu_01KCj": ToolDetailSummary(key: "toolu_01KCj", kind: "tool", name: "commander_status")])
+        let lines = groups(prettyItems(wire, facts: named))[0].lines
+        #expect(lines.map(\.sentence.plain) == ["Checked the run: 1 worker, 1 running", "Got a result whose call was not recorded"])
+        let source = ActivityResultSource(entry: entries[0], step: lines[0], record: nil, summary: named.summary("w-1:toolu_01KCj"))
+        #expect(source.name == "commander_status" && source.tried != "A call that was not recorded")
+
+        // A record under another ID names nothing, whatever its position or time; nor does a thought's.
+        let other = ActivityFacts(summaries: [
+            "w-1:toolu_other": ToolDetailSummary(key: "toolu_other", kind: "tool", sequence: 1, name: "commander_status"),
+        ])
+        #expect(groups(prettyItems(wire, facts: other))[0].summary.text == "Got 2 results with no recorded call")
+        let thought = ActivityFacts(summaries: ["w-1:toolu_01KCj": ToolDetailSummary(key: "toolu_01KCj", kind: "thought", name: "x")])
+        #expect(groups(prettyItems(wire, facts: thought))[0].summary.text == "Got 2 results with no recorded call")
+        #expect(ActivityResultSource(entry: entries[1], step: lines[1], record: nil, summary: nil).name.isEmpty)
+    }
+
+    @Test func theOpenCallShowsATimeOnlyFromItsRecordOverALiveConnection() {
+        let started = ToolDetailSummary(key: "t", kind: "tool", startedAt: "2026-11-27T01:59:10.338546Z")
+        let live = PrettyLive(isActive: true)
+        #expect(live.callStart(started) == ToolDetailSummary.date("2026-11-27T01:59:10.338546Z"))
+        #expect(live.callStart(started) != nil)
+        // No record, no start time, a record that has ended, an idle worker or a lost connection: no time.
+        #expect(live.callStart(nil) == nil)
+        #expect(live.callStart(ToolDetailSummary(key: "t", kind: "tool")) == nil)
+        #expect(live.callStart(ToolDetailSummary(key: "t", kind: "tool", startedAt: started.startedAt, endedAt: "2026-11-27T01:59:11Z")) == nil)
+        #expect(PrettyLive().callStart(started) == nil)
+        #expect(PrettyLive(isActive: true, isDisconnected: true).callStart(started) == nil)
+    }
+
     /// The older runner keeps no arguments on a report's event: the service's response is then
     /// the only copy of the text (runs r-c7085325 and r-30bb462d).
     @Test func aReportWithoutArgumentsReadsTheTextTheServiceReturned() {

@@ -633,19 +633,30 @@ enum ActivityWords {
         }
     }
 
-    /// The subject a provider tool names: from the call's text, then the stored short fields.
-    static func fact(_ name: String, detail: String?, summary: ToolDetailSummary?) -> String? {
+    /// The subject a provider tool names (a path, command, pattern or URL). The stored values
+    /// come first: the summary's short fields, then the full record's input once it is read.
+    /// The call's own text is last: it is the console's preview, which the service may have cut.
+    static func fact(_ name: String, detail: String?, summary: ToolDetailSummary?, record: ToolDetailRecord? = nil) -> String? {
         guard let tool = ProviderTool(name: name) else { return nil }
-        if let fact = tool.fact(from: detail) { return fact }
+        // The value keeps its full length: each sentence shortens it by its own rule, and a path
+        // cut before its file name would name the wrong thing.
         for key in tool.factKeys {
-            if let value = summary?.field(key) { return CommanderCall.firstLine(value) }
+            if let value = summary?.field(key) { return ToolDetailText.wholeLine(value) }
+            let parts = (summary?.fields?[key]?.arrayValue ?? []).compactMap { CommanderCall.text($0) }
+            if !parts.isEmpty { return ToolDetailText.wholeLine(parts.joined(separator: " ")) }
         }
-        return nil
+        // A stored input that was cut short is not read: its last value may be incomplete.
+        if let input = record?.input, let read = OrderedJSON.read(input), !read.isCut, read.value.members != nil,
+           let fact = tool.fact(from: input, whole: true) {
+            return fact
+        }
+        return tool.fact(from: detail, whole: true)
     }
 
-    static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil) -> ActivityWording {
+    static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
+                         record: ToolDetailRecord? = nil) -> ActivityWording {
         let kind = providerKind(name)
-        let fact = fact(name, detail: detail, summary: summary)
+        let fact = fact(name, detail: detail, summary: summary, record: record)
         func file(_ running: String, _ done: String, _ failed: String, fallback: String, key: String,
                   one: String, many: String) -> ActivityWording {
             let name = fact.map(fileName)
@@ -774,19 +785,31 @@ enum ActivitySteps {
     static func step(tool entry: TranscriptEntry, awaitingToolID: String?, facts: ActivityFacts) -> ActivityStep? {
         guard case .tool(let name, let detail, let result) = entry.kind else { return nil }
         let status: ToolStatus = result == nil && entry.id == awaitingToolID ? .awaitingApproval : ToolStatus(result: result)
-        let summary = facts.summary(entry.id)
+        let summary = facts.summary(entry.detailKey)
         var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
         if status == .awaitingApproval {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary)
         }
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary), to: &step, status: status, result: result)
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: facts.record(entry.detailKey)),
+              to: &step, status: status, result: result)
         return step
     }
 
-    /// A result whose call the service did not send.
-    static func step(orphan entry: TranscriptEntry) -> ActivityStep? {
+    /// A result whose call the service did not send. When the stored details hold a record under
+    /// the result's exact tool call ID, the line is worded as that tool's call. Nothing else
+    /// names it: not its position, its time or the shape of its text.
+    static func step(orphan entry: TranscriptEntry, facts: ActivityFacts = .none) -> ActivityStep? {
         guard case .output(let result) = entry.kind else { return nil }
         let status = ToolStatus(result: result)
+        if let key = entry.toolCallID, let summary = facts.summary(key), summary.kind == "tool",
+           let name = summary.name, !name.isEmpty {
+            var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
+            let named = TranscriptEntry(id: entry.id, kind: .tool(name: name, detail: nil, result: result))
+            let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
+                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
+            apply(wording, to: &step, status: status, result: result)
+            return step
+        }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
                                 sentence: ActivitySentence(""))
         apply(ActivityWords.orphanResult, to: &step, status: status, result: result)
@@ -898,7 +921,7 @@ enum ActivitySteps {
     static func step(thought entry: TranscriptEntry, facts: ActivityFacts) -> ActivityStep? {
         guard entry.isThought, case .other(_, let text) = entry.kind else { return nil }
         // A thought's times are kept under the provider's message ID.
-        let summary = (entry.origin?.messageID).flatMap(facts.summary) ?? facts.summary(entry.id)
+        let summary = (entry.origin?.messageID).flatMap(facts.summary) ?? facts.summary(entry.detailKey)
         let duration = summary?.duration.flatMap { $0 > 0 ? $0 : nil }
         return ActivityStep(id: entry.id, kind: .thought, entries: [entry], state: .done,
                             sentence: ActivityWords.thought(duration: duration), duration: duration, text: text)
@@ -989,14 +1012,14 @@ enum ActivityConversation {
                 out.append(.entry(entry))
             case .tool(let name, let detail, let result):
                 if ActivityWords.providerKind(name) == .plan, ToolStatus(result: result) != .failed {
-                    let items = PlanItem.items(facts.record(entry.id)?.input.flatMap { OrderedJSON.read($0)?.value })
+                    let items = PlanItem.items(facts.record(entry.detailKey)?.input.flatMap { OrderedJSON.read($0)?.value })
                         ?? PlanItem.items(detail.flatMap { OrderedJSON.read($0)?.value })
                     plan(entry, items: items, count: nil)
                 } else if let step = ActivitySteps.step(tool: entry, awaitingToolID: awaitingToolID, facts: facts) {
                     route(step)
                 }
             case .output:
-                if let step = ActivitySteps.step(orphan: entry) { route(step) }
+                if let step = ActivitySteps.step(orphan: entry, facts: facts) { route(step) }
             case .other:
                 if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)

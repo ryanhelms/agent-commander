@@ -35,10 +35,18 @@ struct ActivityResultSource: Equatable {
     var liveState: String?
     /// The stored values the service shortened: `input`, `result`.
     var cut: [String] = []
+    /// The stored short values of the call's arguments. They are exact, so they are read before
+    /// the call's own text, which is the console's preview.
+    var fields: [String: AGUIValue]? = nil
+    /// `callText` is the stored record's full input.
+    var callIsStored = false
 
-    /// One call of a line. `record` is the stored full record, once it has been read.
-    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?) {
-        toolID = entry.id
+    /// One call of a line. `record` is the stored full record, once it has been read; `summary`
+    /// is the same record without its large values.
+    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?, summary: ToolDetailSummary? = nil) {
+        toolID = entry.detailKey
+        fields = summary?.fields
+        callIsStored = record?.input.map { !$0.isEmpty } ?? false
         failure = step.entries.count == 1 || step.entries.last?.id == entry.id ? step.failure : nil
         liveState = nil
         cut = record?.truncated ?? []
@@ -56,16 +64,20 @@ struct ActivityResultSource: Equatable {
                 liveState = call.facts?.liveOperationStatus ?? call.facts?.liveRequestStatus
             } else {
                 // What was tried, in plain words: the tool's label and its subject.
-                let subject = ActivityWords.fact(name, detail: detail, summary: nil).map { ActivityWords.middle($0) }
+                let subject = ActivityWords.fact(name, detail: detail, summary: summary, record: record)
+                    .map { ActivityWords.middle($0) }
                 tried = [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(name), subject]
                     .compactMap { $0 }.joined(separator: ": ")
             }
         case .output(let result):
-            name = ""
-            callText = nil
+            // A record stored under the result's exact tool call ID names the call.
+            let stored = entry.toolCallID == nil ? nil : (record?.name ?? summary?.name)
+            name = stored ?? ""
+            callText = entry.toolCallID == nil ? nil : record?.input.flatMap { $0.isEmpty ? nil : $0 }
             resultText = result.output
             statusWord = result.error == nil ? "completed" : ToolStatus(result: result).word
-            tried = "A call that was not recorded"
+            tried = stored.map { CommanderTool(name: $0)?.label ?? ProviderTool(name: $0)?.label ?? "Use " + ActivityWords.bareName($0) }
+                ?? "A call that was not recorded"
         default:
             name = ""
             callText = nil
@@ -645,12 +657,16 @@ struct ActivityResultView: View {
 
     /// A value of the call's arguments, from JSON or the call's plain text.
     private func subject(_ keys: [String]) -> String? {
+        // The stored short values first, unless the full stored input is already in hand.
+        if !source.callIsStored, let fields = source.fields {
+            for key in keys { if let found = CommanderCall.text(fields[key]) { return found } }
+        }
         guard let text = source.callText?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         if let value = OrderedJSON.read(text)?.value, value.members != nil {
             for key in keys { if let found = value[key]?.scalarText { return found } }
             return nil
         }
-        return ToolDetailText.headline(text)
+        return ToolDetailText.subject(text)
     }
 
     private func failure(_ payload: ResultPayload) -> some View {

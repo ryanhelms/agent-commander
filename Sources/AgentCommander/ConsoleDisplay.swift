@@ -336,7 +336,9 @@ struct PrettyConsoleView: View {
         let summaries = details?.summaries(worker: consoleID) ?? [:]
         let store = details
         let worker = consoleID
+        // Read through the store, which matches a feed ID to the key the service keeps.
         var facts = ActivityFacts(summaries: summaries)
+        facts.summary = { key in store?.summary(worker: worker, key: key) }
         facts.record = { key in store?.record(worker: worker, key: key) }
         let conversation = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
                                                       awaitingToolID: awaitingToolID, anchor: anchor)
@@ -345,7 +347,8 @@ struct PrettyConsoleView: View {
         guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
             return Layout(items: items)
         }
-        let record = (thought.entries.first?.origin?.messageID).flatMap { summaries[$0] } ?? summaries[thought.id]
+        let record = (thought.entries.first?.origin?.messageID).flatMap { store?.summary(worker: worker, key: $0) }
+            ?? store?.summary(worker: worker, key: thought.id)
         return Layout(items: ActivityConversation.withoutLiveThought(items), thinking: thought, thinkingStarted: record?.started)
     }
 
@@ -456,7 +459,10 @@ struct PrettyConsoleView: View {
                     }
             }
         case .live(let step):
-            PrettyLiveLine(subject: .call(step), live: live ?? PrettyLive(), isExpanded: false, metrics: metrics) {}
+            // The time comes from the call's stored record, never from when the app saw the call.
+            let record = step.entries.last.flatMap { details?.summary(worker: consoleID, key: $0.detailKey) }
+            PrettyLiveLine(subject: .call(step), live: live ?? PrettyLive(), isExpanded: false, metrics: metrics,
+                           callStarted: live?.callStart(record)) {}
         case .approval(let step):
             VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -551,12 +557,13 @@ struct PrettyConsoleView: View {
     }
 
     private func result(_ entry: TranscriptEntry, step: ActivityStep, metrics: PrettyMetrics) -> some View {
-        let record = details?.record(worker: consoleID, key: entry.id)
-        return ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record), metrics: metrics,
-                                  hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
+        let record = details?.record(worker: consoleID, key: entry.detailKey)
+        let summary = details?.summary(worker: consoleID, key: entry.detailKey)
+        return ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+                                  metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false, copy: copy)
             .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             // The full record is read only now that the line is open.
-            .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.id) }
+            .task(id: entry.id) { await details?.open(worker: consoleID, key: entry.detailKey) }
     }
 
     private func reportDetail(_ report: ActivityReport, metrics: PrettyMetrics) -> some View {
