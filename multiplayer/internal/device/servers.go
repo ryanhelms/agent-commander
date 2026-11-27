@@ -89,6 +89,9 @@ type ManagerConfig struct {
 	Discover      bool
 	DiscoverEvery time.Duration
 	BonjourWindow time.Duration
+	// DirectoryURL is the public relay directory discovery reads; empty
+	// leaves it out.
+	DirectoryURL string
 }
 
 // Manager runs one Agent per enabled server and serves the tray.

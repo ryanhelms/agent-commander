@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	"agentcommander.network/pilot/internal/bonjour"
+	"agentcommander.network/pilot/internal/directory"
 	"agentcommander.network/pilot/internal/hostmode"
 	"agentcommander.network/pilot/internal/identity"
 )
@@ -31,11 +32,13 @@ func hostCommand(ctx context.Context, args []string) error {
 	}
 	action := flags.Arg(0)
 	var cfg hostmode.Config
-	secretFile, clearSecret, advertise := "", false, ""
+	secretFile, clearSecret, advertise, listPublicly, directoryURL := "", false, "", "", ""
 	if action == "configure" {
 		flags.StringVar(&secretFile, "client-secret-file", "", "store the sign-in client's installed-app secret: a Google Desktop OAuth JSON file or the bare secret; - or /dev/stdin reads standard input")
 		flags.BoolVar(&clearSecret, "clear-client-secret", false, "stop handing out a sign-in client secret")
 		flags.StringVar(&advertise, "advertise", "", `"on" or "off": advertise the relay over Bonjour`)
+		flags.StringVar(&listPublicly, "list-publicly", "", `list the relay in the public directory under this public https URL, or "off" to stop`)
+		flags.StringVar(&directoryURL, "directory", "", "public directory origin (default "+directory.DefaultURL+")")
 		flags.StringVar(&cfg.Listen, "listen", "", "replace the HTTPS listen address")
 		flags.Func("add-hostname", "add a certificate DNS name or IP (repeatable)", func(value string) error {
 			cfg.Hostnames = append(cfg.Hostnames, value)
@@ -131,7 +134,22 @@ func hostCommand(ctx context.Context, args []string) error {
 				return err
 			}
 		}
-		if (secretFile != "" || clearSecret || advertise != "") && len(cfg.Hostnames) == 0 && cfg.Listen == "" {
+		if listPublicly != "" || directoryURL != "" {
+			origin := listPublicly
+			if origin == "off" {
+				origin = ""
+			} else if origin == "" {
+				current, err := hostmode.ReadConfig(path)
+				if err != nil {
+					return err
+				}
+				origin = current.PublicListing
+			}
+			if err := hostmode.SetPublicListing(path, origin, directoryURL); err != nil {
+				return err
+			}
+		}
+		if (secretFile != "" || clearSecret || advertise != "" || listPublicly != "" || directoryURL != "") && len(cfg.Hostnames) == 0 && cfg.Listen == "" {
 			return nil
 		}
 		return hostmode.UpdateConfig(path, cfg.Hostnames, cfg.Listen)
@@ -249,6 +267,7 @@ func serveHost(ctx context.Context, dir string, client *http.Client) (err error)
 		edge: "host", replicas: 1, mode: "host", name: cfg.Name,
 		identity: identity.Config{AllowedEmails: cfg.AllowedEmails, Admins: cfg.Admins, Issuer: cfg.Issuer, ClientID: cfg.ClientID, HTTPClient: client,
 			ClientSecret: func() string { return hostmode.ClientSecret(dir) }},
+		publicURL: cfg.PublicListing, directoryURL: cfg.DirectoryURL,
 	})
 	if cause := context.Cause(runCtx); cause != nil && ctx.Err() == nil {
 		return errors.Join(err, cause)

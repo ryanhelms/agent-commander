@@ -24,6 +24,7 @@ import (
 
 	"agentcommander.network/pilot/internal/device"
 	"agentcommander.network/pilot/internal/devicekeys"
+	"agentcommander.network/pilot/internal/directory"
 )
 
 const daemonBusyExit = 75
@@ -169,6 +170,8 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 		SeedRelay: os.Getenv("COMMANDER_NETWORK_RELAY"),
 		Tailscale: os.Getenv("COMMANDER_TAILSCALE"),
 		Discover:  true,
+		// COMMANDER_DIRECTORY overrides the public directory; "off" leaves it out.
+		DirectoryURL: directoryURL(),
 		Secrets: func(relay string) (devicekeys.Store, error) {
 			sum := sha256.Sum256([]byte(relay))
 			return devicekeys.Keychain("device-" + hex.EncodeToString(sum[:]))
@@ -301,5 +304,16 @@ func main() {
 			os.Exit(daemonBusyExit)
 		}
 		os.Exit(1)
+	}
+}
+
+func directoryURL() string {
+	switch v := os.Getenv("COMMANDER_DIRECTORY"); v {
+	case "":
+		return directory.DefaultURL
+	case "off":
+		return ""
+	default:
+		return v
 	}
 }

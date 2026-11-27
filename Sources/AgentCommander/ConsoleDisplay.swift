@@ -374,7 +374,7 @@ struct PrettyConsoleView: View {
         let store = details
         let worker = consoleID
         // Read through the store, which matches a feed ID to the key the service keeps.
-        var facts = ActivityFacts(summaries: summaries)
+        var facts = ActivityFacts(summaries: summaries, worker: worker)
         facts.summary = { key in store?.summary(worker: worker, key: key) }
         facts.record = { key in store?.record(worker: worker, key: key) }
         // The older runner sends no console event for a thought: its record is placed by sequence.

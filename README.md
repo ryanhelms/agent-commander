@@ -6,7 +6,7 @@ The multiplayer pilot adds a menu bar panel for sign-in, friend requests, and sh
 
 ## Download the pilot
 
-Open [GitHub Releases](https://github.com/nscaledev/agent-commander/releases) with your Nscale GitHub account. Choose an Agent Commander pilot release and download the universal macOS ZIP and `SHA256SUMS`. Compare the ZIP's hash with its entry in the manifest before extracting it.
+Open [GitHub Releases](https://github.com/ryanhelms/agent-commander/releases). Choose an Agent Commander pilot release and download the universal macOS ZIP and `SHA256SUMS`. Compare the ZIP's hash with its entry in the manifest before extracting it.
 
 ```sh
 shasum -a 256 Agent-Commander-Multiplayer-Pilot-macOS-universal.zip
@@ -46,10 +46,10 @@ You can also restart the running app yourself: **Agent Commander → Restart Age
 
 To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
 
-With `gh` authenticated to the private repository, fetch the exact Go modules required by `go.mod` and build a release configuration without sibling checkouts.
+Fetch the public Go build inputs pinned by `go.mod` to build a release configuration without sibling checkouts.
 
 ```sh
-python3 packaging/sdk-inputs.py fetch nscaledev/agent-commander
+python3 packaging/sdk-inputs.py fetch
 make app CONFIG=release
 make run
 ```
