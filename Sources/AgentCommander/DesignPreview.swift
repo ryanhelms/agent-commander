@@ -873,9 +873,31 @@ enum DesignFixture {
         return request
     }
 
-    /// Pending requests across both runs, in arrival order for the stack.
+    /// Whether the developer controls a sample worker: the one rule the sample workspace reads
+    /// for its control cue, its request and Attention, as `WorkerInputRoute` is for the service's
+    /// runs. Take control and Hand back in the preview decide it; before either, the view does.
+    ///
+    /// Field ownership (W-052) is held in every view, so its Q-021 is the sample request of the
+    /// PiP, queue and side panel. Timeout cases (W-047) is held in the views that answer its
+    /// Q-018, and directed by Failure paths in the others, where its tile shows the request as
+    /// its owner's. Backoff strategy (W-043) is the worker being typed into when a request arrives.
+    static func holds(_ workerID: String, store: PreviewStore) -> Bool {
+        if store.released.contains(workerID) { return false }
+        if store.taken.contains(workerID) { return true }
+        switch workerID {
+        case "W-052": return true
+        case "W-047":
+            return [.focusedWorker, .accessibleWorker, .attentionQueue, .attentionPanel].contains(store.scenario)
+        case "W-043": return store.scenario == .pipArrival || store.scenario == .accessibleWall
+        default: return false
+        }
+    }
+
+    /// The pending requests the developer answers across both runs, in arrival order for the
+    /// stack. A request whose worker the developer does not control stays with that worker's
+    /// owner: it is on the worker's tile as status and is not listed here.
     static func pending(for store: PreviewStore) -> [RequestPresentation] {
-        requests.filter { store.answers[$0.id] == nil }
+        requests.filter { store.answers[$0.id] == nil && holds($0.workerID, store: store) }
     }
 
     static func runs(for store: PreviewStore) -> [RunContent] {
@@ -992,9 +1014,6 @@ enum DesignFixture {
     // MARK: Runs
 
     private static func retryPolicyRun(_ store: PreviewStore) -> RunContent {
-        let scenario = store.scenario
-        let holdsBackoff = scenario == .pipArrival || scenario == .accessibleWall
-        let holdsTimeout = scenario == .focusedWorker || scenario == .accessibleWorker
         // The wall and PiP show the compact tail with the pending question; the zoomed worker
         // shows the expanded turn.
         let timeoutOutput = store.ui.zoomedWorkerID == "W-047" ? timeoutTranscript : timeoutTail
@@ -1002,7 +1021,7 @@ enum DesignFixture {
         let wall = WallLayout(
             leaves: [
                 worker(store, id: "W-043", name: "Backoff strategy", client: .codex, host: .macStudio,
-                       branch: "feat/backoff", state: .working, started: "14:16:34", run: run, held: holdsBackoff,
+                       branch: "feat/backoff", state: .working, started: "14:16:34", run: run,
                        task: "Implement capped exponential backoff with jitter. Keep the retry budget per request.",
                        output: backoffOutput),
                 worker(store, id: "W-044", name: "Retry telemetry", client: .codex, host: .build01,
@@ -1023,7 +1042,7 @@ enum DesignFixture {
                     members: [
                         worker(store, id: "W-047", name: "Timeout cases", client: .codex, host: .build01,
                                branch: "main", state: .needsInput, started: "14:12:41", run: run,
-                               parents: ["Failure paths"], held: holdsTimeout, request: timeoutRequest,
+                               parents: ["Failure paths"], request: timeoutRequest,
                                task: "Cover timeout behavior before headers, after headers, and after the first body chunk.\nReport any ambiguous cases.",
                                output: timeoutOutput)
                     ])
@@ -1080,7 +1099,7 @@ enum DesignFixture {
 
     private static func worker(_ store: PreviewStore, id: String, name: String, client: AgentClient, host: SampleHost,
                                branch: String, state: TaskState, started: String, run: String,
-                               parents: [String] = [], held: Bool = false, request: RequestPresentation? = nil,
+                               parents: [String] = [], request: RequestPresentation? = nil,
                                task: String, output: String) -> WorkerPresentation {
         let holder = parents.last ?? run
         var output = output
@@ -1108,19 +1127,23 @@ enum DesignFixture {
         } else if state == .working, let script = liveScripts[id] {
             for line in script.prefix(store.liveTick % (script.count + 1)) { output += "\n" + line }
         }
-        var control = held ? InputControl.held : InputControl.observing(holder: holder)
-        if store.taken.contains(id) { control = .held }
-        if store.released.contains(id) { control = .observing(holder: holder) }
+        // As the service's control record would decide it: while the developer controls the
+        // worker its request is theirs; handed back, the same request is its owner's again and
+        // stays on the worker as status.
+        let held = holds(id, store: store)
+        let control = held ? InputControl.held : InputControl.observing(holder: holder)
         return WorkerPresentation(
             id: id, shortID: id, name: name, client: client, host: host.name, platform: host.platform,
             location: branch, locationIsBranch: true, task: task, output: output, error: error,
             state: state, isCoordinator: false, lineage: [run] + parents + [name],
-            control: control, request: pending, startedAt: started,
+            control: control, request: held ? pending : nil, startedAt: started,
             transcript: ConversationFixture.transcript(workerID: id),
             unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil,
             // Only the link changed: status, output and the pending request are as they were.
             hostIsReconnecting: id == reconnectingWorkerID && state != .stopped,
-            session: SourceFixture.session(workerID: id, client: client))
+            session: SourceFixture.session(workerID: id, client: client),
+            observedRequests: held ? [] : (pending.map { [$0] } ?? []),
+            inputOwner: held ? nil : WorkerInputOwner(parentName: parents.last))
     }
 
     private static func coordinator(_ store: PreviewStore, runID: String, id: String, name: String,
