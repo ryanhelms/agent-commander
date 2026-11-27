@@ -769,6 +769,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				if err := a.requestContext(ctx, "POST", path+"/questions", map[string]any{
 					"question": request.Prompt, "choices": choices,
 					"idempotency_key": request.RequestId, "provider_turn": turnID, "provider_request": request.RequestId,
+					"provider_tool_call_id": acpPermissionToolCallID(e, false),
 				}, &q); err != nil {
 					return "failed", false, err
 				}

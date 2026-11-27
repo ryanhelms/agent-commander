@@ -672,6 +672,95 @@ import Testing
         #expect(PrettyToolCard.kind(name: "ExitPlanMode", result: ToolResult(output: "", error: "Tool failed."), summary: nil) == nil)
     }
 
+    /// Issue #112. Two workers hold a plan under the same provider tool ID. Each approval line
+    /// shows only the plan its own console keeps for the call its permission names by exact ID.
+    @Test func aHeldPlanShowsItsOwnWorkersMarkdownBeforeTheDecision() throws {
+        var wire = Wire()
+        wire.user("Propose a plan.")
+        let earlier = wire.call("ExitPlanMode", result: "User has approved your plan.")
+        let held = wire.call("ExitPlanMode")
+        let heldEntry = try #require(wire.entries.last)
+        // Delta has two plan calls open at once.
+        var rival = Wire()
+        rival.user("Propose two plans.")
+        let first = rival.call("ExitPlanMode")
+        let second = rival.call("ExitPlanMode")
+        func input(_ plan: String) -> String { #"{"plan":"\#(plan)"}"# }
+        // Alpha and Bravo keep different plans under the same key; Bravo's feed names the call
+        // `<worker>:<tool ID>`. Charlie keeps nothing.
+        let store = ToolDetailStore(
+            summaries: ["alpha": try Self.summaries(Self.tool(held, 4, name: "ExitPlanMode")),
+                        "bravo": try Self.summaries(Self.tool(held, 4, name: "ExitPlanMode"))],
+            records: ["alpha": [ToolDetailRecord(key: held, kind: "tool", name: "ExitPlanMode", input: input("## PLAN_ALPHA")),
+                                ToolDetailRecord(key: earlier, kind: "tool", name: "ExitPlanMode", input: input("## EARLIER"))],
+                      "bravo": [ToolDetailRecord(key: held, kind: "tool", name: "ExitPlanMode", input: input("## PLAN_BRAVO"))],
+                      "delta": [ToolDetailRecord(key: first, kind: "tool", name: "ExitPlanMode", input: input("## FIRST")),
+                                ToolDetailRecord(key: second, kind: "tool", name: "ExitPlanMode", input: input("## SECOND"))]])
+        func items(_ worker: String, awaiting: String?, entries: [TranscriptEntry]? = nil) -> [PrettyItem] {
+            var facts = ActivityFacts(summaries: store.summaries(worker: worker), worker: worker)
+            facts.summary = { store.summary(worker: worker, key: $0) }
+            facts.record = { store.record(worker: worker, key: $0) }
+            let shown = TranscriptEntry.displayed(entries ?? wire.entries, mode: .pretty)
+            return ActivityConversation.items(ConversationActivity.items(shown, awaitingToolID: awaiting),
+                                              awaitingToolID: awaiting, facts: facts)
+        }
+        func heldStep(_ items: [PrettyItem]) -> ActivityStep? {
+            items.compactMap { item -> ActivityStep? in if case .approval(let step) = item { step } else { nil } }.first
+        }
+        /// `exact` is the call the permission names, as the request resolved it.
+        func plan(_ worker: String, _ step: ActivityStep, exact: String?, prefix: String = "") -> String? {
+            PrettyToolInput.pendingPlan(for: step, exactToolID: exact,
+                                        summary: { store.summary(worker: worker, key: prefix + $0) },
+                                        record: { store.record(worker: worker, key: prefix + $0) })
+        }
+
+        // The held call stays the approval line, with the generic sentence; the request form is as it was.
+        let alpha = try #require(heldStep(items("alpha", awaiting: heldEntry.id)))
+        #expect(alpha.sentence.plain == "Needs your approval to use ExitPlanMode")
+        #expect(plan("alpha", alpha, exact: heldEntry.id) == "## PLAN_ALPHA")
+        #expect(plan("bravo", alpha, exact: heldEntry.id) == "## PLAN_BRAVO")
+        #expect(plan("bravo", alpha, exact: heldEntry.id, prefix: "bravo:") == "## PLAN_BRAVO")
+        // A request that names no call marked this one as the one open call: the line stays,
+        // with no document.
+        #expect(plan("alpha", alpha, exact: nil) == nil)
+        // The permission names another call: the earlier one, or this raw ID under another worker.
+        #expect(plan("alpha", alpha, exact: earlier) == nil)
+        #expect(plan("alpha", alpha, exact: "bravo:" + held) == nil)
+        // No stored plan, an empty plan or an input cut short: no document, whatever another worker keeps.
+        #expect(plan("charlie", alpha, exact: heldEntry.id) == nil)
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", input: input("  ")) }) == nil)
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", input: #"{"plan":"Cut short"#) }) == nil)
+        // A record kept under the same ID for another tool is not this call's plan.
+        #expect(PrettyToolInput.pendingPlan(for: alpha, exactToolID: heldEntry.id, summary: { _ in nil },
+                                            record: { ToolDetailRecord(key: $0, kind: "tool", name: "Bash", input: input("## OTHER")) }) == nil)
+        // The earlier, approved plan keeps its card and is never the held call's text.
+        let cards = items("alpha", awaiting: heldEntry.id).compactMap { item -> PrettyToolCard? in
+            if case .card(let card) = item { card } else { nil }
+        }
+        #expect(cards.map(\.kind) == [.plan] && cards.first?.step.state == .done)
+        #expect(try plan("alpha", #require(cards.first?.step), exact: earlier) == nil)
+
+        // Two plan calls open at once: the named call shows its own plan, never the other's.
+        let named = try #require(heldStep(items("delta", awaiting: second, entries: rival.entries)))
+        #expect(named.entries.map(\.id) == [second])
+        #expect(plan("delta", named, exact: second) == "## SECOND")
+        #expect(plan("delta", named, exact: first) == nil)
+        let namedFirst = try #require(heldStep(items("delta", awaiting: first, entries: rival.entries)))
+        #expect(plan("delta", namedFirst, exact: first) == "## FIRST")
+
+        // Another held call shows no plan, even with a plan stored under its ID.
+        var other = Wire()
+        other.user("Run it.")
+        let shell = other.call("Bash", detail: "make test")
+        let bash = try #require(heldStep(items("alpha", awaiting: other.entries.last?.id, entries: other.entries)))
+        #expect(PrettyToolInput.pendingPlan(for: bash, exactToolID: shell, summary: { _ in nil },
+                                            record: { _ in ToolDetailRecord(key: shell, kind: "tool", input: input("## SHELL")) }) == nil)
+        // A plan call no request holds is the card, as before.
+        #expect(heldStep(items("alpha", awaiting: nil)) == nil)
+    }
+
     // MARK: Pictures
 
     @Test(.enabled(if: prettyRenderDirectory != nil)) func drawsTheOlderRunnersRecords() async throws {

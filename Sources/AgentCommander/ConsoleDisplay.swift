@@ -354,6 +354,9 @@ struct PrettyConsoleView: View {
     /// The open tool call of a worker waiting for the developer's reply, which reads as awaiting
     /// approval. Nil everywhere else, so every call keeps the status its result gives it.
     var awaitingToolID: String? = nil
+    /// The call the pending permission names by exact ID. Only this call shows its proposed plan
+    /// before the decision (`PrettyToolInput.pendingPlan`). Nil when the request names no call.
+    var exactApprovalToolID: String? = nil
     /// The requests the parent surface can act on and how, for a line's targeted actions.
     var stories = ActivityStoryContext()
     /// A request's workflow linked over the whole transcript, on a surface showing a recent window.
@@ -564,6 +567,13 @@ struct PrettyConsoleView: View {
                     ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.attention)
                 }
                 .accessibilityElement(children: .combine)
+                // A proposed plan is read before its decision: this console's record of the call
+                // the permission names.
+                if let plan = PrettyToolInput.pendingPlan(
+                    for: step, exactToolID: exactApprovalToolID, summary: { details?.summary(worker: consoleID, key: $0) },
+                    record: { details?.record(worker: consoleID, key: $0) }) {
+                    PrettyPlanDocument(plan: plan, metrics: metrics)
+                }
                 let primary = actions(for: step, scope: scope).filter(\.isPrimary)
                 if !primary.isEmpty {
                     ActivityActionGroup(actions: primary, fontSize: metrics.toolSize, density: density) { perform($0) }

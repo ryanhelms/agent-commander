@@ -25,9 +25,13 @@ func TestWorkerControlWaitWakesForAddressedApproval(t *testing.T) {
 	input := map[string]any{
 		"question": "Read fixture?", "choices": []QuestionChoice{choice},
 		"provider_turn": turn, "provider_request": "provider-request",
+		"provider_tool_call_id": "exact-tool",
 	}
 	if err := json.Unmarshal(f.call("POST", path+"/questions", worker.Token, input, 201, ""), &q); err != nil {
 		t.Fatal(err)
+	}
+	if q.WorkerID != worker.ID || q.ProviderToolCallID != "exact-tool" {
+		t.Fatalf("wrong addressed permission: %+v", q)
 	}
 	route := path + "/control?turn=" + turn
 	var first workerControlFeed

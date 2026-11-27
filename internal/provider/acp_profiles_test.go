@@ -275,6 +275,9 @@ for await (const line of createInterface({input:process.stdin})) {
 			if choices := run.Requests[0].Choices; len(choices) != 1 || choices[0].ID != "once" {
 				t.Fatalf("wrong actionable permission choices: %+v", choices)
 			}
+			if got := run.Requests[0].ProviderToolCallID; got != "check" {
+				t.Fatalf("wrong permission tool call: %q", got)
+			}
 			var mediaWorker service.Worker
 			if err := client.request("POST", "/v1/runs/"+run.ID+"/workers", map[string]string{
 				"name": "media", "task": "Start media worker.",
