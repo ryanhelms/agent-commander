@@ -709,6 +709,8 @@ struct FloatingAttentionRoot: View {
         }
         .padding(FloatingPiPGeometry.margin)
         .consoleRecordAccess(actions)
+        // The PiP names the jobs; a worker is opened from the main window.
+        .environment(\.backgroundWork, BackgroundWorkAccess(isConnected: content.connection == .online))
         .onChange(of: ui.floatingReplyFocus) { _, requestID in
             guard let requestID else { return }
             ui.floatingReplyFocus = nil

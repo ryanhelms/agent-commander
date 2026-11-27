@@ -130,7 +130,7 @@ struct WorkerTile: View {
                ProviderAvailability.allowsControl(worker.providerAvailability), let sendInput = actions.sendInput {
                 if (modes?.mode(for: worker.id) ?? .console) == .pretty {
                     // Pretty's message box: it queues while a turn runs, and Stop interrupts the turn.
-                    PrettyComposer(workerName: worker.name, isWorking: worker.state.isActiveTurn,
+                    PrettyComposer(workerName: worker.name, isWorking: worker.isInTurn,
                                    queued: worker.queuedMessages, send: sendInput, context: actions.followUpContext,
                                    removeQueued: actions.removeQueued, stop: actions.interrupt)
                 } else {
@@ -184,10 +184,11 @@ struct WorkerTile: View {
     private var terminalWell: some View {
         ZStack(alignment: .topLeading) {
             Term.background
-            ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact,
+            ConsoleScrollback(worker: worker, density: .compact,
                               terminal: NativeTerminalTarget(worker: worker),
                               live: PrettyLive(state: worker.state, workerName: worker.name, reportsProgress: worker.claudeProgress != nil,
-                                               reportedPhase: worker.claudeProgress?.evidence?.phase)) {
+                                               reportedPhase: worker.claudeProgress?.evidence?.phase,
+                                               turnIsRunning: worker.turnIsRunning)) {
                 if !worker.transcript.isEmpty {
                     TranscriptView(entries: worker.transcript, agentName: worker.name,
                                    fontSize: TypeRole.wallTerminalSize, inset: 11,
@@ -231,11 +232,11 @@ struct WorkerTile: View {
                 // as a native form inside it.
                 PrettyACPConsole(worker: worker, session: session, reply: reply)
             } else {
-                ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output,
-                                  density: .regular, horizontalInset: 21,
+                ConsoleScrollback(worker: worker, density: .regular, horizontalInset: 21,
                                   terminal: NativeTerminalTarget(worker: worker),
                                   live: PrettyLive(state: worker.state, workerName: worker.name, reportsProgress: worker.claudeProgress != nil,
-                                               reportedPhase: worker.claudeProgress?.evidence?.phase)) {
+                                               reportedPhase: worker.claudeProgress?.evidence?.phase,
+                                               turnIsRunning: worker.turnIsRunning)) {
                     if !worker.transcript.isEmpty {
                         // Structured messages: the transcript takes the room above the request.
                         TranscriptView(entries: worker.transcript, agentName: worker.name,
@@ -824,10 +825,10 @@ struct CoordinatorConsole: View {
                             .padding(.bottom, 9)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    ConsoleScrollback(consoleID: coordinator.id, entries: coordinator.transcript,
-                                      rawOutput: coordinator.output, density: .regular, horizontalInset: 0,
+                    ConsoleScrollback(worker: coordinator, density: .regular, horizontalInset: 0,
                                       terminal: NativeTerminalTarget(worker: coordinator),
-                                      live: PrettyLive(state: coordinator.state, workerName: coordinator.name),
+                                      live: PrettyLive(state: coordinator.state, workerName: coordinator.name,
+                                                       turnIsRunning: coordinator.turnIsRunning),
                                       reportsAsCoordinator: true) {
                         if !coordinator.transcript.isEmpty {
                             TranscriptView(entries: coordinator.transcript, agentName: coordinator.name,
@@ -1047,10 +1048,10 @@ struct AttentionStack: View {
                         VStack(spacing: 0) {
                             NativeTerminalRegion(consoleID: current.workerID, target: NativeTerminalTarget(request: current),
                                                  hasTranscript: !current.contextEntries.isEmpty || !current.contextTail.isEmpty) {
-                                ConsoleScrollback(consoleID: current.workerID, entries: current.contextEntries,
-                                                  rawOutput: current.contextTail.joined(separator: "\n"), density: .pip,
+                                ConsoleScrollback(request: current, density: .pip,
                                                   horizontalInset: 8, terminal: NativeTerminalTarget(request: current),
-                                                  live: PrettyLive(state: current.workerState, workerName: current.workerName)) {
+                                                  live: PrettyLive(state: current.workerState, workerName: current.workerName,
+                                                                   turnIsRunning: current.workerTurnIsRunning)) {
                                     if !current.contextEntries.isEmpty {
                                         // A recent window of whole entries: a tool result always sits with its call.
                                         TranscriptView(entries: current.contextEntries, agentName: current.workerName,

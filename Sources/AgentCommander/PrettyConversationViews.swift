@@ -17,6 +17,7 @@ import SwiftUI
 //              ActivityFailureLine     a failed or blocked call with its reason, never folded
 //              PrettyReportBlock       a reported result as quoted prose
 //              PrettyLiveLine          the open call, or Thinking with its elapsed time
+//              PrettyElapsedText       the time since a record's own start
 //              PrettyThoughtBody       a thought's text, in italic beside a rule
 //              PrettyPlanCard          a task checklist
 //              PrettyClamp             the first lines of a block, then "Show all"
@@ -50,8 +51,14 @@ struct PrettyLive: Equatable {
     /// - Parameters:
     ///   - reportedPhase: the phase a tracked local Claude worker's service reports. With it,
     ///     "responding" is never inferred: only a reported thinking phase adds a line.
-    init(state: TaskState, workerName: String, reportsProgress: Bool = false, reportedPhase: ClaudeProgress.Phase? = nil) {
+    ///   - turnIsRunning: the service's own state says a turn is in progress. A worker that reads
+    ///     needs-input while it waits for a reply inside its turn is then active: its open call
+    ///     spins. Nothing is inferred after that call, so there is no "responding" line.
+    init(state: TaskState, workerName: String, reportsProgress: Bool = false, reportedPhase: ClaudeProgress.Phase? = nil,
+         turnIsRunning: Bool = false) {
         switch state {
+        case .needsInput where turnIsRunning:
+            isActive = true
         case .running, .working, .starting:
             isActive = true
             if reportsProgress {
@@ -474,6 +481,23 @@ struct PrettyThoughtBody: View {
     }
 }
 
+/// The time since a record's own start, ticking once a second, in the terminal face. Drawn only
+/// where a record holds a start time: never a client-side guess.
+struct PrettyElapsedText: View {
+    let started: Date
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        TimelineView(.periodic(from: started, by: 1)) { context in
+            Text(verbatim: ElapsedTime.text(max(0, context.date.timeIntervalSince(started))))
+                .font(Term.font(metrics.tagSize + 0.5)).foregroundStyle(.inkSecondary)
+                .monospacedDigit()
+        }
+        // Read on focus, never announced on every tick.
+        .accessibilityHidden(true)
+    }
+}
+
 /// The last thing the agent is doing, inline at the point it belongs to: a spinner, the
 /// sentence, and the elapsed time when the record holds a start time. While the agent thinks
 /// it takes a chevron and opens to the thought text.
@@ -554,17 +578,8 @@ struct PrettyLiveLine: View {
         .contentShape(Rectangle())
     }
 
-    /// The time since the record's own start, ticking once a second. No start time, no time.
     @ViewBuilder private func elapsed(since started: Date?) -> some View {
-        if let started {
-            TimelineView(.periodic(from: started, by: 1)) { context in
-                Text(verbatim: ElapsedTime.text(max(0, context.date.timeIntervalSince(started))))
-                    .font(Term.font(metrics.tagSize + 0.5)).foregroundStyle(.inkSecondary)
-                    .monospacedDigit()
-            }
-            // Read on focus, never announced on every tick.
-            .accessibilityHidden(true)
-        }
+        if let started { PrettyElapsedText(started: started, metrics: metrics) }
     }
 
     private var spoken: String {

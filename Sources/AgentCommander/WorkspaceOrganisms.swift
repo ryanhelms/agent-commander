@@ -356,7 +356,7 @@ struct RequestInspector: View {
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .harnessHeaderFill(worker.client)
                     .padding(.top, 18)
-                    ConsoleScrollback(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: .compact, horizontalInset: 8,
+                    ConsoleScrollback(worker: worker, density: .compact, horizontalInset: 8,
                                       terminal: terminal) {
                         TerminalWell(output: worker.output, workerID: worker.id, workerName: worker.name,
                                      fontSize: 12.5, inset: NSSize(width: 14, height: 11))

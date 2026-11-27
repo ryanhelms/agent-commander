@@ -4,13 +4,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"agentcommander/internal/hosted"
 )
 
 type detailList struct {
 	Revision uint64                  `json:"revision"`
 	Records  []toolDetailSummaryView `json:"records"`
+}
+
+func claudePrivateDetails(marker string) []ToolDetail {
+	duration := int64(0)
+	failed := false
+	return []ToolDetail{
+		{Kind: "job", Key: "job-t1", Title: marker + " command",
+			JobDetail: &JobDetail{ToolUseID: "t1", JobKind: "command", State: "completed"}, Result: marker + " exit"},
+		{Kind: "job", Key: "job-t2", Title: marker + " agent",
+			JobDetail: &JobDetail{ToolUseID: "t2", JobKind: "agent", State: "running", OpenToolName: "Read", OpenToolArg: marker + ".go"}},
+		{Kind: "turn_end", Key: "turn-end-r1", TurnEndDetail: &TurnEndDetail{
+			DurationMS: &duration, StopReason: marker + " stop", TerminalReason: marker + " terminal", IsError: &failed}},
+		{Kind: "thought", Key: "thought-a", StartedAt: "2026-01-02T03:04:05Z", EndedAt: "2026-01-02T03:04:06Z", Result: marker + " thought"},
+	}
 }
 
 func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
@@ -30,11 +47,11 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 	}, 200, "")
 	f.call("POST", path+"/output", worker.Token, map[string]any{
 		"stream_id": "s", "batch": 2, "text": "",
-		"details": []ToolDetail{{Kind: "tool", Key: "t1", Result: marker + " result", EndedAt: "2026-01-02T03:04:07Z"}},
+		"details": append([]ToolDetail{{Kind: "tool", Key: "t1", Result: marker + " result", EndedAt: "2026-01-02T03:04:07Z"}}, claudePrivateDetails(marker)...),
 	}, 200, "")
 
 	var list detailList
-	if err := json.Unmarshal(f.call("GET", path+"/tool-details", "", nil, 200, ""), &list); err != nil || len(list.Records) != 1 {
+	if err := json.Unmarshal(f.call("GET", path+"/tool-details", "", nil, 200, ""), &list); err != nil || len(list.Records) != 5 {
 		t.Fatalf("list: %+v, %v", list, err)
 	}
 	got := list.Records[0]
@@ -49,12 +66,36 @@ func TestToolDetailsReachOnlyTheLocalOwner(t *testing.T) {
 		t.Fatalf("full record: %v", err)
 	}
 
+	for i, want := range claudePrivateDetails(marker) {
+		row := list.Records[i+1]
+		if row.Key != want.Key || row.Kind != want.Kind || row.Sequence != 1 || row.Result != "" ||
+			!reflect.DeepEqual(row.JobDetail, want.JobDetail) || !reflect.DeepEqual(row.TurnEndDetail, want.TurnEndDetail) {
+			t.Fatalf("summary %s: %+v", want.Key, row)
+		}
+		var record ToolDetail
+		if err := json.Unmarshal(f.call("GET", path+"/tool-details?key="+want.Key, "", nil, 200, ""), &record); err != nil ||
+			record.Result != want.Result || record.EndedAt != want.EndedAt {
+			t.Fatalf("full %s: %+v, %v", want.Key, record, err)
+		}
+	}
+
 	// Nothing outside the owner's details routes carries the values.
 	f.call("GET", path+"/tool-details", worker.Token, nil, 403, "")
 	f.call("GET", path+"/tool-details", coordinator.Token, nil, 403, "")
 	for _, shared := range []string{"/v1/runs", "/v1/runs/" + worker.RunID, "/v1/runs/" + worker.RunID + "?view=ag-ui", "/v1/ag-ui" + strings.TrimPrefix(path, "/v1")} {
 		if body := f.call("GET", shared, "", nil, 200, ""); strings.Contains(string(body), marker) || strings.Contains(string(body), "started_at") {
 			t.Fatalf("%s carries tool details", shared)
+		}
+	}
+
+	// Exercise the hosted route allowlist without a network listener.
+	gateway := (&hosted.Gateway{}).Handler(f.api)
+	for _, detail := range claudePrivateDetails(marker) {
+		req := httptest.NewRequest(http.MethodGet, path+"/tool-details?key="+detail.Key, nil)
+		w := httptest.NewRecorder()
+		gateway.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), marker) {
+			t.Fatalf("hosted read for %s: %d", detail.Kind, w.Code)
 		}
 	}
 
@@ -126,4 +167,34 @@ func TestOwnerCancelsQueuedFollowUp(t *testing.T) {
 	f.call("POST", path+"/control/finish", worker.Token, map[string]string{"state": "completed"}, 200, "")
 	f.call("POST", path+"/messages/"+second.ID+"/claim", worker.Token, struct{}{}, 200, "")
 	f.call("POST", path+"/messages/"+second.ID+"/cancel", "", struct{}{}, 409, "")
+}
+
+func TestJobDetailUpdatesClearOpenCallAndKeepExitSummary(t *testing.T) {
+	var store toolDetailStore
+	dir := t.TempDir()
+	if err := store.open(dir); err != nil {
+		t.Fatal(err)
+	}
+	for i, step := range []struct{ state, name, arg, summary string }{
+		{"running", "Read", strings.Repeat("x", 520), ""},
+		{"running", "", "", ""},
+		{"completed", "", "", "exit summary"},
+		{"completed", "", "", ""},
+	} {
+		d := ToolDetail{Key: "job-t", Kind: "job", Result: step.summary,
+			JobDetail: &JobDetail{ToolUseID: "t", JobKind: "agent", State: step.state, OpenToolName: step.name, OpenToolArg: step.arg}}
+		store.add("worker", store.prepare([]ToolDetail{d}, nil, 0, i+1))
+		got := store.log("worker").records[d.Key]
+		if got == nil || got.Sequence != 1 || got.State != step.state || got.OpenToolName != step.name || got.OpenToolArg != cutText(step.arg, toolDetailSummary) {
+			t.Fatalf("snapshot %d: %+v", i, got)
+		}
+	}
+	var reopened toolDetailStore
+	if err := reopened.open(dir); err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.log("worker").records["job-t"]
+	if got == nil || got.State != "completed" || got.OpenToolName != "" || got.Result != "exit summary" {
+		t.Fatalf("reopened record: %+v", got)
+	}
 }

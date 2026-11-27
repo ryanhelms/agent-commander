@@ -130,6 +130,8 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
     /// What the surface knows about the turn in progress, for Pretty's live line.
     private let live: PrettyLive?
     private let reportsAsCoordinator: Bool
+    /// The jobs this console's calls started, for Pretty's background stack.
+    private let background: [BackgroundJob]
     private let console: () -> ConsoleContent
 
     init(
@@ -141,8 +143,10 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
         terminal: NativeTerminalTarget? = nil,
         live: PrettyLive? = nil,
         reportsAsCoordinator: Bool = false,
+        background: [BackgroundJob] = [],
         @ViewBuilder console: @escaping () -> ConsoleContent
     ) {
+        self.background = background
         self.live = live
         self.reportsAsCoordinator = reportsAsCoordinator
         self.consoleID = consoleID
@@ -160,18 +164,47 @@ struct ConsoleScrollback<ConsoleContent: View>: View {
             NativeTerminalSlot(target: terminal, density: density, horizontalInset: horizontalInset, fallback: console)
         } else if mode == .pretty,
            PrettyContent.isPresentable(entries: entries, rawOutput: rawOutput) {
-            PrettyConsoleView(
-                consoleID: consoleID,
-                entries: entries,
-                rawOutput: rawOutput,
-                density: density,
-                horizontalInset: horizontalInset,
-                live: live,
-                reportsAsCoordinator: reportsAsCoordinator
-            )
+            pretty
         } else {
             console()
         }
+    }
+
+    /// The Pretty console this scrollback draws, with everything the surface gave it.
+    var pretty: PrettyConsoleView {
+        PrettyConsoleView(
+            consoleID: consoleID,
+            entries: entries,
+            rawOutput: rawOutput,
+            density: density,
+            horizontalInset: horizontalInset,
+            live: live,
+            reportsAsCoordinator: reportsAsCoordinator,
+            background: background
+        )
+    }
+}
+
+extension ConsoleScrollback {
+    /// A worker's or coordinator's console: its transcript, its live terminal and the jobs its
+    /// calls started. Every surface that draws a worker goes through here, so none leaves the
+    /// background stack out.
+    init(worker: WorkerPresentation, density: PrettyDensity, horizontalInset: CGFloat = 12,
+         terminal: NativeTerminalTarget? = nil, live: PrettyLive? = nil, reportsAsCoordinator: Bool = false,
+         @ViewBuilder console: @escaping () -> ConsoleContent) {
+        self.init(consoleID: worker.id, entries: worker.transcript, rawOutput: worker.output, density: density,
+                  horizontalInset: horizontalInset, terminal: terminal, live: live,
+                  reportsAsCoordinator: reportsAsCoordinator, background: worker.backgroundJobs, console: console)
+    }
+
+    /// The asking worker's console in the PiP: its recent window and that worker's jobs.
+    init(request: RequestPresentation, density: PrettyDensity, horizontalInset: CGFloat = 12,
+         terminal: NativeTerminalTarget? = nil, live: PrettyLive? = nil,
+         @ViewBuilder console: @escaping () -> ConsoleContent) {
+        self.init(consoleID: request.workerID, entries: request.contextEntries,
+                  rawOutput: request.contextTail.joined(separator: "\n"), density: density,
+                  horizontalInset: horizontalInset, terminal: terminal, live: live,
+                  background: request.workerBackgroundJobs, console: console)
     }
 }
 
@@ -321,9 +354,13 @@ struct PrettyConsoleView: View {
     var live: PrettyLive? = nil
     /// The console is a coordinator's: its report is the run's result.
     var reportsAsCoordinator = false
+    /// The jobs this console's calls started, each read by exact ID (`BackgroundJobs`).
+    var background: [BackgroundJob] = []
 
     private struct Layout {
         var items: [PrettyItem]
+        /// The run's jobs and the provider's own, for the background stack.
+        var jobs: [BackgroundJob] = []
         /// The thought the agent is in now, drawn by the live line.
         var thinking: ActivityStep?
         var thinkingStarted: Date?
@@ -340,16 +377,28 @@ struct PrettyConsoleView: View {
         var facts = ActivityFacts(summaries: summaries)
         facts.summary = { key in store?.summary(worker: worker, key: key) }
         facts.record = { key in store?.record(worker: worker, key: key) }
-        let conversation = ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty),
-                                                      awaitingToolID: awaitingToolID, anchor: anchor)
-        let items = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
+        // The older runner sends no console event for a thought: its record is placed by sequence.
+        let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
+        let records = Array(summaries.values)
+        let displayed = PrettyRecordPlacement.withThoughts(
+            TranscriptEntry.displayed(entries, mode: .pretty), summaries: records, worker: worker,
+            summary: lookup, record: { key in store?.record(worker: worker, key: key) })
+        let conversation = ConversationActivity.items(displayed, awaitingToolID: awaitingToolID, anchor: anchor)
+        let built = ActivityConversation.items(conversation, awaitingToolID: awaitingToolID, facts: facts,
                                                reportsAsCoordinator: reportsAsCoordinator)
+        let items = PrettyRecordPlacement.withTurnEnds(built, summaries: records, worker: worker, summary: lookup)
+        // The run's jobs, then the provider's own: background commands and child agents.
+        let jobs = background + ProviderJobs.jobs(summaries: records, record: { key in store?.record(worker: worker, key: key) },
+                                                  entries: entries, worker: worker)
         guard let live, live.isActive || live.isDisconnected, let thought = ActivityConversation.liveThought(in: items) else {
-            return Layout(items: items)
+            return Layout(items: items, jobs: jobs)
         }
         let record = (thought.entries.first?.origin?.messageID).flatMap { store?.summary(worker: worker, key: $0) }
             ?? store?.summary(worker: worker, key: thought.id)
-        return Layout(items: ActivityConversation.withoutLiveThought(items), thinking: thought, thinkingStarted: record?.started)
+        // A thought whose record holds its end is over: it stays a line, and is not the live one.
+        if record?.ended != nil { return Layout(items: items, jobs: jobs) }
+        return Layout(items: ActivityConversation.withoutLiveThought(items), jobs: jobs, thinking: thought,
+                      thinkingStarted: record?.started)
     }
 
     /// Changes when the transcript gains an entry or a call gains its result: the moments the
@@ -376,6 +425,13 @@ struct PrettyConsoleView: View {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
                         self.item(item, scope: scope, metrics: metrics)
                             .padding(.top, index == 0 ? 0 : spacing(before: item, after: shown[index - 1], metrics: metrics))
+                    }
+                    // Background work sits at the bottom, above the agent's own live line.
+                    if !layout.jobs.isEmpty {
+                        BackgroundStack(jobs: layout.jobs, metrics: metrics, isExpanded: isExpanded, toggle: toggle,
+                                        openRequest: stories.openRequest,
+                                        openSource: access?.openSource)
+                            .padding(.top, shown.isEmpty ? 0 : metrics.blockSpacing * 1.4)
                     }
                     lastLine(layout, metrics: metrics)
                         .padding(.top, shown.isEmpty ? 0 : metrics.blockSpacing * 1.4)
@@ -414,6 +470,17 @@ struct PrettyConsoleView: View {
             await details?.refresh(worker: consoleID)
             // A report's text may be only in its stored record: summaries leave out long values.
             for key in ActivitySteps.reportsToRead(entries) { await details?.open(worker: consoleID, key: key) }
+            // A failed job's reason, a thought's text and a card's content are in the full records.
+            let records = Array((details?.summaries(worker: consoleID) ?? [:]).values)
+            let cards = entries.compactMap { entry -> String? in
+                guard case .tool(let name, _, let result) = entry.kind,
+                      PrettyToolCard.kind(name: name, result: result, summary: details?.summary(worker: consoleID, key: entry.detailKey)) != nil
+                else { return nil }
+                return entry.detailKey
+            }
+            for key in ProviderJobs.recordsToRead(records) + PrettyRecordPlacement.thoughtsToRead(records) + cards {
+                await details?.open(worker: consoleID, key: key)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
@@ -463,6 +530,15 @@ struct PrettyConsoleView: View {
             let record = step.entries.last.flatMap { details?.summary(worker: consoleID, key: $0.detailKey) }
             PrettyLiveLine(subject: .call(step), live: live ?? PrettyLive(), isExpanded: false, metrics: metrics,
                            callStarted: live?.callStart(record)) {}
+        case .turnEnd(let end):
+            PrettyTurnEndLine(end: end, metrics: metrics)
+        case .card(let card):
+            let key = card.entry?.detailKey ?? card.step.id
+            PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
+                               record: details?.record(worker: consoleID, key: key), metrics: metrics,
+                               isExpanded: isExpanded(card.step.id), toggle: { toggle(card.step.id) }) {
+                detail(card.step, scope: scope, metrics: metrics)
+            }
         case .approval(let step):
             VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -502,6 +578,8 @@ struct PrettyConsoleView: View {
     private func endsWithOpenCall(_ items: [PrettyItem]) -> Bool {
         switch items.last {
         case .live?, .approval?: true
+        // A provider question that waits for its answer is the open call.
+        case .card(let card)?: card.step.state == .running
         default: false
         }
     }

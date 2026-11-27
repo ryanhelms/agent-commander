@@ -72,11 +72,26 @@ struct ToolDetailSummary: Decodable, Equatable, Sendable {
     var fields: [String: AGUIValue]? = nil
     var inputBytes: Int? = nil
     var resultBytes: Int? = nil
+    /// A `job` record: the console call that started it, `command` or `agent`, and the runner's
+    /// state word. `openToolName` and `openToolArg` are a child's latest open call.
+    var toolUseID: String? = nil
+    var jobKind: String? = nil
+    var state: String? = nil
+    var openToolName: String? = nil
+    var openToolArg: String? = nil
+    /// A `turn_end` record. Zero and false are meaningful; nil means the provider sent none.
+    var durationMS: Int? = nil
+    var stopReason: String? = nil
+    var terminalReason: String? = nil
+    var isError: Bool? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case key, kind, sequence, name, title, plan, truncated, revision, fields
+        case key, kind, sequence, name, title, plan, truncated, revision, fields, state
         case toolKind = "tool_kind", startedAt = "started_at", endedAt = "ended_at"
         case inputBytes = "input_bytes", resultBytes = "result_bytes"
+        case toolUseID = "tool_use_id", jobKind = "job_kind"
+        case openToolName = "open_tool_name", openToolArg = "open_tool_arg"
+        case durationMS = "duration_ms", stopReason = "stop_reason", terminalReason = "terminal_reason", isError = "is_error"
     }
 
     func field(_ name: String) -> String? { CommanderCall.text(fields?[name]) }

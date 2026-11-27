@@ -336,6 +336,10 @@ struct RequestPresentation: Identifiable, Equatable {
     /// on that host and the request can be answered: Commander keeps one answer and the worker
     /// reads it when the link comes back. Never set together with `disconnectReason`.
     var hostIsReconnecting = false
+    /// The asking worker's background jobs, as on its own console.
+    var workerBackgroundJobs: [BackgroundJob] = []
+    /// The service says the asking worker's turn is still running (`WorkerPresentation.turnIsRunning`).
+    var workerTurnIsRunning = false
     /// The asking worker's provider session, when the service has bound one. A request surface
     /// uses it to point to that worker's source inspector.
     var workerSession: NativeSession? = nil
@@ -449,8 +453,17 @@ struct WorkerPresentation: Identifiable, Equatable {
     /// The prompt content the session accepts beyond text, from the service's control record.
     /// Nil from an older service, and the follow-up then offers no file context.
     var promptCapabilities: WorkerPromptCapabilities? = nil
+    /// The jobs this worker's calls started, each read from the run by exact ID.
+    var backgroundJobs: [BackgroundJob] = []
+    /// The service's own state says a turn is in progress, whatever `state` reads. A worker that
+    /// asked the developer a question and waits for the reply inside its turn reads needs-input,
+    /// and its turn is still running: the live line spins and the message box queues.
+    var turnIsRunning = false
 
     var isDisconnected: Bool { state == .disconnected }
+    /// A turn is in progress: the message box queues and offers Stop. A disconnected or finished
+    /// worker is never in a turn.
+    var isInTurn: Bool { state.isActiveTurn || (state == .needsInput && turnIsRunning) }
 
     /// The scope a follow-up's file context is prepared in. Nil when the session accepts neither a
     /// file link nor a snapshot.
@@ -999,6 +1012,18 @@ extension RunContent {
             return names
         }
 
+        // Each worker's entries are built once: for its own console, and for the background
+        // line of the console that delegated it.
+        var transcripts: [String: [TranscriptEntry]] = [:]
+        func transcript(of worker: Worker) -> [TranscriptEntry] {
+            if let built = transcripts[worker.id] { return built }
+            let built = CommanderActivity.annotate(TranscriptEntry.entries(from: worker.messages ?? []), live: live)
+            transcripts[worker.id] = built
+            return built
+        }
+        let records = BackgroundJobs.Records(workers: byID, requests: run.requests ?? [], integrations: live.integrations,
+                                             transcript: { transcript(of: $0) })
+
         func present(_ worker: Worker) -> WorkerPresentation {
             let isCoordinator = worker.id == coordinatorID
             let ancestors = parents(of: worker)
@@ -1009,8 +1034,8 @@ extension RunContent {
             // Commander calls carry the current state of their request, follow-up or integration
             // from this run, by exact ID, so Pretty never shows a pending request as done or a
             // finished follow-up as queued. No polling: the workspace projection holds it all.
-            let transcript = CommanderActivity.annotate(
-                TranscriptEntry.entries(from: worker.messages ?? []), live: live)
+            let transcript = transcript(of: worker)
+            let background = BackgroundJobs.jobs(entries: transcript, records: records)
             let questions = requestsByWorker[worker.id] ?? []
             let state = TaskState(api: worker.state, hasPendingRequest: !questions.isEmpty)
             // The service's own explanation, or a plain statement when it sent none.
@@ -1036,6 +1061,8 @@ extension RunContent {
                     contextEntries: TranscriptEntry.recent(transcript),
                     disconnectReason: disconnectReason,
                     hostIsReconnecting: reconnecting,
+                    workerBackgroundJobs: background,
+                    workerTurnIsRunning: TaskState(api: worker.state).isActiveTurn,
                     workerSession: worker.boundSession,
                     choices: question.choices ?? [],
                     workerTelemetry: telemetry,
@@ -1083,7 +1110,9 @@ extension RunContent {
                 providerAvailability: isCoordinator ? nil : ProviderAvailability(worker: worker),
                 pendingRequests: requests,
                 checkout: worker.worktree,
-                promptCapabilities: isCoordinator ? nil : worker.control?.promptCapabilities)
+                promptCapabilities: isCoordinator ? nil : worker.control?.promptCapabilities,
+                backgroundJobs: background,
+                turnIsRunning: TaskState(api: worker.state).isActiveTurn)
         }
 
         // Wall: root workers without children fill the top rows; a root with nested workers becomes a group.

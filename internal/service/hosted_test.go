@@ -217,6 +217,7 @@ func testHostedFrontendToolRenewal(t *testing.T, relayed bool) {
 }
 
 func testHostedWorkerAccess(t *testing.T, relayed bool) {
+	const detailMarker = "PrivacyFixtureLocalDetail"
 	const promptMarker = "PrivacyFixturePrompt"
 	const replyMarker = "PrivacyFixtureApprovalReply"
 	const resultMarker = "PrivacyFixtureToolResult"
@@ -236,6 +237,7 @@ func testHostedWorkerAccess(t *testing.T, relayed bool) {
 	path := "/v1/workers/" + worker.ID
 	ref := NativeSession{HarnessInstance: "local-claude", SessionID: "hosted-fixture-session"}
 	f.call("POST", path+"/native-session", "", ref, 200, "")
+	f.call("POST", path+"/output", worker.Token, map[string]any{"details": claudePrivateDetails(detailMarker)}, 200, "")
 	attachmentData := base64.StdEncoding.EncodeToString([]byte(attachmentMarker))
 	attachmentBody := fmt.Sprintf(`{"type":"image","mimeType":"image/png","data":%q}`, attachmentData)
 	f.call("POST", path+"/live-source", worker.Token, LiveSourceUpdate{Session: ref, Cursor: "hosted-source", TurnID: "turn",
@@ -355,6 +357,10 @@ func testHostedWorkerAccess(t *testing.T, relayed bool) {
 	}
 	call("GET", base, "wrong-audience", "", 401)
 	call("GET", "/v1/ag-ui/events", "app-a", "", 404)
+	call("GET", path+"/tool-details", "app-a", "", 404)
+	for _, detail := range claudePrivateDetails(detailMarker) {
+		call("GET", path+"/tool-details?key="+detail.Key, "history-only", "", 404)
+	}
 	call("GET", path+"/terminal", "app-a", "", 404)
 	call("GET", "/v1/ag-ui/workers/"+coordinator.ID, "app-a", "", 403)
 	call("GET", path+"/history", "app-a", "", 403)
@@ -399,7 +405,11 @@ func testHostedWorkerAccess(t *testing.T, relayed bool) {
 		Generation int `json:"generation"`
 	}
 	res := call("GET", base, "observe-only", "", 200)
-	if err := json.NewDecoder(res.Body).Decode(&info); err != nil || info.Generation != 2 {
+	snapshot, err := io.ReadAll(res.Body)
+	if err != nil || bytes.Contains(snapshot, []byte(detailMarker)) {
+		t.Fatalf("hosted snapshot read error or private detail: %v", err)
+	}
+	if err := json.Unmarshal(snapshot, &info); err != nil || info.Generation != 2 {
 		t.Fatalf("worker info %+v: %v", info, err)
 	}
 
@@ -668,7 +678,7 @@ func testHostedWorkerAccess(t *testing.T, relayed bool) {
 		if !strings.Contains(stats, "commander_relay_connected_hosts 1\n") {
 			t.Fatalf("unexpected telemetry: %s", stats)
 		}
-		for _, value := range []string{promptMarker, replyMarker, resultMarker, attachmentMarker, attachmentData, encodedSource,
+		for _, value := range []string{detailMarker, promptMarker, replyMarker, resultMarker, attachmentMarker, attachmentData, encodedSource,
 			malformedMarker, overloadMarker, offlineMarker, worker.ID, queued.OperationID} {
 			if strings.Contains(stats, value) {
 				t.Fatal("relay telemetry contained request or response data")

@@ -76,7 +76,7 @@ struct ActivityTag: Equatable {
 }
 
 struct ActivityFailure: Equatable {
-    enum Outcome: Equatable { case blocked, failed }
+    enum Outcome: Equatable { case blocked, failed, interrupted }
 
     let outcome: Outcome
     /// Short plain words for a denial Commander recognises; otherwise the provider's first sentence.
@@ -86,9 +86,19 @@ struct ActivityFailure: Equatable {
     /// The rest of the provider's message, written for the agent. Shown as text only.
     var rest: String? = nil
 
-    var tag: ActivityTag { outcome == .blocked ? .blocked : .failed }
+    var tag: ActivityTag {
+        switch outcome {
+        case .blocked: .blocked
+        case .failed: .failed
+        case .interrupted: ActivityTag(word: "cancelled", tone: .wait)
+        }
+    }
     var meaning: String {
-        outcome == .blocked ? "the provider refused permission; the tool never ran" : "the tool ran and reported an error"
+        switch outcome {
+        case .blocked: "the provider refused permission; the tool never ran"
+        case .failed: "the tool ran and reported an error"
+        case .interrupted: "the session ended before the tool's result was recorded"
+        }
     }
 }
 
@@ -99,7 +109,25 @@ enum ActivityFailureWords {
         ("has been denied because Claude Code is running in don't ask mode", "Claude Code is in don't-ask mode."),
         ("permission does not match the active provider turn", "The approval was for an earlier turn."),
         ("developer holds worker input", "Someone holds input for this worker."),
+        // Section H, failed results by cause. Each phrase is from a real `is_error` result.
+        ("The user doesn't want to proceed with this tool use. The tool use was rejected", "You declined this."),
+        ("Permission for this command was denied by a built-in Claude Code safety check", "A Claude Code safety check denied this."),
+        ("Permission for this action was denied by the Claude Code auto mode classifier. Reason: [",
+         "Claude Code's auto mode denied this."),
     ]
+
+    /// Phrases with a tool name or a path in the middle: both ends must be there, in order.
+    static let framed: [(start: String, end: String, words: String, outcome: ActivityFailure.Outcome)] = [
+        ("PreToolUse:", " hook error: [", "A hook blocked this.", .blocked),
+        ("Permission to use ", " has been denied.", "Permission to use this tool was denied.", .blocked),
+        ("Claude requested permissions to write to ", " but you haven't granted it yet.", "Write permission was not granted.", .blocked),
+        ("[Tool call interrupted: the session ended before this call's result was recorded", "", "Interrupted.", .interrupted),
+    ]
+
+    private static func matches(_ message: String, start: String, end: String) -> Bool {
+        guard let from = message.range(of: start) else { return false }
+        return end.isEmpty || message.range(of: end, range: from.upperBound..<message.endIndex) != nil
+    }
 
     static let noReason = "No reason was given."
 
@@ -119,6 +147,9 @@ enum ActivityFailureWords {
         }
         for entry in table where message.contains(entry.phrase) {
             return ActivityFailure(outcome: .blocked, reason: entry.words, exact: first, rest: rest)
+        }
+        for entry in framed where matches(message, start: entry.start, end: entry.end) {
+            return ActivityFailure(outcome: entry.outcome, reason: entry.words, exact: first, rest: rest)
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)
@@ -348,6 +379,10 @@ enum PrettyItem: Identifiable, Equatable {
     case live(ActivityStep)
     /// A call a permission request holds. Never collapsed.
     case approval(ActivityStep)
+    /// A call drawn as a card: a pending question's choices, a proposed plan, a deliverable.
+    case card(PrettyToolCard)
+    /// The end-of-turn line, from the turn's `turn_end` records. Never folded.
+    case turnEnd(PrettyTurnEnd)
 
     var id: String {
         switch self {
@@ -357,6 +392,8 @@ enum PrettyItem: Identifiable, Equatable {
         case .plan(let plan): plan.id
         case .live(let step): step.id + "#live"
         case .approval(let step): step.id + "#approval"
+        case .card(let card): card.id
+        case .turnEnd(let end): end.id + "#turn-end"
         }
     }
 
@@ -367,6 +404,8 @@ enum PrettyItem: Identifiable, Equatable {
         case .report(let report): [report.call.entry]
         case .plan(let plan): plan.entries
         case .live(let step), .approval(let step): step.entries
+        case .card(let card): card.step.entries
+        case .turnEnd: []
         }
     }
 }
@@ -655,6 +694,7 @@ enum ActivityWords {
 
     static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
                          record: ToolDetailRecord? = nil) -> ActivityWording {
+        if let special = special(name: name, detail: detail, summary: summary, record: record) { return special }
         let kind = providerKind(name)
         let fact = fact(name, detail: detail, summary: summary, record: record)
         func file(_ running: String, _ done: String, _ failed: String, fallback: String, key: String,
@@ -721,6 +761,89 @@ enum ActivityWords {
                 running: ActivitySentence(.text("Using "), .mono(bare)), done: ActivitySentence(.text("Used "), .mono(bare)),
                 fallback: ActivitySentence(.text("Used "), .mono(bare)), failed: ActivitySentence(.mono(bare), .text(" failed")),
                 phrase: ActivityPhrase(key: "other", one: "used another tool", many: "used %d other tools"), help: name)
+        }
+    }
+
+    /// The provider's own tools that are not a file, search, command or web call (section H).
+    /// Matched on the tool's whole name, so an extension's `wait` is not read as the provider's.
+    /// Each sentence names a value only when the stored call holds it.
+    static func special(name: String, detail: String?, summary: ToolDetailSummary?, record: ToolDetailRecord?) -> ActivityWording? {
+        func make(_ running: ActivitySentence, _ done: ActivitySentence, _ failed: String, key: String, one: String,
+                  many: String? = nil, tag: ActivityTag? = nil) -> ActivityWording {
+            ActivityWording(running: running, done: done, fallback: done, failed: ActivitySentence(failed),
+                            phrase: ActivityPhrase(key: key, one: one, many: many ?? one), tag: tag, help: name)
+        }
+        func field(_ key: String) -> String? {
+            if let value = summary?.field(key) { return value }
+            return (PrettyToolInput.object(record?.input)?[key] as? String).flatMap { CommanderCall.text(.string($0)) }
+        }
+        let lower = name.lowercased()
+        switch lower {
+        case "toolsearch":
+            return make(ActivitySentence("Loading tools"), ActivitySentence("Loaded tools"), "Couldn't load tools",
+                        key: lower, one: "loaded tools")
+        case "sendmessage", "send_message":
+            let to = field("to")
+            return make(ActivitySentence("Sending a message"),
+                        to.map { ActivitySentence(.text("Sent "), .strong($0), .text(" a message")) } ?? ActivitySentence("Sent a message"),
+                        "Couldn't send the message", key: "sendmessage", one: "sent a message", many: "sent %d messages")
+        case "agent", "task", "spawn_agent":
+            let description = field("description")
+            return make(ActivitySentence("Starting a child agent"),
+                        ActivitySentence("Started a child agent" + (description.map { ": " + CommanderCall.firstLine($0) } ?? "")),
+                        "Couldn't start a child agent", key: "agent", one: "started a child agent", many: "started %d child agents")
+        case "monitor":
+            let description = field("description")
+            return make(ActivitySentence("Starting to watch"),
+                        ActivitySentence("Started watching" + (description.map { ": " + CommanderCall.firstLine($0) } ?? "")),
+                        "Couldn't start watching", key: lower, one: "started watching", many: "started %d watches",
+                        tag: ActivityTag(word: "accepted"))
+        case "croncreate":
+            let prompt = field("prompt")
+            return make(ActivitySentence("Scheduling"),
+                        ActivitySentence(prompt.map { "Scheduled " + quote($0) } ?? "Scheduled a task"),
+                        "Couldn't schedule the task", key: lower, one: "scheduled a task", many: "scheduled %d tasks",
+                        tag: ActivityTag(word: "accepted"))
+        case "sleep", "wait":
+            return make(ActivitySentence("Waiting"), ActivitySentence("Waited"), "Couldn't wait",
+                        key: "wait", one: "waited", many: "waited %d times")
+        case "exec":
+            let command = (field("command") ?? field("cmd") ?? detail.flatMap(ToolDetailText.subject)).map { middle($0) }
+            return ActivityWording(
+                running: command.map { ActivitySentence(.text("Running "), .mono($0)) } ?? ActivitySentence("Running a command"),
+                done: command.map { ActivitySentence(.text("Ran "), .mono($0)) } ?? ActivitySentence("Ran a command"),
+                fallback: ActivitySentence("Ran a command"),
+                failed: command.map { ActivitySentence(.mono($0), .text(" failed")) } ?? ActivitySentence("A command failed"),
+                phrase: ActivityPhrase(key: "shell", one: "ran a command", many: "ran %d commands"), help: name)
+        case "js":
+            return make(ActivitySentence("Running a script"), ActivitySentence("Ran a script"), "A script failed",
+                        key: lower, one: "ran a script", many: "ran %d scripts")
+        case "askuserquestion", "request_user_input":
+            let question = PrettyChoiceQuestion.questions(input: record?.input).first?.question ?? field("question")
+            return make(ActivitySentence("Asking"),
+                        ActivitySentence(question.map { "Asked: " + quote($0) } ?? "Asked a question"),
+                        "Couldn't ask", key: "askuser", one: "asked a question", many: "asked %d questions")
+        case "exitplanmode":
+            return make(ActivitySentence("Proposing a plan"), ActivitySentence("Proposed a plan"), "Couldn't propose a plan",
+                        key: lower, one: "proposed a plan", many: "proposed %d plans")
+        case "artifact":
+            // The same tool reads and lists; only a publish is worded here.
+            guard field("action") == "publish" else { return nil }
+            let title = field("title")
+            return make(ActivitySentence("Publishing" + (title.map { " " + $0 } ?? " an artifact")),
+                        title.map { ActivitySentence(.text("Published "), .strong($0)) } ?? ActivitySentence("Published an artifact"),
+                        "Couldn't publish" + (title.map { " " + $0 } ?? " the artifact"),
+                        key: lower, one: "published an artifact", many: "published %d artifacts")
+        case "senduserfile":
+            let files = PrettyDeliverable(name: name, input: record?.input, summary: summary, result: nil).files
+            let named: ActivitySentence? = files.first.map {
+                ActivitySentence(parts: [.text("Sent you "), .strong($0.name)]
+                                    + (files.count > 1 ? [.text(" and " + count(files.count - 1, "more file"))] : []))
+            }
+            return make(ActivitySentence("Sending you a file"), named ?? ActivitySentence("Sent you a file"),
+                        "Couldn't send the file", key: lower, one: "sent you a file", many: "sent you %d files")
+        default:
+            return nil
         }
     }
 
@@ -1016,7 +1139,14 @@ enum ActivityConversation {
                         ?? PlanItem.items(detail.flatMap { OrderedJSON.read($0)?.value })
                     plan(entry, items: items, count: nil)
                 } else if let step = ActivitySteps.step(tool: entry, awaitingToolID: awaitingToolID, facts: facts) {
-                    route(step)
+                    if CommanderTool(name: name) == nil, step.state != .awaitingApproval,
+                       let card = PrettyToolCard.kind(name: name, result: result, summary: facts.summary(entry.detailKey)) {
+                        // A result for the reader, a proposed plan, a waiting question: in the open.
+                        flush()
+                        out.append(.card(PrettyToolCard(kind: card, step: step)))
+                    } else {
+                        route(step)
+                    }
                 }
             case .output:
                 if let step = ActivitySteps.step(orphan: entry, facts: facts) { route(step) }
