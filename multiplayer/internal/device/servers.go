@@ -607,9 +607,6 @@ func (m *Manager) serverVerb(ctx context.Context, verb string, in serverInput) (
 	return nil, fmt.Errorf("unknown server operation")
 }
 
-// agentFor picks the server a request names, or the only server.
-func (m *Manager) agentFor(id string) (*Agent, error) { return m.agentUse(id, true) }
-
 func (m *Manager) agentUse(id string, bump bool) (*Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -647,9 +644,9 @@ func (m *Manager) agentUseLocked(id string, bump bool) (*Agent, error) {
 // coordinatorAgent picks the named server or the first signed-in server in
 // tray order. Without a signed-in server, return only a sanitized activation
 // status. The coordinator handler verifies the caller before returning it.
-func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
+func (m *Manager) coordinatorAgent(id string, bump bool) (*Agent, error) {
 	if id != "" {
-		return m.agentFor(id)
+		return m.agentUse(id, bump)
 	}
 
 	m.mu.Lock()
@@ -658,7 +655,7 @@ func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 	for _, s := range m.orderedServersLocked() {
 		if m.agents[s.ID] != nil {
 			if m.summary(s).SignedIn {
-				return m.agentUseLocked(s.ID, true)
+				return m.agentUseLocked(s.ID, bump)
 			}
 			continue
 		}
@@ -800,7 +797,7 @@ func (m *Manager) Handler() http.Handler {
 		a.Handler().ServeHTTP(w, r)
 	})
 	mux.HandleFunc("POST /coordinator/{verb}", func(w http.ResponseWriter, r *http.Request) {
-		a, e := m.coordinatorAgent(r.Header.Get("X-Commander-Server"))
+		a, e := m.coordinatorAgent(r.Header.Get("X-Commander-Server"), r.PathValue("verb") != "inbox")
 		if e != nil {
 			var starting *serverActivationStatus
 			if errors.As(e, &starting) {

@@ -291,6 +291,8 @@ For an open local Claude turn, Commander persists the expected turn ID with work
 
 The coordinator MCP adapter forwards each network request to the private device daemon with its existing actor credential and run and worker IDs. The Commander service authenticates that token and verifies live coordinator ownership before the daemon uses the friend grant. A role declared by a harness cannot authorize a remote action.
 
+Inbox reads use the same relay selection and proof as other coordinator requests. Background polls leave the relay’s last-used timestamp and saved server list untouched, so polling never changes the order used for default relay selection.
+
 An enrolled coordinator can offer the independent, read-only `app.build` grant. The existing signed and addressed device envelope binds the observation to one recipient and operation. The requester retains the nonce and issue time alongside the encrypted submission. It only projects a verified result while that challenge is fresh. Reusing an operation retrieves its original receipt and does not take a new sample.
 
 The device’s owner tray combines its live coordinator binding with the relay resource record when showing build-verification options. An explicit grant reconciles a missing advertised build action on that same owned resource before the existing grant write, carrying forward the relay’s metadata and actions. Peer discovery continues to derive executable actions from grants. [Pilot build verification](MULTIPLAYER-PILOT.md#check-the-running-app-build)
