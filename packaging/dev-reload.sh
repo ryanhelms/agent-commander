@@ -61,7 +61,7 @@ restart_relay() {
         say "Restarting the host-mode relay ($RELAY_LABEL)"
         launchctl kickstart -k "$domain/$RELAY_LABEL"
         local program
-        program="$(launchctl print "$domain/$RELAY_LABEL" 2>/dev/null | awk '/^[[:space:]]*program = /{print $3; exit}')"
+        program="$(launchctl print "$domain/$RELAY_LABEL" 2>/dev/null | awk '/^[[:space:]]*program = /{sub(/^[[:space:]]*program = /, ""); print; exit}')"
         if [ -n "$program" ] && [ "$program" != "$APP/Contents/MacOS/commander-relay" ]; then
             say "Note: the relay runs $program, not this checkout's build."
             say "Run '$APP/Contents/MacOS/commander-relay host install' to point it here."
