@@ -58,7 +58,7 @@ func (s *Server) revokeEnrollment(ctx context.Context, tx pgx.Tx, device, requir
 	if err != nil || revoked {
 		return owner, false, err
 	}
-	_, err = tx.Exec(ctx, "UPDATE mp_auth_devices SET revoked=true,access_hash=NULL,refresh_hash=NULL WHERE device=$1", device)
+	_, err = tx.Exec(ctx, "UPDATE mp_auth_devices SET revoked=true,access_hash=NULL,refresh_hash=NULL,prev_refresh_hash=NULL WHERE device=$1", device)
 	if err == nil && s.revokeWork != nil {
 		err = s.revokeWork(ctx, tx, device)
 	}
@@ -89,7 +89,7 @@ func (s *Server) setSuspended(suspend bool) adminOperation {
 		kind := "member.unsuspended"
 		if suspend {
 			kind = "member.suspended"
-			if _, err := tx.Exec(ctx, "UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL WHERE user_id=$1", user); err != nil {
+			if _, err := tx.Exec(ctx, "UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL,prev_refresh_hash=NULL WHERE user_id=$1", user); err != nil {
 				return err
 			}
 			if err := control.SuspendMemberWork(ctx, tx, user); err != nil {

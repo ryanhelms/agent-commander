@@ -365,8 +365,26 @@ func TestDurableEnrollmentRefreshAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The successor has not been used yet, so the previous token still
+	// recovers a session whose response was lost. Its result replaces the
+	// lost one; using it retires the previous token.
+	lost := session
+	session, err = c.Refresh(ctx, old.RefreshToken)
+	if err != nil {
+		t.Fatalf("previous refresh token before successor use: %v", err)
+	}
+	if _, err = c.Lookup(ctx, lost.AccessToken, session.Device); err == nil {
+		t.Fatal("lost access remained valid after recovery")
+	}
+	if _, err = c.Refresh(ctx, lost.RefreshToken); err == nil {
+		t.Fatal("lost successor was accepted after recovery")
+	}
+	session, err = c.Refresh(ctx, session.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err = c.Refresh(ctx, old.RefreshToken); err == nil {
-		t.Fatal("refresh reused")
+		t.Fatal("refresh reused after its successor was used")
 	}
 	if _, err = c.Lookup(ctx, old.AccessToken, session.Device); err == nil {
 		t.Fatal("superseded access remained valid")

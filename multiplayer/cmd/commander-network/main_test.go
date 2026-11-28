@@ -100,3 +100,37 @@ func TestDaemonOwnershipBeforeDeviceInitialization(t *testing.T) {
 		t.Fatalf("live socket replaced: %v", err)
 	}
 }
+
+func TestServeOutputIsPrivateAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	f, err := serveOutput(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("panic: first\n")
+	f.Close()
+	name := filepath.Join(dir, "logs", "serve.stderr.log")
+	if st, err := os.Stat(name); err != nil || st.Mode().Perm() != 0600 {
+		t.Fatalf("stderr file mode: %v", err)
+	}
+	if st, err := os.Stat(filepath.Join(dir, "logs")); err != nil || st.Mode().Perm() != 0700 {
+		t.Fatalf("logs dir mode: %v", err)
+	}
+	if f, err = serveOutput(dir); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if data, _ := os.ReadFile(name); string(data) != "panic: first\n" {
+		t.Fatalf("output not appended: %q", data)
+	}
+	if err = os.WriteFile(name, make([]byte, 6<<20), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if f, err = serveOutput(dir); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if st, _ := os.Stat(name); st.Size() != 0 {
+		t.Fatalf("oversized output kept %d bytes", st.Size())
+	}
+}
