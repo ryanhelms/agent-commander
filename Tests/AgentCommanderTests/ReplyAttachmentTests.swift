@@ -455,6 +455,21 @@ private actor Reads {
         // The size and type are unchanged, and a click still has the address as sent.
         #expect(link.sizeText == "72 bytes" && link.caption(hidesSecrets: true).hasSuffix("text/plain"))
         #expect(link.openable?.absoluteString == link.uri)
+        #expect(resource.caption(hidesSecrets: true).hasSuffix("text/plain"))
+
+        // A type is the provider's free text: a keyed parameter of it is hidden the same way.
+        let keyed = "text/plain; token=\(placeholder)"
+        let typedLink = ReplyAttachment.Link(name: "plan.txt", uri: "https://example.com/plan.txt", title: "Plan", mimeType: keyed)
+        let typedResource = ReplyAttachment.Resource(uri: "https://example.com/notes.txt", mimeType: keyed, text: "x")
+        #expect(typedLink.caption() == "Plan, " + keyed)
+        #expect(typedResource.caption() == "https://example.com/notes.txt, " + keyed)
+        #expect(!typedLink.caption(hidesSecrets: true).contains(placeholder))
+        #expect(!typedResource.caption(hidesSecrets: true).contains(placeholder))
+        #expect(typedLink.caption(hidesSecrets: true).hasPrefix("Plan, text/plain; token="))
+        #expect(typedResource.caption(hidesSecrets: true).hasPrefix("https://example.com/notes.txt, text/plain; token="))
+        // An ordinary type reads the same with the setting on or off.
+        let plain = ReplyAttachment.Link(name: "plan.txt", uri: "https://example.com/plan.txt", mimeType: "text/plain; charset=utf-8")
+        #expect(plain.caption(hidesSecrets: true) == "text/plain; charset=utf-8" && plain.caption() == "text/plain; charset=utf-8")
     }
 
     @Test @MainActor func aFailedReadIsNotCountedAsMissing() async throws {

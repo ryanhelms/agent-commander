@@ -152,7 +152,8 @@ extension ReplyAttachment.Link {
     func caption(hidesSecrets: Bool = false) -> String {
         var parts: [String] = []
         if let title, title != name { parts.append(ReplyAttachment.shown(title, hidesSecrets: hidesSecrets)) }
-        if let mimeType { parts.append(mimeType) }
+        // A type is the provider's free text too: a parameter of it may hold a value.
+        if let mimeType { parts.append(ReplyAttachment.shown(mimeType, hidesSecrets: hidesSecrets)) }
         return parts.joined(separator: ", ")
     }
 }
@@ -160,7 +161,8 @@ extension ReplyAttachment.Link {
 extension ReplyAttachment.Resource {
     /// The line above the quoted text: where it is from, and its type.
     func caption(hidesSecrets: Bool = false) -> String {
-        [ReplyAttachment.shown(uri, hidesSecrets: hidesSecrets), mimeType].compactMap { $0 }.joined(separator: ", ")
+        [uri, mimeType].compactMap { $0.map { ReplyAttachment.shown($0, hidesSecrets: hidesSecrets) } }
+            .joined(separator: ", ")
     }
 }
 
