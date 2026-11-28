@@ -21,6 +21,7 @@ BUNDLE_ID="local.agentcommander.cockpit"
 EXECUTABLE="$APP/Contents/MacOS/AgentCommander"
 RELAY_LABEL="local.agentcommander.relay"
 LOG="$ROOT/dist/dev-reload.log"
+NETWORK_RELOAD="$ROOT/dist/dev-reload-network"
 DEBOUNCE="${DEV_RELOAD_DEBOUNCE:-1}"
 
 mkdir -p "$ROOT/dist"
@@ -94,20 +95,10 @@ stop_service() {
     return 1
 }
 
-# Network helpers left behind by the quit app: reparented to launchd and running from an app bundle.
-stop_orphaned_helpers() {
-    local pid
-    for pid in $(pgrep -f 'Contents/MacOS/commander-network' 2>/dev/null || true); do
-        if [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = 1 ]; then
-            say "Stopping a network helper left by the old app (pid $pid)"
-            kill -TERM "$pid" 2>/dev/null || true
-        fi
-    done
-}
-
 # Builds everything the bundle needs without touching the bundle, so the app can keep running.
 prebuild() {
-    "$MAKE" cli network relay postgres CONFIG="$CONFIG"
+    "$MAKE" cli network relay postgres CONFIG="$CONFIG" || return
+    go build -o "$NETWORK_RELOAD" ./packaging/devreloadnetwork || return
     swift build -c "$CONFIG" --product AgentCommander
 }
 
@@ -127,8 +118,12 @@ reload() {
         return 1
     fi
 
-    quit_app
-    stop_orphaned_helpers
+    quit_app || return
+    if ! "$NETWORK_RELOAD" stop 2>&1 | tee -a "$LOG"; then
+        say "The old network helper could not be stopped safely. Agent Commander was quit. Details: $LOG"
+        notify "Network helper stop failed" "Inspect the normal owner socket before retrying. See dist/dev-reload.log."
+        return 1
+    fi
 
     # Incremental: the compiled products are fresh, so this copies them into the bundle and signs it.
     if ! "$MAKE" app CONFIG="$CONFIG" 2>&1 | tee -a "$LOG"; then
@@ -147,9 +142,18 @@ reload() {
     if [ "$relay" = 1 ]; then restart_relay 2>&1 | tee -a "$LOG" || say "The relay restart failed. Details: $LOG"; fi
 
     say "Opening $APP"
-    open "$APP"
+    if ! open "$APP" 2>&1 | tee -a "$LOG"; then
+        say "Launch Services could not open the app. Details: $LOG"
+        notify "Launch failed" "The new build did not start. See dist/dev-reload.log."
+        return 1
+    fi
     for _ in $(seq 1 50); do
         if pgrep -f "$EXECUTABLE" >/dev/null 2>&1; then
+            if ! "$NETWORK_RELOAD" ready "$APP/Contents/MacOS/commander-network" 2>&1 | tee -a "$LOG"; then
+                say "The app opened but network helper replacement could not be verified. Details: $LOG"
+                notify "Network helper launch failed" "The app opened. Inspect the network helper in dist/dev-reload.log."
+                return 1
+            fi
             local took=$(( $(date +%s) - started ))
             say "Reloaded in ${took}s"
             echo "=== reloaded in ${took}s" >>"$LOG"

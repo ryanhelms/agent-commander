@@ -261,6 +261,8 @@ Ordinary sign-out retires the device's lease in the credential transaction and m
 
 A saved multiplayer relay activates independently of the local tray API and other relays. Its current activation owns credential initialization and any subsequent connection loops. A retired activation keeps its slot until the OS operation returns, so an edit cannot overlap two Keychain operations for the same relay. The list and scoped status project the waiting state from that activation. An operation refused during the wait has no pending work to replay.
 
+Local dev reload identifies the normal owner network socket independently of whether its helper can answer HTTP. It verifies the kernel's socket owner, executable path and process start time before each signal. A helper outside a registered checkout, an ambiguous socket or a changed owner stops the reload. After a bounded graceful stop, only the same verified owner is eligible for escalation. Reload succeeds when the newly bundled helper owns the socket and answers the server-list request. An empty list and a relay waiting for Keychain are valid replies. The helper's replacement result and relay authorization are reported independently.
+
 ## Native terminal observation
 
 The local provider acts as an Adapter between a Commander worker ID and its existing tmux session. The owner API resolves a selected worker on demand. After resolution, the bundled CLI attaches a read-only tmux client on SwiftTerm’s PTY with its size ignored. Closing the viewer disconnects that client. The runner retains the session, input ownership, and provider-native history.
