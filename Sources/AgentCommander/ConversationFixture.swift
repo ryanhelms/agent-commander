@@ -92,7 +92,7 @@ enum ConversationFixture {
 /// on the wall, the focused worker and the PiP without a service. Off unless asked for, beside
 /// `AGENT_COMMANDER_PREVIEW_DISPLAY`:
 ///
-///   AGENT_COMMANDER_PREVIEW_COMPACTION=1   append a notice and four compactions to every sample
+///   AGENT_COMMANDER_PREVIEW_COMPACTION=1   append a warning notice and four compactions to every sample
 ///                                          conversation: finished with a summary, finished with
 ///                                          none, failed with an error, and still running
 ///
@@ -136,7 +136,8 @@ enum CompactionFixture {
     private static let template = #"""
     [
       {"id": "WID:10", "role": "system", "content": "[ACP notice] Context is almost full",
-       "metadata": {"acp": {"source": "live", "cursor": "WID-notice-1", "turnId": "op-9", "kind": "notice"}}},
+       "metadata": {"acp": {"source": "live", "cursor": "WID-notice-1", "turnId": "op-9", "kind": "notice",
+                            "noticeSeverity": "warning"}}},
       {"id": "WID:11", "role": "system", "content": "Provider context compaction completed",
        "metadata": {"acp": {"source": "live", "cursor": "WID-cmp-1", "turnId": "op-9", "kind": "compaction_update",
                             "messageId": "ID(cmp-1)", "messageOp": "replace"}}},

@@ -1196,8 +1196,9 @@ enum ActivitySteps {
 enum ActivityConversation {
     /// The Pretty conversation, in order. A run of consecutive finished calls and quiet lines
     /// inside one agent turn is one group. Agent prose, a prompt, a reported result, a pending
-    /// request, a plan, a compaction, an attention-tone event and the open call each end it. A
-    /// failed call is drawn under the group it follows and ends it too.
+    /// request, a plan, a compaction, an attention-tone event, a notice with no stated level and
+    /// the open call each end it. A failed call is drawn under the group it follows and ends it
+    /// too.
     static func items(_ source: [ConversationItem], awaitingToolID: String? = nil, facts: ActivityFacts = .none,
                       reportsAsCoordinator: Bool = false) -> [PrettyItem] {
         var out: [PrettyItem] = []
@@ -1306,9 +1307,11 @@ enum ActivityConversation {
                 } else if isPlanEvent(entry) {
                     // The record kept from this very event, by its console sequence.
                     plan(entry, items: facts.plan(for: entry)?.plan, count: entry.origin?.itemCount, replaces: true)
-                } else if let event = ActivityEvent(entry: entry), event.tone == .quiet {
+                } else if let event = ActivityEvent(entry: entry), event.folds {
                     add(ActivitySteps.step(quiet: entry, event: event))
                 } else {
+                    // An attention event, a notice with no stated level, or a role note: in the
+                    // open, where it arrived. It ends the group.
                     flush()
                     out.append(.entry(entry))
                 }
@@ -1363,7 +1366,7 @@ enum ActivityConversation {
     ///   it as it is: replies, the report, the turn's end, a card, the live line.
     /// - Before that group: every failure of the turn, as failure lines without their group's
     ///   finished calls; the turn's latest report, when none follows; a pending question's line
-    ///   and a live line.
+    ///   and a live line; a provider notice that does not fold. Each keeps its place in order.
     /// - From any turn: a call awaiting approval, and every item holding an entry in `keeping`
     ///   (the request's own workflow), so the request is never cut off.
     ///
@@ -1418,7 +1421,11 @@ enum ActivityConversation {
                 if compaction.mark.status != .completed { shown.append(item) }
             case .report:
                 if index == earlierReport { shown.append(item) }
-            case .entry, .plan, .approval, .card, .turnEnd, .formOutcome:
+            case .entry(let entry):
+                // A provider notice that does not fold (a warning, an error, or one with no
+                // stated level) stays, where it arrived. Every other entry is left out.
+                if entry.origin?.notice != nil, ActivityEvent(entry: entry)?.folds == false { shown.append(item) }
+            case .plan, .approval, .card, .turnEnd, .formOutcome:
                 break
             }
         }

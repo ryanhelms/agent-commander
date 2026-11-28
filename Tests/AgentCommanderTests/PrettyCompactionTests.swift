@@ -28,8 +28,9 @@ private func compaction(_ sequence: Int, id: String = "cmp-a", status: String?, 
     return try message(#"{"id":"w:\#(sequence)","role":"system","content":"\#(text)","metadata":{"acp":{\#(acp)}}}"#)
 }
 
+/// A notice the provider sent as `info`, so it folds beside a compaction as a session update.
 private func notice(_ sequence: Int) throws -> AGUIMessage {
-    try message(#"{"id":"w:\#(sequence)","role":"system","content":"[ACP notice] Context is almost full","metadata":{"acp":{"source":"live","cursor":"c-\#(sequence)","turnId":"op-7","kind":"notice"}}}"#)
+    try message(#"{"id":"w:\#(sequence)","role":"system","content":"[ACP notice] Context is almost full","metadata":{"acp":{"source":"live","cursor":"c-\#(sequence)","turnId":"op-7","kind":"notice","noticeSeverity":"info"}}}"#)
 }
 
 private func prose(_ sequence: Int, _ text: String, role: String = "assistant") throws -> AGUIMessage {
@@ -94,7 +95,7 @@ private actor Gate {
 }
 
 @Suite struct PrettyCompactionTests {
-    /// The fixture of the parent issue: a warning notice, then one compaction's updates, between
+    /// The fixture of the parent issue: a notice, then one compaction's updates, between
     /// two distinct replies.
     private func run(status: String = "completed") throws -> [AGUIMessage] {
         [
@@ -476,7 +477,8 @@ private actor Gate {
         let items = pretty(CompactionFixture.messages(workerID: "W-1"))
         let rows = compactions(items)
         #expect(rows.map(\.mark.status) == [.completed, .completed, .failed, .inProgress])
-        #expect(items.first?.id == "W-1:10#group")
+        // The fixture's notice is a warning: in the open, before the first compaction.
+        #expect(items.first?.id == "W-1:10")
 
         for row in rows { await CompactionFixture.store.load(worker: "W-1", mark: row.mark) }
         let records = rows.map { CompactionFixture.store.record(worker: "W-1", mark: $0.mark) }
