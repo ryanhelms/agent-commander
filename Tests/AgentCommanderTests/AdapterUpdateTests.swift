@@ -68,14 +68,18 @@ private struct Dropped: Error {}
 }
 
 /// Expects the next recorded event to be `expected`. A failure reports the progress made before it.
-@MainActor private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ expected: Exchange.Event,
-                                   in exchange: Exchange, feed: AdapterUpdateFeed,
-                                   sourceLocation: SourceLocation = #_sourceLocation) async {
-    let event = await events.next(isolation: MainActor.shared)
+/// The wait runs wherever the caller runs: on the main actor for a main-actor test, on no actor
+/// for a test that is off it. Only a failure goes to the main actor, to read the feed's state.
+private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ expected: Exchange.Event,
+                        in exchange: Exchange, feed: AdapterUpdateFeed,
+                        isolation: isolated (any Actor)? = #isolation,
+                        sourceLocation: SourceLocation = #_sourceLocation) async {
+    let event = await events.next(isolation: isolation)
+    guard event != expected else { return }
     // No event at all means the wait ended with the task: the time limit cancelled the test.
     let arrival = event == nil ? "no event arrived before the test task was cancelled" : "a different event arrived"
-    #expect(event == expected, "waiting for \(expected): \(arrival); \(progress(exchange, feed))",
-            sourceLocation: sourceLocation)
+    let seen = await progress(exchange, feed)
+    #expect(event == expected, "waiting for \(expected): \(arrival); \(seen)", sourceLocation: sourceLocation)
 }
 
 @Suite struct AdapterUpdateSnapshotTests {
@@ -241,19 +245,26 @@ private struct Dropped: Error {}
         #expect(exchange.live == 0)
     }
 
-    @Test(.timeLimit(.minutes(1))) func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async {
+    /// Issue #150 candidate: this body runs off the main actor, so reading an event, checking the
+    /// count and cancelling a call do not each wait for a turn on the main actor behind the calls
+    /// under test. The feed is still created, followed and observed on the main actor.
+    @Test(.timeLimit(.minutes(1))) @concurrent
+    func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async {
         // Issue #150: this test alone prints a timed trace, so a run that only hits the time limit
         // still shows its last lifecycle event. "exchange" lines are events as the exchange
         // recorded them; "call" lines are a call's own stages; "pilot" lines are this body's
-        // checkpoints, printed after the awaited step before them has ended.
+        // checkpoints, printed after the awaited step before them has ended. A pilot line does not
+        // read the feed, which would take a main-actor turn; a failed wait still reports its link.
         let trace = Trace()
         let exchange = Exchange(trace: trace)
         var events = exchange.events.makeAsyncIterator()
-        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
-        func pilot(_ step: String) {
-            trace("pilot", "\(step); link \(feed.link)\(Task.isCancelled ? "; TEST TASK CANCELLED" : "")")
+        let feed = await MainActor.run {
+            AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
         }
-        func follow(_ name: String) -> Task<Void, Never> {
+        func pilot(_ step: String) {
+            trace("pilot", "\(step)\(Task.isCancelled ? "; TEST TASK CANCELLED" : "")")
+        }
+        let follow: @MainActor @Sendable (String) -> Task<Void, Never> = { name in
             Task.immediate { @MainActor in
                 trace("call", "\(name) enters follow")
                 await feed.follow()
@@ -263,9 +274,11 @@ private struct Dropped: Error {}
         }
         pilot("body started")
 
-        let first = follow("first")
-        let second = follow("second")
-        let third = follow("third")
+        // One main-actor turn starts all three. Each starts immediately and runs until it first
+        // waits, so the calls reach the feed in this order with nothing else in between.
+        let (first, second, third) = await MainActor.run {
+            (follow("first"), follow("second"), follow("third"))
+        }
         // A failed wait below must not leave a call following the feed after the test.
         defer { for call in [first, second, third] { call.cancel() } }
         pilot("started first, second, third; awaiting opened(1)")
@@ -296,7 +309,10 @@ private struct Dropped: Error {}
         pilot("awaiting the feed to read the snapshot")
         let read = await until { feed.updates == [fixture, other] }
         pilot("wait for the snapshot ended; read \(read)")
-        #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
+        if !read {
+            let seen = await progress(exchange, feed)
+            #expect(read, "the feed never read the snapshot; \(seen)")
+        }
 
         pilot("cancelling third, the owner")
         third.cancel()
@@ -309,7 +325,7 @@ private struct Dropped: Error {}
 
         // Nothing still holds the feed: a later call connects at once. It is cancelled as soon as
         // its connection opens, before it has read anything.
-        let again = follow("again")
+        let again = await MainActor.run { follow("again") }
         defer { again.cancel() }
         pilot("started again; awaiting opened(3)")
         await expectNext(&events, .opened(3), in: exchange, feed: feed)
@@ -320,7 +336,11 @@ private struct Dropped: Error {}
         pilot("wait for closed(3) ended")
         await expectNext(&events, .returned("again"), in: exchange, feed: feed)
         pilot("wait for returned(again) ended; body finished")
-        #expect(exchange.live == 0, "\(progress(exchange, feed))")
+        let live = exchange.live
+        if live != 0 {
+            let seen = await progress(exchange, feed)
+            #expect(live == 0, "\(seen)")
+        }
     }
 
     /// The comparison for the cancel straight after `opened` above: here the call has provably
