@@ -758,7 +758,8 @@ struct PrettyConsoleView: View {
                 ToolLocationAction(workerID: consoleID, detailKey: entry.detailKey, location: location, intents: intents,
                                    metrics: metrics)
             }
-            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary,
+                                                            hidesSecrets: details?.hidesSecrets ?? false),
                                metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false,
                                hidesChangeText: details?.hidesSecrets, copy: copy)
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
