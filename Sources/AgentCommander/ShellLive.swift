@@ -179,11 +179,16 @@ enum LiveShell {
     /// The keys held with a mode's number. ⌘1 stays the coordinator's.
     static let modeModifiers: EventModifiers = [.command, .option]
 
-    static func project(_ path: String) -> String { "project:\(path)" }
+    /// Records a folder as a project. It is an action, never the window's place.
+    static let openFolder = "open-folder"
+
+    /// A project's place, by its row's key: the project ID, or the directory of runs that name
+    /// no project (`ProjectEntry.key`).
+    static func project(_ key: String) -> String { "project:\(key)" }
     static func team(_ pending: MultiplayerPending<MultiplayerWorkspace>) -> String { "team:\(pending.id)" }
 
-    /// The repository path of a project place.
-    static func projectPath(of placeID: String) -> String? {
+    /// The key of a project place.
+    static func projectKey(of placeID: String) -> String? {
         placeID.hasPrefix("project:") ? String(placeID.dropFirst("project:".count)) : nil
     }
 
@@ -194,32 +199,40 @@ enum LiveShell {
     // MARK: Navigation
 
     /// The whole navigation of the live window.
-    ///   Agents    Needs you, Runs, New run, Hosts, then one place per project
+    ///   Agents    Needs you, Runs, New run, Open folder, Hosts, then one place per project
     ///   Network   Servers, Directory, Approvals, Hand-offs, Threads, Audit, Fan-out, Shared
     ///   People    People
     ///   Teams     one place per workspace, then the team tools: Groups, Hosts, Knowledge, Directory
     ///             and, for an admin, Admin
     ///   Harnesses Needs sign-in (while a harness needs it), Installed, Available
     ///   Settings  Settings, at the foot of the rail
-    /// `place` is where the window is; on the wall the selected row is the open run's project, and
-    /// the new-run form selects New run.
+    /// `place` is where the window is. A project's place shows its overview. On the wall the
+    /// selected row is the open run's project, and the new-run form selects New run.
     /// `serviceHost` is the headless host in use, shown as the Hosts row's figure; `showsHosts`
     /// lists the Hosts place.
+    /// `projects` is the Projects group (`ProjectEntry.list`); without it the group is the
+    /// directories the runs name. `openRunID` finds the open run's project by the run itself,
+    /// before its directory. `canOpenFolder` lists Open folder.
     static func navigation(runs: [RunSummary], openRunPath: String?, composing: Bool, place: String,
                            needsYou: Int, network: ShellNetwork, isOnline: Bool = true,
                            showsHosts: Bool = false, serviceHost: String? = nil,
                            harnesses: HarnessTally = HarnessTally(),
-                           plugins: PluginTally = PluginTally()) -> CommanderNavigation {
+                           plugins: PluginTally = PluginTally(),
+                           projects entries: [ProjectEntry]? = nil, openRunID: String? = nil,
+                           canOpenFolder: Bool = false) -> CommanderNavigation {
         func row(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                  hot: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
                            isHot: hot && count > 0, isDetail: true, countNoun: noun)
         }
-        var seen = Set<String>()
-        let projects = runs.filter { seen.insert($0.path).inserted }.map { run in
-            CommanderPlace(id: project(run.path), title: run.project,
-                           mark: .letter(String(run.project.prefix(1)).uppercased()), canShare: true)
+        let entries = entries ?? ProjectEntry.list(catalog: [], runs: runs)
+        let projects = entries.map { entry in
+            CommanderPlace(id: project(entry.key), title: entry.name,
+                           mark: .letter(String(entry.name.prefix(1)).uppercased()), canShare: true)
         }
+        // The open run's project: the row that holds the run, else the row for its directory.
+        let openProject = openRunID.flatMap { id in entries.first { $0.runIDs.contains(id) } }
+            ?? openRunPath.flatMap { path in entries.first { $0.path == path } }
         let teams = network.workspaces.map { pending in
             CommanderPlace(id: team(pending), title: pending.item.name.multiplayerDisplay,
                            mark: .letter(String(pending.item.name.prefix(1)).uppercased()),
@@ -241,8 +254,11 @@ enum LiveShell {
             CommanderPlace(id: wall, title: "Runs", mark: .symbol("rectangle.split.2x1"), count: runs.count, countNoun: "runs"),
             // A run can't start while the local service is offline, so the row is off like ⌘N.
             CommanderPlace(id: newRun, title: "New run", mark: .symbol("plus"), isDisabled: !isOnline)
-        ] + (showsHosts ? [CommanderPlace(id: hosts, title: "Hosts", mark: .symbol("desktopcomputer"),
-                                          figure: serviceHost)] : []) + projects + networkPlaces + [
+        ] + (canOpenFolder ? [
+            // A folder can't be recorded while the service is offline either.
+            CommanderPlace(id: openFolder, title: "Open folder…", mark: .symbol("folder.badge.plus"), isDisabled: !isOnline)
+        ] : []) + (showsHosts ? [CommanderPlace(id: hosts, title: "Hosts", mark: .symbol("desktopcomputer"),
+                                                figure: serviceHost)] : []) + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
         ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin, requests: network.membershipRequests)
             + HarnessPlace.places(harnesses)
@@ -252,7 +268,8 @@ enum LiveShell {
         ]
 
         var agentSections = [CommanderPlaceGroup(id: "workspace", title: "Workspace",
-                                                 placeIDs: [Self.needsYou, wall, newRun] + (showsHosts ? [hosts] : []))]
+                                                 placeIDs: [Self.needsYou, wall, newRun] + (canOpenFolder ? [openFolder] : [])
+                                                     + (showsHosts ? [hosts] : []))]
         if !projects.isEmpty {
             agentSections.append(CommanderPlaceGroup(id: "projects", title: "Projects", placeIDs: projects.map(\.id)))
         }
@@ -286,8 +303,9 @@ enum LiveShell {
         } else if PluginPlace.hasPage(place), !known.contains(place) {
             // Problems leaves the list once every plugin passes, and a panel when its plugin is removed.
             selection = PluginPlace.installed
-        } else if place == wall || !known.contains(place) {
-            selection = openRunPath.map(project).flatMap { known.contains($0) ? $0 : nil } ?? wall
+        } else if place == wall || place == openFolder || !known.contains(place) {
+            // Open folder is an action, so it is never where the window is.
+            selection = openProject.map { project($0.key) } ?? wall
         } else {
             selection = place
         }
@@ -321,9 +339,18 @@ enum LiveShell {
          CommanderPlaceGroup(id: "team-tools", title: "Team tools", placeIDs: teamTools(isAdmin: isAdmin).map(\.id))]
     }
 
-    /// True while the selected row means the coordinator wall, the new-run form or the empty state.
+    /// True while the selected row means the cockpit's own canvas: the coordinator wall, the
+    /// new-run form, the empty state, or a project, whose row is selected both on its overview
+    /// and on the wall of one of its runs.
     static func showsWall(_ selection: String) -> Bool {
-        selection == wall || selection == newRun || projectPath(of: selection) != nil
+        selection == wall || selection == newRun || projectKey(of: selection) != nil
+    }
+
+    /// The project whose overview the window shows: the place names it and it is still listed.
+    /// Nil on the wall, in the new-run form and once the project is gone.
+    static func shownProject(place: String, composing: Bool, in projects: [ProjectEntry]) -> ProjectEntry? {
+        guard !composing, let key = projectKey(of: place) else { return nil }
+        return projects.first { $0.key == key }
     }
 
     /// What a place without a page yet says.

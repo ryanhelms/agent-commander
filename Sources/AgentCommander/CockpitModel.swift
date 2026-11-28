@@ -22,6 +22,23 @@ final class CockpitModel {
     private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
     private var receivedStreamState = false
     private var usingLegacyService = false
+    /// The folders the service in use has recorded as projects, in its order. Empty until the
+    /// catalog is read, and for a service without one.
+    private(set) var projects: [Project] = []
+    /// Whether the service in use has a project catalog. An older one has none, and the window
+    /// then lists the directories its runs name.
+    private(set) var projectCatalog = ProjectCatalogState.unknown
+    /// A folder is being recorded as a project.
+    private(set) var isOpeningProject = false
+    /// One catalog read at a time; a request that arrives meanwhile is read once more after it.
+    @ObservationIgnored private var readingProjects = false
+    @ObservationIgnored private var projectsReadAgain = false
+    /// Project IDs a run named that the catalog didn't list when it was last read for them. Each
+    /// asks for one read, so a run of a project that is gone never reads in a loop.
+    @ObservationIgnored private var unknownProjectsAsked = Set<String>()
+    @ObservationIgnored private var lastProjectActivationRead = Date.distantPast
+    /// Reads the catalog. A test supplies its own.
+    @ObservationIgnored var readProjects: (@Sendable () async throws -> [Project])?
     /// Source records for the one console being inspected. A read runs beside the client's other
     /// requests, so a slow provider history never waits in front of a reply or a control change.
     let source: ConsoleSourceModel
@@ -88,6 +105,7 @@ final class CockpitModel {
         source = ConsoleSourceModel { workerID, kind, cursor in
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
+        readProjects = { try await reader.projects() }
         // An accepted form reply has a stored record and may bring no console event. The service
         // stores it before it answers, so one read now holds it.
         elicitations.formReplied = { [toolDetails] workerID, _ in
@@ -122,6 +140,8 @@ final class CockpitModel {
         serviceGeneration += 1
         connection = .connecting
         receivedStreamState = false
+        // What was recorded while the link was down shows with the first answer.
+        unknownProjectsAsked = []
     }
 
     /// The selected service changed. What the last one sent is dropped, and the window's
@@ -129,6 +149,10 @@ final class CockpitModel {
     private func serviceChanged() {
         serviceGeneration += 1
         runs = []
+        // The last service's projects are not this one's.
+        projects = []
+        projectCatalog = .unknown
+        unknownProjectsAsked = []
         connection = .connecting
         notice = nil
         receivedStreamState = false
@@ -232,12 +256,137 @@ final class CockpitModel {
     }
 
     private func apply(_ latest: [Run]) {
+        // The first answer, and the first after the service was away, reads the catalog again:
+        // a folder opened from Terminal meanwhile is then listed.
+        let cameOnline = connection != .online
         connection = .online
         // The service answers: read its saved transcript setting before a result is opened.
         if !toolDetails.settingsLoaded { Task { await toolDetails.loadSettingsIfNeeded() } }
         if runs != latest { runs = latest }
         if selected == nil { select(runs.last?.id) }
+        if cameOnline || namesUnknownProject(latest) { Task { await refreshProjects() } }
     }
+
+    // MARK: Projects
+
+    /// True when a run names a project the catalog doesn't list and no read was asked for it yet.
+    /// A run started from Terminal in a new folder is how a project first reaches the window.
+    private func namesUnknownProject(_ latest: [Run]) -> Bool {
+        guard projectCatalog != .unsupported else { return false }
+        let known = Set(projects.map(\.id))
+        let unknown = Set(latest.compactMap(\.projectID)).subtracting(known).subtracting(unknownProjectsAsked)
+        unknownProjectsAsked.formUnion(unknown)
+        return !unknown.isEmpty
+    }
+
+    /// Reads the project catalog of the service in use. A service without the route is noted as
+    /// having no catalog, once, and is not asked again until the service changes. Any other
+    /// failure leaves the last list in place: the run feed says whether the service answers.
+    func refreshProjects() async {
+        guard projectCatalog != .unsupported, let readProjects else { return }
+        guard !readingProjects else { projectsReadAgain = true; return }
+        readingProjects = true
+        defer { readingProjects = false }
+        repeat {
+            projectsReadAgain = false
+            let generation = serviceGeneration
+            do {
+                let latest = try await readProjects()
+                // An answer from the service the window just left is dropped, and the new one is read.
+                guard generation == serviceGeneration else { projectsReadAgain = true; continue }
+                projectCatalog = .supported
+                if projects != latest { projects = latest }
+            } catch let refusal as ServiceStatusError where Self.meansNoCatalog(refusal) {
+                guard generation == serviceGeneration else { projectsReadAgain = true; continue }
+                projectCatalog = .unsupported
+                projects = []
+            } catch {
+                // Offline or a passing error. The list stays as it was last read.
+            }
+        } while projectsReadAgain && projectCatalog != .unsupported
+    }
+
+    /// The service has no such route: it is older than the project catalog.
+    private static func meansNoCatalog(_ refusal: ServiceStatusError) -> Bool {
+        [404, 405, 501].contains(refusal.status)
+    }
+
+    /// The app came forward. A folder may have been opened from Terminal meanwhile, so the catalog
+    /// is read again, at most once in five seconds.
+    func refreshProjectsOnActivation(now: Date = Date()) {
+        guard connection == .online, now.timeIntervalSince(lastProjectActivationRead) >= 5 else { return }
+        lastProjectActivationRead = now
+        Task { await refreshProjects() }
+    }
+
+    /// Records a folder as a project of the service in use. The path is sent as given: on this
+    /// Mac it comes from the folder picker, on a headless host it is the host's own path as typed.
+    /// Returns nil when the service refuses it, with the reason in the notice. An older service
+    /// has no catalog: nil with no notice, and `projectCatalog` says so.
+    func openProject(path: String) async -> Project? {
+        guard !isOpeningProject else { return nil }
+        isOpeningProject = true
+        defer { isOpeningProject = false }
+        let generation = serviceGeneration
+        do {
+            let project = try await api.openProject(path: path)
+            guard generation == serviceGeneration else { return nil }
+            projectCatalog = .supported
+            if let index = projects.firstIndex(where: { $0.id == project.id }) {
+                projects[index] = project
+            } else {
+                projects.append(project)
+            }
+            return project
+        } catch let refusal as ServiceStatusError where Self.meansNoCatalog(refusal) {
+            if generation == serviceGeneration { projectCatalog = .unsupported }
+            return nil
+        } catch {
+            notice = "Open folder: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Whether a link's target is listed by the service in use right now.
+    func lists(_ link: CommanderLink) -> Bool {
+        switch link {
+        case .run(let id): runs.contains { $0.id == id }
+        case .project(let id): projects.contains { $0.id == id }
+        }
+    }
+
+    /// Waits for a link's target to be listed by the service in use: a run that was just started
+    /// reaches the window with its stream, a project with the next catalog read. The service is
+    /// never changed and nothing is started. False once the wait is over: `settle` after the
+    /// service began answering without it, or `limit` in all.
+    func awaitTarget(of link: CommanderLink, settle: Duration = .seconds(6), limit: Duration = .seconds(30),
+                     step: Duration = .milliseconds(400)) async -> Bool {
+        let clock = ContinuousClock()
+        let start = clock.now
+        var onlineSince: ContinuousClock.Instant?
+        while !Task.isCancelled {
+            if lists(link) { return true }
+            if connection == .online {
+                if onlineSince == nil { onlineSince = clock.now }
+                if case .project = link {
+                    guard projectCatalog != .unsupported else { return false }
+                    await refreshProjects()
+                } else if usingLegacyService {
+                    await refresh()
+                }
+                if lists(link) { return true }
+            } else {
+                onlineSince = nil
+            }
+            if let onlineSince, clock.now - onlineSince >= settle { return false }
+            if clock.now - start >= limit { return false }
+            try? await Task.sleep(for: step)
+        }
+        return false
+    }
+
+    /// The service a link's target was looked for on, for a sentence.
+    var serviceName: String { hosts.inUse ?? "this Mac" }
 
     func refresh(allowStart: Bool = false) async {
         let generation = serviceGeneration
@@ -262,6 +411,14 @@ final class CockpitModel {
 
     func create(path: String, task: String, title: String? = nil, operationID: String) async throws {
         let run = try await api.create(path: path, task: task, title: title, operationID: operationID)
+        if !runs.contains(where: { $0.id == run.id }) { runs.append(run) }
+        select(run.id)
+        if usingLegacyService { await refresh() }
+    }
+
+    /// Starts a run in a recorded project. The service takes the folder from its own record.
+    func create(projectID: String, task: String, title: String? = nil, operationID: String) async throws {
+        let run = try await api.create(projectID: projectID, task: task, title: title, operationID: operationID)
         if !runs.contains(where: { $0.id == run.id }) { runs.append(run) }
         select(run.id)
         if usingLegacyService { await refresh() }

@@ -1359,6 +1359,9 @@ struct RunHeader: View {
     let canStop: Bool
     @Binding var showingDetails: Bool
     let showRuns: () -> Void
+    /// Goes back to the run's project. Nil where the window has no project overview, and the
+    /// project's name is then plain text.
+    var showProject: (() -> Void)? = nil
     let stop: () -> Void
     /// Opens the network tray's share sheet for this run's repository.
     var share: (() -> Void)? = nil
@@ -1368,7 +1371,13 @@ struct RunHeader: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
                     Image(systemName: "folder").font(.system(size: 11))
-                    Text(run.project).lineLimit(1)
+                    if let showProject {
+                        Button(run.project, action: showProject).buttonStyle(.plain).lineLimit(1)
+                            .help("Back to \(run.project)")
+                            .accessibilityLabel("Back to project \(run.project)")
+                    } else {
+                        Text(run.project).lineLimit(1)
+                    }
                     Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).opacity(0.7)
                     Button("Runs", action: showRuns).buttonStyle(.plain)
                         .accessibilityLabel("Show projects and runs")

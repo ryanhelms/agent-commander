@@ -8,16 +8,30 @@ import SwiftUI
 //   aside   run preview card: KeyValueRow, HostAvailabilityRow, delegation note
 //   footer  CapsuleButtonStyle actions
 //
+// Opened from a project, the form shows that project's recorded folder and sends the project's ID
+// (NewRunProject). On a headless host's service the directory is typed, never picked on this Mac.
+//
 // What the form offers is decided by RunSetupCapabilities. The live app passes the local default,
 // which is exactly what POST /v1/runs accepts: a directory, a task and an optional title, with one
 // coordinator client on this Mac. Worker policy, model choice, remote hosts, disconnect behavior
 // and the delegation card appear only when a capability set declares them. Today only the design
 // fixture does, so those panels are never shown on a live page.
 
+/// The recorded project a run is started in. The form then shows the project's folder and
+/// offers no other: the folder is the project's, whatever run was open before.
+struct NewRunProject: Equatable {
+    /// The catalog ID. Nil for a project known only by the directory its runs name.
+    let id: String?
+    let name: String
+    let path: String
+}
+
 struct NewRunDraft: Equatable {
     var title = ""
     var path = ""
     var task = ""
+    /// The project the form was opened from. Nil lets the person choose a directory.
+    var project: NewRunProject? = nil
 }
 
 struct RunSetupCapabilities {
@@ -79,6 +93,9 @@ struct RunSetupCapabilities {
     /// The managed harnesses that are turned on. Nil where nothing reports them: the form then
     /// names the coordinator alone and holds no run back.
     var harnesses: [RunHarness]? = nil
+    /// The headless host whose service is in use. The directory is then that host's own absolute
+    /// path, typed: this Mac's folder picker would name a folder on the wrong machine.
+    var typedDirectoryHost: String? = nil
 
     /// Why a run can't start with the coordinator's harness now. Nil when it can, or when nothing
     /// reports harnesses.
@@ -97,15 +114,20 @@ struct RunSetupCapabilities {
 }
 
 struct NewRunView: View {
-    private enum Field: Hashable { case title, task }
+    private enum Field: Hashable { case title, task, directory }
 
     let connection: CockpitModel.Connection
     let projectName: String?
     let capabilities: RunSetupCapabilities
     let create: @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void
+    /// Starts the run in a recorded project by its ID. Nil sends the project's directory instead.
+    var createInProject: (@MainActor (_ projectID: String, _ task: String, _ title: String?,
+                                      _ operationID: String) async throws -> Void)? = nil
     let cancel: () -> Void
     /// Opens a harness's own sign-in. Nil leaves the gate without a button.
     var signIn: ((String) -> Void)? = nil
+    /// The project the form was opened from. Its folder is fixed.
+    private let project: NewRunProject?
 
     @State private var title: String
     @State private var path: String
@@ -118,24 +140,43 @@ struct NewRunView: View {
     init(connection: CockpitModel.Connection, draft: NewRunDraft, projectName: String?,
          capabilities: RunSetupCapabilities = RunSetupCapabilities(),
          create: @escaping @MainActor (_ path: String, _ task: String, _ title: String?, _ operationID: String) async throws -> Void,
-         cancel: @escaping () -> Void, signIn: ((String) -> Void)? = nil) {
+         cancel: @escaping () -> Void, signIn: ((String) -> Void)? = nil,
+         createInProject: (@MainActor (_ projectID: String, _ task: String, _ title: String?,
+                                       _ operationID: String) async throws -> Void)? = nil) {
         self.signIn = signIn
         self.connection = connection
-        self.projectName = projectName
+        self.projectName = draft.project?.name ?? projectName
         self.capabilities = capabilities
         self.create = create
+        self.createInProject = createInProject
         self.cancel = cancel
+        project = draft.project
         _title = State(initialValue: draft.title)
-        _path = State(initialValue: draft.path)
+        // A project's own folder, never the directory of whichever run was open.
+        _path = State(initialValue: draft.project?.path ?? draft.path)
         _task = State(initialValue: draft.task)
     }
 
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedTask: String { task.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var isOnline: Bool { connection == .online }
-    private var canStart: Bool {
-        !path.isEmpty && !trimmedTask.isEmpty && isOnline && !busy && capabilities.coordinatorBlock == nil
+    /// The directory as it is sent. On a headless host it is typed, so it is trimmed and must be
+    /// absolute; nil until it is.
+    private var runPath: String? {
+        guard project == nil, capabilities.typedDirectoryHost != nil else { return path.isEmpty ? nil : path }
+        return ProjectFolderPicker.typed(path)
     }
+    private var canStart: Bool {
+        runPath != nil && !trimmedTask.isEmpty && isOnline && !busy && capabilities.coordinatorBlock == nil
+    }
+
+    /// A path as the form shows it. A headless host's path is shown as it is: this Mac's home
+    /// folder says nothing about it.
+    private func shown(_ path: String) -> String {
+        capabilities.typedDirectoryHost == nil ? PathDisplay.abbreviated(path) : path
+    }
+
+    private var directoryLabel: String { project == nil ? "Project directory" : "Project folder" }
 
     private var previewTitle: String {
         if !trimmedTitle.isEmpty { return trimmedTitle }
@@ -163,14 +204,20 @@ struct NewRunView: View {
 
     // MARK: Header
 
+    private var headerText: String {
+        if capabilities.hasWorkerPolicy {
+            return "Choose the coordinator, its workspace, and the limits for everyone it delegates to."
+        }
+        if let project { return "Describe the task for the coordinator. It runs in \(project.name)’s folder." }
+        return "Choose the project directory and describe the task for the coordinator."
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Kicker(text: projectName.map { "\($0) / Runs" } ?? "Runs")
             Text("Start a coordinator run").font(TypeRole.pageTitle).tracking(-1.1)
                 .foregroundStyle(Palette.foreground).accessibilityAddTraits(.isHeader)
-            Text(capabilities.hasWorkerPolicy
-                 ? "Choose the coordinator, its workspace, and the limits for everyone it delegates to."
-                 : "Choose the project directory and describe the task for the coordinator.")
+            Text(headerText)
                 .font(TypeRole.body).foregroundStyle(.inkSecondary)
         }
     }
@@ -198,7 +245,7 @@ struct NewRunView: View {
                     }
                 }
                 HStack(alignment: .top, spacing: 16) {
-                    LabeledField(label: "Project directory") { directoryField }
+                    LabeledField(label: directoryLabel) { directoryField }
                     LabeledField(label: "Coordinator host") {
                         StaticField(symbol: "desktopcomputer", value: capabilities.localHostName, showsChevron: true)
                     }
@@ -219,7 +266,7 @@ struct NewRunView: View {
                     }
                 }
                 HStack(alignment: .top, spacing: 16) {
-                    LabeledField(label: "Project directory") { directoryField }
+                    LabeledField(label: directoryLabel) { directoryField }
                     LabeledField(label: "Coordinator host") {
                         StaticField(symbol: "desktopcomputer", value: capabilities.localHostName)
                     }
@@ -231,7 +278,7 @@ struct NewRunView: View {
                         StaticField(symbol: "desktopcomputer", value: capabilities.localHostName)
                     }
                 }
-                LabeledField(label: "Project directory") { directoryField }
+                LabeledField(label: directoryLabel) { directoryField }
             }
             if capabilities.hasWorkerPolicy {
                 Hairline().padding(.vertical, 4)
@@ -289,18 +336,51 @@ struct NewRunView: View {
             .accessibilityAddTraits(.isHeader)
     }
 
-    private var directoryField: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(.inkSecondary)
-            Text(path.isEmpty ? "Choose a directory" : PathDisplay.abbreviated(path))
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(path.isEmpty ? Palette.secondary : Palette.foreground)
-                .lineLimit(1).truncationMode(.middle)
-                .help(path)
-            Spacer(minLength: 8)
-            Button("Choose…", action: pickDirectory).disabled(busy)
+    /// The run's directory, in one of three forms.
+    ///   A project's folder   shown, not chosen: the form was opened from that project.
+    ///   A headless host      typed, as that host's own absolute path. No local picker.
+    ///   This Mac             chosen with the folder picker, as before.
+    @ViewBuilder private var directoryField: some View {
+        if let project {
+            HStack(spacing: 10) {
+                Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(.inkSecondary)
+                Text(shown(project.path))
+                    .font(.system(size: 13, design: .monospaced)).foregroundStyle(Palette.foreground)
+                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(project.path)
+                Spacer(minLength: 8)
+                Text(project.name).font(TypeRole.caption).foregroundStyle(.inkSecondary).lineLimit(1)
+            }
+            .fieldBox()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Project folder")
+            .accessibilityValue("\(project.path), the folder of \(project.name)")
+        } else if let host = capabilities.typedDirectoryHost {
+            HStack(spacing: 10) {
+                Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(.inkSecondary)
+                TextField("Absolute path on \(host)", text: $path)
+                    .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .focused($focus, equals: .directory)
+                    .disabled(busy)
+                    .accessibilityLabel("Project directory on \(host)")
+            }
+            .fieldBox(focused: focus == .directory)
+            .help("The directory’s absolute path on \(host). This Mac’s folders are not on that host.")
+        } else {
+            HStack(spacing: 10) {
+                Image(systemName: "folder").font(.system(size: 13)).foregroundStyle(.inkSecondary)
+                Text(path.isEmpty ? "Choose a directory" : PathDisplay.abbreviated(path))
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(path.isEmpty ? Palette.secondary : Palette.foreground)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(path)
+                Spacer(minLength: 8)
+                Button("Choose…", action: pickDirectory).disabled(busy)
+            }
+            .fieldBox()
         }
-        .fieldBox()
     }
 
     // MARK: Aside
@@ -308,8 +388,8 @@ struct NewRunView: View {
     private var previewRows: [RunSetupCapabilities.PreviewRow] {
         if let rows = capabilities.previewRows { return rows }
         return [
-            .init(key: "Project", value: path.isEmpty ? "Not chosen" : URL(filePath: path).lastPathComponent),
-            .init(key: "Directory", value: path.isEmpty ? "Not chosen" : PathDisplay.abbreviated(path), monospaced: true),
+            .init(key: "Project", value: project?.name ?? (path.isEmpty ? "Not chosen" : URL(filePath: path).lastPathComponent)),
+            .init(key: "Directory", value: path.isEmpty ? "Not chosen" : shown(path), monospaced: true),
             .init(key: "Coordinator", value: "Claude Code"),
             .init(key: "Host", value: capabilities.localHostName)
         ]
@@ -431,16 +511,24 @@ struct NewRunView: View {
     // MARK: Intents
 
     private func start() {
-        guard canStart else { return }
+        guard canStart, let runPath = runPath else { return }
         busy = true
         message = nil
-        let runPath = path, runTask = task, runKey = key
+        let runTask = task, runKey = key
         let runTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
+        // A recorded project is named by its ID, and the service uses the folder it recorded.
+        let projectID = createInProject == nil ? nil : project?.id
+        let remembersDirectory = project == nil && capabilities.typedDirectoryHost == nil
         Task {
             do {
-                try await create(runPath, runTask, runTitle, runKey)
-                // Remember real directories only, so a sample path never becomes the next default.
-                if FileManager.default.fileExists(atPath: runPath) {
+                if let projectID, let createInProject {
+                    try await createInProject(projectID, runTask, runTitle, runKey)
+                } else {
+                    try await create(runPath, runTask, runTitle, runKey)
+                }
+                // Remember real directories of this Mac only, so neither a sample path nor a
+                // headless host's path becomes the next default.
+                if remembersDirectory, FileManager.default.fileExists(atPath: runPath) {
                     UserDefaults.standard.set(runPath, forKey: "recentProject")
                 }
             } catch {
@@ -450,14 +538,10 @@ struct NewRunView: View {
         }
     }
 
+    /// This Mac's folder picker. It is never offered for a headless host's service.
     private func pickDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Use project"
-        if !path.isEmpty { panel.directoryURL = URL(filePath: path, directoryHint: .isDirectory) }
-        if panel.runModal() == .OK, let url = panel.url { path = url.standardizedFileURL.path }
+        guard capabilities.typedDirectoryHost == nil else { return }
+        if let chosen = ProjectFolderPicker.pick(prompt: "Use project", startingAt: path) { path = chosen }
         if capabilities.showsTaskEditor { focus = .task }
     }
 }

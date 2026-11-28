@@ -95,6 +95,38 @@ final class CockpitPresentationState {
     }
     var composingRun = false
     var newRunDraft = NewRunDraft()
+    /// A headless host's service is in use and Open folder asks for that host's own path.
+    var promptingFolderPath = false
+    var folderPathDraft = ""
+    var folderPathHost = ""
+    /// Why the path last typed was not sent.
+    var folderPathProblem: String?
+    /// Counts the links followed. A link still waiting for its target gives way to a newer one.
+    var linkGeneration = 0
+
+    /// Shows a run's wall, by the run's exact ID, with one of its workers zoomed when named.
+    /// `current` is the run the wall holds now: the same run is shown at once, another one is
+    /// selected and zooms when it arrives.
+    func showRun(_ id: String, worker: String? = nil, current: String?, selectRun: (String) -> Void) {
+        composingRun = false
+        showingRunChooser = false
+        shellPlace = LiveShell.wall
+        zoomedRemoteWorkerID = nil
+        if id == current {
+            zoomedWorkerID = worker
+            if let worker { returnFocusWorkerID = worker }
+        } else {
+            zoomAfterSelection = worker
+            selectRun(id)
+        }
+    }
+
+    /// Shows a project's overview, by its row's key.
+    func showProject(_ key: String) {
+        composingRun = false
+        showingRunChooser = false
+        shellPlace = LiveShell.project(key)
+    }
     var showingRunChooser = false
     var showingRunDetails = false
     var showingStopConfirmation = false
@@ -625,6 +657,16 @@ struct CockpitScreen: View {
     // MARK: Body
 
     var body: some View {
+        reactions
+            // A project that left the list (another service, a folder the service dropped) leaves
+            // the window on the wall, so the place and what is drawn agree.
+            .onChange(of: content.projects.map(\.key)) { _, keys in
+                if let key = LiveShell.projectKey(of: ui.shellPlace), !keys.contains(key) { ui.shellPlace = LiveShell.wall }
+            }
+            .modifier(FolderPathPrompt(ui: ui, open: { openTypedFolder() }))
+    }
+
+    private var reactions: some View {
         // Reactions to data sit apart from the window chrome, which keeps each expression small
         // enough for the type checker.
         chrome
@@ -741,12 +783,30 @@ struct CockpitScreen: View {
                                     isOnline: isOnline, showsHosts: shell.hosts != nil,
                                     serviceHost: shell.hosts?.serviceName,
                                     harnesses: shell.harnesses?.tally ?? HarnessTally(),
-                                    plugins: shell.plugins?.tally ?? PluginTally())
+                                    plugins: shell.plugins?.tally ?? PluginTally(),
+                                    // Without a project list (a fixture) the group is the runs' directories.
+                                    projects: content.projects.isEmpty ? nil : content.projects,
+                                    openRunID: run?.id, canOpenFolder: actions.openProject != nil)
     }
 
-    /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
+    /// Back from a run's wall to its project. Nil where the window lists no projects (a fixture
+    /// without the shell), and the run header then names the project as plain text.
+    private var backToProject: (() -> Void)? {
+        guard shell != nil, let project = content.selectedProject else { return nil }
+        let key = project.key
+        return { ui.showProject(key) }
+    }
+
+    /// The project whose overview is showing. Nil on the wall and in the new-run form.
+    private var shownProject: ProjectEntry? {
+        guard shell != nil else { return nil }
+        return LiveShell.shownProject(place: ui.shellPlace, composing: ui.composingRun, in: content.projects)
+    }
+
+    /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker. A
+    /// project's overview reads as its place: "Agents › Projects › Relay".
     private func shellCrumbs(_ navigation: CommanderNavigation) -> [String] {
-        guard LiveShell.showsWall(navigation.selection) else { return navigation.crumbs }
+        guard LiveShell.showsWall(navigation.selection), shownProject == nil else { return navigation.crumbs }
         // With no run open the wall has no crumbs of its own, so the place says where this is.
         if crumbs.isEmpty {
             let mode = navigation.modes.first { $0.id == navigation.selectedModeID }?.title
@@ -810,7 +870,9 @@ struct CockpitScreen: View {
 
     @ViewBuilder private func shellCanvas(_ shell: ShellContext, _ navigation: CommanderNavigation) -> some View {
         let selection = navigation.selection
-        if LiveShell.showsWall(selection) {
+        if let project = shownProject {
+            projectPage(project, shell)
+        } else if LiveShell.showsWall(selection) {
             canvas
         } else if selection == LiveShell.needsYou {
             LiveNeedsYouPage(pending: content.pending, network: shell.network, decided: ui.needsYouDecided,
@@ -855,6 +917,20 @@ struct CockpitScreen: View {
         }
     }
 
+    /// A project's overview, from the service's catalog and runs: its folder, the coordinators
+    /// running in it and the runs that ended. A run opens by its exact ID.
+    private func projectPage(_ project: ProjectEntry, _ shell: ShellContext) -> some View {
+        let runs = content.runs(in: project)
+        // A headless host's path is shown as it is: this Mac's home folder says nothing about it.
+        let path = shell.hosts?.serviceName == nil ? PathDisplay.abbreviated(project.path) : project.path
+        return ProjectPage(name: project.name, path: path, runs: runs.active, history: runs.earlier,
+                           openRun: { run in openRun(run.id) },
+                           openWorker: { run, worker in openRun(run.id, worker: worker.id) },
+                           startCoordinator: { startComposing(in: project) },
+                           canStart: isOnline)
+            .id(project.key)
+    }
+
     /// The plugins as the page shows them, with the cockpit's own checkouts offered first in the
     /// grant form. Where nothing reports plugins, the mode says so and offers no action.
     private func pluginsContext(_ shell: ShellContext) -> PluginsContext {
@@ -881,6 +957,11 @@ struct CockpitScreen: View {
     private var liveRunSetup: RunSetupCapabilities {
         var setup = runSetup
         if setup.harnesses == nil { setup.harnesses = shell?.harnesses?.runHarnesses }
+        // On a headless host's service the run is on that host, and so is its directory.
+        if let host = shell?.hosts?.serviceName {
+            setup.typedDirectoryHost = host
+            setup.localHostName = host
+        }
         return setup
     }
 
@@ -896,7 +977,9 @@ struct CockpitScreen: View {
         case .setPresence(let choice):
             shell.actions.setPresence(choice)
         case .share(let id):
-            guard let path = LiveShell.projectPath(of: id), let name = navigation.place(id)?.title else { return }
+            guard let key = LiveShell.projectKey(of: id), let name = navigation.place(id)?.title else { return }
+            // A recorded project shares its folder; a row grouped by directory is keyed by it.
+            let path = content.project(key)?.path ?? key
             MultiplayerShareLauncher.action(.repo(path: path, name: name))?()
         case .toggleGroup:
             break
@@ -904,10 +987,12 @@ struct CockpitScreen: View {
     }
 
     /// Goes to a place. Runs shows the wall, and offers the run chooser when the wall is already
-    /// showing; a project opens its newest run; New run opens the form.
+    /// showing; a project opens its overview, and its newest run when the overview is already
+    /// showing; New run opens the form; Open folder records a folder and changes no place itself.
     private func show(place id: String, from navigation: CommanderNavigation? = nil) {
         if id == LiveShell.wall {
-            if let navigation, LiveShell.showsWall(navigation.selection), !ui.composingRun, !content.runs.isEmpty {
+            if let navigation, LiveShell.showsWall(navigation.selection), shownProject == nil, !ui.composingRun,
+               !content.runs.isEmpty {
                 ui.showingRunChooser.toggle()
             }
             ui.composingRun = false
@@ -915,12 +1000,26 @@ struct CockpitScreen: View {
         } else if id == LiveShell.newRun {
             // No run can start while the service is offline; the row and ⌘N are both off.
             guard isOnline else { return }
-            ui.shellPlace = LiveShell.wall
-            startComposing()
-        } else if let path = LiveShell.projectPath(of: id) {
-            ui.shellPlace = LiveShell.wall
-            ui.composingRun = false
-            if let latest = content.runs.last(where: { $0.path == path }) { actions.selectRun(latest.id) }
+            // From a project's overview the form is that project's, and Cancel returns to it.
+            let project = shownProject
+            if project == nil { ui.shellPlace = LiveShell.wall }
+            startComposing(in: project)
+        } else if id == LiveShell.openFolder {
+            openFolder()
+        } else if let key = LiveShell.projectKey(of: id) {
+            if let project = content.project(key) {
+                // The row of the overview already showing goes on to the project's newest run.
+                if shownProject?.key == key, let latest = project.runIDs.last {
+                    openRun(latest)
+                } else {
+                    ui.showProject(key)
+                }
+            } else {
+                // No project list (a fixture): the row is a directory and opens its newest run.
+                ui.shellPlace = LiveShell.wall
+                ui.composingRun = false
+                if let latest = content.runs.last(where: { $0.path == key }) { actions.selectRun(latest.id) }
+            }
         } else {
             ui.composingRun = false
             ui.shellPlace = id
@@ -1054,10 +1153,16 @@ struct CockpitScreen: View {
     }
 
     private var crumbs: [String] {
-        if ui.composingRun { return (run.map { [$0.project] } ?? []) + ["New run"] }
+        // The form names the project it starts the run in, before the run that happens to be open.
+        if ui.composingRun {
+            let project = ui.newRunDraft.project?.name ?? run?.project
+            return (project.map { [$0] } ?? []) + ["New run"]
+        }
         guard let run else { return [] }
-        // The opened groups, then the zoomed worker, as the worker pane's own crumb names them.
-        return [run.project, run.title] + (openGroup(in: run)?.trail ?? []) + (zoomed.map { [$0.name] } ?? [])
+        // The project's recorded name, the opened groups, then the zoomed worker, as the worker
+        // pane's own crumb names them.
+        return [content.selectedProject?.name ?? run.project, run.title]
+            + (openGroup(in: run)?.trail ?? []) + (zoomed.map { [$0.name] } ?? [])
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
@@ -1123,10 +1228,12 @@ struct CockpitScreen: View {
                        capabilities: liveRunSetup,
                        create: { path, task, title, key in
                            try await actions.createRun(path, task, title, key)
-                           ui.composingRun = false
+                           showStartedRun()
                        },
+                       // Cancel returns to where the form was opened: the wall, or the project.
                        cancel: { ui.composingRun = false },
-                       signIn: shell?.harnesses.map { harnesses in { id in harnesses.actions.signIn(id) } })
+                       signIn: shell?.harnesses.map { harnesses in { id in harnesses.actions.signIn(id) } },
+                       createInProject: createInProject)
         } else if let run = run {
             // The coordinator is the same view with the worker region open or closed, so the first
             // worker arriving, or the last one leaving, changes its width and nothing else.
@@ -1136,6 +1243,7 @@ struct CockpitScreen: View {
                     RunHeader(run: run, canStop: run.canStop && isOnline && !content.isStopping,
                               showingDetails: $ui.showingRunDetails,
                               showRuns: { ui.showingRunChooser = true },
+                              showProject: backToProject,
                               stop: { ui.showingStopConfirmation = true },
                               share: content.runs.first { $0.id == run.id }.flatMap {
                                   MultiplayerShareLauncher.action(.repo(path: $0.path, name: $0.project))
@@ -1172,10 +1280,21 @@ struct CockpitScreen: View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "rectangle.split.2x1").font(.system(size: 32)).foregroundStyle(Palette.working)
             Text("Open a project").font(TypeRole.pageTitle).tracking(-1.1)
-            Text("Choose a directory and give your coordinator a task.").font(TypeRole.body).foregroundStyle(.inkSecondary)
-            Button { startComposing() } label: { Label("Start a run…", systemImage: "play") }
-                .buttonStyle(CapsuleButtonStyle(prominent: true))
-                .disabled(!isOnline)
+            Text(actions.openProject == nil
+                 ? "Choose a directory and give your coordinator a task."
+                 : "Open a folder to keep it in Projects, or start a run and give your coordinator a task.")
+                .font(TypeRole.body).foregroundStyle(.inkSecondary)
+            HStack(spacing: 10) {
+                Button { startComposing() } label: { Label("Start a run…", systemImage: "play") }
+                    .buttonStyle(CapsuleButtonStyle(prominent: true))
+                    .disabled(!isOnline)
+                // A folder becomes a project before any run starts in it.
+                if actions.openProject != nil {
+                    Button { openFolder() } label: { Label("Open Folder…", systemImage: "folder.badge.plus") }
+                        .buttonStyle(CapsuleButtonStyle())
+                        .disabled(!isOnline || content.isOpeningProject)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1322,6 +1441,10 @@ struct CockpitScreen: View {
                     remoteBand
                 }
                 HStack(spacing: 17) {
+                    // Back from the wall is the run's project, as back from a worker is the wall.
+                    if shell != nil, content.selectedProject != nil {
+                        KeyHint(keys: "⌘[", title: "Project") { returnToWall() }
+                    }
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
                     KeyHint(keys: "⌘]", title: "Zoom worker", isEnabled: count > 0) { zoomFocused() }
@@ -1695,9 +1818,89 @@ struct CockpitScreen: View {
 
     // MARK: Intents
 
-    private func startComposing() {
-        ui.newRunDraft = NewRunDraft(path: run?.path ?? UserDefaults.standard.string(forKey: "recentProject") ?? "")
+    /// Opens the run form. From a project it is that project's: its recorded folder, fixed, and
+    /// its ID for the request. Otherwise the directory starts at the open run's and can be chosen.
+    private func startComposing(in project: ProjectEntry? = nil) {
+        if let project {
+            ui.newRunDraft = NewRunDraft(project: NewRunProject(id: project.projectID, name: project.name, path: project.path))
+        } else {
+            // The last directory used is this Mac's. It is no default for a headless host's service.
+            let recent = shell?.hosts?.serviceName == nil ? UserDefaults.standard.string(forKey: "recentProject") : nil
+            ui.newRunDraft = NewRunDraft(path: run?.path ?? recent ?? "")
+        }
         ui.composingRun = true
+    }
+
+    /// Starts a run in a recorded project by its ID, then shows its wall. Nil where the service
+    /// records no projects.
+    private var createInProject: (@MainActor (String, String, String?, String) async throws -> Void)? {
+        guard let create = actions.createRunInProject else { return nil }
+        let start: @MainActor (String, String, String?, String) async throws -> Void = { projectID, task, title, key in
+            try await create(projectID, task, title, key)
+            showStartedRun()
+        }
+        return start
+    }
+
+    /// A run was started from the form. The model selected it; the window shows its wall, unzoomed.
+    private func showStartedRun() {
+        ui.composingRun = false
+        ui.shellPlace = LiveShell.wall
+        ui.zoomedRemoteWorkerID = nil
+        ui.zoomAfterSelection = nil
+    }
+
+    /// Shows one run's wall by its exact ID, zoomed to a worker when one is named.
+    private func openRun(_ id: String, worker: String? = nil) {
+        ui.showRun(id, worker: worker, current: run?.id, selectRun: { actions.selectRun($0) })
+    }
+
+    /// Records a folder as a project. On this Mac the folder comes from the system's picker. On a
+    /// headless host's service the person types that host's own path: a folder picked here would
+    /// be a path on the wrong machine.
+    private func openFolder() {
+        guard isOnline, actions.openProject != nil, !content.isOpeningProject else { return }
+        if let host = shell?.hosts?.serviceName {
+            ui.folderPathHost = host
+            ui.folderPathProblem = nil
+            ui.promptingFolderPath = true
+            return
+        }
+        if let path = ProjectFolderPicker.pick() { register(folder: path) }
+    }
+
+    /// The path typed for a headless host. One that isn't absolute is asked for again.
+    private func openTypedFolder() {
+        guard let path = ProjectFolderPicker.typed(ui.folderPathDraft) else {
+            ui.folderPathProblem = "That isn’t an absolute path. Start it with a slash."
+            Task {
+                // The prompt is put away by its button first.
+                try? await Task.sleep(for: .milliseconds(250))
+                ui.promptingFolderPath = true
+            }
+            return
+        }
+        ui.folderPathDraft = ""
+        ui.folderPathProblem = nil
+        register(folder: path)
+    }
+
+    /// Sends the folder to the service and shows the project it recorded. An older service has no
+    /// catalog: the run form opens on the folder, and the folder is listed once a run names it.
+    private func register(folder path: String) {
+        guard let open = actions.openProject else { return }
+        Task {
+            switch await open(path) {
+            case .opened(let project):
+                ui.showProject(project.id)
+            case .noCatalog:
+                ui.shellPlace = LiveShell.wall
+                ui.newRunDraft = NewRunDraft(path: path)
+                ui.composingRun = true
+            case .refused:
+                break
+            }
+        }
     }
 
     private func send(_ request: RequestPresentation) {
@@ -1847,7 +2050,8 @@ struct CockpitScreen: View {
     /// tile inside a folded group has its group opened, and one scrolled away is brought into
     /// view. After a group the keyboard is on the pane that had it when the group was opened. When
     /// that pane is gone the keyboard goes to the nearest level's parent or the coordinator. A
-    /// remote worker's way back returns to its own tile (`returnFromRemote`).
+    /// remote worker's way back returns to its own tile (`returnFromRemote`). From the wall itself,
+    /// with nothing zoomed and no group open, back is the run's project.
     private func returnToWall() {
         if let remoteID = ui.zoomedRemoteWorkerID {
             ui.zoomedRemoteWorkerID = nil
@@ -1861,7 +2065,11 @@ struct CockpitScreen: View {
             // A zoomed worker the run no longer lists: the wall is already showing.
             ui.zoomedWorkerID = nil
             ui.groupPath = []
-            if let stale { returnToWallTile(stale, in: run) }
+            if let stale { returnToWallTile(stale, in: run); return }
+            // Already on the wall: back is the run's project.
+            if shell != nil, !ui.composingRun, !ui.wallHidden, let project = content.selectedProject {
+                ui.showProject(project.key)
+            }
             return
         }
         ui.zoomedWorkerID = route.zoomedWorkerID
@@ -2065,6 +2273,28 @@ struct CockpitScreen: View {
     }
 }
 
+// MARK: - Folder path prompt
+
+/// Asks for a folder's path on the headless host whose service is in use. A native alert with one
+/// field: Open Folder on this Mac uses the system's folder picker instead, and the two are never
+/// mixed, so a path of this Mac is not sent to a host by mistake.
+struct FolderPathPrompt: ViewModifier {
+    @Bindable var ui: CockpitPresentationState
+    let open: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("Open a folder on \(ui.folderPathHost)", isPresented: $ui.promptingFolderPath) {
+            TextField("/absolute/path/on/\(ui.folderPathHost)", text: $ui.folderPathDraft)
+                .autocorrectionDisabled()
+            Button("Open Folder") { open() }
+            Button("Cancel", role: .cancel) { ui.folderPathProblem = nil }
+        } message: {
+            Text(ui.folderPathProblem
+                 ?? "Type the folder’s absolute path on \(ui.folderPathHost). This Mac’s folders are not on that host.")
+        }
+    }
+}
+
 // MARK: - Visibility reporting
 
 /// Reports whether a console's tile is in view, into `visibleConsoles`. In view means at least
@@ -2226,11 +2456,14 @@ struct CockpitView: View {
             // The tray's "Open in Agent Commander" arrives here (CommanderWindowRouter.swift). A
             // request sent while the window was closed is handed over as it reopens.
             .onAppear {
-                let ui = ui, network = network
-                routerAttachment = CommanderWindowRouter.shared.attach { request in
+                let ui = ui, network = network, model = model
+                routerAttachment = CommanderWindowRouter.shared.attach({ request in
                     let places = LiveShell.places(network: ShellNetwork(model: network))
                     request.destination(in: CommanderOpenCatalog(places: places, model: network)).show(in: ui, model: network)
-                }
+                }, follow: { link in
+                    // An agentcommander://run/… or …/project/… link, also one that waited for a cold launch.
+                    Self.follow(link, in: ui, model: model)
+                })
             }
             .onDisappear {
                 if let routerAttachment { CommanderWindowRouter.shared.detach(routerAttachment) }
@@ -2256,6 +2489,8 @@ struct CockpitView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 model.harnesses.refreshOnActivation()
                 model.plugins.refreshOnActivation()
+                // A folder opened from Terminal while the app was behind shows when it comes forward.
+                model.refreshProjectsOnActivation()
             }
             .onAppear {
                 guard floatingPanel == nil else { return }
@@ -2275,6 +2510,30 @@ struct CockpitView: View {
             .onChange(of: ui.splitFraction) { _, fraction in
                 UserDefaults.standard.set(fraction, forKey: Self.coordinatorSplitKey)
             }
+    }
+
+    /// Follows a run or project link: shows the run's wall or the project's overview, by exact ID,
+    /// on the service the app is using. It only navigates: nothing is started, stopped or sent,
+    /// and the service in use is never changed for a link. A target the service doesn't list yet
+    /// (a run just started from Terminal, whose stream hasn't arrived) is waited for, bounded;
+    /// one that never shows leaves the window where it is and says so. A newer link takes over.
+    @MainActor static func follow(_ link: CommanderLink, in ui: CockpitPresentationState, model: CockpitModel) {
+        ui.linkGeneration += 1
+        let token = ui.linkGeneration
+        Task { @MainActor in
+            let found = await model.awaitTarget(of: link)
+            guard token == ui.linkGeneration else { return }
+            guard found else {
+                model.notice = "Couldn’t open the link. \(link.subject) isn’t on \(model.serviceName)."
+                return
+            }
+            switch link {
+            case .run(let id):
+                ui.showRun(id, current: model.selectedID, selectRun: { model.select($0) })
+            case .project(let id):
+                ui.showProject(id)
+            }
+        }
     }
 
     /// The network intents the shell may ask for: the same model methods the tray calls.
@@ -2329,6 +2588,14 @@ struct CockpitView: View {
             dismissNotice: { model.notice = nil },
             createRun: { path, task, title, key in
                 try await model.create(path: path, task: task, title: title, operationID: key)
+            },
+            // A run in a recorded project names the project. The service supplies its folder.
+            createRunInProject: { projectID, task, title, key in
+                try await model.create(projectID: projectID, task: task, title: title, operationID: key)
+            },
+            openProject: { path in
+                if let project = await model.openProject(path: path) { return .opened(project) }
+                return model.projectCatalog == .unsupported ? .noCatalog : .refused
             },
             // Per-worker control. Each call names its worker; the model decides, per worker, which
             // of them apply (see the `can…` queries below).

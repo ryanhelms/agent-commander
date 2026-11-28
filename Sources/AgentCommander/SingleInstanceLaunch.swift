@@ -167,10 +167,19 @@ final class SingleInstanceAppDelegate: NSObject, NSApplicationDelegate {
         MultiplayerModel.shared.startActivityWatch()
     }
 
-    /// An `agentcommander://join` invite link: the network tray opens on its add-server page,
-    /// filled in from the link. A second copy launched by a link hands off before it gets here.
+    /// The app's `agentcommander://` links. A second copy launched by a link hands off before it
+    /// gets here.
+    ///   join      an invite: the network tray opens on its add-server page, filled in from the link
+    ///   run       `agentcommander://run/<id>`: the cockpit shows that run's wall
+    ///   project   `agentcommander://project/<id>`: the cockpit shows that project
+    /// A run or project link only navigates. It goes through the window router, so one that
+    /// arrives at a cold launch waits for the cockpit, and the window looks its target up on the
+    /// service it is using. Anything else is ignored.
     func application(_ application: NSApplication, open urls: [URL]) {
-        MultiplayerLinkWindow.open(urls, in: MultiplayerModel.shared)
+        CommanderWindowRouter.shared.open(links: urls)
+        // The join handler takes every address of the scheme, so a run or project link is kept
+        // from it: it would read as a broken invite and open the network panel.
+        MultiplayerLinkWindow.open(urls.filter { CommanderLink($0) == nil }, in: MultiplayerModel.shared)
     }
 
     /// Dock click or Launch Services reopen: restore the cockpit even when only Settings or the

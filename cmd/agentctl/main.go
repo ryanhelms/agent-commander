@@ -31,8 +31,13 @@ import (
 const usage = `Agent Commander
 
   agentctl start                         Start the local API service
-  agentctl run [--client ID] DIRECTORY TASK
+  agentctl run [--open] [--client ID] DIRECTORY TASK
                                          Start a managed coordinator
+  agentctl run [--open] [--client ID] --cwd TASK
+                                         Start in the calling directory
+  agentctl project open [--open] [DIRECTORY]
+                                         Register a project (defaults to the calling directory)
+  agentctl project list                  List registered projects
   agentctl catalog list [HTTPS_URL ...]   List ACP adapter catalog metadata
   agentctl catalog stage-binary URL ID VERSION ENTRY SIGNATURE PUBLIC_KEY
                                          Verify and stage a catalog binary
@@ -220,6 +225,7 @@ func run(args []string) error {
 	case "mcp":
 		return mcpbridge.Run(ctx, api)
 	}
+	args, destination := cockpitLaunchArgs(args)
 	method, path, input, err := operation(args)
 	if err != nil {
 		return err
@@ -234,7 +240,15 @@ func run(args []string) error {
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(pretty)
+	if err := enc.Encode(pretty); err != nil {
+		return err
+	}
+	if destination != "" {
+		if err := openCockpitResult(ctx, destination, b); err != nil {
+			fmt.Fprintf(os.Stderr, "Saved in Commander. Could not open the cockpit: %v\n", err)
+		}
+	}
+	return nil
 }
 
 func stageCatalogRelease(ctx context.Context, stateDir string, release []string, manager string, proofPaths []string) error {
@@ -293,11 +307,13 @@ func operation(args []string) (method, path string, input any, err error) {
 			return invalid()
 		}
 		return "GET", "/v1/runs", nil, nil
+	case "project":
+		return projectOperation(args[1:])
 	case "run":
 		client := "claude"
 		runArgs := args[1:]
 		if len(runArgs) > 0 && runArgs[0] == "--client" {
-			if len(runArgs) < 4 || strings.TrimSpace(runArgs[1]) == "" {
+			if len(runArgs) < 3 || strings.TrimSpace(runArgs[1]) == "" {
 				return invalid()
 			}
 			client, runArgs = runArgs[1], runArgs[2:]
@@ -305,7 +321,11 @@ func operation(args []string) (method, path string, input any, err error) {
 		if len(runArgs) < 2 {
 			return invalid()
 		}
-		dir, err := filepath.Abs(runArgs[0])
+		directory := runArgs[0]
+		if directory == "--cwd" {
+			directory = "."
+		}
+		dir, err := filepath.Abs(directory)
 		if err != nil {
 			return "", "", nil, err
 		}
