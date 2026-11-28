@@ -170,8 +170,8 @@ struct MultiplayerServerList: View {
                     if server.state == .certChanged {
                         MultiplayerCertificateNotice(serverName: server.displayName) { onOpen(server.id) }
                             .padding(.bottom, Space.xs)
-                    } else if let problem = server.shownProblem {
-                        Text(server.isReconnecting ? MultiplayerModel.reconnectText(problem) : MultiplayerModel.problemText(problem))
+                    } else if let problem = MultiplayerModel.problemLine(server) {
+                        Text(problem)
                             .font(MultiplayerTheme.sub)
                             .foregroundStyle(server.state == .error ? MultiplayerTheme.failure : MultiplayerTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1418,7 +1418,7 @@ private struct MultiplayerPanelContent: View {
                                           onCancelRemove: { model.cancelRemove() },
                                           onConfirmRemove: { model.confirmRemove() })
             }
-            if let session, session.route == .home, session.isOnline, let status = session.status {
+            if server.showsSession, let session, session.route == .home, session.isOnline, let status = session.status {
                 MultiplayerIdentityBand(handle: status.handle, displayName: status.displayName,
                                         statusMessage: status.statusMessage,
                                         avatar: model.avatar(server: server.id, handle: status.handle),
@@ -1431,7 +1431,7 @@ private struct MultiplayerPanelContent: View {
                         if status.hasAvatar { model.loadAvatar(server: server.id, handle: status.handle) }
                     }
             }
-            if let session, session.route == .home, session.isOnline, let status = session.status {
+            if server.showsSession, let session, session.route == .home, session.isOnline, let status = session.status {
                 let share = model.share
                 // What moved to the main window is a compact row each. Share… and Relay policy stay.
                 let waiting = share.unanswered(share.incomingAccess(server.id), on: server.id).count
@@ -1531,7 +1531,7 @@ private struct MultiplayerPanelContent: View {
                 } else {
                     MultiplayerTrayFooter(note: model.session(server.id)?.route != .home ? nil : server.handle.isEmpty ? nil : "Signed in as \(server.handle.multiplayerDisplay)",
                                           isFixture: model.usesFixtureHelper) {
-                        if let session = model.session(server.id), session.canSignOut {
+                        if server.showsSession, let session = model.session(server.id), session.canSignOut {
                             Button("Sign out") { session.signOut() }
                                 .buttonStyle(MultiplayerTrayButtonStyle())
                                 .disabled(session.isBusy)

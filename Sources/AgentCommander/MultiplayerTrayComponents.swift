@@ -244,7 +244,7 @@ extension MultiplayerServerState {
     var lamp: MultiplayerLamp.Kind {
         switch self {
         case .online: .on
-        case .connecting: .waiting
+        case .connecting, .keychainPending: .waiting
         case .certChanged, .error: .error
         case .signedOut, .offline: .off
         case .unknown: .unknown

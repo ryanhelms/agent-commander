@@ -122,9 +122,6 @@ func queueTestRepo(t *testing.T) string {
 
 func TestTrayServerQueues(t *testing.T) {
 	m := testManager(t)
-	ctx, stop := context.WithCancel(t.Context())
-	stop()
-	m.ctx = ctx // Keep the fixture's signed-in devices offline.
 	h := m.Handler()
 	legacy := filepath.Join(m.cfg.Dir, queueFile)
 	checkout := queueTestRepo(t)
@@ -142,8 +139,15 @@ func TestTrayServerQueues(t *testing.T) {
 		if msg != "" || json.Unmarshal(data, &s) != nil || s.ID == "" || s.Error != "" {
 			t.Fatalf("add server: %s %s", data, msg)
 		}
-		m.agents[s.ID].creds.Session = identity.Session{User: "me", ExpiresAt: time.Now().Add(time.Hour)}
-		m.agents[s.ID].http = &http.Client{Transport: relayTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		active := waitManagerAgent(t, m, s.ID)
+		active.Close()
+		// This agent's mocked session is used only by the queue calls.
+		a, err := prepareAgent(t.Context(), active.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.creds.Session = identity.Session{User: "me", ExpiresAt: time.Now().Add(time.Hour)}
+		a.http = &http.Client{Transport: relayTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "GET" || r.URL.Path != "/v1/workspaces" || r.URL.Host != url {
 				t.Errorf("unexpected workspace lookup: %s %s", r.Method, r.URL)
 			}
@@ -153,6 +157,9 @@ func TestTrayServerQueues(t *testing.T) {
 				w.Write([]byte(`{"workspaces":[]}`))
 			}
 		})}}
+		m.mu.Lock()
+		m.agents[s.ID] = a
+		m.mu.Unlock()
 		return s.ID
 	}
 	a, b := addServer("a.example.test"), addServer("b.example.test")

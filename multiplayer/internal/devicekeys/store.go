@@ -14,6 +14,16 @@ type Store interface {
 	Delete() error
 }
 
+// ErrKeychainAccess classifies an authorization or interaction failure without
+// requiring callers to interpret Security.framework status numbers.
+var ErrKeychainAccess = errors.New("macOS Keychain access is unavailable")
+
+// IsKeychain reports whether this store can await macOS credential approval.
+func IsKeychain(store Store) bool {
+	typed, ok := store.(interface{ KeychainBacked() bool })
+	return ok && typed.KeychainBacked()
+}
+
 // Directory is an explicit disposable alternative for automated/headless tests.
 func Directory(path string) (Store, error) {
 	if !filepath.IsAbs(path) {

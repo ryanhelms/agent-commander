@@ -49,10 +49,14 @@ New verbs:
 ```json
 {"id": "s-3f2a9c1d", "url": "https://ryan-mac.tail.internal", "name": "ryan-mac",
  "favorite": true, "autoConnect": true, "pin": "sha256/...", "lastUsedAt": "...",
- "state": "signedOut | connecting | online | offline | certChanged | error",
+ "state": "signedOut | connecting | keychainPending | online | offline | certChanged | error",
  "signedIn": true, "handle": "ryan", "lastSeen": "...", "error": "",
  "friendsOnline": 2, "incoming": 1}
 ```
+
+The private tray API becomes available while each saved relay initializes independently. During a macOS Keychain read or initial save, the list and scoped `status` report `keychainPending` with owner guidance and no active session, presence, or grants. A denied credential check reports `error` with guidance to retry using Connect automatically. Ordinary startup reports `connecting` until ready. The same request envelope handles all three states.
+
+The helper awaits macOS authorization without a timeout on that operation. Disabling or replacing a relay retires its current activation. A replacement waits for the retired access to return before making another Keychain call for that relay. Shutdown retires every activation and returns independently of any outstanding OS prompt. A request refused while a relay starts must be sent again after the relay becomes available.
 
 `Probe` lists each step in order. A failed step ends the probe.
 

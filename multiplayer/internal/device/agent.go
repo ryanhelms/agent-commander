@@ -38,10 +38,11 @@ type Config struct {
 	OIDCHTTP                    *http.Client
 	// Pin, when set, replaces chain verification with a SubjectPublicKeyInfo
 	// SHA-256 match ("sha256/<base64>"). OnPinMismatch runs when it fails.
-	Pin                 string
-	OnPinMismatch       func()
-	GoogleDesktopConfig string
-	configureActions    func(actions.Config) actions.Config
+	Pin                  string
+	OnPinMismatch        func()
+	GoogleDesktopConfig  string
+	configureActions     func(actions.Config) actions.Config
+	onStartupCredentials func(bool)
 }
 type credentials struct {
 	Keys    *devicekeys.Keys
@@ -140,6 +141,15 @@ func privateDir(path string) error {
 	return nil
 }
 func New(ctx context.Context, c Config) (*Agent, error) {
+	a, err := prepareAgent(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	a.start()
+	return a, nil
+}
+
+func prepareAgent(ctx context.Context, c Config) (*Agent, error) {
 	u, e := url.Parse(c.Relay)
 	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Trim(u.Path, "/") != "" {
 		return nil, errors.New("expected HTTPS relay origin")
@@ -152,17 +162,7 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		return nil, e
 	}
 	a := &Agent{cfg: c}
-	b, e := c.Secrets.Load()
-	switch {
-	case errors.Is(e, os.ErrNotExist):
-		a.creds.Keys, e = devicekeys.Generate()
-		if e == nil {
-			e = a.persistCredentials(a.creds)
-		}
-	case e == nil:
-		e = json.Unmarshal(b, &a.creds)
-	}
-	if e != nil {
+	if e = a.loadStartupCredentials(ctx); e != nil {
 		return nil, e
 	}
 	if a.creds.Keys == nil {
@@ -198,10 +198,58 @@ func New(ctx context.Context, c Config) (*Agent, error) {
 		return nil, e
 	}
 	a.loadSocial()
-	go a.receiveLoop()
-	go a.eventsLoop()
+	if err := ctx.Err(); err != nil {
+		a.Close()
+		return nil, err
+	}
 	return a, nil
 }
+
+func (a *Agent) start() {
+	go a.receiveLoop()
+	go a.eventsLoop()
+}
+
+// loadStartupCredentials can await the owner's OS interaction. An activation
+// canceled during a read cannot generate or persist credentials afterward.
+func (a *Agent) loadStartupCredentials(ctx context.Context) error {
+	var raw []byte
+	err := a.withStartupCredentialAccess(ctx, func() error {
+		var err error
+		raw, err = a.cfg.Secrets.Load()
+		return err
+	})
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		a.creds.Keys, err = devicekeys.Generate()
+		if err != nil {
+			return err
+		}
+		return a.withStartupCredentialAccess(ctx, func() error {
+			return a.persistCredentials(a.creds)
+		})
+	case err == nil:
+		return json.Unmarshal(raw, &a.creds)
+	default:
+		return err
+	}
+}
+
+func (a *Agent) withStartupCredentialAccess(ctx context.Context, access func() error) error {
+	if progress := a.cfg.onStartupCredentials; progress != nil {
+		progress(true)
+		defer progress(false)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := access()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
 func (a *Agent) Close() { a.stop(); a.http.CloseIdleConnections() }
 func (a *Agent) persistCredentials(c credentials) error {
 	b, e := json.Marshal(c)

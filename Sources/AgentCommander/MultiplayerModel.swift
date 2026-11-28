@@ -22,6 +22,9 @@ enum MultiplayerPresence: Equatable {
     case checking
     case signedOut
     case waitingForBrowser
+    /// The device agent waits for macOS to let it use this Mac's credential for the server. Carries
+    /// what the person can do. Nothing is signed in or online, and there is no sign-in to start.
+    case keychainPending(detail: String)
     /// Browser sign-in can be started again. Carries the service's display-safe reason, when it gave one.
     case signInIncomplete(detail: String?)
     case needsHandle
@@ -36,6 +39,7 @@ enum MultiplayerPresence: Equatable {
         case .checking: "Checking…"
         case .signedOut: "Signed out"
         case .waitingForBrowser: "Waiting for browser"
+        case .keychainPending: "Waiting for Keychain…"
         case .signInIncomplete: "Sign-in didn’t finish"
         case .needsHandle: "Handle needed"
         case .online: "Online"
@@ -49,7 +53,7 @@ enum MultiplayerPresence: Equatable {
         case .online: .working
         case .waitingForBrowser, .needsHandle, .signInIncomplete: .attention
         case .unavailable, .serviceError: .failure
-        case .checking: .focus
+        case .checking, .keychainPending: .focus
         case .offline, .signedOut: .neutral
         }
     }
@@ -58,7 +62,7 @@ enum MultiplayerPresence: Equatable {
     var isLit: Bool {
         switch self {
         case .online, .waitingForBrowser, .needsHandle, .signInIncomplete, .serviceError, .unavailable: true
-        case .offline, .checking, .signedOut: false
+        case .offline, .checking, .keychainPending, .signedOut: false
         }
     }
 
@@ -148,6 +152,11 @@ final class MultiplayerSessionModel {
     private(set) var running: MultiplayerCommand?
     private(set) var actionFailure: MultiplayerActionFailure?
     private(set) var notice: String?
+    /// What the server list says while the device agent holds no session for this server
+    /// (`MultiplayerServerSummary.hasNoSession`). It outranks the last status read, which can still
+    /// be the one from the connected phase. Nil in every other state. The tray's model sets it
+    /// through `hold(_:)`.
+    private(set) var listedHold: MultiplayerPresence?
     /// Bridges a confirmed `login` to the next status; that status then decides.
     private(set) var awaitingBrowser = false
     /// The last status ended a pending sign-in without signing in.
@@ -210,8 +219,23 @@ final class MultiplayerSessionModel {
 
     var presence: MultiplayerPresence {
         if let setupFailure { return .unavailable(setupFailure.message) }
+        // The list's word on a server with no session: nothing cached from before stands, neither an
+        // online status nor a failed read of one.
+        if let listedHold { return listedHold }
         if let statusFailure { return .unavailable(statusFailure.message) }
         guard let status else { return isRefreshing ? .checking : .offline }
+        // The device agent answered for a server with no connection yet and named the phase. None of
+        // them is a browser sign-in, so none offers one, whatever the other fields or local memory say.
+        switch status.activation {
+        case .keychainPending:
+            return .keychainPending(detail: Self.serviceText(status.error) ?? MultiplayerServerSummary.keychainWaitingText)
+        case .connecting:
+            return .checking
+        case .error where !status.signedIn && !status.error.isEmpty:
+            return .serviceError(Self.serviceErrorText(status.error))
+        default:
+            break
+        }
         if status.loginPending || (awaitingBrowser && !status.signedIn) { return .waitingForBrowser }
         if !status.signedIn {
             // A signed-out problem is recovered by signing in again, so it keeps the sign-in action.
@@ -319,7 +343,10 @@ final class MultiplayerSessionModel {
         status?.resources.first { $0.id == id }?.name ?? id
     }
 
-    var canSignOut: Bool { setupFailure == nil && statusFailure == nil && status?.signedIn == true }
+    var canSignOut: Bool {
+        setupFailure == nil && statusFailure == nil && listedHold == nil
+            && status?.signedIn == true && status?.activation != .keychainPending
+    }
 
     /// Only your own enrolled repositories take a GitHub token; shared resources never do.
     static func takesCredential(_ resource: MultiplayerResource) -> Bool {
@@ -383,7 +410,8 @@ final class MultiplayerSessionModel {
     /// One poll step. Returns the wait before the next.
     private func tick() -> Duration {
         if !isBusy, lookupTask == nil, route == .home { refresh() }
-        return awaitingBrowser || status?.loginPending == true ? fastPoll : steadyPoll
+        // A wait for Keychain ends when the person answers macOS: read as often as for a browser sign-in.
+        return awaitingBrowser || status?.loginPending == true || status?.activation == .keychainPending ? fastPoll : steadyPoll
     }
 
     // MARK: - Status
@@ -438,6 +466,20 @@ final class MultiplayerSessionModel {
             refreshToken &+= 1
             isRefreshing = false
         }
+    }
+
+    /// Takes the list's word on whether the device agent holds a session for this server. When a
+    /// hold ends, whatever was read before or during it is from another phase: the status and any
+    /// read in flight are dropped, and the server is read again before anything of it is shown.
+    func hold(_ next: MultiplayerPresence?) {
+        guard next != listedHold else { return }
+        let released = listedHold != nil && next == nil
+        listedHold = next
+        guard released else { return }
+        cancelRefresh()
+        status = nil
+        statusFailure = nil
+        if viewers > 0 { refresh() }
     }
 
     /// Keeps an editor or confirmation only while what it refers to still exists.

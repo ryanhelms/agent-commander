@@ -259,6 +259,8 @@ The Google Desktop variant sources its OAuth client credentials from the device'
 
 Ordinary sign-out retires the device's lease in the credential transaction and marks in-flight outcomes uncertain. Authenticated lease admission rechecks the current access credential under the enrollment lock. An offline registered device can still receive pending work for its next sign-in.
 
+A saved multiplayer relay activates independently of the local tray API and other relays. Its current activation owns credential initialization and any subsequent connection loops. A retired activation keeps its slot until the OS operation returns, so an edit cannot overlap two Keychain operations for the same relay. The list and scoped status project the waiting state from that activation. An operation refused during the wait has no pending work to replay.
+
 ## Native terminal observation
 
 The local provider acts as an Adapter between a Commander worker ID and its existing tmux session. The owner API resolves a selected worker on demand. After resolution, the bundled CLI attaches a read-only tmux client on SwiftTerm’s PTY with its size ignored. Closing the viewer disconnects that client. The runner retains the session, input ownership, and provider-native history.

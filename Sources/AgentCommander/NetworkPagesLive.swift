@@ -32,7 +32,7 @@ extension NetworkPagesContent {
             let session = model.session(summary.id)
             // The same rule as the tray: a server's lists show only while its session is online
             // and its certificate is the pinned one.
-            if summary.state != .certChanged, let session, session.isOnline, let status = session.status {
+            if summary.showsSession, let session, session.isOnline, let status = session.status {
                 server.isOnline = true
                 server.handle = status.handle
                 server.displayName = status.displayName

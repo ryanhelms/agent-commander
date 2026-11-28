@@ -2,6 +2,8 @@ package device
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -22,6 +24,39 @@ func TestInviteLinkRoundTrip(t *testing.T) {
 	}
 }
 
+func TestJoinStartsNewRelayAfterActivation(t *testing.T) {
+	m := testManager(t)
+	invited := make(chan string, 1)
+	relay := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/challenge" {
+			var challenge struct{ Invite string }
+			if err := json.NewDecoder(r.Body).Decode(&challenge); err == nil {
+				invited <- challenge.Invite
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer relay.Close()
+
+	link := InviteLink(relay.URL, SPKIPin(relay.Certificate()), "fixture-invite", "")
+	data, err := call(t, m.Handler(), "join", map[string]string{"link": link})
+	if err != "" {
+		t.Fatalf("join did not start sign-in after ordinary activation: %s", err)
+	}
+	var server ServerSummary
+	if json.Unmarshal(data, &server) != nil || server.URL != relay.URL {
+		t.Fatalf("join did not return the new server: %s", data)
+	}
+	select {
+	case code := <-invited:
+		if code != "fixture-invite" {
+			t.Fatalf("join used invite code %q", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("join did not send the original invite code")
+	}
+}
+
 func TestAutoPresence(t *testing.T) {
 	if AutoPresence(true, time.Hour) != "busy" || AutoPresence(false, 11*time.Minute) != "away" || AutoPresence(false, time.Minute) != "online" {
 		t.Fatal("unexpected automatic presence")
@@ -32,9 +67,15 @@ func TestActivityMergesAndMarksSeen(t *testing.T) {
 	m := testManager(t)
 	h := m.Handler()
 	for _, url := range []string{"a.example.test", "b.example.test"} {
-		if _, e := call(t, h, "server-add", map[string]any{"url": url}); e != "" {
+		data, e := call(t, h, "server-add", map[string]any{"url": url})
+		if e != "" {
 			t.Fatal(e)
 		}
+		var server ServerSummary
+		if err := json.Unmarshal(data, &server); err != nil {
+			t.Fatal(err)
+		}
+		waitManagerAgent(t, m, server.ID)
 	}
 	now := time.Now()
 	i := 0
