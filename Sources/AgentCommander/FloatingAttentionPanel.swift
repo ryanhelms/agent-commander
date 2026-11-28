@@ -234,6 +234,7 @@ final class FloatingAttentionController: NSObject, NSWindowDelegate {
             .environment(consoleModes)
             .environment(model.toolDetails)
             .environment(model.compactions)
+            .environment(model.replyAttachments)
             .environment(nativeTerminals)
             .preferredColorScheme(.dark)
         let host = NSHostingController(rootView: AnyView(root))

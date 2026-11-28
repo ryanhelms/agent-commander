@@ -41,6 +41,8 @@ final class CockpitModel {
     let toolDetails: ToolDetailStore
     /// The provider's summary and error of each compaction row, read from its source record.
     let compactions: CompactionSummaryStore
+    /// The link or text of each reply chunk that is a resource, read from its source record.
+    let replyAttachments: ReplyAttachmentStore
 
     init(endpoint: ServiceEndpoint = .live) {
         api = ServiceClient(endpoint: endpoint)
@@ -50,6 +52,7 @@ final class CockpitModel {
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
         compactions = CompactionFixture.isRequested ? CompactionFixture.store : .live(reader: reader)
+        replyAttachments = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         toolDetails = ToolDetailStore(source: ToolDetailSource(
             page: { try await reader.toolDetails($0, after: $1) },
@@ -121,6 +124,7 @@ final class CockpitModel {
         // The new service's transcript setting is not known yet: values stay hidden until it is.
         toolDetails.serviceChanged()
         compactions.serviceChanged()
+        replyAttachments.serviceChanged()
         sending = []
         replyAttempts = [:]
         followUpAttempts = [:]
