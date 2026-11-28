@@ -35,16 +35,23 @@ extension EnvironmentValues {
 struct PrettyLinkButton: View {
     let title: String
     let size: CGFloat
+    /// The title may take several lines in a column narrower than it. Off, the link keeps its
+    /// own width on one line, as every caller but a reply's link row draws it.
+    var wraps = false
     let action: () -> Void
 
     var body: some View {
-        Button(title, action: action)
+        let link = Button(title, action: action)
             .buttonStyle(.plain)
             .font(.system(size: size))
             .foregroundStyle(Palette.focus)
             .underline()
             .textSelection(.disabled)
-            .fixedSize()
+        if wraps {
+            link.multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+        } else {
+            link.fixedSize()
+        }
     }
 }
 
