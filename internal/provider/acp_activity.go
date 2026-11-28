@@ -140,7 +140,8 @@ func acpObservationActivity(update *acpprocessor.Update, obs *model.Observation,
 	if update.Kind == "plan_update" || update.Kind == "plan_removed" {
 		bound, ok := boundPlanUpdate(update, obs)
 		if ok {
-			event.ACP.PlanIdentity = planIdentity(&bound, obs.GetSession().GetSessionId())
+			session := obs.GetSession()
+			event.ACP.PlanIdentity = planIdentity(&bound, session.GetHarnessInstance(), session.GetSessionId())
 		}
 	}
 	return event
@@ -161,8 +162,8 @@ func boundPlanUpdate(update *acpprocessor.Update, obs *model.Observation) (acppr
 	return *update, true
 }
 
-func planIdentity(update *acpprocessor.Update, session string) string {
-	if !validPlanKey(session) {
+func planIdentity(update *acpprocessor.Update, harness, session string) string {
+	if !validPlanKey(harness, 256) || !validPlanKey(session, 512) {
 		return ""
 	}
 	var id string
@@ -178,15 +179,15 @@ func planIdentity(update *acpprocessor.Update, session string) string {
 			id = string(plan.Markdown.PlanId)
 		}
 	}
-	if !validPlanKey(id) {
+	if !validPlanKey(id, 256) {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(session + "\x00" + id))
+	sum := sha256.Sum256([]byte(harness + "\x00" + session + "\x00" + id))
 	return hex.EncodeToString(sum[:])
 }
 
-func validPlanKey(key string) bool {
-	return len(key) <= 256 && strings.TrimSpace(key) != "" && strings.IndexFunc(key, unicode.IsControl) == -1
+func validPlanKey(key string, limit int) bool {
+	return len(key) <= limit && strings.TrimSpace(key) != "" && strings.IndexFunc(key, unicode.IsControl) == -1
 }
 
 // Private summaries, child transcripts and declined tool requests stay behind
@@ -267,7 +268,8 @@ func planDetail(obs *model.Observation, activity *acpprocessor.Activity) *servic
 			return nil
 		}
 		bound, ok := boundPlanUpdate(&update, obs)
-		if !ok || planIdentity(&bound, obs.GetSession().GetSessionId()) != activity.PlanIdentity {
+		session := obs.GetSession()
+		if !ok || planIdentity(&bound, session.GetHarnessInstance(), session.GetSessionId()) != activity.PlanIdentity {
 			return nil
 		}
 		return itemPlanDetail(&bound)

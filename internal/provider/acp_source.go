@@ -438,7 +438,7 @@ func (p *acpSourcePublisher) publish(ctx context.Context, a *api, path string, r
 				if update.TurnID == "" && update.Kind == "" && len(update.Body) > 0 {
 					decoded := acpprocessor.Decode(update.Body)
 					event := acpActivityEvent(&decoded, "live", update.Cursor)
-					event.ACP.PlanIdentity = planIdentity(&decoded, update.Session.SessionID)
+					event.ACP.PlanIdentity = planIdentity(&decoded, update.Session.HarnessInstance, update.Session.SessionID)
 					var detail *service.ToolDetail
 					if event.ACP.PlanIdentity != "" {
 						detail = itemPlanDetail(&decoded)

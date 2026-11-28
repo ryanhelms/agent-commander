@@ -166,7 +166,7 @@ func TestACPPlanUpdateProjectsScopedIdentityAndKeepsExactItemsPrivate(t *testing
 	}
 	observation := func(raw string) *model.Observation {
 		return &model.Observation{
-			Session: &model.SessionRef{SessionId: session}, Cursor: "record",
+			Session: &model.SessionRef{HarnessInstance: "fixture", SessionId: session}, Cursor: "record",
 			Event: &model.Observation_Extension{Extension: &model.Extension{
 				Type: "acp.session_update", MediaType: "application/json", Data: []byte(raw),
 			}},
@@ -179,6 +179,8 @@ func TestACPPlanUpdateProjectsScopedIdentityAndKeepsExactItemsPrivate(t *testing
 	other := observation(update(beta, items))
 	otherSession := observation(update(alpha, items))
 	otherSession.Session.SessionId = "other-session"
+	otherHarness := observation(update(alpha, items))
+	otherHarness.Session.HarnessInstance = "other-fixture"
 
 	project := func(obs *model.Observation) *acpprocessor.Activity {
 		t.Helper()
@@ -193,7 +195,7 @@ func TestACPPlanUpdateProjectsScopedIdentityAndKeepsExactItemsPrivate(t *testing
 	initialActivity := project(first)
 	identity := initialActivity.PlanIdentity
 	if len(identity) != 64 || identity != project(final).PlanIdentity || identity != project(removed).PlanIdentity ||
-		identity == project(other).PlanIdentity || identity == project(otherSession).PlanIdentity {
+		identity == project(other).PlanIdentity || identity == project(otherSession).PlanIdentity || identity == project(otherHarness).PlanIdentity {
 		t.Fatal("plan events were not associated by plan ID within the bound session")
 	}
 	if d := planDetail(first, initialActivity); d == nil || string(d.Plan) != items {
