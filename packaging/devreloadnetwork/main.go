@@ -1,4 +1,4 @@
-// The dev reload script uses this tool to manage only the normal owner network socket.
+// The dev reload script uses this tool to verify the selected local socket owner.
 package main
 
 import (
@@ -18,12 +18,19 @@ const bundledHelper = "dist/Agent Commander.app/Contents/MacOS/commander-network
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "Network helper:", err)
+		label := "Network helper:"
+		if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "service-") {
+			label = "Commander service:"
+		}
+		fmt.Fprintln(os.Stderr, label, err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
+	if len(args) > 0 && strings.HasPrefix(args[0], "service-") {
+		return runService(args)
+	}
 	owner, err := user.Current()
 	if err != nil {
 		return fmt.Errorf("find the normal owner socket: %w", err)
@@ -33,7 +40,7 @@ func run(args []string) error {
 	case len(args) == 1 && args[0] == "stop":
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
-		allowed, err := developmentHelpers(ctx)
+		allowed, err := developmentExecutables(ctx, "commander-network")
 		if err != nil {
 			return err
 		}
@@ -59,11 +66,11 @@ func run(args []string) error {
 		}
 		return nil
 	default:
-		return errors.New("usage: dev-reload-network stop | ready BUNDLED_HELPER")
+		return errors.New("usage: dev-reload-network stop | ready BUNDLED_HELPER | service-stop | service-ready BUNDLED_AGENTCTL")
 	}
 }
 
-func developmentHelpers(ctx context.Context) (map[string]bool, error) {
+func developmentExecutables(ctx context.Context, name string) (map[string]bool, error) {
 	out, err := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain", "-z").Output()
 	if err != nil {
 		return nil, fmt.Errorf("list registered Commander checkouts: %w", err)
@@ -79,8 +86,8 @@ func developmentHelpers(ctx context.Context) (map[string]bool, error) {
 			// A prunable checkout cannot authorize a process signal.
 			continue
 		}
-		allowed[filepath.Join(canonical, bundledHelper)] = true
-		allowed[filepath.Join(canonical, "dist", "commander-network")] = true
+		allowed[filepath.Join(canonical, "dist", "Agent Commander.app", "Contents", "MacOS", name)] = true
+		allowed[filepath.Join(canonical, "dist", name)] = true
 	}
 	if len(allowed) == 0 {
 		return nil, errors.New("no registered Commander checkout could be verified")

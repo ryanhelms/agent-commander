@@ -7,6 +7,9 @@ package main
 #include <libproc.h>
 #include <sys/proc.h>
 #include <sys/proc_info.h>
+#include <sys/sysctl.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static int selfProcess(int pid, uint64_t *seconds, uint64_t *micros, char *path) {
@@ -35,6 +38,52 @@ static int selfProcess(int pid, uint64_t *seconds, uint64_t *micros, char *path)
 	*seconds = before.pbi_start_tvsec;
 	*micros = before.pbi_start_tvusec;
 	return 0;
+}
+
+// KERN_PROCARGS2 returns argc, the executable path, NUL padding, and argv.
+// Inspect only the arguments. The same buffer may also include the environment.
+static int serveRole(int pid, int *result) {
+	int mib[] = {CTL_KERN, KERN_PROCARGS2, pid};
+	size_t size;
+	if (sysctl(mib, 3, NULL, &size, NULL, 0) < 0) {
+		return errno;
+	}
+	if (size < sizeof(int)) {
+		return EINVAL;
+	}
+	char *args = malloc(size);
+	if (args == NULL) {
+		return ENOMEM;
+	}
+	int error = 0;
+	*result = 0;
+	if (sysctl(mib, 3, args, &size, NULL, 0) < 0) {
+		error = errno;
+		goto done;
+	}
+	if (size < sizeof(int)) {
+		error = EINVAL;
+		goto done;
+	}
+	int argc;
+	memcpy(&argc, args, sizeof(argc));
+	if (argc == 2) {
+		char *end = args + size;
+		char *arg = memchr(args + sizeof(argc), 0, size - sizeof(argc));
+		if (arg != NULL) {
+			while (arg < end && *arg == 0) {
+				arg++;
+			}
+			arg = memchr(arg, 0, end - arg);
+			if (arg != NULL && end - arg > sizeof("serve") &&
+				memcmp(arg + 1, "serve", sizeof("serve")) == 0) {
+				*result = 1;
+			}
+		}
+	}
+done:
+	free(args);
+	return error;
 }
 */
 import "C"
@@ -86,4 +135,12 @@ func inspectProcess(pid int) (*process, error) {
 	default:
 		return nil, fmt.Errorf("inspect PID %d: %w", pid, status)
 	}
+}
+
+func ownsServeArguments(pid int) (bool, error) {
+	var result C.int
+	if status := syscall.Errno(C.serveRole(C.int(pid), &result)); status != 0 {
+		return false, fmt.Errorf("inspect the service arguments for PID %d: %w", pid, status)
+	}
+	return result != 0, nil
 }
