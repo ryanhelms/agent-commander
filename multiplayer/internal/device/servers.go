@@ -310,6 +310,16 @@ func (m *Manager) summary(s Server) ServerSummary {
 func (m *Manager) Summaries() []ServerSummary {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	list := m.orderedServersLocked()
+	out := make([]ServerSummary, 0, len(list))
+	for _, s := range list {
+		out = append(out, m.summary(s))
+	}
+	return out
+}
+
+// orderedServersLocked returns a copy in the tray's default routing order.
+func (m *Manager) orderedServersLocked() []Server {
 	list := slices.Clone(m.servers)
 	slices.SortStableFunc(list, func(a, b Server) int {
 		if a.Favorite != b.Favorite {
@@ -320,11 +330,7 @@ func (m *Manager) Summaries() []ServerSummary {
 		}
 		return b.LastUsedAt.Compare(a.LastUsedAt)
 	})
-	out := make([]ServerSummary, 0, len(list))
-	for _, s := range list {
-		out = append(out, m.summary(s))
-	}
-	return out
+	return list
 }
 
 // ProbeStep is one stage of a server health check.
@@ -638,15 +644,43 @@ func (m *Manager) agentUseLocked(id string, bump bool) (*Agent, error) {
 	return a, nil
 }
 
-// coordinatorAgent picks the server for agent requests: the named one, else
-// the first signed-in server in list order.
+// coordinatorAgent picks the named server or the first signed-in server in
+// tray order. Without a signed-in server, return only a sanitized activation
+// status. The coordinator handler verifies the caller before returning it.
 func (m *Manager) coordinatorAgent(id string) (*Agent, error) {
 	if id != "" {
 		return m.agentFor(id)
 	}
-	for _, s := range m.Summaries() {
-		if s.SignedIn {
-			return m.agentFor(s.ID)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var pending, connecting, denied *serverActivationStatus
+	for _, s := range m.orderedServersLocked() {
+		if m.agents[s.ID] != nil {
+			if m.summary(s).SignedIn {
+				return m.agentUseLocked(s.ID, true)
+			}
+			continue
+		}
+		if m.certChanged[s.ID] {
+			continue
+		}
+		status, ok := m.activationProblem(s).(*serverActivationStatus)
+		if !ok {
+			continue
+		}
+		switch status.state {
+		case "keychainPending":
+			pending = status
+		case "connecting":
+			connecting = status
+		case "error":
+			denied = status
+		}
+	}
+	for _, status := range []*serverActivationStatus{pending, connecting, denied} {
+		if status != nil {
+			return nil, status
 		}
 	}
 	return nil, errors.New("sign in to a server first")
