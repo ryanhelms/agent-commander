@@ -35,6 +35,8 @@ import SwiftUI
 //                                           none and offers no inspector. Provider has two pages,
 //                                           a gap and an inline image; Live is empty except for
 //                                           W-047; Journal fails
+//   AGENT_COMMANDER_PREVIEW_ASSIGNMENT=long               give the sample run a long assignment, so
+//                                           the coordinator's assignment sheet wraps and scrolls
 //
 // Preview mode asks for a 1600 x 1000 window frame placed 62 pt below the top of the screen, as in
 // the concept captures. Production windows get no special sizing.
@@ -1169,8 +1171,18 @@ enum DesignFixture {
         "W-053": ["✓ consumer billing accepts sourceName", "✓ consumer audit accepts sourceName"]
     ]
 
-    private static let assignment =
-        "Plan and implement a retry policy for upstream requests. Keep non-idempotent calls safe."
+    private static let assignment: String = {
+        let short = "Plan and implement a retry policy for upstream requests. Keep non-idempotent calls safe."
+        guard ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_ASSIGNMENT"] == "long" else { return short }
+        // Long enough to wrap and scroll in the assignment sheet, with a line that has no spaces
+        // and a last line that shows the end was reached.
+        let steps = (1...40).map { step in
+            "\(step). Review failure path \(step): state which calls are safe to retry, the budget each "
+                + "request keeps, and the test that proves it. Report anything ambiguous before changing it."
+        }
+        return ([short, "", "relay/internal/upstream/retry/" + String(repeating: "policy_", count: 30) + "test.go", ""]
+                + steps + ["", "End of assignment."]).joined(separator: "\n")
+    }()
 
     private static let timeoutRequest = RequestPresentation(
         id: "Q-018", shortID: "Q-018",
