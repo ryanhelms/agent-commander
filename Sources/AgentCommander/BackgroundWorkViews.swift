@@ -109,16 +109,33 @@ struct BackgroundJobLine<Detail: View>: View {
                      failure: row.line.reason.map { ActivityFailure(outcome: .failed, reason: $0, exact: $0) })
     }
 
+    /// A running job's sentence and chevron shimmer. The mark, the time and the tag stay still.
     private var label: some View {
+        labelParts(shimmerMask: false)
+            .prettyShimmer(isActive: row.line.mark == .spinner, band: PrettyShimmer.band(bodySize: metrics.bodySize)) {
+                labelParts(shimmerMask: true)
+            }
+            .contentShape(Rectangle())
+    }
+
+    /// The label, or its shimmer mask: the same layout with the still parts hidden.
+    private func labelParts(shimmerMask: Bool) -> some View {
         HStack(alignment: .center, spacing: 8) {
-            BackgroundMark(mark: row.line.mark, size: metrics.density == .pip ? 10 : 12)
+            let markSize: CGFloat = metrics.density == .pip ? 10 : 12
+            if shimmerMask {
+                // The mark's footprint, without a second spinner running unseen.
+                Color.clear.frame(width: markSize, height: markSize)
+            } else {
+                BackgroundMark(mark: row.line.mark, size: markSize)
+            }
             ActivitySentenceText(sentence: row.line.sentence, metrics: metrics)
                 .lineLimit(metrics.density == .regular ? 2 : 1).truncationMode(.middle)
-            if let started = row.line.started { PrettyElapsedText(started: started, metrics: metrics) }
-            if let tag = row.line.tag { ActivityTagView(tag: tag, metrics: metrics) }
+            if let started = row.line.started {
+                PrettyElapsedText(started: started, metrics: metrics).opacity(shimmerMask ? 0 : 1)
+            }
+            if let tag = row.line.tag { ActivityTagView(tag: tag, metrics: metrics).opacity(shimmerMask ? 0 : 1) }
             if opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
         }
-        .contentShape(Rectangle())
     }
 }
 

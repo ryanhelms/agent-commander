@@ -10,13 +10,16 @@ import SwiftUI
 //   Atoms      ActivityTagView         the small monospaced state tag
 //              ActivityChevron         the disclosure mark after a sentence
 //              PrettySpinner           the live line's spinner; a hollow dot without evidence
+//              PrettyWorkingMark       the live line's mark while the agent works on its turn
+//              PrettyShimmer           the band of light across a running task's label
 //              StatusLamp              a lamp and a word
 //   Molecules  ActivitySentenceText    a sentence's plain, strong and monospaced parts
 //              ActivityLine            one sentence, its tag and chevron: a native button
 //              ActivityGroupSummary    the secondary-ink summary line and its "N failed"
 //              ActivityFailureLine     a failed or blocked call with its reason, never folded
 //              PrettyReportBlock       a reported result as quoted prose
-//              PrettyLiveLine          the open call, or Thinking with its elapsed time
+//              PrettyLiveLine          the open call, or Thinking with its elapsed time: the
+//                                      working mark and a shimmering label while the turn runs
 //              PrettyElapsedText       the time since a record's own start
 //              PrettyThoughtBody       a thought's text, in italic beside a rule
 //              PrettyPlanCard          a task checklist
@@ -158,6 +161,187 @@ struct PrettySpinner: View {
                 .padding(0.75)
                 .rotationEffect(.degrees(-90))
         }
+    }
+}
+
+/// The live line's mark while the agent works on its turn (DESIGN.md, "Pretty transcript"):
+/// three dots of different sizes in `live` ink circling one centre. Each dot swells and shrinks
+/// once a cycle, a third of a cycle after the one before, and a small dot falls in toward the
+/// centre, so the trio seems to tumble. One cycle takes `PrettyWorkingMark.period`, at a steady
+/// rate. It has the spinner's footprint. With Reduce Motion the dots stand still.
+struct PrettyWorkingMark: View {
+    struct Dot: Equatable {
+        var centre: CGPoint
+        var radius: CGFloat
+    }
+
+    /// One full cycle.
+    static let period: TimeInterval = 2.0
+    /// The turn the dots hold with Reduce Motion: three clearly different sizes, none touching.
+    static let restingTurn = 0.944
+    /// A dot's radius at the 12 pt mark: the measured 3 : 2 : 1.2 trio, sized to leave air
+    /// between the dots inside the mark.
+    static let largest: CGFloat = 1.75, smallest: CGFloat = 0.7
+
+    /// The three dots at `turn` (0 to 1, one cycle) inside a square `size` wide. The dots go
+    /// round the centre once while their sizes pass round the trio the other way. The largest
+    /// dot rides the outer orbit and the smallest sits near the centre. No dot leaves the square.
+    static func dots(turn: Double, size: CGFloat) -> [Dot] {
+        let unit = size / 12
+        return (0..<3).map { index in
+            let slot = Double(index) / 3
+            let angle = (slot + turn) * 2 * .pi
+            let swell = (1 + cos((slot - turn) * 2 * .pi)) / 2
+            let radius = (smallest + (largest - smallest) * swell) * unit
+            let orbit = (1.1 + 3.0 * swell) * unit
+            return Dot(centre: CGPoint(x: size / 2 + orbit * cos(angle), y: size / 2 + orbit * sin(angle)), radius: radius)
+        }
+    }
+
+    static func turn(at time: TimeInterval) -> Double {
+        time / period - (time / period).rounded(.down)
+    }
+
+    var size: CGFloat = 12
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                dots(turn: Self.restingTurn)
+            } else {
+                TimelineView(.animation) { context in
+                    dots(turn: Self.turn(at: context.date.timeIntervalSinceReferenceDate))
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+
+    private func dots(turn: Double) -> some View {
+        Canvas { context, canvas in
+            for dot in Self.dots(turn: turn, size: min(canvas.width, canvas.height)) {
+                let box = CGRect(x: dot.centre.x - dot.radius, y: dot.centre.y - dot.radius,
+                                 width: dot.radius * 2, height: dot.radius * 2)
+                context.fill(Path(ellipseIn: box), with: .color(Palette.live))
+            }
+        }
+    }
+}
+
+/// The band of light that crosses a running task's label (DESIGN.md, Motion, `shimmer`): one
+/// sweep from left to right, then rest. Time comes from the reference date, so every running
+/// line sweeps in phase. The values here are pure; `prettyShimmer` draws them.
+enum PrettyShimmer {
+    /// One sweep and its rest.
+    static let period: TimeInterval = 3.0
+    /// How long the band takes to cross the label.
+    static let sweep: TimeInterval = 0.6
+    /// Frames drawn each second while the band moves. None are drawn at rest.
+    static let framesPerSecond = 60.0
+    /// How far the glyphs lift from their own ink toward `foreground` at the band's centre.
+    static let peak = 0.92
+
+    /// The band's eased travel at `time`, 0 at the leading edge to 1 at the trailing edge.
+    /// Nil while the label rests.
+    static func progress(at time: TimeInterval) -> Double? {
+        let phase = time - (time / period).rounded(.down) * period
+        guard phase < sweep else { return nil }
+        let linear = phase / sweep
+        return linear * linear * (3 - 2 * linear)
+    }
+
+    /// The band's centre across a label `width` wide. It starts and ends wholly outside the label.
+    static func centre(progress: Double, width: CGFloat, band: CGFloat) -> CGFloat {
+        -band / 2 + CGFloat(progress) * (width + band)
+    }
+
+    /// The band's width for a transcript's body size: 182 pt at the focused worker's 14 pt.
+    static func band(bodySize: CGFloat) -> CGFloat { bodySize * 13 }
+
+    /// Ticks only while the band moves: each frame of a sweep, then one at its end that clears
+    /// the band. Nothing is drawn through the rest.
+    struct Schedule: TimelineSchedule {
+        func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+            let time = startDate.timeIntervalSinceReferenceDate
+            let cycle = (time / PrettyShimmer.period).rounded(.down)
+            let frame = ((time - cycle * PrettyShimmer.period) * PrettyShimmer.framesPerSecond).rounded(.down)
+            return Entries(cycle: cycle, frame: min(frame, Entries.lastFrame))
+        }
+
+        struct Entries: Sequence, IteratorProtocol {
+            /// The frame at the sweep's end. It is drawn a moment into the rest, so it clears the band.
+            static let lastFrame = (PrettyShimmer.sweep * PrettyShimmer.framesPerSecond).rounded()
+            var cycle: Double
+            var frame: Double
+
+            mutating func next() -> Date? {
+                let isLast = frame >= Self.lastFrame
+                let offset = isLast ? PrettyShimmer.sweep + 0.001 : frame / PrettyShimmer.framesPerSecond
+                if isLast { cycle += 1; frame = 0 } else { frame += 1 }
+                return Date(timeIntervalSinceReferenceDate: (isLast ? cycle - 1 : cycle) * PrettyShimmer.period + offset)
+            }
+        }
+    }
+}
+
+/// Draws `PrettyShimmer` over a label. The band is `foreground` ink cut to the shape of `mask`,
+/// so only glyphs light up and the label's own inks, size and layout stay as they are.
+private struct PrettyShimmerModifier<Mask: View>: ViewModifier {
+    let isActive: Bool
+    let band: CGFloat
+    @ViewBuilder let mask: () -> Mask
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        if isActive, !reduceMotion {
+            content.overlay {
+                TimelineView(PrettyShimmer.Schedule()) { context in
+                    GeometryReader { proxy in
+                        if let progress = PrettyShimmer.progress(at: context.date.timeIntervalSinceReferenceDate) {
+                            light
+                                .frame(width: band, height: proxy.size.height)
+                                .position(x: PrettyShimmer.centre(progress: progress, width: proxy.size.width, band: band),
+                                          y: proxy.size.height / 2)
+                        }
+                    }
+                }
+                .mask { mask() }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        } else {
+            content
+        }
+    }
+
+    /// A soft band: clear at both edges, `foreground` at the centre, eased between.
+    private var light: some View {
+        let ink = Palette.foreground
+        return LinearGradient(stops: [
+            .init(color: ink.opacity(0), location: 0),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.15), location: 0.2),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.65), location: 0.38),
+            .init(color: ink.opacity(PrettyShimmer.peak), location: 0.5),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.65), location: 0.62),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.15), location: 0.8),
+            .init(color: ink.opacity(0), location: 1),
+        ], startPoint: .leading, endPoint: .trailing)
+    }
+}
+
+extension View {
+    /// The running shimmer over this whole view. Still, and no timeline, when `isActive` is
+    /// false or Reduce Motion is on.
+    func prettyShimmer(isActive: Bool, band: CGFloat) -> some View {
+        modifier(PrettyShimmerModifier(isActive: isActive, band: band) { self })
+    }
+
+    /// The running shimmer over the parts of this view that `mask` draws. `mask` has this
+    /// view's layout, with each part that must stay still hidden.
+    func prettyShimmer<Mask: View>(isActive: Bool, band: CGFloat, @ViewBuilder mask: @escaping () -> Mask) -> some View {
+        modifier(PrettyShimmerModifier(isActive: isActive, band: band, mask: mask))
     }
 }
 
@@ -641,35 +825,60 @@ struct PrettyLiveLine: View {
         .frame(maxWidth: metrics.readingWidth, alignment: .leading)
     }
 
+    /// The record says the turn runs, over a live connection: the one condition for the working
+    /// mark, the shimmer and the timer. Otherwise a hollow dot and "Last known".
+    private var isWorking: Bool { live.isActive && !live.isDisconnected }
+
     private var row: some View {
-        HStack(alignment: .center, spacing: metrics.density == .pip ? 7 : 10) {
-            PrettySpinner(isSpinning: live.isActive && !live.isDisconnected, size: metrics.density == .pip ? 10 : 12)
+        let spacing: CGFloat = metrics.density == .pip ? 7 : 10
+        let markSize: CGFloat = metrics.density == .pip ? 10 : 12
+        return HStack(alignment: .center, spacing: spacing) {
+            if isWorking {
+                PrettyWorkingMark(size: markSize)
+            } else {
+                PrettySpinner(isSpinning: false, size: markSize)
+            }
             switch subject {
             case .call(let step):
-                if live.isDisconnected || !live.isActive {
+                if isWorking {
+                    ActivitySentenceText(sentence: step.sentence, metrics: metrics)
+                        .prettyShimmer(isActive: true, band: shimmerBand)
+                    elapsed(since: callStarted)
+                } else {
                     (Text("Last known: ").foregroundColor(Palette.secondary)
                      + Text(verbatim: step.sentence.plain.prefix(1).lowercased() + step.sentence.plain.dropFirst())
                         .foregroundColor(Palette.secondary))
                         .font(metrics.body)
-                } else {
-                    ActivitySentenceText(sentence: step.sentence, metrics: metrics)
-                    elapsed(since: callStarted)
                 }
             case .thinking(_, let started):
-                if live.isDisconnected || !live.isActive {
-                    Text("Last known: thinking").font(metrics.body).foregroundStyle(.inkSecondary)
-                } else {
-                    Text("Thinking").font(metrics.body).foregroundStyle(.inkSecondary)
-                    elapsed(since: started)
-                }
-                if thought != nil { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
+                // The word and the chevron shimmer as one label; the time between them stays still.
+                thinkingLabel(started: started, spacing: spacing, shimmerMask: false)
+                    .prettyShimmer(isActive: isWorking, band: shimmerBand) {
+                        thinkingLabel(started: started, spacing: spacing, shimmerMask: true)
+                    }
             case .responding(let name):
                 Text("\(name) is responding").font(metrics.body).foregroundStyle(.inkSecondary)
+                    .prettyShimmer(isActive: isWorking, band: shimmerBand)
             }
             Spacer(minLength: 0)
         }
         .lineLimit(metrics.density == .regular ? 2 : 1).truncationMode(.middle)
         .contentShape(Rectangle())
+    }
+
+    private var shimmerBand: CGFloat { PrettyShimmer.band(bodySize: metrics.bodySize) }
+
+    /// Thinking's word, time and chevron, or their shimmer mask: the same layout with the time hidden.
+    private func thinkingLabel(started: Date?, spacing: CGFloat, shimmerMask: Bool) -> some View {
+        HStack(alignment: .center, spacing: spacing) {
+            if isWorking {
+                Text("Thinking").font(metrics.body).foregroundStyle(.inkSecondary)
+                elapsed(since: started).opacity(shimmerMask ? 0 : 1)
+            } else {
+                Text("Last known: thinking").font(metrics.body).foregroundStyle(.inkSecondary)
+            }
+            if thought != nil { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
+        }
     }
 
     @ViewBuilder private func elapsed(since started: Date?) -> some View {

@@ -156,6 +156,7 @@ import Testing
             "color.border": "#383B44", "color.foreground": "#F5F5F9", "color.secondary": "#B7BAC6",
             "color.focus": "#B5D6FF", "color.working": "#A8E0C0", "color.attention": "#F1C587",
             "color.failure": "#EC9B92", "color.selection": "#283344", "color.onAccent": "#101825",
+            "color.live": "#D67B6A",
             "radius.tile": "2", "radius.control": "2", "radius.chip": "1",
             "line.hairline": "1", "line.selectedMarker": "2", "line.focusedField": "1.5",
             "type.title": "system 14 semibold tracking 0", "type.name": "system 13 medium tracking 0",
