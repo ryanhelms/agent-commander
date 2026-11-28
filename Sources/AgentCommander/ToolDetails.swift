@@ -64,6 +64,50 @@ struct PlanItem: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// The console event an identified ACP plan record was kept from, as the service states it on
+/// the record (`plan_event`): that event's own cursor and plan identity, and its turn when it
+/// had one. A console's sequence numbers start again when it is rebuilt from provider history,
+/// while its records persist, so a sequence alone can name a record kept from another event.
+/// The record belongs to an event only when these agree with the event's own reference.
+///
+/// Decoding never fails: a member that is missing or not a string leaves the binding unusable,
+/// and it then matches no event.
+struct PlanEventBinding: Decodable, Equatable, Sendable {
+    var cursor: String
+    var planIdentity: String
+    /// Nil when the event was outside a turn.
+    var turnID: String?
+
+    private enum CodingKeys: String, CodingKey { case cursor, planIdentity, turnID = "turnId" }
+
+    init(cursor: String, planIdentity: String, turnID: String? = nil) {
+        self.cursor = cursor
+        self.planIdentity = planIdentity
+        self.turnID = turnID
+    }
+
+    init(from decoder: Decoder) throws {
+        let members = try? decoder.container(keyedBy: CodingKeys.self)
+        func text(_ key: CodingKeys) -> String { (try? members?.decode(String.self, forKey: key)) ?? "" }
+        cursor = text(.cursor)
+        planIdentity = text(.planIdentity)
+        if members?.contains(.turnID) == true {
+            // A turn that is stated must be a usable string, or the binding names no event.
+            let turn = text(.turnID)
+            turnID = turn
+            if turn.isEmpty { cursor = "" }
+        } else {
+            turnID = nil
+        }
+    }
+
+    /// The record was kept from the event with exactly this cursor, plan identity and turn.
+    func names(cursor: String?, planIdentity: String?, turnID: String?) -> Bool {
+        guard let cursor, let planIdentity, !self.cursor.isEmpty, !self.planIdentity.isEmpty else { return false }
+        return self.cursor == cursor && self.planIdentity == planIdentity && self.turnID == turnID
+    }
+}
+
 struct ToolDetailSummary: Decodable, Equatable, Sendable {
     let key: String
     let kind: String
@@ -95,9 +139,13 @@ struct ToolDetailSummary: Decodable, Equatable, Sendable {
     /// The one file and line an ACP tool reported for this call. Nil when the service sent
     /// none; a member that is not one valid location holds no value (`ToolLocation.swift`).
     var location: ToolLocationField? = nil
+    /// A `plan` record of an identified ACP plan: the console event it was kept from. Nil on
+    /// every other record, and on one stored before the service stated it.
+    var planEvent: PlanEventBinding? = nil
 
     private enum CodingKeys: String, CodingKey {
         case key, kind, sequence, name, title, plan, truncated, revision, fields, state, location
+        case planEvent = "plan_event"
         case toolKind = "tool_kind", startedAt = "started_at", endedAt = "ended_at"
         case inputBytes = "input_bytes", resultBytes = "result_bytes"
         case toolUseID = "tool_use_id", jobKind = "job_kind"

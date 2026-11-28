@@ -545,6 +545,19 @@ struct ActivityFacts {
         return plans[sequence]
     }
 
+    /// The plan record of an identified ACP plan update: the record at the event's sequence,
+    /// only when the event was observed live and the record states that it was kept from this
+    /// very event, by the event's own cursor, plan identity and turn. A console rebuilt from
+    /// provider history numbers its events afresh while the records persist, so a later live
+    /// event can have the sequence of a record kept from another one. A record that states no
+    /// event, or another event, is not read: the card then shows its fallback.
+    func identifiedPlan(for entry: TranscriptEntry) -> ToolDetailSummary? {
+        guard let origin = entry.origin, origin.planIsLive, let record = plan(for: entry),
+              record.planEvent?.names(cursor: origin.planCursor, planIdentity: origin.planIdentity,
+                                      turnID: origin.planTurnID) == true else { return nil }
+        return record
+    }
+
     private static func bySequence(_ records: [ToolDetailSummary]) -> [Int: ToolDetailSummary] {
         var found: [Int: ToolDetailSummary] = [:]
         var repeated: Set<Int> = []
@@ -1308,10 +1321,11 @@ enum ActivityConversation {
         func identifiedPlan(_ entry: TranscriptEntry, identity: String) {
             flush()
             let removes = entry.origin?.kind == TranscriptOrigin.planRemovedKind
-            // The record kept from this very event, by its console sequence. A removal has none,
-            // and neither has an event this console did not observe live: provider history is
-            // numbered afresh, so its sequence may be that of an unrelated older record.
-            let items = removes || entry.origin?.planIsLive != true ? nil : facts.plan(for: entry)?.plan
+            // The record kept from this very event: at its console sequence, and stating the
+            // event's own cursor, identity and turn. A removal has none, and neither has an event
+            // this console did not observe live: provider history is numbered afresh, so its
+            // sequence may be that of an unrelated older record.
+            let items = removes ? nil : facts.identifiedPlan(for: entry)?.plan
             let count = removes ? nil : entry.origin?.itemCount
             if let index = identified[identity], case .plan(var card) = out[index], !card.isRemoved || removes {
                 card.entries.append(entry)

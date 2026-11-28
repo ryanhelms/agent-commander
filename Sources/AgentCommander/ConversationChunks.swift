@@ -70,6 +70,11 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// provider history numbered afresh, while the records kept from its earlier live events
     /// remain under their old sequences; such an event's sequence names no record.
     var planIsLive = false
+    /// The cursor and the turn of an identified plan event's own reference, when each is a
+    /// non-empty string. A stored plan record is this event's only when it names both, and the
+    /// identity, exactly (`PlanEventBinding`). Never drawn, spoken or copied.
+    var planCursor: String? = nil
+    var planTurnID: String? = nil
 }
 
 enum ConversationChunks {
@@ -174,6 +179,10 @@ extension TranscriptOrigin {
         notice = NoticeMark(message: message, acp: acp)
         planIdentity = Self.planIdentity(kind: kind, acp: acp)
         planIsLive = planIdentity != nil && acp["source"]?.stringValue == ConversationChunks.liveSource
+        if planIdentity != nil {
+            planCursor = acp["cursor"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+            planTurnID = acp["turnId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        }
     }
 
     /// The ACP session update that states a plan as it now is, and the one that removes a plan.
