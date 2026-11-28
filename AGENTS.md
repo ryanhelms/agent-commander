@@ -18,10 +18,13 @@ Use Claude Opus for every new Commander-managed Claude session and project Claud
 
 Before any design or interface task, read and follow the [shared design rules](.codex/rules/DESIGN.md). This covers new views, restyles, components, tokens, motion, mockups, and UI defect fixes.
 
-Before every code change, read and follow the [shared design pattern rules](.codex/rules/DESIGN-PATTERNS.md). When adding a shared rules file under `.codex/rules/`, add its task-specific reading instruction and Claude file import here. Claude loads these imports through `CLAUDE.md`.
+Before every code change, read and follow the [shared design pattern rules](.codex/rules/DESIGN-PATTERNS.md).
+
+Before adding, moving, renaming, or deleting a project rule, follow the [shared rule authoring requirements](.codex/rules/SHARED-RULES.md).
 
 @.codex/rules/DESIGN.md
 @.codex/rules/DESIGN-PATTERNS.md
+@.codex/rules/SHARED-RULES.md
 
 ## Using this Mac
 
