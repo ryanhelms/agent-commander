@@ -184,6 +184,16 @@ func TestCredentialFileAndRunnerStates(t *testing.T) {
 func TestMonitorPublishesCredentialChangeWithoutPolling(t *testing.T) {
 	f := newFixture(t)
 	f.install(t, "qwen")
+	credentialDir := filepath.Join(f.home, ".qwen")
+	if err := os.Mkdir(credentialDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Stage outside the watched home on the same filesystem so the monitor
+	// sees one change with the completed credential file already in place.
+	staged := filepath.Join(filepath.Dir(f.home), "oauth_creds.json")
+	if err := os.WriteFile(staged, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	entries := []Entry{entry(t, "qwen"), entry(t, "codex")}
 	m, err := newMonitor(t.TempDir(), f.env, entries)
 	if err != nil {
@@ -207,8 +217,9 @@ func TestMonitorPublishesCredentialChangeWithoutPolling(t *testing.T) {
 		t.Fatal("monitor ran commands without a change")
 	}
 	f.advance(time.Minute) // past the recheck spacing
-	os.MkdirAll(filepath.Join(f.home, ".qwen"), 0700)
-	os.WriteFile(filepath.Join(f.home, ".qwen", "oauth_creds.json"), []byte("{}"), 0600)
+	if err := os.Rename(staged, filepath.Join(credentialDir, "oauth_creds.json")); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case frame := <-frames:
 		if frame[0].ID != "qwen" || frame[0].Auth.State != SignedIn || frame[0].Changed != "auth" || frame[1].Changed != "" {
