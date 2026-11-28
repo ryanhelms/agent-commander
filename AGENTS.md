@@ -14,7 +14,11 @@ Use Claude Opus for every new Commander-managed Claude session and project Claud
 - Ship visible progress quickly. Cover the main path first; don't hold a working increment back to fix every edge case.
 - Build only what the plans describe ([MVP plan](MVP-PLAN.md), the design documents under `design/`). Don't invent functionality that isn't in a plan; propose it first.
 
-Keep all design tokens, components, fixtures and assets in this repository. The repository named `design-system` is a separate project.
+## Shared rules
+
+Before any design or interface task, read and follow the [shared design rules](.codex/rules/DESIGN.md). This covers new views, restyles, components, tokens, motion, mockups, and UI defect fixes. When adding a shared rules file under `.codex/rules/`, add its task-specific reading instruction and Claude file import here. Claude loads these imports through `CLAUDE.md`.
+
+@.codex/rules/DESIGN.md
 
 ## Using this Mac
 
@@ -28,10 +32,6 @@ Any session or agent may use this Mac whenever the work needs it, without asking
 
 Use the primary checkout’s `dist/Agent Commander.app` for the user-facing cockpit. Its name is **Agent Commander** and its bundle identifier is `local.agentcommander.cockpit`. Run `make run` in that checkout to build it on first use or reopen the existing bundle through Launch Services. Use the same app for interactive QA and session demos. When new or changed functionality is ready to test, run `make reload` in the checkout that holds the change, without asking first. It builds, quits the running app, and opens the new build; add `SERVICE=1` when it touches the Go service (`cmd/`, `internal/`, `harness/`, `go.mod`) and `RELAY=1` when it touches the relay (`multiplayer/`). From a cloud session, run it on the user's Mac through a Remote Control session. If it fails, report what failed: the script leaves the previous build running only when the compile fails, and says so. `make dev` keeps a watch loop running that does the same on every source change. From Remote Control, run `cd` into the worktree as its own command, then `make reload` (with any options) as the next one, so the `Bash(make reload:*)` allow rule matches. Coordinate any other quit and reopen, such as a change to launch arguments or environment, with the user first. Preserve the developer’s chosen `CODE_SIGN_IDENTITY` for subsequent builds. Use headless fixtures for independent verification while the user is working in Commander.
 
-Apply Brad Frost’s Atomic Design strictly to each implemented view. Start with the [component map](design/system/ATOMIC-DESIGN.md) and [local tokens](design/system/tokens.json). Compose native controls and styled atoms into molecules, then feature organisms, layout templates and pages. A standard native control can serve directly as an atom. Share component implementations between the wall, zoom and PiP when they have the same responsibility. Components receive values and emit targeted actions. The API and feature models own domain operations and subscriptions.
-
-When changing a screen, identify its actual Swift components and compare the rendered state with the matching [original screenshot](design/concepts/index.html). Record any visible differences that matter. Use the approved coordinator wall and PiP as the starting point for the local build.
-
 ### Restart when ready to test
 
 When new or changed functionality is ready for the user to test, rebuild and restart the app without asking. Do it on this Mac, through a Remote Control session when you work from the cloud.
@@ -42,19 +42,11 @@ When new or changed functionality is ready for the user to test, rebuild and res
 4. If the change touches the relay (`multiplayer/`, `commander-relay`) and the relay runs under launchd, restart it too: `launchctl kickstart -k gui/$(id -u)/local.agentcommander.relay`. Then check `commander-relay host status`.
 5. Tell the user what you restarted and from which branch. If a build, quit or restart fails, say which step failed and include its error output. Leave the previous app running when the build fails.
 
-
-[DESIGN.md](DESIGN.md) is the visual source of truth for every surface: the main window, zoom, PiP and the network tray. Read it before any design or interface task, including new views, restyles, components, tokens, motion, mockups and UI defect fixes.
-
-- Use its tokens and component inventory. Reuse an existing atom or molecule before adding one.
-- If a view needs something DESIGN.md does not cover, propose the addition and update DESIGN.md in the same change. Do not invent a one-off style.
-- Keep Console mode rendering as it is. In Terminal mode, leave the provider's output untouched; its well and frame may change only as the "Quiet theme" section of DESIGN.md describes. The design applies to everything around them. The Pretty transcript follows the "Pretty transcript" section of DESIGN.md.
-- When a change adds or alters a component, token or motion, update DESIGN.md in the same commit.
-
 ## Backend
 
 Before implementing a flow, consult the [existing GoF and Enterprise Integration Patterns decisions](design/PATTERN-DECISIONS.md). Make a short note for a new boundary or changed approach. Deliver working increments as described in the [MVP plan](MVP-PLAN.md).
 
-Use the [design pattern index](.context/design-patterns/index.md) to find a pattern by problem or category. Follow its “Commonly Used With” links when designing related behavior. Treat the examples as design references and the decision record as the source for project adoption.
+Start relay design work at the [design pattern index](.context/design-patterns/index.md) and follow the applicable [project decision](design/PATTERN-DECISIONS.md). Use the index to find a pattern by problem or category. Follow its “Commonly Used With” links when designing related behavior. Treat the examples as design references and the decision record as the source for project adoption.
 
 Build the new multiplayer relay in Go. Follow the [relay architecture](design/MULTIPLAYER-RELAY.md) for connection ownership, one-to-many delivery and extension contracts.
 
