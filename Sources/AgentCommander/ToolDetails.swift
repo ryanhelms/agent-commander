@@ -13,8 +13,10 @@ import Observation
 //                  TranscriptSettings   what new records keep, and whether secrets are hidden
 //   Feature layer  ToolDetailStore      summaries by worker, read after the last revision seen;
 //                                       full records read one at a time, on request; one
-//                                       read after the owner's reply to a form request; a page
-//                                       that lists the service's keys drops every other copy
+//                                       read after the owner's reply to a form request; one
+//                                       read at a time per worker, and one more for the calls
+//                                       that arrived during it; a page that lists the
+//                                       service's keys drops every other copy
 //   Boundary       ToolDetailSource     the four service calls, as closures
 //
 // The store never guesses: a record stored before the service kept details has no entry, and the
@@ -270,6 +272,12 @@ final class ToolDetailStore {
     /// The page read in flight for each worker, by its token. A read ends only its own token, so
     /// one left over from the last service cannot end the read that replaced it.
     @ObservationIgnored private var pageReads: [String: Int] = [:]
+    /// The calls waiting for a worker's read in flight to end, each under its own token. Each
+    /// then reads, or returns. An entry is resumed by whoever removes it, so exactly once.
+    @ObservationIgnored private var pageWaiters: [String: [Int: CheckedContinuation<Void, Never>]] = [:]
+    /// The latest page request that ended with an answer, by worker. Requests share the tokens'
+    /// count, so a later number is a request sent later.
+    @ObservationIgnored private var answeredReads: [String: Int] = [:]
     /// The full-record reads in flight, by worker and key.
     @ObservationIgnored private var recordReads: [ReadID: RecordRead] = [:]
     @ObservationIgnored private var lastToken = 0
@@ -325,22 +333,35 @@ final class ToolDetailStore {
     /// Reads the worker's summaries changed since the last revision seen. Called when its
     /// transcript gains an entry or its state changes, never on a timer.
     ///
-    /// A call that arrives while a read is in flight starts no second one. With `afterInFlight`
-    /// (the read after a form reply), the worker is then read once more when that read ends,
-    /// from the revision it returned: it may have been answered before the reply's record was
-    /// stored. Any other overlapping call is dropped, as before.
+    /// One read runs per worker at a time. A call that arrives during it starts no second one:
+    ///
+    /// - With `afterInFlight` (the read after a form reply) it returns at once, and the read in
+    ///   flight is followed by one more, from the revision it returned: it may have been
+    ///   answered before the reply's record was stored.
+    /// - Any other call waits. It needs a page asked for after it arrived, so it returns once
+    ///   such a request has ended with an answer. The first call to find none makes the request
+    ///   itself, and the calls that arrived with it wait for that one. A read whose caller was
+    ///   cancelled ends with no answer, so the latest transcript's call still reads its page.
+    ///
+    /// The read belongs to the call that makes it, and is cancelled with it. A call that is
+    /// already cancelled asks nothing. One cancelled while it waits returns at once, without
+    /// waiting for the read in flight. One whose service changed reads nothing.
     ///
     /// A page that lists the service's keys (`retainedKeys`) is the whole truth about which
     /// records exist: every cached summary and full record it does not list is dropped, except a
     /// full record whose revision is later than the page's. A page that lists none (an older
     /// service) drops nothing, and ends what the last list said.
     func refresh(worker: String, afterInFlight: Bool = false) async {
-        guard let source else { return }
-        guard pageReads[worker] == nil else {
-            if afterInFlight { rereads.insert(worker) }
-            return
-        }
+        // A cancelled call's transcript was replaced: it asks nothing, even with no read in flight.
+        guard let source, !Task.isCancelled else { return }
         let generation = settingsGeneration
+        if pageReads[worker] != nil {
+            if afterInFlight {
+                rereads.insert(worker)
+                return
+            }
+            guard await mustReadAfterWaiting(worker: worker, arrived: lastToken, generation: generation) else { return }
+        }
         lastToken += 1
         let token = lastToken
         pageReads[worker] = token
@@ -348,17 +369,63 @@ final class ToolDetailStore {
             if pageReads[worker] == token {
                 pageReads[worker] = nil
                 rereads.remove(worker)
+                pageWaiters.removeValue(forKey: worker)?.values.forEach { $0.resume() }
             }
         }
         repeat {
             rereads.remove(worker)
             let after = revisions[worker] ?? 0
+            lastToken += 1
+            let request = lastToken
             let page = try? await source.page(worker, after)
             // The service changed during the read: the answer is the last service's.
             guard generation == settingsGeneration, pageReads[worker] == token else { return }
-            guard let page else { continue }
-            apply(page, worker: worker, after: after)
+            if let page { apply(page, worker: worker, after: after) }
+            // A cancelled call's request ends unanswered, so a call that waited makes its own.
+            // A request the service failed is an answer: the calls that waited do not repeat it.
+            if page != nil || !Task.isCancelled { answeredReads[worker] = request }
         } while rereads.contains(worker)
+    }
+
+    /// Waits while another call reads the worker. True when this call must make the next
+    /// request: none sent after it arrived (`arrived`, the token count then) has been answered,
+    /// and none is in flight. False when one has been, or when this call is cancelled or its
+    /// service has changed.
+    private func mustReadAfterWaiting(worker: String, arrived: Int, generation: Int) async -> Bool {
+        while pageReads[worker] != nil {
+            await readInFlightEnded(worker: worker)
+            guard generation == settingsGeneration, !Task.isCancelled else { return false }
+            if (answeredReads[worker] ?? 0) > arrived { return false }
+        }
+        return true
+    }
+
+    /// Returns when the worker's read in flight ends, the service changes, or this call is
+    /// cancelled, whichever is first.
+    ///
+    /// The wait is filed under a token of its own. Cancellation removes that one entry, so it
+    /// cannot touch a wait filed later, and an entry already taken (by the read's end or a
+    /// change of service) is left alone. A call cancelled before its wait is filed files none.
+    private func readInFlightEnded(worker: String) async {
+        lastToken += 1
+        let token = lastToken
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume()
+                } else {
+                    pageWaiters[worker, default: [:]][token] = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.endWait(worker: worker, token: token) }
+        }
+    }
+
+    private func endWait(worker: String, token: Int) {
+        guard let waiter = pageWaiters[worker]?.removeValue(forKey: token) else { return }
+        if pageWaiters[worker]?.isEmpty == true { pageWaiters[worker] = nil }
+        waiter.resume()
     }
 
     private func apply(_ page: ToolDetailPage, worker: String, after: UInt64) {
@@ -507,7 +574,8 @@ final class ToolDetailStore {
     /// until the new service says what it holds.
     ///
     /// Its records go too: every summary and full copy, and what was known about its reads. A
-    /// read still in flight belongs to the last service, and its answer is dropped.
+    /// read still in flight belongs to the last service, and its answer is dropped. A call
+    /// waiting for that read was for the last service's transcript: it ends without reading.
     func serviceChanged() {
         settingsGeneration += 1
         isLoadingSettings = false
@@ -519,9 +587,13 @@ final class ToolDetailStore {
         revisions = [:]
         retained = [:]
         pageReads = [:]
+        answeredReads = [:]
         recordReads = [:]
         rereads = []
         missing = [:]
+        let waiters = pageWaiters
+        pageWaiters = [:]
+        waiters.values.forEach { $0.values.forEach { $0.resume() } }
     }
 
     /// Saves a change. The shown value moves only when the service accepts it.

@@ -276,12 +276,19 @@ private func page(_ revision: UInt64, _ records: [ToolDetailSummary] = [], retai
         #expect(store.summaries(worker: "w").isEmpty && store.record(worker: "w", key: "b") == nil)
 
         // The old read ending did not end the new one: a second call still starts no request.
-        await store.refresh(worker: "w")
+        // It waits for the new read, then asks once for the page after it (issue #206).
+        let second = Task { await store.refresh(worker: "w") }
+        await Task.yield()
         let asked = await service.pages.asked.count, held = await service.pages.held
         #expect(asked == 3 && held == 1)
         await service.pages.release(.success(page(2, [summary("gone", 2)], retained: ["gone"])))
         await newPage.value
         #expect(store.summaries(worker: "w").keys.sorted() == ["gone"])
+        while await service.pages.asked.count == 3 { await Task.yield() }
+        await service.pages.release(.success(page(2, retained: ["gone"])))
+        await second.value
+        // Whenever the second call ran, it never asked the new service beside the read in flight.
+        #expect(await service.pages.asked == ["w@0", "w@7", "w@0", "w@2"])
 
         // What the first service did not hold is asked of the new one, and the cursor is its own.
         await service.open("gone", revision: 2)
