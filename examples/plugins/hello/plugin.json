@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "id": "example.hello",
+  "version": "1.0.0",
+  "name": "Hello plugin",
+  "description": "A dependency-free example: echo text and list the granted project's top-level files.",
+  "command": ["node", "server.mjs"],
+  "contributes": {
+    "tools": [
+      { "mcp_tool": "echo", "id": "example.hello.echo", "version": 1, "action": "read" },
+      { "mcp_tool": "project_files", "id": "example.hello.project_files", "version": 1, "action": "read" }
+    ]
+  },
+  "settings_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "greeting": { "type": "string", "maxLength": 40 } }
+  }
+}

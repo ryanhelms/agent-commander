@@ -106,6 +106,12 @@ To add a brokered connector, declare a versioned `toolregistry.Tool` with a read
 
 Run the connector proof with `AGENT_COMMANDER_TEST_INTEGRATION=1 go test -count=1 ./cmd/agentctl -run '^TestLinearLookupThroughAgentctlMCP$'`.
 
+## User plugins
+
+User plugins extend the scoped coordinator tools without installing code in the service. A plugin is an out-of-process MCP server with a manifest. `agentctl plugin install` probes it once, freezes its tool schemas and pins a digest of its files. Installing grants nothing; `tool-grants.json` remains the only route to an agent. `internal/plugins` gives `toolregistry.Load` one registered tool per contributed tool, so discovery, authorization, validation, deadlines and result limits stay on the existing Facade path.
+
+Each bound handler is an [Adapter](../.context/design-patterns/adapter.md) from the registry handler to MCP `tools/call`. It passes the resolved project scope and grant settings in `_meta`. One supervisor per plugin acts as a [Service Activator](../.context/design-patterns/service-activator.md). It starts the process lazily from a stripped environment without Commander credentials, verifies the digest before each start, and replaces the process after an exit or a missed deadline. A refused plugin keeps its tools registered with a fixed unavailable outcome, so its grants do not stop the service. This follows the out-of-process rule for third-party extensions in the [relay architecture](MULTIPLAYER-RELAY.md). The process boundary isolates address space and credentials but not file access; sandboxing is a later increment. [User plugins](PLUGINS.md)
+
 ## Incremental follow-ups
 
 A developer-held managed worker keeps its running assignment available between completed turns, including after the coordinator finishes and the service restarts. Releasing the final held worker re-evaluates ordinary run completion. An explicit stop or a coordinator failure still ends the run.
