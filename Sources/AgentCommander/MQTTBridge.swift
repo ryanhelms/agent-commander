@@ -2,11 +2,14 @@ import Foundation
 import Observation
 import SwiftUI
 
-// The MQTT Bridge plugin's panel: what the local MQTT Bridge daemon carries, read from its own
-// HTTP API on the loopback (`mqttbridge serve --http 127.0.0.1:18830`). The app only reads;
-// publishing stays in the bridge's own web UI.
+// The MQTT Bridge plugin's panel: what the shared MQTT Bridge carries, read from its own HTTP
+// API. The bridge runs once on the tailnet and mirrors the MQTT brokers ("sources") people add
+// in its web UI. Its address is the `bridge_url` setting of the plugin's grants, the same one
+// the plugin's tools read. The app only reads; adding sources and publishing stay in the
+// bridge's own web UI.
 //
-//   Values         MQTTStatus           the broker's counters
+//   Values         MQTTStatus           the broker's counters, its sources and who is viewing
+//                  MQTTSource           one mirrored broker and its connection
 //                  MQTTMessage          one recorded message
 //                  MQTTTopic            a topic, its count and its last message
 //                  MQTTTopicNode        one level of the topic tree
@@ -22,9 +25,49 @@ import SwiftUI
 enum MQTTBridge {
     /// The plugin whose panel this is.
     static let pluginID = "adag.mqtt"
-    /// Where the daemon serves its API and its web UI.
-    static let address = "127.0.0.1:18830"
-    static var webUI: URL { URL(string: "http://\(address)")! }
+    /// Where the bridge is read when no grant names one: a bridge run on this Mac.
+    static let defaultAddress = "127.0.0.1:18830"
+    /// The grant setting that names the bridge.
+    static let urlSetting = "bridge_url"
+
+    static func webUI(_ address: String) -> URL { URL(string: "http://\(address)")! }
+
+    /// The `host:port` of a `bridge_url`, under the plugin's own rule: plain http with no
+    /// credentials, path or query, at a loopback or tailnet (100.64.0.0/10) address, with a port.
+    /// Nil for anything else, so a grant can't point the app at the open internet or the LAN.
+    static func address(bridgeURL: String) -> String? {
+        guard let parts = URLComponents(string: bridgeURL.trimmingCharacters(in: .whitespaces)),
+              parts.scheme?.lowercased() == "http", parts.user == nil, parts.password == nil,
+              parts.query == nil, parts.fragment == nil, parts.path.isEmpty || parts.path == "/",
+              let host = parts.host?.lowercased(), let port = parts.port, (1...65_535).contains(port),
+              host == "localhost" || isLoopbackOrTailnet(host) else { return nil }
+        return "\(host):\(port)"
+    }
+
+    /// 127.0.0.0/8 or 100.64.0.0/10, written as a dotted IPv4 address.
+    static func isLoopbackOrTailnet(_ host: String) -> Bool {
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ $0.map { (0...255).contains($0) } ?? false }) else { return false }
+        let first = octets[0]!, second = octets[1]!
+        return first == 127 || (first == 100 && (64...127).contains(second))
+    }
+
+    /// The bridge the plugin's grants name. Grants the running service loaded come first, then
+    /// by checkout path, so the choice is stable. Grants without a valid `bridge_url` are skipped;
+    /// with none left, a bridge on this Mac.
+    static func address(in plugins: [Plugin]) -> String {
+        let grants = plugins.first { $0.id == pluginID }?.tools.flatMap(\.grants) ?? []
+        let ordered = grants.sorted { ($0.active ? 0 : 1, $0.project) < ($1.active ? 0 : 1, $1.project) }
+        for grant in ordered {
+            if case .string(let raw)? = grant.settings?.objectValue?[urlSetting], let address = address(bridgeURL: raw) {
+                return address
+            }
+        }
+        return defaultAddress
+    }
+
+    /// Whether the address is on this Mac, for the words the panel uses.
+    static func isLocal(_ address: String) -> Bool { address.hasPrefix("127.") || address.hasPrefix("localhost:") }
     /// The most messages the live list keeps.
     static let messageLimit = 300
     /// How many recorded messages are read when the list opens or its topic changes.
@@ -46,6 +89,10 @@ struct MQTTStatus: Equatable, Sendable {
     var messagesRecorded = 0
     /// Topics the bridge stopped tracking because it holds too many.
     var topicsDropped = 0
+    /// The brokers the bridge mirrors, as everyone on the tailnet sees them.
+    var sources: [MQTTSource] = []
+    /// Who the bridge took this Mac's request for. Nil from a bridge older than sources.
+    var viewer: MQTTViewer? = nil
 
     /// "2 d 4 h", "47 min", "12 s".
     var uptime: String {
@@ -57,6 +104,32 @@ struct MQTTStatus: Equatable, Sendable {
         default: return "\(seconds / 86_400) d \(seconds % 86_400 / 3600) h"
         }
     }
+}
+
+/// One broker the bridge mirrors. Its messages appear under `prefix/`.
+struct MQTTSource: Identifiable, Equatable, Sendable {
+    let id: String
+    var name = ""
+    /// The broker, `mqtt://host:port`.
+    var url = ""
+    /// The filter subscribed on the broker.
+    var topics = "#"
+    var prefix = ""
+    var addedBy = ""
+    var addedAt: Date? = nil
+    var connected = false
+    var messages = 0
+    var lastError = ""
+
+    /// The filter that reads this source's messages in the bridge.
+    var filter: String { MQTTTopicTree.filter(for: prefix) }
+}
+
+/// Who the bridge took a request for: a person's device may change sources, a tagged one may not.
+struct MQTTViewer: Equatable, Sendable {
+    var login = ""
+    var device = ""
+    var canEdit = false
 }
 
 struct MQTTMessage: Identifiable, Equatable, Sendable {
@@ -274,13 +347,49 @@ enum MQTTSnapshot {
         let topics: Int?
         let messages_recorded: Int?
         let topics_dropped: Int?
+        let sources: [SourceWire]?
+        let viewer: ViewerWire?
 
         var value: MQTTStatus {
             MQTTStatus(version: version ?? "", mqttAddress: mqtt_address ?? "", uptimeSeconds: Int(uptime_seconds ?? 0),
                        clientsConnected: clients_connected ?? 0, subscriptions: subscriptions ?? 0,
                        messagesReceived: messages_received ?? 0, messagesSent: messages_sent ?? 0, retained: retained ?? 0,
-                       topics: topics ?? 0, messagesRecorded: messages_recorded ?? 0, topicsDropped: topics_dropped ?? 0)
+                       topics: topics ?? 0, messagesRecorded: messages_recorded ?? 0, topicsDropped: topics_dropped ?? 0,
+                       sources: (sources ?? []).compactMap(\.value), viewer: viewer?.value)
         }
+    }
+
+    private struct SourceWire: Decodable {
+        struct Link: Decodable {
+            let connected: Bool?
+            let messages: Int?
+            let last_error: String?
+        }
+
+        let id: String?
+        let name: String?
+        let url: String?
+        let topics: String?
+        let prefix: String?
+        let added_by: String?
+        let added_at: String?
+        let status: Link?
+
+        var value: MQTTSource? {
+            guard let id, !id.isEmpty else { return nil }
+            return MQTTSource(id: id, name: name ?? "", url: url ?? "", topics: topics ?? "#", prefix: prefix ?? "",
+                              addedBy: added_by ?? "", addedAt: MQTTSnapshot.date(added_at),
+                              connected: status?.connected ?? false, messages: status?.messages ?? 0,
+                              lastError: status?.last_error ?? "")
+        }
+    }
+
+    private struct ViewerWire: Decodable {
+        let login: String?
+        let device: String?
+        let can_edit: Bool?
+
+        var value: MQTTViewer { MQTTViewer(login: login ?? "", device: device ?? "", canEdit: can_edit ?? false) }
     }
 
     private struct MessageWire: Decodable {
@@ -361,7 +470,7 @@ enum MQTTSnapshot {
     }
 }
 
-/// The daemon's HTTP API over the loopback, through the same curl transport as the service's.
+/// The bridge's HTTP API at a loopback or tailnet address, through the same curl transport as the service's.
 enum MQTTStream {
     enum Event: Equatable, Sendable {
         case status(MQTTStatus)
@@ -386,7 +495,7 @@ enum MQTTStream {
     }
 
     /// One GET, off the main actor.
-    static func get(_ path: String, address: String = MQTTBridge.address, timeout: Int = 4) async throws -> Data {
+    static func get(_ path: String, address: String, timeout: Int = 4) async throws -> Data {
         try await Task.detached(priority: .userInitiated) {
             let client = Process()
             let output = Pipe()
@@ -404,7 +513,7 @@ enum MQTTStream {
     }
 
     /// One connection to the event stream. It always ends by throwing.
-    static func connect(filter: String?, address: String = MQTTBridge.address) -> AsyncThrowingStream<Event, Error> {
+    static func connect(filter: String?, address: String) -> AsyncThrowingStream<Event, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingNewest(512)) { output in
             let producer = Task.detached(priority: .utility) {
                 do {
@@ -471,13 +580,17 @@ struct MQTTBridgeAPI: Sendable {
     var messages: @Sendable (_ filter: String?, _ limit: Int) async throws -> [MQTTMessage]
     var stream: @Sendable (_ filter: String?) -> AsyncThrowingStream<MQTTStream.Event, Error>
 
-    static let live = MQTTBridgeAPI(
-        status: { try MQTTSnapshot.status(try await MQTTStream.get("/api/status")) },
-        topics: { try MQTTSnapshot.topics(try await MQTTStream.get("/api/topics")) },
-        messages: { filter, limit in
-            try MQTTSnapshot.messages(try await MQTTStream.get("/api/messages" + MQTTStream.query([("filter", filter), ("limit", String(limit))])))
-        },
-        stream: { MQTTStream.connect(filter: $0) })
+    /// The bridge at `address` (`host:port`).
+    static func live(_ address: String) -> MQTTBridgeAPI {
+        MQTTBridgeAPI(
+            status: { try MQTTSnapshot.status(try await MQTTStream.get("/api/status", address: address)) },
+            topics: { try MQTTSnapshot.topics(try await MQTTStream.get("/api/topics", address: address)) },
+            messages: { filter, limit in
+                try MQTTSnapshot.messages(try await MQTTStream.get(
+                    "/api/messages" + MQTTStream.query([("filter", filter), ("limit", String(limit))]), address: address))
+            },
+            stream: { MQTTStream.connect(filter: $0, address: address) })
+    }
 }
 
 /// What the bridge carries, kept by one subscription while its panel shows. The topic tree is
@@ -504,18 +617,26 @@ final class MQTTBridgeFeed {
     private(set) var held: [MQTTMessage] = []
     /// The message in the inspector, by sequence number.
     private(set) var shownSeq: Int?
+    /// The bridge being read, `host:port`. It follows the plugin's grants (`use(address:)`).
+    private(set) var address = MQTTBridge.defaultAddress
 
-    @ObservationIgnored private let api: MQTTBridgeAPI?
+    /// Builds the routes for an address. Nil for a fixture, which never connects.
+    @ObservationIgnored private let makeAPI: (@Sendable (String) -> MQTTBridgeAPI)?
+    /// The routes of the round in progress.
+    @ObservationIgnored private var api: MQTTBridgeAPI?
     @ObservationIgnored private var lastCall = 0
     @ObservationIgnored private var pause: Task<Void, Never>?
     @ObservationIgnored private var topicsRecorded = -1
     @ObservationIgnored private var topicRead: Task<Void, Never>?
 
-    init(api: MQTTBridgeAPI = .live) { self.api = api }
+    init(makeAPI: @escaping @Sendable (String) -> MQTTBridgeAPI = MQTTBridgeAPI.live) { self.makeAPI = makeAPI }
+
+    /// One fixed set of routes, whatever the address.
+    convenience init(api: MQTTBridgeAPI) { self.init(makeAPI: { _ in api }) }
 
     /// Fixed contents for previews and fixtures. It never connects.
     init(fixture status: MQTTStatus?, topics: [MQTTTopic] = [], messages: [MQTTMessage] = [], link: Link = .live) {
-        api = nil
+        makeAPI = nil
         self.status = status
         self.topics = topics
         self.messages = messages.sorted { $0.seq > $1.seq }
@@ -532,12 +653,14 @@ final class MQTTBridgeFeed {
     /// recorded messages, then the stream. A lost stream is reopened after a pause. The newest
     /// call holds the subscription, so choosing a node starts over with its filter.
     func follow() async {
-        guard let api else { return }
+        guard let makeAPI else { return }
         lastCall += 1
         let call = lastCall
         var failed = 0
         while !Task.isCancelled, call == lastCall {
             let filter = filter
+            let api = makeAPI(address)
+            self.api = api
             do {
                 async let status = api.status()
                 async let topics = api.topics()
@@ -616,6 +739,22 @@ final class MQTTBridgeFeed {
 
     // MARK: Intents
 
+    /// Reads another bridge. What the old one sent is dropped, so two bridges never mix. The
+    /// caller restarts `follow()` when `address` changes.
+    func use(address next: String) {
+        guard next != address else { return }
+        address = next
+        status = nil
+        topics = []
+        messages = []
+        held = []
+        shownSeq = nil
+        selectedPath = nil
+        expanded = []
+        topicsRecorded = -1
+        if makeAPI != nil { link = .connecting }
+    }
+
     /// Chooses a node of the tree, or every topic with nil. The list is read again for it.
     /// The caller restarts `follow()` when `filter` changes.
     func select(path: String?) {
@@ -653,6 +792,7 @@ struct MQTTActions {
     var toggle: @MainActor (_ path: String) -> Void = { _ in }
     var setPaused: @MainActor (Bool) -> Void = { _ in }
     var show: @MainActor (_ seq: Int?) -> Void = { _ in }
+    /// Opens the bridge's own page: sources are added and removed there, and messages published.
     var openWebUI: @MainActor () -> Void = {}
 }
 
@@ -667,6 +807,8 @@ struct MQTTContext {
     var isPaused = false
     var heldCount = 0
     var shown: MQTTMessage? = nil
+    /// The bridge being read, `host:port`.
+    var address = MQTTBridge.defaultAddress
     var actions = MQTTActions()
 
     init() {}
@@ -682,6 +824,7 @@ struct MQTTContext {
         isPaused = feed.isPaused
         heldCount = feed.held.count
         shown = feed.shown ?? feed.messages.first
+        address = feed.address
         actions = MQTTActions(retry: { feed.retry() }, select: { feed.select(path: $0) }, toggle: { feed.toggle(path: $0) },
                               setPaused: { feed.setPaused($0) }, show: { feed.show(seq: $0) }, openWebUI: openWebUI)
     }
@@ -692,6 +835,9 @@ struct MQTTContext {
     /// Messages on every topic, as the tree counts them.
     var total: Int { tree.reduce(0) { $0 + $1.total } }
     var filter: String? { selectedPath.map(MQTTTopicTree.filter) }
+    var sources: [MQTTSource] { status?.sources ?? [] }
+    /// "on this Mac" or "at 100.64.0.6:18830".
+    var whereabouts: String { MQTTBridge.isLocal(address) ? "on this Mac" : "at \(address)" }
 }
 
 // MARK: - Fixtures
@@ -700,9 +846,17 @@ struct MQTTContext {
 enum MQTTFixture {
     static let now = PluginFixture.now
 
-    static let status = MQTTStatus(version: "0.1.0", mqttAddress: "127.0.0.1:1885", uptimeSeconds: 9 * 3600 + 14 * 60,
+    static let status = MQTTStatus(version: "0.2.0", mqttAddress: "127.0.0.1:1885", uptimeSeconds: 9 * 3600 + 14 * 60,
                                    clientsConnected: 4, subscriptions: 9, messagesReceived: 18_422, messagesSent: 51_907,
-                                   retained: 6, topics: 9, messagesRecorded: 18_422)
+                                   retained: 6, topics: 9, messagesRecorded: 18_422, sources: sources,
+                                   viewer: MQTTViewer(login: "dana", device: "dana-mbp", canEdit: true))
+
+    static let sources = [
+        MQTTSource(id: "a1", name: "Plant floor", url: "mqtt://100.64.0.21:1883", prefix: "plant", addedBy: "dana (dana-mbp)",
+                   addedAt: now.addingTimeInterval(-9 * 3600), connected: true, messages: 18_408),
+        MQTTSource(id: "b2", name: "Office BMS", url: "mqtt://100.64.0.34:1883", prefix: "office", addedBy: "lee (lee-air)",
+                   addedAt: now.addingTimeInterval(-26 * 3600), connected: false, messages: 14, lastError: "connection refused")
+    ]
 
     static var messages: [MQTTMessage] {
         func json(_ seq: Int, _ ago: TimeInterval, _ topic: String, _ payload: String, client: String = "plc-line1", retain: Bool = false, qos: Int = 0) -> MQTTMessage {
@@ -754,4 +908,5 @@ enum MQTTFixture {
 struct MQTTFollow: Hashable {
     let isShown: Bool
     let filter: String?
+    var address = MQTTBridge.defaultAddress
 }

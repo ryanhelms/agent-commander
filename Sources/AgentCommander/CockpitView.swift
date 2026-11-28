@@ -1878,7 +1878,9 @@ struct CockpitView: View {
                                           harnesses: HarnessesContext(feed: model.harnesses),
                                           plugins: PluginsContext(feed: model.plugins),
                                           mqtt: MQTTContext(feed: model.mqtt,
-                                                            openWebUI: { _ = NSWorkspace.shared.open(MQTTBridge.webUI) })))
+                                                            openWebUI: { [address = model.mqtt.address] in
+                                                                _ = NSWorkspace.shared.open(MQTTBridge.webUI(address))
+                                                            })))
             // Both subscriptions start again when the service changes, on the new socket.
             .task(id: model.serviceGeneration) { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
@@ -1905,9 +1907,14 @@ struct CockpitView: View {
             // The plugin list has no stream: it is read when the window opens and when the app
             // comes forward, because `agentctl plugin` changes it from outside.
             .task(id: model.serviceGeneration) { await model.plugins.follow() }
-            // The MQTT Bridge is followed only while its panel shows, and again for each chosen topic.
-            .task(id: MQTTFollow(isShown: ui.shellPlace == PluginPlace.mqtt, filter: model.mqtt.filter)) {
+            // The MQTT Bridge is followed only while its panel shows, and again for each chosen topic
+            // and each bridge. The bridge is the one the plugin's grants name in `bridge_url`.
+            .task(id: MQTTFollow(isShown: ui.shellPlace == PluginPlace.mqtt, filter: model.mqtt.filter,
+                                 address: model.mqtt.address)) {
                 if ui.shellPlace == PluginPlace.mqtt { await model.mqtt.follow() }
+            }
+            .onChange(of: MQTTBridge.address(in: model.plugins.plugins), initial: true) { _, address in
+                model.mqtt.use(address: address)
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 model.harnesses.refreshOnActivation()

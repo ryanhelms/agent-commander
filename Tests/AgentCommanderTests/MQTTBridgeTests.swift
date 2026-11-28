@@ -21,6 +21,81 @@ import Testing
         #expect(dropped.topicsDropped == 7 && dropped.uptimeSeconds == 1)
     }
 
+    @Test func readsSourcesAndTheViewer() throws {
+        let json = ##"{"version":"0.2.0","sources":[{"id":"b1","name":"Home","url":"mqtt://127.0.0.1:1883","topics":"#","prefix":"home","added_by":"nick (nick)","added_at":"2026-11-28T04:18:26Z","status":{"broker":"127.0.0.1:1883","connected":true,"messages":176}},{"id":"c2","name":"Lab","prefix":"lab","status":{"connected":false,"last_error":"connection refused"}},{"name":"no id"}],"viewer":{"login":"ryan","device":"ryan-mbp","can_edit":true}}"##
+        let status = try MQTTSnapshot.status(Data(json.utf8))
+        #expect(status.sources.map(\.id) == ["b1", "c2"])
+        let home = try #require(status.sources.first)
+        #expect(home.name == "Home" && home.url == "mqtt://127.0.0.1:1883" && home.prefix == "home" && home.addedBy == "nick (nick)")
+        #expect(home.connected && home.messages == 176 && home.lastError.isEmpty && home.filter == "home/#")
+        #expect(home.addedAt?.timeIntervalSince1970 == 1_795_839_506)
+        #expect(!status.sources[1].connected && status.sources[1].lastError == "connection refused" && status.sources[1].topics == "#")
+        #expect(status.viewer == MQTTViewer(login: "ryan", device: "ryan-mbp", canEdit: true))
+        // A bridge older than sources says nothing about either.
+        let old = try MQTTSnapshot.status(Data(Self.statusJSON.utf8))
+        #expect(old.sources.isEmpty && old.viewer == nil)
+    }
+
+    @Test func theBridgeAddressFollowsTheRulesOfThePlugin() {
+        #expect(MQTTBridge.address(bridgeURL: "http://100.64.0.6:18830") == "100.64.0.6:18830")
+        #expect(MQTTBridge.address(bridgeURL: " http://100.127.255.1:80/ ") == "100.127.255.1:80")
+        #expect(MQTTBridge.address(bridgeURL: "http://127.0.0.1:18830") == "127.0.0.1:18830")
+        #expect(MQTTBridge.address(bridgeURL: "http://localhost:18830") == "localhost:18830")
+        for refused in ["https://100.64.0.6:18830", "http://192.168.50.99:18830", "http://100.128.0.1:18830",
+                        "http://100.63.255.255:18830", "http://100.64.0.6", "http://u:p@100.64.0.6:18830",
+                        "http://100.64.0.6:18830/api", "http://100.64.0.6:18830?x=1", "http://nick-bms.tail.internal:18830",
+                        "http://8.8.8.8:80", "100.64.0.6:18830", "", "http://100.64.0:18830", "http://100.64.0.256:1"] {
+            #expect(MQTTBridge.address(bridgeURL: refused) == nil, "\(refused)")
+        }
+    }
+
+    @Test func theBridgeIsTheOneTheGrantsName() {
+        func plugin(_ grants: [PluginGrant], id: String = MQTTBridge.pluginID) -> Plugin {
+            Plugin(id: id, name: "MQTT", tools: [PluginTool(id: "\(id).list_topics", grants: grants)])
+        }
+        func url(_ raw: String) -> AGUIValue { .object([MQTTBridge.urlSetting: .string(raw)]) }
+        #expect(MQTTBridge.address(in: []) == MQTTBridge.defaultAddress)
+        #expect(MQTTBridge.address(in: [plugin([PluginGrant(project: "/a")])]) == MQTTBridge.defaultAddress)
+        // Another plugin's setting is not this one's.
+        #expect(MQTTBridge.address(in: [plugin([PluginGrant(project: "/a", settings: url("http://100.64.0.9:1"))], id: "x.other")])
+                == MQTTBridge.defaultAddress)
+        // A grant the service loaded wins over one written since; an invalid URL is passed over.
+        let grants = [PluginGrant(project: "/a", settings: url("http://100.64.0.7:18830"), active: false),
+                      PluginGrant(project: "/c", settings: url("http://192.168.50.99:18830")),
+                      PluginGrant(project: "/d", settings: url("http://100.64.0.6:18830"))]
+        #expect(MQTTBridge.address(in: [plugin(grants)]) == "100.64.0.6:18830")
+        #expect(MQTTBridge.address(in: [plugin(Array(grants.prefix(2)))]) == "100.64.0.7:18830")
+        #expect(MQTTBridge.isLocal("127.0.0.1:18830") && MQTTBridge.isLocal("localhost:1") && !MQTTBridge.isLocal("100.64.0.6:18830"))
+    }
+
+    @Test func anotherBridgeStartsClean() async {
+        let asked = Asked()
+        let feed = MQTTBridgeFeed(makeAPI: { address in
+            MQTTBridgeAPI(status: { await asked.add(address); return MQTTStatus(version: address) }, topics: { [] },
+                          messages: { _, _ in [] }, stream: { _ in AsyncThrowingStream { $0.finish(throwing: MQTTStream.Failure.disconnected) } })
+        })
+        #expect(feed.address == MQTTBridge.defaultAddress)
+        let first = Task { await feed.follow() }
+        for _ in 0..<50 where feed.status == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        first.cancel()
+        await first.value
+        #expect(feed.status?.version == MQTTBridge.defaultAddress)
+        feed.select(path: "home")
+        feed.use(address: "100.64.0.6:18830")
+        #expect(feed.status == nil && feed.selectedPath == nil && feed.link == .connecting && feed.address == "100.64.0.6:18830")
+        let second = Task { await feed.follow() }
+        for _ in 0..<50 where feed.status == nil { try? await Task.sleep(for: .milliseconds(10)) }
+        second.cancel()
+        await second.value
+        #expect(feed.status?.version == "100.64.0.6:18830" && MQTTContext(feed: feed).whereabouts == "at 100.64.0.6:18830")
+        #expect(await asked.addresses.contains("100.64.0.6:18830"))
+    }
+
+    actor Asked {
+        var addresses: [String] = []
+        func add(_ address: String) { addresses.append(address) }
+    }
+
     @Test func readsMessagesAndTopics() throws {
         let message = try MQTTSnapshot.message(Data(Self.messageJSON.utf8))
         #expect(message.seq == 41 && message.topic == "plant/line1/temp" && message.payload == #"{"v":21.5}"# && message.encoding == .utf8)
@@ -206,9 +281,11 @@ import Testing
         #expect(context.selectedPath == "plant" && context.total == 18_422 && context.rows.contains { $0.node.path == "plant/line1" })
     }
 
-    /// Against the bridge running on this Mac: `MQTT_BRIDGE_LIVE=1 swift test --filter MQTTBridge`.
+    /// Against a running bridge: `MQTT_BRIDGE_LIVE=1 swift test --filter MQTTBridge`, with
+    /// `MQTT_BRIDGE_URL=http://100.64.0.6:18830` for the shared one (a bridge on this Mac otherwise).
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MQTT_BRIDGE_LIVE"] != nil)) func followsTheRunningBridge() async throws {
         let feed = MQTTBridgeFeed()
+        if let raw = ProcessInfo.processInfo.environment["MQTT_BRIDGE_URL"] { feed.use(address: try #require(MQTTBridge.address(bridgeURL: raw))) }
         let follow = Task { await feed.follow() }
         // The first status of the stream arrives within two seconds of the connection.
         var streamed = false

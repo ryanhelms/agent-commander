@@ -6,13 +6,16 @@ import SwiftUI
 //
 //   Molecules  MQTTTopicTreeRow     one level of the tree: disclosure, name, count
 //              MQTTMessageRow       one message as a table row: time, topic, payload, size
-//   Organisms  MQTTTopicBrowser      the tree on a panel, with "All topics" first
+//              MQTTSourceRow        one mirrored broker: lamp, name, prefix, broker, count, who added it
+//   Organisms  MQTTSourceList       the bridge's sources on a panel; a row chooses its prefix
+//              MQTTTopicBrowser      the tree on a panel, with "All topics" first
 //              MQTTMessageList      the live list on a panel, with its state and Pause
 //              MQTTPayloadInspector the chosen message: metadata, then the payload in a chosen form
-//   Page       MQTTPanelPage        WorkspacePage: header, readout strip, NetworkSplit(tree + list | payload)
+//   Page       MQTTPanelPage        WorkspacePage: header, readouts, sources, NetworkSplit(tree + list | payload)
 //
 // The page takes an `MQTTContext` (values and intents). The feed (MQTTBridge.swift) owns the
-// subscription and every read. The panel never publishes: "Open web UI" hands that to the bridge.
+// subscription and every read. The panel never publishes or changes sources: "Open web UI" hands
+// both to the bridge, which checks who is asking.
 
 enum MQTTLayout {
     static let treeWidth: CGFloat = 248
@@ -21,6 +24,9 @@ enum MQTTLayout {
     /// The height of the tree and of the list. Each scrolls inside it.
     static let listHeight: CGFloat = 520
     static let indent: CGFloat = 14
+    static let sourceColumns = [ShellColumn(title: "Source"), ShellColumn(title: "Prefix", width: 120),
+                                ShellColumn(title: "Broker"), ShellColumn(title: "Messages", width: 84, alignment: .trailing),
+                                ShellColumn(title: "Added by", width: 150)]
     static let columns = [ShellColumn(title: "Time", width: 78), ShellColumn(title: "Topic"),
                           ShellColumn(title: "Payload"), ShellColumn(title: "Size", width: 58, alignment: .trailing)]
 }
@@ -119,7 +125,77 @@ struct MQTTMessageRow: View {
     }
 }
 
+/// One broker the bridge mirrors. Choosing it filters the tree and the list to its prefix.
+struct MQTTSourceRow: View {
+    let source: MQTTSource
+    var isSelected = false
+    let select: () -> Void
+    @Environment(\.theme) private var theme
+
+    var spoken: String {
+        "\(source.name), \(source.connected ? "connected" : "down")\(source.lastError.isEmpty ? "" : ", \(source.lastError)"), "
+            + "prefix \(source.prefix), broker \(source.url), \(source.messages) messages, added by \(source.addedBy)"
+    }
+
+    var body: some View {
+        let columns = MQTTLayout.sourceColumns
+        ShellTableRow(isSelected: isSelected, spoken: spoken, hint: "Shows this source's topics", select: select) {
+            HStack(spacing: Space.s) {
+                MultiplayerLamp(kind: source.connected ? .on : .error)
+                Text(source.name).themeType(theme.type.data).foregroundStyle(.theme(\.color.foreground)).lineLimit(1)
+            }
+            .help(source.connected ? "Connected" : (source.lastError.isEmpty ? "Not connected" : "Not connected: \(source.lastError)"))
+            .shellCell(columns[0])
+            Text(source.prefix + "/").themeType(theme.type.mono).foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
+                .shellCell(columns[1])
+            Text(source.url).themeType(theme.type.mono).foregroundStyle(.theme(\.color.secondary))
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                .shellCell(columns[2])
+            ShellCellFigure(text: source.messages.formatted()).shellCell(columns[3])
+            Text(source.addedBy.isEmpty ? "Unknown" : source.addedBy).themeType(theme.type.label)
+                .foregroundStyle(.theme(\.color.secondary)).lineLimit(1).truncationMode(.tail)
+                .help(source.addedAt.map { "Added \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")
+                .shellCell(columns[4])
+        }
+        .accessibilityIdentifier("mqtt-source-\(source.id)")
+    }
+}
+
 // MARK: - Organisms
+
+/// The brokers the bridge mirrors, shared by everyone on the tailnet. Sources are added and
+/// removed in the bridge's web UI.
+struct MQTTSourceList: View {
+    let sources: [MQTTSource]
+    let selectedPath: String?
+    let viewer: MQTTViewer?
+    let actions: MQTTActions
+
+    private var note: String {
+        let who = viewer.map { $0.canEdit ? "as \($0.login), you can add and remove them in the web UI" : "read only from this device" }
+        return "shared on the tailnet" + (who.map { "; " + $0 } ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ShellBandHeading(title: "Sources", count: "\(sources.count)", note: note)
+                .padding(.horizontal, Space.m).padding(.vertical, Space.xs)
+            ShellTableHeader(columns: MQTTLayout.sourceColumns)
+            ThemeRule()
+            if sources.isEmpty {
+                ShellNote(text: "The bridge mirrors no broker yet. Add one in its web UI.", lamp: .off)
+            }
+            ForEach(sources) { source in
+                MQTTSourceRow(source: source, isSelected: selectedPath == source.prefix) { actions.select(source.prefix) }
+                ThemeRule()
+            }
+        }
+        .themePanel()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sources")
+        .accessibilityIdentifier("mqtt-sources")
+    }
+}
 
 /// The broker's topics as a tree. "All topics" is first and clears the filter.
 struct MQTTTopicBrowser: View {
@@ -299,10 +375,10 @@ struct MQTTPanelPage: View {
 
     private var summary: String {
         guard let status = context.status else {
-            return context.isLoading ? "Reading the MQTT Bridge on this Mac…" : "What the MQTT Bridge on this Mac carries, read from \(MQTTBridge.address)."
+            return context.isLoading ? "Reading the MQTT Bridge \(context.whereabouts)…" : "What the MQTT Bridge \(context.whereabouts) carries."
         }
-        let broker = status.mqttAddress.isEmpty ? "" : " Broker at \(status.mqttAddress)."
-        let line = "MQTT Bridge \(status.version) on \(MQTTBridge.address).\(broker) \(status.messagesRecorded.formatted()) messages recorded"
+        let sources = status.sources.count == 1 ? "1 source" : "\(status.sources.count) sources"
+        let line = "MQTT Bridge \(status.version) \(context.whereabouts), mirroring \(sources). \(status.messagesRecorded.formatted()) messages recorded"
         return context.link == .offline ? "\(line). The bridge stopped answering; this is what it last sent." : "\(line)."
     }
 
@@ -333,13 +409,17 @@ struct MQTTPanelPage: View {
                     Label("Open web UI", systemImage: "arrow.up.right.square")
                 }
                 .buttonStyle(ThemeButtonStyle())
-                .help("Open the bridge’s own page at \(MQTTBridge.address), where messages are published")
+                .help("Open the bridge’s own page at \(context.address), where sources are added and messages published")
                 .accessibilityIdentifier("mqtt-open-web-ui")
             }
         } content: {
             if let status = context.status {
                 ShellReadoutStrip(cells: Self.readouts(status, link: context.link), large: true)
                     .accessibilityIdentifier("mqtt-readouts")
+                if !status.sources.isEmpty || status.viewer != nil {
+                    MQTTSourceList(sources: status.sources, selectedPath: context.selectedPath, viewer: status.viewer,
+                                   actions: context.actions)
+                }
                 NetworkSplit {
                     HStack(alignment: .top, spacing: Space.l) {
                         MQTTTopicBrowser(rows: context.rows, total: context.total, selectedPath: context.selectedPath, actions: context.actions)
@@ -355,7 +435,7 @@ struct MQTTPanelPage: View {
                     }
                 }
             } else if context.isLoading {
-                ShellNote(text: "Reading the MQTT Bridge on this Mac…", lamp: .waiting).themePanel()
+                ShellNote(text: "Reading the MQTT Bridge \(context.whereabouts)…", lamp: .waiting).themePanel()
             } else {
                 offline
             }
@@ -363,11 +443,17 @@ struct MQTTPanelPage: View {
         .accessibilityIdentifier("mqtt-page")
     }
 
+    private var offlineText: String {
+        let how = MQTTBridge.isLocal(context.address)
+            ? "Start it with mqttbridge serve, or set bridge_url on the plugin’s grants to the shared bridge."
+            : "Check that this Mac is on the tailnet and the bridge is running there."
+        return "The MQTT Bridge isn’t answering at \(context.address). \(how) Agent Commander keeps trying."
+    }
+
     /// The bridge doesn't answer and nothing was ever read: say so calmly, and offer one way on.
     private var offline: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ShellNote(text: "The MQTT Bridge isn’t answering at \(MQTTBridge.address). Start it with mqttbridge serve. Agent Commander keeps trying.",
-                      lamp: .error)
+            ShellNote(text: offlineText, lamp: .error)
             Button("Try again") { context.actions.retry() }
                 .buttonStyle(ThemeButtonStyle())
                 .padding(.horizontal, Space.m).padding(.bottom, theme.space.bandBottom)
