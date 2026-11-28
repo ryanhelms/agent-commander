@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -446,5 +449,20 @@ func TestTerminalRefreshKeepsANewerSession(t *testing.T) {
 	a.endSession("new", 401)
 	if a.creds.Session.User != "" || a.creds.Keys != keys || a.problem != sessionEndedText {
 		t.Fatalf("terminal refresh: %+v %q", a.creds.Session, a.problem)
+	}
+}
+
+func TestErrTextRedactsQueries(t *testing.T) {
+	inner := &url.Error{Op: "Get", URL: "https://relay.test/v1/inbox?wait=10&session=secretlease", Err: io.ErrUnexpectedEOF}
+	got := errText(fmt.Errorf("connect: %w", inner))
+	if strings.Contains(got, "secretlease") || strings.Contains(got, "wait=10") {
+		t.Fatalf("query leaked: %s", got)
+	}
+	if !strings.Contains(got, "https://relay.test/v1/inbox") || !strings.Contains(got, "unexpected EOF") {
+		t.Fatalf("lost useful context: %s", got)
+	}
+	re := &refreshError{retryIn: time.Second, err: inner}
+	if strings.Contains(re.Error(), "secretlease") {
+		t.Fatalf("tray problem leaked query: %s", re.Error())
 	}
 }

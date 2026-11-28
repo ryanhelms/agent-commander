@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentcommander.network/pilot/internal/actions"
@@ -330,7 +331,7 @@ func (a *Agent) receiveLoop() {
 				retry.reset()
 			}
 		} else if a.ctx.Err() == nil {
-			a.logger().Warn("session_open_failed", "err", e.Error())
+			a.logger().Warn("session_open_failed", "err", errText(e))
 		}
 		a.mu.Lock()
 		if a.creds.Session.User == s.User {
@@ -347,11 +348,26 @@ func (a *Agent) receiveLoop() {
 	}
 }
 
+// errText renders an error for the network log and the tray. Request URLs
+// lose their query and fragment: inbox and session routes carry lease
+// identifiers there.
 func errText(e error) string {
 	if e == nil {
 		return ""
 	}
-	return e.Error()
+	text := e.Error()
+	for err := e; err != nil; {
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			break
+		}
+		if u, perr := url.Parse(ue.URL); perr == nil && (u.RawQuery != "" || u.Fragment != "") {
+			u.RawQuery, u.Fragment, u.ForceQuery = "", "", false
+			text = strings.ReplaceAll(text, ue.URL, u.String())
+		}
+		err = ue.Err
+	}
+	return text
 }
 func (a *Agent) connected(parent context.Context, who identity.Session, l control.Lease) error {
 	ctx, cancel := context.WithCancel(parent)

@@ -337,7 +337,7 @@ func (a *Agent) startLogin(handle, invite string) (any, error) {
 		if e == nil && ctx.Err() == nil {
 			a.logger().Info("state", "state", "signedIn", "device", netlog.DevicePrefix(s.Device))
 		} else if e != nil {
-			a.logger().Warn("login", "outcome", "error", "err", e.Error())
+			a.logger().Warn("login", "outcome", "error", "err", errText(e))
 		}
 		if e == nil && ctx.Err() == nil && handle != "" {
 			e = a.remote(ctx, s, "PUT", "/v1/profile", map[string]string{"handle": handle}, nil)
@@ -346,7 +346,7 @@ func (a *Agent) startLogin(handle, invite string) (any, error) {
 		a.loginPending = false
 		a.loginStop = nil
 		if e != nil {
-			a.problem = e.Error()
+			a.problem = errText(e)
 		}
 		var refused identity.NotAdmittedError
 		switch {

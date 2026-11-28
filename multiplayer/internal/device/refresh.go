@@ -128,7 +128,7 @@ func (e *refreshError) Error() string {
 	if e.terminal {
 		return sessionEndedText
 	}
-	return fmt.Sprintf("Could not renew the relay session; retrying in %s: %v", max(e.retryIn, time.Second).Round(time.Second), e.err)
+	return fmt.Sprintf("Could not renew the relay session; retrying in %s: %v", max(e.retryIn, time.Second).Round(time.Second), errText(e.err))
 }
 
 func (e *refreshError) Unwrap() error { return e.err }
@@ -231,10 +231,10 @@ func (a *Agent) renew(ctx context.Context, s identity.Session) (identity.Session
 		*st = refreshState{}
 		return n, nil
 	case refreshCanceled:
-		a.logger().Info("refresh", append(attrs, "err", err.Error())...)
+		a.logger().Info("refresh", append(attrs, "err", errText(err))...)
 		return s, err
 	case refreshTerminal:
-		a.logger().Warn("refresh", append(attrs, "err", err.Error())...)
+		a.logger().Warn("refresh", append(attrs, "err", errText(err))...)
 		*st = refreshState{}
 		a.endSession(s.RefreshToken, status)
 		return identity.Session{}, &refreshError{terminal: true, status: status, err: err}
@@ -243,7 +243,7 @@ func (a *Agent) renew(ctx context.Context, s identity.Session) (identity.Session
 		st.failed = now(c)
 		st.retryAt = st.failed.mono + d
 		st.last = &refreshError{status: status, retryIn: d, err: err}
-		a.logger().Warn("refresh", append(attrs, "err", err.Error(), "retry_in_ms", d.Milliseconds())...)
+		a.logger().Warn("refresh", append(attrs, "err", errText(err), "retry_in_ms", d.Milliseconds())...)
 		out := *st.last
 		return s, &out
 	}
@@ -262,7 +262,7 @@ func (a *Agent) endSession(refreshToken string, status int) {
 	next.Session = identity.Session{}
 	if err := a.persistCredentials(next); err != nil {
 		// Forget it in memory anyway; a restart tries the dead token once more.
-		a.logger().Error("session_clear", "err", err.Error())
+		a.logger().Error("session_clear", "err", errText(err))
 	}
 	a.creds = next
 	if a.sessionStop != nil {
@@ -270,7 +270,7 @@ func (a *Agent) endSession(refreshToken string, status int) {
 	}
 	a.lease = control.Lease{}
 	if err := a.loadPolicy(""); err != nil {
-		a.logger().Error("policy_reset", "err", err.Error())
+		a.logger().Error("policy_reset", "err", errText(err))
 	}
 	a.problem = sessionEndedText
 	a.logger().Warn("state", "state", "signedOut", "reason", "refresh_rejected", "status", status)
@@ -289,7 +289,7 @@ func (a *Agent) noteSessionProblem(user string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.creds.Session.User == user {
-		a.problem = err.Error()
+		a.problem = errText(err)
 	}
 }
 
