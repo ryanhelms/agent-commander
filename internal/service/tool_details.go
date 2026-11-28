@@ -659,6 +659,11 @@ func (s *service) readToolDetails(req *http.Request, actor string) (outcome, err
 		return read(*record), nil
 	}
 	after, _ := strconv.ParseUint(query.Get("after"), 10, 64)
+	if after > current.revision {
+		// A reader may still hold the cursor of a service that restarted with
+		// less history. Let it rebuild from the retained records in one read.
+		after = 0
+	}
 	records := []toolDetailSummaryView{}
 	for _, key := range current.order {
 		record := current.records[key]
@@ -670,7 +675,10 @@ func (s *service) readToolDetails(req *http.Request, actor string) (outcome, err
 		view.Input, view.Result, view.Content, view.Shortened = "", "", "", nil
 		records = append(records, view)
 	}
-	return read(map[string]any{"revision": current.revision, "records": records}), nil
+	// The delta never includes records the store has evicted. Send the
+	// bounded key set independently of it, including an array when empty.
+	retainedKeys := append([]string{}, current.order...)
+	return read(map[string]any{"revision": current.revision, "records": records, "retained_keys": retainedKeys}), nil
 }
 
 func (s *service) readTranscriptSettings(req *http.Request, actor string) (outcome, error) {
