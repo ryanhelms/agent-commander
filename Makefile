@@ -10,7 +10,7 @@ PG_FORMULA ?= postgresql@17
 # Resolves the agent-acp SDK checkouts from any checkout or worktree.
 SDK_GOWORK := $(shell sh packaging/sdk-workspace.sh)
 
-.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-multiplayer-docker smoke run reload dev
+.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-native-ci test-multiplayer-docker smoke run reload dev
 
 app: cli network relay postgres
 	swift build -c $(CONFIG) --product AgentCommander
@@ -67,7 +67,8 @@ test:
 test-multiplayer-docker:
 	python3 multiplayer/deploy/rehearsal/acceptance.py
 
-test-native:
+# Hosted CI keeps the deadline-sensitive suites off the bulk test executor.
+test-native test-native-ci:
 	@set -eu; \
 	dev="$${DEVELOPER_DIR:-$$(xcode-select -p)}"; \
 	frameworks="$$dev/Library/Developer/Frameworks"; \
@@ -77,6 +78,11 @@ test-native:
 			-Xswiftc -plugin-path -Xswiftc "$$dev/usr/lib/swift/host/plugins/testing" \
 			-Xlinker "-F$$frameworks" -Xlinker -rpath -Xlinker "$$frameworks" \
 			-Xlinker -rpath -Xlinker "$$dev/Library/Developer/usr/lib"; \
+	fi; \
+	if [ "$@" = test-native-ci ]; then \
+		isolated_suites='AdapterUpdateFeedTests|MultiplayerLiveModelTests'; \
+		swift test "$$@" --skip "$$isolated_suites"; \
+		exec swift test "$$@" --skip-build --no-parallel --filter "$$isolated_suites"; \
 	fi; \
 	exec swift test "$$@"
 

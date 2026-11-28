@@ -109,7 +109,7 @@ jobs:
             go.sum
             multiplayer/go.sum
       - name: Test native app
-        run: make test-native
+        run: make test-native-ci
       - name: Fetch pinned public Go inputs
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: python3 packaging/sdk-inputs.py fetch
