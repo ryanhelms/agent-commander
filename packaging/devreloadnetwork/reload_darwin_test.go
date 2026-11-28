@@ -20,6 +20,15 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	// Keep the real process arguments for the kernel role check, while
+	// directing the Go test binary to the isolated listener in the child.
+	if os.Getenv("AC_RELOAD_TEST_SOCKET") != "" && len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-test.") {
+		os.Args = []string{os.Args[0], "-test.run=^TestReloadFixtureProcess$"}
+	}
+	os.Exit(m.Run())
+}
+
 // A second copy of the test executable stands in for the network helper. No
 // fixture uses the normal socket, a relay, or the Keychain.
 func TestReloadFixtureProcess(t *testing.T) {
@@ -46,8 +55,12 @@ func TestReloadFixtureProcess(t *testing.T) {
 		for {
 			<-term
 		}
-	case "ready", "empty":
+	case "ready", "empty", "service":
 		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if mode == "service" && r.Method == http.MethodGet && r.URL.Path == "/v1/health" {
+				io.WriteString(w, `{"status":"ok"}`)
+				return
+			}
 			if r.Method != http.MethodPost || r.URL.Path != "/tray/servers" {
 				http.NotFound(w, r)
 				return
@@ -116,8 +129,13 @@ type fixtureProcess struct {
 
 func startFixture(t *testing.T, exe, socket, mode string) *fixtureProcess {
 	t.Helper()
+	return startFixtureArgs(t, exe, socket, mode, "-test.run=^TestReloadFixtureProcess$")
+}
+
+func startFixtureArgs(t *testing.T, exe, socket, mode string, args ...string) *fixtureProcess {
+	t.Helper()
 	var output bytes.Buffer
-	cmd := exec.Command(exe, "-test.run=^TestReloadFixtureProcess$")
+	cmd := exec.Command(exe, args...)
 	cmd.Env = append(os.Environ(), "AC_RELOAD_TEST_SOCKET="+socket, "AC_RELOAD_TEST_MODE="+mode)
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Start(); err != nil {

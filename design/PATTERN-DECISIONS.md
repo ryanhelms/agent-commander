@@ -265,6 +265,8 @@ A saved multiplayer relay activates independently of the local tray API and othe
 
 Local dev reload identifies the normal owner network socket independently of whether its helper can answer HTTP. It verifies the kernel's socket owner, executable path and process start time before each signal. A helper outside a registered checkout, an ambiguous socket or a changed owner stops the reload. After a bounded graceful stop, only the same verified owner is eligible for escalation. Reload succeeds when the newly bundled helper owns the socket and answers the server-list request. An empty list and a relay waiting for Keychain are valid replies. The helper's replacement result and relay authorization are reported independently.
 
+When dev reload includes the local Commander service, it scopes shutdown to the socket selected by the documented state directory and socket settings. The same process identity check verifies a registered `agentctl` executable running `serve` before sending SIGTERM. The service has a bounded graceful stop. The app can reopen after a verification failure, and reload reports success only after the new bundled service owns the same socket and answers health.
+
 ## Native terminal observation
 
 The local provider acts as an Adapter between a Commander worker ID and its existing tmux session. The owner API resolves a selected worker on demand. After resolution, the bundled CLI attaches a read-only tmux client on SwiftTerm’s PTY with its size ignored. Closing the viewer disconnects that client. The runner retains the session, input ownership, and provider-native history.
