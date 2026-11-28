@@ -33,7 +33,7 @@ Start a coordinator in that checkout and ask it to list its project extensions. 
 | `contributes.tools` | One entry per tool: `mcp_tool` (your MCP name), `id`, integer `version`, `action: "read"`, and optional `description` to override the MCP one. |
 | `settings_schema` | Optional JSON Schema for per-project settings. Without it, grants cannot carry settings. |
 
-5. Install it with `agentctl plugin install ./your-plugin`. Install runs your server once to read its tools, so fix anything it reports and install again. Raise a tool's `version` when its input or meaning changes; grants name the exact version.
+5. Install it with `agentctl plugin install ./your-plugin`. Install runs your server once to read its tools, so fix anything it reports and install again. Raise a tool's `version` when its input or meaning changes; grants name the exact version. Installing a release that no longer serves an existing grant (a tool's version raised or a tool dropped, or settings the new schema refuses) fails and lists those grants: revoke them, install, then grant again. `data` and `plugin.log` can't be used as a release version.
 
 ## What your plugin gets
 

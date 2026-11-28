@@ -435,12 +435,31 @@ struct PrettyConsoleView: View {
                       thinkingStarted: record?.started)
     }
 
-    /// Changes when the transcript gains an entry or a call gains its result: the moments the
-    /// service may hold new details. Nothing is read on a timer.
-    private var detailRevision: String {
-        var results = 0
-        for entry in entries { if case .tool(_, _, let result) = entry.kind, result != nil { results += 1 } }
-        return "\(consoleID) \(entries.count) \(results)"
+    /// What the read of stored details is keyed on: the worker, the number of entries, the IDs of
+    /// the material entries in order, and the IDs of the calls that hold their result. A material
+    /// entry is a call, a result without its call, a prompt or a message of another role: every
+    /// entry but the agent's own prose. The key changes when the transcript gains or loses an
+    /// entry or a call gains its result, the moments the service may hold new details. A full
+    /// window of calls that advances keeps its counts and changes its IDs, so it changes then too.
+    /// The agent's prose counts only towards the number: a reply that grows under its ID, or a
+    /// full window whose streamed chunks are replaced one for one, reads nothing. Nothing is read
+    /// on a timer.
+    struct DetailRevision: Equatable {
+        let worker: String
+        let count: Int
+        let material: [String]
+        let completed: [String]
+
+        init(worker: String, entries: [TranscriptEntry]) {
+            self.worker = worker
+            count = entries.count
+            material = entries.compactMap { entry in
+                if case .prose(_, fromUser: false) = entry.kind { nil } else { entry.id }
+            }
+            completed = entries.compactMap { entry in
+                if case .tool(_, _, let result) = entry.kind, result != nil { entry.id } else { nil }
+            }
+        }
     }
 
     var body: some View {
@@ -503,7 +522,7 @@ struct PrettyConsoleView: View {
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
-        .task(id: detailRevision) {
+        .task(id: DetailRevision(worker: consoleID, entries: entries)) {
             // The saved setting first, on any surface: until it is known, job text is drawn hidden.
             await details?.loadSettingsIfNeeded()
             await details?.refresh(worker: consoleID)
@@ -758,7 +777,8 @@ struct PrettyConsoleView: View {
                 ToolLocationAction(workerID: consoleID, detailKey: entry.detailKey, location: location, intents: intents,
                                    metrics: metrics)
             }
-            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary,
+                                                            hidesSecrets: details?.hidesSecrets ?? false),
                                metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false,
                                hidesChangeText: details?.hidesSecrets, copy: copy)
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)

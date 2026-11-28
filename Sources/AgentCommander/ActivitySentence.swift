@@ -178,9 +178,17 @@ enum ActivityFailureWords {
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
     /// cancelled permission reads as blocked.
-    static func read(_ result: ToolResult, status: ToolStatus) -> ActivityFailure {
+    ///
+    /// The outcome and the fixed words are told from the message as it was sent. The texts the
+    /// failure shows (`reason` when it is the provider's sentence, `exact`, `rest`) are cut from
+    /// the message as `shown` gives it: with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) the whole message is masked first, so the failure line,
+    /// what VoiceOver reads and the opened Reason and Exact text never hold the value. A mask
+    /// can take part of a recognised phrase away; the outcome does not change with it. The
+    /// result and its stored record keep the text as sent, and Source shows that.
+    static func read(_ result: ToolResult, status: ToolStatus, hidesSecrets: Bool = false) -> ActivityFailure {
         let message = body(result)
-        let (first, rest) = firstSentence(message)
+        let (first, rest) = firstSentence(shown(message, hidesSecrets: hidesSecrets))
         switch status {
         case .declined:
             return ActivityFailure(outcome: .blocked, reason: "You denied this.", exact: first.isEmpty ? "Tool declined." : first, rest: rest)
@@ -201,6 +209,27 @@ enum ActivityFailureWords {
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)
+    }
+
+    /// A failure's whole text as it is drawn: as sent, or with `hidesSecrets` masked as
+    /// `SecretValues.masked(prose:)` masks it. Mask the whole text, then cut: a cut secret no
+    /// longer looks like one. The mask writes whole JSON one property per line. A text sent as
+    /// one line stays one line: the masked JSON's lines are joined again, so the first sentence
+    /// is still cut from its contents and never reads as a bare bracket. The line breaks of
+    /// that JSON are only between its parts; one inside a string is written escaped. A text
+    /// sent on several lines keeps the lines the mask gives it.
+    static func shown(_ text: String, hidesSecrets: Bool) -> String {
+        guard hidesSecrets else { return text }
+        let masked = SecretValues.masked(prose: text).text
+        guard !text.contains(where: \.isNewline), masked.contains(where: \.isNewline) else { return masked }
+        return masked.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.joined()
+    }
+
+    /// The failure of a result that states one only in its wrapper (`ok: false`, a non-empty
+    /// `error`) and has no failure of its own: the wrapper's error, whole, as `shown` gives it.
+    static func wrapper(_ error: String?, hidesSecrets: Bool = false) -> ActivityFailure {
+        let reason = error.map { shown($0, hidesSecrets: hidesSecrets) } ?? noReason
+        return ActivityFailure(outcome: .failed, reason: reason, exact: reason)
     }
 
     /// The provider's message: the error and the output, without the service's `Tool failed.` line.
@@ -308,6 +337,13 @@ struct ActivityStep: Identifiable, Equatable {
         if let tag { parts.append(tag.word) }
         if let failure { parts.append(failure.reason) }
         return parts.joined(separator: ", ")
+    }
+
+    /// What VoiceOver reads for the failure line: the sentence, the outcome, then the reason
+    /// the line shows. It is built from the failure as drawn, so it hides what the line hides.
+    var failureLabel: String {
+        sentence.plain + ", " + (failure?.outcome == .blocked ? "blocked" : "failed")
+            + (failure.map { ", " + $0.reason } ?? "")
     }
 }
 
@@ -602,6 +638,14 @@ enum ActivityWords {
         return name
     }
 
+    /// A tool's name as a line shows it. A tool Commander does not know by name can carry the
+    /// provider's own title there, so with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) a secret-looking value in it is hidden before the name
+    /// enters a sentence, its help or what VoiceOver reads. Mask before `bareName` cuts it.
+    static func shownName(_ name: String, hidesSecrets: Bool) -> String {
+        hidesSecrets ? SecretValues.masked(prose: name).text : name
+    }
+
     static func fileName(_ path: String) -> String {
         let name = (path as NSString).lastPathComponent
         return name.isEmpty ? path : name
@@ -848,9 +892,11 @@ enum ActivityWords {
     }
 
     static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
-                         record: ToolDetailRecord? = nil) -> ActivityWording {
+                         record: ToolDetailRecord? = nil, hidesSecrets: Bool = false) -> ActivityWording {
         if let special = special(name: name, detail: detail, summary: summary, record: record) { return special }
         let kind = providerKind(name)
+        // Only the generic sentence of an unknown tool names the tool, and its help repeats it.
+        let name = kind == .other ? shownName(name, hidesSecrets: hidesSecrets) : name
         let fact = fact(name, detail: detail, summary: summary, record: record)
         func file(_ running: String, _ done: String, _ failed: String, fallback: String, key: String,
                   one: String, many: String) -> ActivityWording {
@@ -911,11 +957,13 @@ enum ActivityWords {
                                    fallback: ActivitySentence("Updated the plan"),
                                    failed: ActivitySentence("Couldn't update the plan"), phrase: nil, help: name)
         case .other:
+            // A tool Commander does not know takes its verb from the provider's own kind.
+            if let stated = self.kind(summary: summary, hidesSecrets: hidesSecrets) { return stated }
             let bare = bareName(name)
             return ActivityWording(
                 running: ActivitySentence(.text("Using "), .mono(bare)), done: ActivitySentence(.text("Used "), .mono(bare)),
                 fallback: ActivitySentence(.text("Used "), .mono(bare)), failed: ActivitySentence(.mono(bare), .text(" failed")),
-                phrase: ActivityPhrase(key: "other", one: "used another tool", many: "used %d other tools"), help: name)
+                phrase: otherToolPhrase, help: name)
         }
     }
 
@@ -1021,13 +1069,14 @@ enum ActivityWords {
     /// coordinator or parent answers (`owner`), it names them and asks nothing of the reader:
     /// "Waiting for the coordinator's approval to run `command`".
     static func approval(name: String, detail: String?, summary: ToolDetailSummary?,
-                         owner: WorkerInputOwner? = nil) -> ActivitySentence {
+                         owner: WorkerInputOwner? = nil, hidesSecrets: Bool = false) -> ActivitySentence {
         let lead = owner.map { "Waiting for \($0.phrase)'s approval to " } ?? "Needs your approval to "
         if CommanderTool(name: name) == nil, providerKind(name) == .shell,
            let command = fact(name, detail: detail, summary: summary) {
             return ActivitySentence(.text(lead + "run "), .mono(middle(command)))
         }
-        return ActivitySentence(.text(lead + "use "), .mono(CommanderTool(name: name)?.rawValue ?? bareName(name)))
+        return ActivitySentence(.text(lead + "use "),
+                                .mono(CommanderTool(name: name)?.rawValue ?? bareName(shownName(name, hidesSecrets: hidesSecrets))))
     }
 }
 
@@ -1043,7 +1092,8 @@ enum ActivitySteps {
         }
     }
 
-    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?) {
+    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?,
+                              hidesSecrets: Bool) {
         step.phrase = wording.phrase
         step.help = wording.help
         switch step.state {
@@ -1056,7 +1106,7 @@ enum ActivitySteps {
             step.tag = status == .interrupted ? ActivityTag(word: "cancelled", tone: .wait) : wording.tag
         case .failed:
             step.sentence = wording.failed
-            let failure = result.map { ActivityFailureWords.read($0, status: status) }
+            let failure = result.map { ActivityFailureWords.read($0, status: status, hidesSecrets: hidesSecrets) }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag
@@ -1071,11 +1121,12 @@ enum ActivitySteps {
         var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
         if status == .awaitingApproval {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary,
-                                                   owner: facts.approvalOwner)
+                                                   owner: facts.approvalOwner, hidesSecrets: facts.hidesSecrets)
         }
         let record = facts.record(entry.detailKey)
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
-              to: &step, status: status, result: result)
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record,
+                                     hidesSecrets: facts.hidesSecrets),
+              to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
         if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
@@ -1097,15 +1148,16 @@ enum ActivitySteps {
             var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
             let named = TranscriptEntry(id: entry.id, kind: .tool(name: name, detail: nil, result: result))
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
-                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
-            apply(wording, to: &step, status: status, result: result)
+                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key),
+                                          hidesSecrets: facts.hidesSecrets)
+            apply(wording, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
             // The record kept under the result's exact tool call ID holds that call's diff.
             if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
             return step
         }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
                                 sentence: ActivitySentence(""))
-        apply(ActivityWords.orphanResult, to: &step, status: status, result: result)
+        apply(ActivityWords.orphanResult, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         return step
     }
 
@@ -1152,7 +1204,7 @@ enum ActivitySteps {
             if first.tool == .wait, status == .done, first.status == .waitingForReply {
                 wording.tag = ActivityTag(word: "waiting", tone: .wait)
             }
-            apply(wording, to: &step, status: status, result: first.result)
+            apply(wording, to: &step, status: status, result: first.result, hidesSecrets: facts.hidesSecrets)
             return step
         }
         // Several calls: the workflow's own state speaks. A failed call inside it stays visible
@@ -1208,7 +1260,9 @@ enum ActivitySteps {
             let failing = calls.last { ToolStatus(result: $0.result) == .failed || ToolStatus(result: $0.result) == .declined } ?? last
             let wording = ActivityWords.commander(failing, detail: nil)
             step.sentence = wording.failed
-            let failure = failing.result.map { ActivityFailureWords.read($0, status: ToolStatus(result: $0)) }
+            let failure = failing.result.map {
+                ActivityFailureWords.read($0, status: ToolStatus(result: $0), hidesSecrets: facts.hidesSecrets)
+            }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag

@@ -40,6 +40,21 @@ func TestParseBrowseKeepsPresentInstances(t *testing.T) {
 	}
 }
 
+func TestParseBrowseAcceptsSpacePaddedHours(t *testing.T) {
+	const output = `Timestamp     A/R    Flags  if Domain               Service Type         Instance Name
+ 0:51:56.064  Add        3   1 local.               _agentcommander._tcp. First Relay
+ 0:51:56.064  Add        3  29 local.               _agentcommander._tcp. First Relay
+ 0:51:56.065  Add        2  18 local.               _agentcommander._tcp. Removed Relay
+ 0:51:57.000  Rmv        0  18 local.               _agentcommander._tcp. Removed Relay
+ 0:51:57.100  Rmv        0   1 local.               _agentcommander._tcp. First Relay
+10:44:42.397  Add        2  18 local.               _agentcommander._tcp. Last Relay
+`
+	got := parseBrowse(strings.NewReader(output))
+	if len(got) != 2 || got[0] != "First Relay" || got[1] != "Last Relay" {
+		t.Fatalf("names: %q", got)
+	}
+}
+
 func TestParseLookup(t *testing.T) {
 	in, err := parseLookup(strings.NewReader(lookupOutput))
 	if err != nil {

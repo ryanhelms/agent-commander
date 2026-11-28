@@ -18,6 +18,8 @@ import (
 
 const (
 	installedName    = "installed.json"
+	dataDirName      = "data"
+	logName          = "plugin.log"
 	maxInstalledSize = 4 << 20
 	maxPackageBytes  = 1 << 30
 	maxPackageFiles  = 100_000
@@ -62,11 +64,13 @@ func Root(stateDir string) string { return filepath.Join(stateDir, "plugins") }
 func (r Record) Dir(stateDir string) string { return filepath.Join(Root(stateDir), r.ID, r.Version) }
 
 // DataDir is the plugin's own writable directory, kept across upgrades.
-func (r Record) DataDir(stateDir string) string { return filepath.Join(Root(stateDir), r.ID, "data") }
+func (r Record) DataDir(stateDir string) string {
+	return filepath.Join(Root(stateDir), r.ID, dataDirName)
+}
 
 // LogPath receives the plugin's stderr.
 func (r Record) LogPath(stateDir string) string {
-	return filepath.Join(Root(stateDir), r.ID, "plugin.log")
+	return filepath.Join(Root(stateDir), r.ID, logName)
 }
 
 // List returns the installed plugins in ID order.

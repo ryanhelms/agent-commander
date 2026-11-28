@@ -5,6 +5,7 @@ package devicekeys
 /*
 #cgo LDFLAGS: -framework Security -framework CoreFoundation
 #include <Security/Security.h>
+#include <Security/Authorization.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,7 +62,8 @@ func (keychain) KeychainBacked() bool { return true }
 
 func keychainError(operation string, status C.OSStatus) error {
 	switch status {
-	case C.errSecUserCanceled, C.errSecAuthFailed, C.errSecInteractionNotAllowed, C.errSecInteractionRequired, C.errSecNotAvailable:
+	case C.errSecUserCanceled, C.errSecAuthFailed, C.errSecInteractionNotAllowed, C.errSecInteractionRequired, C.errSecNotAvailable,
+		C.errSecInDarkWake, C.errAuthorizationInternal:
 		return fmt.Errorf("%s Keychain item (OSStatus %d): %w", operation, status, ErrKeychainAccess)
 	default:
 		return fmt.Errorf("%s Keychain item (OSStatus %d)", operation, status)

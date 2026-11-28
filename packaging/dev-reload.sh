@@ -71,9 +71,9 @@ restart_relay() {
     fi
 }
 
-# Builds everything the bundle needs without touching the bundle, so the app can keep running.
+# Builds the bundle inputs and checks network helper signing while the app is still running.
 prebuild() {
-    "$MAKE" cli network relay postgres CONFIG="$CONFIG" || return
+    "$MAKE" cli network-package relay postgres CONFIG="$CONFIG" || return
     go build -o "$NETWORK_RELOAD" ./packaging/devreloadnetwork || return
     swift build -c "$CONFIG" --product AgentCommander
 }
