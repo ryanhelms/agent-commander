@@ -167,3 +167,39 @@ func validateSettings(record Record, settings json.RawMessage) error {
 	}
 	return nil
 }
+
+// ProjectGrant is one tool granted to one project checkout in tool-grants.json.
+type ProjectGrant struct {
+	Project  string          `json:"project"`
+	Tool     string          `json:"tool"`
+	Version  int             `json:"version"`
+	Settings json.RawMessage `json:"settings,omitempty"`
+}
+
+// Grants lists every grant in tool-grants.json, compiled tools included, in
+// file order. An entry that does not carry a version is skipped.
+func Grants(stateDir string) ([]ProjectGrant, error) {
+	file, err := readGrants(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []ProjectGrant
+	for _, p := range file.Projects {
+		ids := make([]string, 0, len(p.Tools))
+		for id := range p.Tools {
+			ids = append(ids, id)
+		}
+		slices.Sort(ids)
+		for _, id := range ids {
+			var value struct {
+				Version  int             `json:"version"`
+				Settings json.RawMessage `json:"settings"`
+			}
+			if json.Unmarshal(p.Tools[id], &value) != nil || value.Version < 1 {
+				continue
+			}
+			out = append(out, ProjectGrant{Project: filepath.Clean(p.Path), Tool: id, Version: value.Version, Settings: value.Settings})
+		}
+	}
+	return out, nil
+}

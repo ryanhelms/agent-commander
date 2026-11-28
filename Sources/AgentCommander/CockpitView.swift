@@ -79,6 +79,8 @@ final class CockpitPresentationState {
     let teamsPages = TeamsPagesLiveState()
     /// The harness shown in the Harnesses inspector. Nil shows the place's first.
     var harnessShown: String?
+    /// The plugin shown in the Plugins inspector. Nil shows the place's first.
+    var pluginShown: String?
     /// The shell shows a page other than the wall, so no console is in front of the developer.
     var wallHidden: Bool { shellPlace != LiveShell.wall }
     /// The last key command pressed and how many there have been. The page runs each one from
@@ -738,7 +740,8 @@ struct CockpitScreen: View {
                                     place: ui.shellPlace, needsYou: inbox.pendingCount, network: shell.network,
                                     isOnline: isOnline, showsHosts: shell.hosts != nil,
                                     serviceHost: shell.hosts?.serviceName,
-                                    harnesses: shell.harnesses?.tally ?? HarnessTally())
+                                    harnesses: shell.harnesses?.tally ?? HarnessTally(),
+                                    plugins: shell.plugins?.tally ?? PluginTally())
     }
 
     /// On the wall the breadcrumb is the cockpit's own: project, run, then the zoomed worker.
@@ -793,6 +796,11 @@ struct CockpitScreen: View {
         .environment(\.multiplayerFixedNow, shell.now)
         // A harness's sign-in or install, in its own terminal. It closes when the command ends;
         // the harness list then carries the new state.
+        // A tool's grant: its checkout and settings. It closes when the service accepted it.
+        .sheet(item: Binding(get: { shell.plugins?.draft },
+                             set: { if $0 == nil { shell.plugins?.actions.closeGrant() } })) { draft in
+            PluginGrantSheet(draft: draft, projects: pluginsContext(shell).projects, actions: shell.plugins?.actions ?? PluginActions())
+        }
         .sheet(item: Binding(get: { shell.harnesses?.session },
                              set: { if $0 == nil { shell.harnesses?.actions.endSession(nil, nil) } })) { session in
             HarnessSessionSheet(session: session) { code, line in shell.harnesses?.actions.endSession(code, line) }
@@ -829,6 +837,12 @@ struct CockpitScreen: View {
         } else if HarnessPlace.hasPage(selection) {
             HarnessesPage(place: selection, crumbs: navigation.crumbs,
                           context: shell.harnesses ?? Self.noHarnesses, shown: $ui.harnessShown)
+        } else if selection == PluginPlace.mqtt, let mqtt = shell.mqtt {
+            MQTTPanelPage(crumbs: navigation.crumbs, context: mqtt)
+        } else if PluginPlace.hasPage(selection) {
+            PluginsPage(place: selection, crumbs: navigation.crumbs,
+                        context: pluginsContext(shell), shown: $ui.pluginShown,
+                        openPanel: { place in show(place: place) })
         } else if NetworkPlace.hasPage(selection), let page = shell.networkPage {
             page(selection) { place in show(place: place) }
         } else if TeamsPlace.hasPage(selection), let page = shell.teamsPage {
@@ -839,6 +853,20 @@ struct CockpitScreen: View {
                                  actionTitle: shell.actions.openNetworkPanel == nil ? nil : "Open network panel",
                                  action: { shell.actions.openNetworkPanel?() })
         }
+    }
+
+    /// The plugins as the page shows them, with the cockpit's own checkouts offered first in the
+    /// grant form. Where nothing reports plugins, the mode says so and offers no action.
+    private func pluginsContext(_ shell: ShellContext) -> PluginsContext {
+        guard var context = shell.plugins else {
+            var missing = PluginsContext()
+            missing.link = .unavailable
+            return missing
+        }
+        var seen = Set<String>()
+        let known = content.runs.filter { seen.insert($0.path).inserted }.map { PluginProject(path: $0.path, name: $0.project) }
+        context.projects = PluginProject.choices(known: known, plugins: context.plugins)
+        return context
     }
 
     /// Where nothing reports harnesses, the mode says so and offers no action.
@@ -1033,7 +1061,7 @@ struct CockpitScreen: View {
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
-    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘6. Each
+    /// system: ⌘1 coordinator, ⌘] zoom, ⌘[ return, and the shell's modes on ⌥⌘1 to ⌥⌘7. Each
     /// button only records its command; `perform` runs it from the page's current state, so a
     /// shortcut never acts on values captured when the window opened.
     private var shortcuts: some View {
@@ -2184,7 +2212,12 @@ struct CockpitView: View {
                                               listError: model.hosts.listError,
                                               use: { model.hosts.use($0) },
                                               refresh: { await model.hosts.refresh() }),
-                                          harnesses: HarnessesContext(feed: model.harnesses)))
+                                          harnesses: HarnessesContext(feed: model.harnesses),
+                                          plugins: PluginsContext(feed: model.plugins),
+                                          mqtt: MQTTContext(feed: model.mqtt,
+                                                            openWebUI: { [address = model.mqtt.address] in
+                                                                _ = NSWorkspace.shared.open(MQTTBridge.webUI(address))
+                                                            })))
             // Both subscriptions start again when the service changes, on the new socket.
             .task(id: model.serviceGeneration) { await model.follow() }
             // The window is one more viewer of the network model: it polls while the window shows.
@@ -2208,8 +2241,21 @@ struct CockpitView: View {
             // The harness list, on its own subscription for the same reason. The service probes a
             // harness again when the app comes forward (design/HARNESSES.md).
             .task(id: model.serviceGeneration) { await model.harnesses.follow() }
+            // The plugin list has no stream: it is read when the window opens and when the app
+            // comes forward, because `agentctl plugin` changes it from outside.
+            .task(id: model.serviceGeneration) { await model.plugins.follow() }
+            // The MQTT Bridge is followed only while its panel shows, and again for each chosen topic
+            // and each bridge. The bridge is the one the plugin's grants name in `bridge_url`.
+            .task(id: MQTTFollow(isShown: ui.shellPlace == PluginPlace.mqtt, filter: model.mqtt.filter,
+                                 address: model.mqtt.address)) {
+                if ui.shellPlace == PluginPlace.mqtt { await model.mqtt.follow() }
+            }
+            .onChange(of: MQTTBridge.address(in: model.plugins.plugins), initial: true) { _, address in
+                model.mqtt.use(address: address)
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 model.harnesses.refreshOnActivation()
+                model.plugins.refreshOnActivation()
             }
             .onAppear {
                 guard floatingPanel == nil else { return }

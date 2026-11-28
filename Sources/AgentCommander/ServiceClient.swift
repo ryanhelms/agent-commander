@@ -1052,6 +1052,47 @@ actor ServiceClient {
         }
     }
 
+    // MARK: Plugins (design/PLUGINS.md)
+
+    /// The installed plugins, their tools and each tool's grants.
+    nonisolated func plugins() async throws -> PluginInventory {
+        try PluginSnapshot.decode(try await pluginCall("GET", "", timeout: 10))
+    }
+
+    /// Grants a tool to a checkout, or replaces that grant's settings. A refusal carries the
+    /// service's own sentence.
+    nonisolated func grantPluginTool(_ tool: String, version: Int, project: String, settings: AGUIValue?) async throws -> PluginInventory {
+        let body = PluginSnapshot.grantBody(tool: tool, version: version, project: project, settings: settings)
+        return try PluginSnapshot.decode(try await pluginCall("POST", "/grants", body: body, timeout: 10))
+    }
+
+    nonisolated func revokePluginTool(_ tool: String, project: String) async throws -> PluginInventory {
+        let body = PluginSnapshot.revokeBody(tool: tool, project: project)
+        return try PluginSnapshot.decode(try await pluginCall("POST", "/grants/revoke", body: body, timeout: 10))
+    }
+
+    /// The end of a plugin's log.
+    nonisolated func pluginLog(_ id: String) async throws -> PluginLog {
+        try PluginSnapshot.decodeLog(try await pluginCall("GET", "/\(Self.percentEncoded(id))/log", timeout: 10))
+    }
+
+    /// One plugin request, off the request queue and cancellable. No bearer credential is sent:
+    /// the routes are the owner's and refuse an Authorization header.
+    private nonisolated func pluginCall(_ method: String, _ rest: String, body: Data? = nil, timeout: Int) async throws -> Data {
+        let socket = socket
+        let transfer = Transfer()
+        return try await withTaskCancellationHandler {
+            try await Task.detached(priority: .userInitiated) {
+                let data = try Self.send(socket: socket, path: "/v1/plugins\(rest)", body: body,
+                                         operationID: nil, timeout: timeout, transfer: transfer, method: method)
+                try Task.checkCancellation()
+                return data
+            }.value
+        } onCancel: {
+            transfer.cancel()
+        }
+    }
+
     func startService() throws {
         // A headless host's service is started on that host. Only this Mac's is started from here.
         if let remote = endpoint.remote {

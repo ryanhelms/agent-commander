@@ -32,6 +32,10 @@ final class CockpitModel {
     let adapterUpdates: AdapterUpdateFeed
     /// The harnesses this Mac can run, followed on their own subscription (Harnesses.swift).
     let harnesses: HarnessFeed
+    /// The installed tool plugins and their grants, read on their own calls (Plugins.swift).
+    let plugins: PluginFeed
+    /// What the MQTT Bridge daemon carries, followed only while its panel shows (MQTTBridge.swift).
+    let mqtt = MQTTBridgeFeed()
     /// The provider session of the one worker whose panel is open, and the developer's reattach.
     let providerSessions: ProviderSessionModel
     /// The structured requests of the one worker whose panel is open, and the owner's replies.
@@ -67,6 +71,11 @@ final class CockpitModel {
             check: { try await reader.checkHarness($0) },
             start: { try await reader.startHarnessSession($0, purpose: $1) },
             saveSettings: { try await reader.saveHarnessSettings($0, $1) }))
+        plugins = PluginFeed(api: PluginAPI(
+            list: { try await reader.plugins() },
+            grant: { try await reader.grantPluginTool($0, version: $1, project: $2, settings: $3) },
+            revoke: { try await reader.revokePluginTool($0, project: $1) },
+            log: { try await reader.pluginLog($0) }))
         // A harness that was signed in and no longer is: tell the person outside the window too.
         if let notifier = MultiplayerUserNotifier.forThisProcess() {
             harnesses.notify = { alert in
