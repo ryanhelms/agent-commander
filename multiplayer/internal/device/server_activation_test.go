@@ -225,7 +225,7 @@ func TestStartupKeychainPendingKeepsLocalAPIAndOtherRelaysResponsive(t *testing.
 
 	// A denied store can include platform diagnostics. They must not appear in
 	// the list, scoped status, or refused operation.
-	store.results <- fmt.Errorf("an internal OS error with diagnostics: %w", devicekeys.ErrKeychainAccess)
+	store.results <- fmt.Errorf("read Keychain item (OSStatus -60008): %w", devicekeys.ErrKeychainAccess)
 	end := time.Now().Add(2 * time.Second)
 	for {
 		reply = request("status", held)
@@ -238,7 +238,7 @@ func TestStartupKeychainPendingKeepsLocalAPIAndOtherRelaysResponsive(t *testing.
 		testSleep()
 	}
 	if !reply.OK || json.Unmarshal(reply.Data, &scoped) != nil || scoped.State != "error" ||
-		scoped.Error != keychainRetryText || strings.Contains(string(reply.Data), "diagnostics") {
+		scoped.Error != keychainRetryText || strings.Contains(string(reply.Data), "-60008") {
 		t.Fatalf("denial did not return actionable sanitized status: %+v", reply)
 	}
 	if reply = request("grant", held); reply.OK || reply.Error != keychainRetryText {
@@ -389,7 +389,7 @@ func TestDefaultCoordinatorReportsKeychainActivationAfterProof(t *testing.T) {
 		t.Fatalf("unverified default request = %q, want coordinator proof failure", got)
 	}
 
-	store.results <- fmt.Errorf("internal fixture diagnostics: %w", devicekeys.ErrKeychainAccess)
+	store.results <- fmt.Errorf("read Keychain item (OSStatus -60008): %w", devicekeys.ErrKeychainAccess)
 	end := time.Now().Add(2 * time.Second)
 	for {
 		status := request("status", map[string]string{"server": "held"})
