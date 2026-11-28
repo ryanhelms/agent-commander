@@ -560,9 +560,11 @@ final class MultiplayerSessionModel {
             go(.home)
         case .revoke:
             go(.home)
-        case .addResource:
+        case .addResource, .addWorkspaceInbox:
             resourceDraft = MultiplayerResourceDraft()
             go(.home)
+        case .setAutoStart:
+            break
         }
         if viewers > 0 { refresh() }
     }
@@ -731,6 +733,14 @@ final class MultiplayerSessionModel {
     func addResource() {
         guard let command = resourceDraft.command(directoryExists: directoryExists) else { return }
         perform(command)
+    }
+
+    /// Turns a workspace inbox's Auto-start on or off. The list shows the new value once the
+    /// device confirms it.
+    @discardableResult
+    func setAutoStart(_ isOn: Bool, for resource: MultiplayerResource) -> Task<Void, Never>? {
+        guard resource.isWorkspaceInbox, resource.autoStart != isOn else { return nil }
+        return perform(.setAutoStart(id: resource.id, name: resource.name, isOn: isOn), keepingPage: true)
     }
 
     /// Opens the share form, preselecting what the developer chose and any single option.

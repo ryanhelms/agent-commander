@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -134,6 +135,48 @@ func firstRow(res any) map[string]any {
 	return row
 }
 
+var (
+	handoffMilestoneFields = [...]string{"deliveredAt", "acceptedAt", "verifiedAt"}
+	handoffTimeUTC         = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`)
+)
+
+type handoffMilestones [len(handoffMilestoneFields)]time.Time
+
+// A signed observation can fill in unknown milestones. An omitted field does
+// not erase earlier proof, and a conflicting stamp cannot rewrite it.
+func (m *handoffMilestones) observe(value map[string]any) {
+	for i, field := range handoffMilestoneFields {
+		v, present := value[field]
+		if !present {
+			if m[i].IsZero() {
+				return
+			}
+			continue
+		}
+		raw, ok := v.(string)
+		if !ok || !handoffTimeUTC.MatchString(raw) {
+			return
+		}
+		at, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil || at.IsZero() || (i > 0 && at.Before(m[i-1])) {
+			return
+		}
+		if m[i].IsZero() {
+			m[i] = at
+		} else if !m[i].Equal(at) {
+			return
+		}
+	}
+}
+
+func (m handoffMilestones) project(row map[string]any) {
+	for i, field := range handoffMilestoneFields {
+		if !m[i].IsZero() {
+			row[field] = m[i].Format(time.RFC3339Nano)
+		}
+	}
+}
+
 func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb string, in input) (any, error) {
 	switch verb {
 	case "send":
@@ -164,6 +207,14 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 		}
 		if e = a.logSent(record); e != nil {
 			return nil, e
+		}
+		switch in.Capability {
+		case "agent.handoff", "agent.status", "agent.result":
+			if value, ok := row["value"].(map[string]any); ok && row["status"] == "completed" {
+				var milestones handoffMilestones
+				milestones.observe(value)
+				milestones.project(row)
+			}
 		}
 		row["request"] = id
 		return row, nil
@@ -207,12 +258,21 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 					row["state"] = status
 				}
 				value, _ := fr["value"].(map[string]any)
+				var milestones handoffMilestones
+				if fr["status"] == "completed" {
+					milestones.observe(value)
+				}
 				if run, _ := value["run"].(string); run != "" {
 					row["state"] = "started"
-					if latest, at := a.handoffUpdate(ctx, s, log, peer, r.Resource, run, false); latest != nil {
+					var progress *handoffMilestones
+					if !milestones[0].IsZero() {
+						progress = &milestones
+					}
+					if latest, at := a.handoffUpdate(ctx, s, log, peer, r.Resource, run, false, progress); latest != nil {
 						value, row["updatedAt"] = latest, at
 					}
 				}
+				milestones.project(row)
 				if state, _ := value["state"].(string); state != "" {
 					row["state"] = state
 				}
@@ -272,7 +332,10 @@ func (a *Agent) requesterVerb(ctx context.Context, s identity.Session, verb stri
 
 // handoffUpdate reads the newest signed status or result for this owner's run.
 // Old sent logs have no run ID, so match those using the verified receipt.
-func (a *Agent) handoffUpdate(ctx context.Context, s identity.Session, newestFirst []SentRequest, peer, resource, run string, resultOnly bool) (map[string]any, time.Time) {
+func (a *Agent) handoffUpdate(ctx context.Context, s identity.Session, newestFirst []SentRequest, peer, resource, run string, resultOnly bool, milestones *handoffMilestones) (map[string]any, time.Time) {
+	var latest map[string]any
+	var latestAt time.Time
+	var observations []map[string]any
 	for _, r := range newestFirst {
 		if r.Resource != resource || (r.Run != "" && r.Run != run) {
 			continue
@@ -286,11 +349,22 @@ func (a *Agent) handoffUpdate(ctx context.Context, s identity.Session, newestFir
 		}
 		row := firstRow(res)
 		value, _ := row["value"].(map[string]any)
-		if row["peer"] == peer && row["status"] == "completed" && value["run"] == run {
+		if row["peer"] != peer || row["resource"] != resource || row["action"] != r.Action ||
+			row["status"] != "completed" || value["run"] != run {
+			continue
+		}
+		if milestones == nil {
 			return value, r.At
 		}
+		if latest == nil {
+			latest, latestAt = value, r.At
+		}
+		observations = append(observations, value)
 	}
-	return nil, time.Time{}
+	for _, value := range slices.Backward(observations) {
+		milestones.observe(value)
+	}
+	return latest, latestAt
 }
 
 // applyArtifact applies a selected artifact into the requester's chosen checkout.
@@ -321,7 +395,7 @@ func (a *Agent) applyArtifact(ctx context.Context, s identity.Session, in input)
 		resource, _ := row["resource"].(string)
 		run, _ := result["run"].(string)
 		if run != "" {
-			result, _ = a.handoffUpdate(ctx, s, log, peer, resource, run, true)
+			result, _ = a.handoffUpdate(ctx, s, log, peer, resource, run, true, nil)
 		}
 	}
 	b, _ := json.Marshal(result)

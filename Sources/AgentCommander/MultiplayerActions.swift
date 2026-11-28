@@ -234,7 +234,10 @@ extension MultiplayerModel {
     /// Hands a task to a friend's agent. The ID is the new hand-off's request.
     func sendHandoff(_ draft: MultiplayerHandoffDraft, to resource: String, on server: String) async -> MultiplayerActionResult {
         let lead = "Couldn’t hand off the task."
-        guard draft.canSend else { return refused("", server, lead, draft.problem ?? "Give the task a title and say what to do.") }
+        let draft = draft.addressed(toWorkspaceInbox: share.entry(resource, on: server)?.isWorkspaceInbox == true)
+        guard draft.canSend else {
+            return refused("", server, lead, draft.problem ?? draft.expectedHeadProblem ?? "Give the task a title and say what to do.")
+        }
         return await made(server: server, failing: lead) { report, made in
             share.sendHandoff(draft, to: resource, on: server, report: report, then: { made($0.request) })
         }

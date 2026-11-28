@@ -36,7 +36,8 @@ import Testing
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.request, $0) })
         // A hand-off's state is its run's once a report was read; otherwise the request's own.
         #expect(byID["ho-1"]?.state == "Done" && byID["ho-1"]?.tone == .working)
-        #expect(byID["ho-2"]?.state == "Waiting" && byID["ho-2"]?.tone == .attention)
+        // One with milestone times shows its latest confirmed stage.
+        #expect(byID["ho-2"]?.state == "Accepted" && byID["ho-2"]?.tone == .working)
         #expect(byID["ho-3"]?.state == "Denied" && byID["ho-3"]?.tone == .failure)
         #expect(byID["rv-1"]?.kind == .review && byID["rv-1"]?.state == "2 important, 1 nit")
         #expect(byID["ho-1"]?.target == "mira’s mira-claude")

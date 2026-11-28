@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"syscall"
 	"time"
@@ -29,6 +30,8 @@ type Resource struct {
 	Repository   string                `json:"repository,omitempty"`
 	Base         string                `json:"base,omitempty"`
 	Run          string                `json:"run,omitempty"`
+	Workspace    string                `json:"workspace,omitempty"`
+	AutoStart    bool                  `json:"autoStart,omitempty"`
 	Coordinator  bool                  `json:"coordinator,omitempty"`
 	Capabilities *sharing.Capabilities `json:"capabilities,omitempty"`
 }
@@ -54,6 +57,7 @@ type Request struct {
 	Resource string          `json:"resource"`
 	Action   string          `json:"action"`
 	Payload  json.RawMessage `json:"payload"`
+	Deadline time.Time       `json:"-"`
 }
 type Config struct {
 	StateDir, CommanderSocket string
@@ -175,7 +179,15 @@ func registeredKind(r Resource) string {
 }
 
 // ResourceCapabilities advertises only actions for the enrolled local target.
-func ResourceCapabilities(r Resource) []string { return Capabilities(registeredKind(r)) }
+func ResourceCapabilities(r Resource) []string {
+	if r.Workspace != "" {
+		if r.Kind != "agent" || r.Coordinator || !identifier.MatchString(r.Workspace) {
+			return nil
+		}
+		return []string{"agent.handoff", "agent.result", "agent.status", "thread.comment", "thread.read"}
+	}
+	return Capabilities(registeredKind(r))
+}
 
 func Capabilities(kind string) []string {
 	var names []string
@@ -416,7 +428,7 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 		}
 	}
 	implementation, known := registry[req.Action]
-	if !known || resource.ID == "" || implementation.kind != registeredKind(resource) {
+	if !known || resource.ID == "" || implementation.kind != registeredKind(resource) || !slices.Contains(ResourceCapabilities(resource), req.Action) {
 		return nil, ErrDenied
 	}
 	grant, ok := activeGrant(cfg, req)
@@ -438,7 +450,11 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 	req.Payload, _ = json.Marshal(canonical)
 	// An owner may remove and later reuse a display ID. Old receipts belong
 	// only to the original target. Display names and refreshed grants may change.
-	raw, _ := json.Marshal([]any{req, resource.Kind, resource.Target, resource.Repository, resource.Branch, resource.Base, resource.Run, resource.Coordinator})
+	binding := []any{req, resource.Kind, resource.Target, resource.Repository, resource.Branch, resource.Base, resource.Run, resource.Coordinator}
+	if resource.Workspace != "" {
+		binding = append(binding, resource.Workspace)
+	}
+	raw, _ := json.Marshal(binding)
 	r, fresh, e := reserve(dir, path, hash(raw), grant)
 	if e != nil {
 		if errors.Is(e, ErrConflict) || errors.Is(e, ErrDenied) || errors.Is(e, ErrBudgetExhausted) {

@@ -99,6 +99,14 @@ The agent resource shares the ability to request a bounded number of operations.
 
 The pilot supports explicit one-to-many target lists. Named persistent groups, pooled token budgets measured in provider tokens, and multi-host database or ingress failover belong to later increments in the [relay architecture](MULTIPLAYER-RELAY.md).
 
+## Hand off to an enrolled workspace
+
+Upgrade the relay and both Macs. On the recipient's Mac, share an Agent resource for the existing workspace and choose a local coordinator run as its anchor. The anchor supplies the owner-selected checkout and provider. The workspace inbox remains available after that run ends. Leave **Auto-start** off to retain queued work until an eligible coordinator is available. Enable it to let the device start a managed workspace coordinator when none is running.
+
+Give the paired workspace member the handoff, status, and result grants. Keep handoff approval set to **Ask** if the owner should approve each operation. The device persists the handoff while that approval is pending. Grant automatic admission for bounded work that may wake an idle coordinator without a separate owner decision.
+
+Send a handoff from the existing shared resource. **Delivered** means the handoff was persisted on the recipient device. **Accepted** identifies a claimed coordinator turn. **Verified** requires a completed turn and matching evidence. For the first evidence type, provide the full expected Git commit in the handoff and refresh status or result to retrieve the matching observed revision. A completed turn with missing or different checkout evidence remains unverified.
+
 ## Read a failed repository receipt
 
 The recipient device signs and encrypts a fixed recovery code in `result.code`. For `stale_revision`, read the current shared branch with `git.head` before preparing a revised change with a fresh submission ID. For `outcome_uncertain`, look up the original submission and check with the repository owner whether the external write took effect before submitting another write. The original submission ID can recover the receipt without repeating the action. Other failure codes report access denial, invalid requests, conflicts, or unavailable owner resources.

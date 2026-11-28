@@ -382,6 +382,7 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 	a.problem = ""
 	a.mu.Unlock()
 	go a.syncCoordinatorInboxes(ctx, who, l)
+	go a.syncWorkspaceHandoffs(ctx, who, l)
 	go func() {
 		defer cancel()
 		for wait(ctx, 15*time.Second) {
@@ -413,7 +414,14 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 			return e
 		}
 		var inbox struct{ Children []control.Child }
-		if e = a.remote(ctx, s, "GET", path, nil, &inbox); e != nil {
+		poll := path
+		a.mu.Lock()
+		offersWorkspace := slices.ContainsFunc(a.policy.Resources, func(resource actions.Resource) bool { return resource.Workspace != "" })
+		a.mu.Unlock()
+		if offersWorkspace {
+			poll += "&workspace=1"
+		}
+		if e = a.remote(ctx, s, "GET", poll, nil, &inbox); e != nil {
 			return e
 		}
 		for _, c := range inbox.Children {
@@ -512,7 +520,10 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 		}
 		p.buildExpires = challenge.ExpiresAt()
 	}
-	if verify == nil && a.needsApproval(c) {
+	workspace := c.Action == "agent.handoff" && slices.ContainsFunc(a.localConfig(s).Resources, func(r actions.Resource) bool {
+		return r.ID == c.Resource && r.Workspace != ""
+	})
+	if verify == nil && !workspace && a.needsApproval(c) {
 		req := actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: payload}
 		if errors.Is(actions.CheckBudget(a.localConfig(s), req), actions.ErrBudgetExhausted) {
 			return a.finish(ctx, s, l, p, nil, "budget_exhausted", "")
@@ -536,7 +547,7 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 			deadline = p.buildExpires
 		}
 		task, cancel := context.WithDeadline(ctx, deadline)
-		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload})
+		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload, Deadline: c.ExpiresAt})
 		cancel()
 	}
 	status := "completed"
@@ -580,4 +591,24 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 		return e
 	}
 	return a.flushReceipts(ctx, s, l)
+}
+
+func (a *Agent) syncWorkspaceHandoffs(ctx context.Context, who identity.Session, lease control.Lease) {
+	for ctx.Err() == nil {
+		session, err := a.getSession(ctx)
+		if err != nil || session.User != who.User || session.Device != who.Device {
+			return
+		}
+		actions.ProcessWorkspaceHandoffs(ctx, a.localConfig(session), func(ctx context.Context, id string) (bool, error) {
+			var admission struct{ Ready, Allowed bool }
+			err := a.remote(ctx, session, "POST", "/v1/children/"+url.PathEscape(id)+"/workspace-admission", proof(lease), &admission)
+			if err == nil && !admission.Ready {
+				err = errors.New("workspace delivery receipt is not ready")
+			}
+			return admission.Allowed, err
+		})
+		if !wait(ctx, 500*time.Millisecond) {
+			return
+		}
+	}
 }

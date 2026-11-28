@@ -124,6 +124,11 @@ func (a *Agent) approvals(ctx context.Context, s identity.Session) map[string]an
 		}
 	}
 	a.mu.Unlock()
+	for _, pending := range actions.PendingWorkspaceApprovals(a.localConfig(s)) {
+		list = append(list, Approval{ID: pending.ID, Server: a.cfg.ServerID, Peer: pending.Peer,
+			Resource: pending.Resource, Action: "agent.handoff", Summary: pending.Title,
+			Arrived: pending.DeliveredAt, Expires: pending.ExpiresAt})
+	}
 	if len(list) != 0 {
 		handles := a.friendHandles(ctx, s)
 		for i := range list {
@@ -144,6 +149,9 @@ func (a *Agent) resolve(ctx context.Context, id, denial, reason string) error {
 	p, ok := a.pending[id]
 	if !ok || p.child.Owner != s.User {
 		a.mu.Unlock()
+		if found, err := actions.ResolveWorkspaceApproval(a.localConfig(s), id, denial == ""); found || err != nil {
+			return err
+		}
 		return errors.New("no such pending request")
 	}
 	delete(a.pending, id)

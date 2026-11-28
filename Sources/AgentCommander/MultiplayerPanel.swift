@@ -191,6 +191,8 @@ struct MultiplayerHomeLists: View {
     let onSetCredential: (_ resourceID: String) -> Void
     /// Opens a resource's audit list. Nil where there is none to open.
     var onAudit: ((_ resourceID: String) -> Void)? = nil
+    /// Turns a workspace inbox's Auto-start on or off. Nil shows the value without a switch.
+    var onSetAutoStart: ((_ resource: MultiplayerResource, _ isOn: Bool) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -249,6 +251,16 @@ struct MultiplayerHomeLists: View {
                 MultiplayerRows(items: status.resources, empty: "Add a repository checkout or an agent you might share.") { resource in
                     MultiplayerRow(symbol: MultiplayerResourceKind.symbol(for: resource.kind), title: resource.name,
                                    caption: resourceSummary(resource)) {
+                        if resource.isWorkspaceInbox, let onSetAutoStart {
+                            // The caption names the switch: "Auto-start on" or "Auto-start off".
+                            Toggle("Auto-start for \(resource.name.multiplayerDisplay)",
+                                   isOn: Binding(get: { resource.autoStart }, set: { onSetAutoStart(resource, $0) }))
+                                .toggleStyle(MultiplayerSwitchStyle())
+                                .disabled(isBusy)
+                                .help(resource.autoStart
+                                      ? "Auto-start is on: Commander starts this workspace’s coordinator for a waiting hand-off."
+                                      : "Auto-start is off: a hand-off waits until this workspace’s coordinator is running.")
+                        }
                         if MultiplayerSessionModel.takesCredential(resource) {
                             SymbolButton(symbol: "key", label: "Set GitHub token for \(resource.name.multiplayerDisplay)") {
                                 onSetCredential(resource.id)
@@ -320,12 +332,14 @@ struct MultiplayerHomeLists: View {
     }
 
     private func resourceSummary(_ resource: MultiplayerResource) -> String {
-        let kind = MultiplayerResourceKind.title(for: resource.kind).multiplayerDisplay
-        switch resource.actions.count {
-        case 0: return "\(kind) · No actions available"
-        case 1: return "\(kind) · 1 action"
-        default: return "\(kind) · \(resource.actions.count) actions"
+        let kind = resource.isWorkspaceInbox ? "Workspace inbox" : MultiplayerResourceKind.title(for: resource.kind).multiplayerDisplay
+        let actions = switch resource.actions.count {
+        case 0: "No actions available"
+        case 1: "1 action"
+        default: "\(resource.actions.count) actions"
         }
+        guard resource.isWorkspaceInbox else { return "\(kind) · \(actions)" }
+        return "\(kind) · \(actions) · Auto-start \(resource.autoStart ? "on" : "off")"
     }
 
     private func sharedSummary(_ shared: MultiplayerShared) -> String {
@@ -525,6 +539,8 @@ struct MultiplayerAddFriendEditor: View {
 /// Names a local repository checkout or agent run. Adding does not share it.
 struct MultiplayerAddResourceEditor: View {
     @Binding var draft: MultiplayerResourceDraft
+    /// The workspaces on this server an agent can take hand-offs for. Empty leaves the choice out.
+    let workspaces: [MultiplayerWorkspace]
     let nameProblem: String?
     let targetProblem: String?
     let canAdd: Bool
@@ -534,9 +550,10 @@ struct MultiplayerAddResourceEditor: View {
 
     enum Field: Hashable { case name, target }
 
-    init(draft: Binding<MultiplayerResourceDraft>, nameProblem: String?, targetProblem: String?, canAdd: Bool,
-         onAdd: @escaping () -> Void, onBack: @escaping () -> Void) {
+    init(draft: Binding<MultiplayerResourceDraft>, workspaces: [MultiplayerWorkspace] = [], nameProblem: String?,
+         targetProblem: String?, canAdd: Bool, onAdd: @escaping () -> Void, onBack: @escaping () -> Void) {
         self._draft = draft
+        self.workspaces = workspaces
         self.nameProblem = nameProblem
         self.targetProblem = targetProblem
         self.canAdd = canAdd
@@ -556,8 +573,24 @@ struct MultiplayerAddResourceEditor: View {
                     .onSubmit { focus = .target }
             }
 
-            MultiplayerField(label: draft.kind.targetLabel, hint: draft.kind.targetHint, problem: targetProblem) {
-                MultiplayerTextField(label: draft.kind.targetLabel, placeholder: draft.kind.targetPlaceholder,
+            if draft.kind == .agent, !workspaces.isEmpty {
+                MultiplayerField(label: "Takes hand-offs for",
+                                 hint: draft.isWorkspaceInbox
+                                     ? "A friend’s hand-off waits in this workspace’s inbox until its coordinator takes it."
+                                     : "Choose a workspace to queue its hand-offs here. One worker runs each hand-off as it arrives.") {
+                    Picker("Takes hand-offs for", selection: $draft.workspace) {
+                        Text("One worker").tag("")
+                        ForEach(workspaces) { workspace in
+                            Text(workspace.name.multiplayerDisplay).tag(workspace.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+            }
+
+            MultiplayerField(label: draft.targetLabel, hint: draft.targetHint, problem: targetProblem) {
+                MultiplayerTextField(label: draft.targetLabel, placeholder: draft.targetPlaceholder,
                                      text: $draft.target, monospaced: true, isFocused: focus == .target)
                     .focused($focus, equals: .target)
                     .onSubmit { if canAdd { onAdd() } }
@@ -566,6 +599,22 @@ struct MultiplayerAddResourceEditor: View {
                         draft.target = url.path(percentEncoded: false)
                         return true
                     }
+            }
+
+            if draft.isWorkspaceInbox {
+                MultiplayerField(label: "When no coordinator is running",
+                                 hint: draft.autoStart
+                                     ? "Commander starts this workspace’s coordinator for a waiting hand-off."
+                                     : "A hand-off waits until you start the coordinator. You can change this later.") {
+                    MultiplayerSettingRow(label: "Auto-start") {
+                        HStack(spacing: Space.s) {
+                            Toggle("Auto-start", isOn: $draft.autoStart).toggleStyle(MultiplayerSwitchStyle())
+                            MultiplayerStateLabel(lamp: draft.autoStart ? .on : .off, text: draft.autoStart ? "On" : "Off",
+                                                  tone: draft.autoStart ? .working : .neutral)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
             }
 
             MultiplayerEditorActions {
@@ -860,6 +909,8 @@ struct MultiplayerSessionContent: View {
     /// The tray's grant sheet (increment 3). Without it, Share opens this session's own form.
     var onShare: ((_ handle: String?, _ resourceID: String?) -> Void)? = nil
     var onAudit: ((_ resourceID: String) -> Void)? = nil
+    /// This server's workspaces, offered when adding an agent as a workspace's hand-off inbox.
+    var workspaces: [MultiplayerWorkspace] = []
 
     @Environment(\.theme) private var theme
     var body: some View {
@@ -914,7 +965,8 @@ struct MultiplayerSessionContent: View {
                                      },
                                      onRevoke: { model.askRevoke($0) },
                                      onSetCredential: { model.startCredential(resourceID: $0) },
-                                     onAudit: onAudit)
+                                     onAudit: onAudit,
+                                     onSetAutoStart: { model.setAutoStart($1, for: $0) })
             case .addFriend:
                 MultiplayerAddFriendEditor(handle: $model.friendDraft, lookup: model.currentLookup,
                                            friends: Set(status.friends.map(\.handle)),
@@ -925,7 +977,7 @@ struct MultiplayerSessionContent: View {
                                            onSend: { model.sendFriendRequest() },
                                            onBack: { model.go(.home) })
             case .addResource:
-                MultiplayerAddResourceEditor(draft: $model.resourceDraft,
+                MultiplayerAddResourceEditor(draft: $model.resourceDraft, workspaces: workspaces,
                                              nameProblem: model.resourceNameProblem,
                                              targetProblem: model.resourceTargetProblem,
                                              canAdd: model.canAddResource,

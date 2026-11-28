@@ -207,6 +207,11 @@ func TestHandoffRowsAndApplyArtifact(t *testing.T) {
 	if err != "" || json.Unmarshal(raw, &list) != nil || len(list.Handoffs) != 1 {
 		t.Fatalf("handoffs: %s %s", raw, err)
 	}
+	for _, milestone := range []string{"deliveredAt", "acceptedAt", "verifiedAt"} {
+		if strings.Contains(string(raw), milestone) {
+			t.Fatalf("legacy receipt projected %s: %s", milestone, raw)
+		}
+	}
 	row := list.Handoffs[0]
 	if row.ID != handoff || row.Server != "s-test" || row.Handle != "sam" || row.Friend != "sam" || row.State != "done" || row.UpdatedAt != updated || row.Title != "Fix worker" {
 		t.Fatalf("handoff row: %+v", row)
@@ -244,4 +249,77 @@ func TestHandoffRowsAndApplyArtifact(t *testing.T) {
 	if !strings.Contains(err, "fetch the branch fix-worker") {
 		t.Fatalf("branch guidance: %s", err)
 	}
+}
+
+func TestHandoffProjectSignedMilestonesAcrossObservations(t *testing.T) {
+	const (
+		delivered = "2026-11-21T11:42:00.125Z"
+		accepted  = "2026-11-21T11:42:02Z"
+		verified  = "2026-11-21T11:42:03Z"
+	)
+	resources := []control.Resource{{ID: "workspace", Actions: []string{"agent.handoff", "agent.status", "agent.result"}}}
+	var observation map[string]any
+	a := newRequester(t, resources, false, func(c control.Child, body json.RawMessage) any {
+		if c.Action == "agent.handoff" {
+			return map[string]any{"run": "handoff-1", "state": "delivered", "deliveredAt": delivered}
+		}
+		var target struct{ Run string }
+		if err := json.Unmarshal(body, &target); err != nil {
+			t.Fatalf("decode handoff lookup: %v", err)
+		}
+		value := map[string]any{"run": target.Run, "state": "completed"}
+		for field, stamp := range observation {
+			value[field] = stamp
+		}
+		return value
+	})
+	h := a.Handler()
+	send := func(action, payload string) map[string]any {
+		t.Helper()
+		raw, err := call(t, h, "send", input{Capability: action, Resource: "workspace", Payload: json.RawMessage(payload)})
+		var row map[string]any
+		if err != "" || json.Unmarshal(raw, &row) != nil || row["status"] != "completed" {
+			t.Fatalf("send %s: %s %s", action, raw, err)
+		}
+		return row
+	}
+	list := func() map[string]any {
+		t.Helper()
+		raw, err := call(t, h, "handoffs", input{})
+		var list struct{ Handoffs []map[string]any }
+		if err != "" || json.Unmarshal(raw, &list) != nil || len(list.Handoffs) != 1 {
+			t.Fatalf("handoffs: %s %s", raw, err)
+		}
+		return list.Handoffs[0]
+	}
+	check := func(row map[string]any, wantAccepted, wantVerified any) {
+		t.Helper()
+		if row["deliveredAt"] != delivered || row["acceptedAt"] != wantAccepted || row["verifiedAt"] != wantVerified {
+			t.Fatalf("milestones delivered=%v accepted=%v verified=%v, want %v %v %v",
+				row["deliveredAt"], row["acceptedAt"], row["verifiedAt"], delivered, wantAccepted, wantVerified)
+		}
+	}
+
+	check(send("agent.handoff", `{"title":"Verify","task":"Verify the workspace"}`), nil, nil)
+	check(list(), nil, nil)
+
+	observation = map[string]any{"deliveredAt": delivered, "acceptedAt": true, "verifiedAt": verified}
+	check(send("agent.status", `{"run":"handoff-1"}`), nil, nil)
+	observation = map[string]any{"deliveredAt": delivered, "acceptedAt": "2026-11-21T1:42:02Z", "verifiedAt": verified}
+	check(send("agent.status", `{"run":"handoff-1"}`), nil, nil)
+	observation = map[string]any{"deliveredAt": delivered, "acceptedAt": accepted, "verifiedAt": verified}
+	send("agent.result", `{"run":"different-handoff"}`)
+	check(list(), nil, nil)
+
+	observation = map[string]any{"acceptedAt": accepted, "verifiedAt": delivered}
+	send("agent.status", `{"run":"handoff-1"}`)
+	check(list(), accepted, nil)
+
+	observation = map[string]any{"deliveredAt": delivered, "acceptedAt": accepted, "verifiedAt": verified}
+	check(send("agent.result", `{"run":"handoff-1"}`), accepted, verified)
+	observation = map[string]any{"deliveredAt": delivered, "acceptedAt": "2026-11-21T11:42:01Z"}
+	send("agent.status", `{"run":"handoff-1"}`)
+	observation = nil
+	send("agent.status", `{"run":"handoff-1"}`)
+	check(list(), accepted, verified)
 }

@@ -293,7 +293,8 @@ func consume(ctx context.Context, tx pgx.Tx, c Child) (string, bool, error) {
 	err := tx.QueryRow(ctx, `SELECT g.per_action,g.source,mp_action_spends_use(a.action) FROM mp_resources r JOIN mp_grants g ON g.resource=r.id
         JOIN mp_selected_grant_actions a ON (a.resource,a.grantee,a.source)=(g.resource,g.grantee,g.source) AND a.action=$5
         WHERE g.grantee=$1 AND r.id=$2 AND r.device=$3 AND r.owner_id=$4 AND $5=ANY(r.actions) AND $5=ANY(g.actions)
-        AND a.expires_at>clock_timestamp() AND $6::timestamptz>clock_timestamp() FOR UPDATE OF g`, c.Sender, c.Resource, c.Device, c.Owner, c.Action, c.ExpiresAt).Scan(&perAction, &source, &spendsUse)
+        AND a.expires_at>clock_timestamp() AND $6::timestamptz>clock_timestamp()
+        AND mp_workspace_handoff_allowed(r.workspace_id,r.owner_id,$1) FOR UPDATE OF g`, c.Sender, c.Resource, c.Device, c.Owner, c.Action, c.ExpiresAt).Scan(&perAction, &source, &spendsUse)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

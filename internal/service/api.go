@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"agentcommander/internal/buildinfo"
@@ -129,6 +130,8 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("GET /v1/catalog/notices/events", s.streamCatalogNotices)
 	(&harnessRoutes{stateDir: stateDir, launcher: launcher}).register(mux)
 	mux.HandleFunc("GET /v1/network/coordinator", s.handleJSON(s.networkCoordinator))
+	mux.HandleFunc("GET /v1/network/workspace-handoffs/{handoff}", s.handle(s.getWorkspaceHandoff))
+	mux.HandleFunc("POST /v1/network/workspace-handoffs/{handoff}", s.handle(s.postWorkspaceHandoff))
 	mux.HandleFunc("GET /v1/runs/{run}/workers/{worker}/tools", s.listScopedTools)
 	mux.HandleFunc("POST /v1/runs/{run}/workers/{worker}/tools/calls", s.callScopedTool)
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
@@ -853,6 +856,19 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	}
 	if ended(w.State) && w.State != in.State {
 		return outcome{}, conflict("worker has already ended")
+	}
+	if w.ID == r.CoordinatorID && r.InitialWorkspaceHandoffID != "" {
+		if in.State == "working" {
+			if h := s.state.WorkspaceHandoffs[r.InitialWorkspaceHandoffID]; h != nil && h.expiredBeforeClaim(time.Now()) {
+				return s.expireWorkspaceHandoff(r, w, nil), nil
+			}
+			s.acceptWorkspaceHandoff(r.InitialWorkspaceHandoffID, w)
+		} else if ended(in.State) {
+			s.finishWorkspaceHandoff(req.Context(), r.InitialWorkspaceHandoffID, w, in.State, "")
+			if in.State == "failed" {
+				s.failWorkspaceHandoff(r.InitialWorkspaceHandoffID, w, "coordinator_failed")
+			}
+		}
 	}
 	w.State, w.Error = in.State, in.Error
 	if ended(in.State) {
