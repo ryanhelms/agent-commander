@@ -155,6 +155,88 @@ func TestACPActivityProjection(t *testing.T) {
 	}
 }
 
+func TestACPPlanUpdateProjectsScopedIdentityAndKeepsExactItemsPrivate(t *testing.T) {
+	const items = `[{"content":"private initial item","priority":"high","status":"pending","futureField":42}]`
+	const replacement = `[{"content":"private replacement","priority":"low","status":"completed"}]`
+	const alpha = "private-alpha-id"
+	const beta = "private-beta-id"
+	const session = "private-session"
+	update := func(id, entries string) string {
+		return `{"sessionUpdate":"plan_update","plan":{"type":"items","planId":"` + id + `","entries":` + entries + `}}`
+	}
+	observation := func(raw string) *model.Observation {
+		return &model.Observation{
+			Session: &model.SessionRef{SessionId: session}, Cursor: "record",
+			Event: &model.Observation_Extension{Extension: &model.Extension{
+				Type: "acp.session_update", MediaType: "application/json", Data: []byte(raw),
+			}},
+		}
+	}
+	first := observation(update(alpha, items))
+	final := observation(update(alpha, replacement))
+	final.Cursor = "another-record"
+	removed := observation(`{"sessionUpdate":"plan_removed","planId":"` + alpha + `"}`)
+	other := observation(update(beta, items))
+	otherSession := observation(update(alpha, items))
+	otherSession.Session.SessionId = "other-session"
+
+	project := func(obs *model.Observation) *acpprocessor.Activity {
+		t.Helper()
+		ev := acpExtensionEvent(obs, "live")
+		raw, err := json.Marshal(ev)
+		if err != nil || strings.Contains(string(raw), "private") || ev.ACP == nil || !ev.ACP.Valid() ||
+			ev.Text != "[ACP "+ev.ACP.Kind+"]" || ev.ACP.MessageID != "" || ev.ACP.MessageOp != "" {
+			t.Fatalf("invalid or disclosing projection: %s (%v)", raw, err)
+		}
+		return ev.ACP
+	}
+	initialActivity := project(first)
+	identity := initialActivity.PlanIdentity
+	if len(identity) != 64 || identity != project(final).PlanIdentity || identity != project(removed).PlanIdentity ||
+		identity == project(other).PlanIdentity || identity == project(otherSession).PlanIdentity {
+		t.Fatal("plan events were not associated by plan ID within the bound session")
+	}
+	if d := planDetail(first, initialActivity); d == nil || string(d.Plan) != items {
+		t.Fatalf("initial scoped snapshot = %+v", d)
+	}
+	if d := planDetail(final, project(final)); d == nil || string(d.Plan) != replacement {
+		t.Fatalf("replacement scoped snapshot = %+v", d)
+	}
+	if planDetail(removed, project(removed)) != nil || planDetail(other, initialActivity) != nil {
+		t.Fatal("a removal or mismatched plan borrowed an item snapshot")
+	}
+	if idle := idleSourcedEvent(first, acpprocessor.Reference("live", first.Cursor, "source", "")); idle.ACP.PlanIdentity != identity {
+		t.Fatal("idle observation lost the bound plan identity")
+	}
+	for _, raw := range []string{update(alpha, "null"), update(alpha, "{}"),
+		`{"sessionUpdate":"plan_update","plan":{"type":"items","planId":"` + alpha + `"}}`,
+		`{"sessionUpdate":"plan_update","plan":{"type":"markdown","planId":"` + alpha + `","content":"private markdown"}}`,
+	} {
+		withoutEntries := observation(raw)
+		activity := project(withoutEntries)
+		if activity.PlanIdentity != identity || planDetail(withoutEntries, activity) != nil {
+			t.Fatal("a plan with no supplied item list gained an item snapshot")
+		}
+	}
+	for _, obs := range []*model.Observation{observation(update("", items)), observation(update("  ", items)), observation(update(`bad\nID`, items))} {
+		if project(obs).PlanIdentity != "" {
+			t.Fatal("invalid plan ID gained a projection identity")
+		}
+	}
+	wrapped := observation(update(alpha, items))
+	wrapped.SourceRecord = &model.Extension{
+		Type: runtime.ACPUpdateParamsSource, MediaType: "application/json",
+		Data: []byte(`{"sessionId":"` + session + `","update":` + update(alpha, items) + `}`),
+	}
+	if project(wrapped).PlanIdentity != identity {
+		t.Fatal("a matching source wrapper lost the plan identity")
+	}
+	wrapped.Session.SessionId = "different-session"
+	if activity := project(wrapped); activity.PlanIdentity != "" || planDetail(wrapped, activity) != nil {
+		t.Fatal("an original bound to another session contributed a plan fact")
+	}
+}
+
 func TestACPIdleContentUsesSpeakerAndScopedMedia(t *testing.T) {
 	for _, tc := range []struct{ raw, kind, text string }{
 		{`{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"retained"}}`, "user", "retained"},

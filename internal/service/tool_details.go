@@ -31,6 +31,8 @@ const (
 	// MaxToolDetailField bounds one argument, result or content value. A longer
 	// value is shortened and listed in Truncated, whatever the settings say.
 	MaxToolDetailField = 512 << 10
+	// MaxPlanDetailBytes bounds one complete checklist snapshot.
+	MaxPlanDetailBytes = 64 << 10
 	// MaxToolDetailRecords bounds retained records per worker.
 	MaxToolDetailRecords = 256
 	toolDetailBytes      = 16 << 20
@@ -425,7 +427,7 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 				d.Shortened[field.name] = paths
 			}
 		}
-		if len(d.Plan) > 64<<10 || (len(d.Plan) != 0 && !json.Valid(d.Plan)) {
+		if len(d.Plan) > MaxPlanDetailBytes || (len(d.Plan) != 0 && !json.Valid(d.Plan)) {
 			d.Plan = nil
 		}
 		prepared = append(prepared, d)

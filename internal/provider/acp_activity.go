@@ -1,15 +1,16 @@
 package provider
 
 import (
-	"agent-acp.local/sdks/go/runtime"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	model "agent-acp.local/sdks/go/model"
+	"agent-acp.local/sdks/go/runtime"
 	"agentcommander/internal/acpprocessor"
 	"agentcommander/internal/service"
 )
@@ -100,7 +101,7 @@ func typedObservation(obs *model.Observation) bool {
 // acpExtensionEvent renders an extension or a typed ACP session observation.
 func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEvent {
 	if update, ok := typedUpdate(obs); ok {
-		return acpActivityEvent(&update, source, obs.Cursor)
+		return acpObservationActivity(&update, obs, source)
 	}
 	ext := obs.GetExtension()
 	if event, ok := acpScopedActivity(obs, source); ok {
@@ -120,7 +121,7 @@ func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEve
 		return service.ConsoleEvent{Kind: "output", Text: "[Provider event: Permission request without an available choice]"}
 	}
 	if update, ok := acpprocessor.ExtensionUpdate(ext); ok {
-		return acpActivityEvent(&update, source, obs.Cursor)
+		return acpObservationActivity(&update, obs, source)
 	}
 	if source == "provider" && (promptMediaExtension(ext.GetType()) || (ext.GetMediaType() != "" &&
 		ext.GetMediaType() != "application/json" && !strings.HasPrefix(ext.GetMediaType(), "text/"))) {
@@ -132,6 +133,60 @@ func acpExtensionEvent(obs *model.Observation, source string) service.ConsoleEve
 		}
 	}
 	return service.ConsoleEvent{Kind: "output", Text: extensionText(ext)}
+}
+
+func acpObservationActivity(update *acpprocessor.Update, obs *model.Observation, source string) service.ConsoleEvent {
+	event := acpActivityEvent(update, source, obs.Cursor)
+	if update.Kind == "plan_update" || update.Kind == "plan_removed" {
+		bound, ok := boundPlanUpdate(update, obs)
+		if ok {
+			event.ACP.PlanIdentity = planIdentity(&bound, obs.GetSession().GetSessionId())
+		}
+	}
+	return event
+}
+
+func boundPlanUpdate(update *acpprocessor.Update, obs *model.Observation) (acpprocessor.Update, bool) {
+	if ext := paramsSource(obs); ext != nil {
+		if ext.GetType() != runtime.ACPUpdateParamsSource {
+			return acpprocessor.Update{}, false
+		}
+		inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())
+		if err != nil {
+			return acpprocessor.Update{}, false
+		}
+		bound := acpprocessor.Decode(inner)
+		return bound, bound.Kind == update.Kind
+	}
+	return *update, true
+}
+
+func planIdentity(update *acpprocessor.Update, session string) string {
+	if !validPlanKey(session) {
+		return ""
+	}
+	var id string
+	switch {
+	case update.Value.PlanRemoved != nil:
+		id = string(update.Value.PlanRemoved.PlanId)
+	case update.Value.PlanUpdate != nil:
+		plan := &update.Value.PlanUpdate.Plan
+		switch {
+		case plan.Items != nil:
+			id = string(plan.Items.PlanId)
+		case plan.Markdown != nil:
+			id = string(plan.Markdown.PlanId)
+		}
+	}
+	if !validPlanKey(id) {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(session + "\x00" + id))
+	return hex.EncodeToString(sum[:])
+}
+
+func validPlanKey(key string) bool {
+	return len(key) <= 256 && strings.TrimSpace(key) != "" && strings.IndexFunc(key, unicode.IsControl) == -1
 }
 
 // Private summaries, child transcripts and declined tool requests stay behind
@@ -201,8 +256,22 @@ func observedToolDetail(obs *model.Observation) *service.ToolDetail {
 	return d
 }
 
-// planDetail keeps a plan's entries; the console event only counts them.
-func planDetail(obs *model.Observation) *service.ToolDetail {
+// planDetail puts exact snapshots behind the owner-only event sequence claim.
+func planDetail(obs *model.Observation, activity *acpprocessor.Activity) *service.ToolDetail {
+	if activity != nil && activity.Kind == "plan_update" && activity.PlanIdentity != "" {
+		update, ok := typedUpdate(obs)
+		if !ok {
+			update, ok = acpprocessor.ExtensionUpdate(obs.GetExtension())
+		}
+		if !ok {
+			return nil
+		}
+		bound, ok := boundPlanUpdate(&update, obs)
+		if !ok || planIdentity(&bound, obs.GetSession().GetSessionId()) != activity.PlanIdentity {
+			return nil
+		}
+		return itemPlanDetail(&bound)
+	}
 	update, ok := typedUpdate(obs)
 	if !ok || update.Value.Plan == nil {
 		return nil
@@ -212,6 +281,22 @@ func planDetail(obs *model.Observation) *service.ToolDetail {
 		return nil
 	}
 	return &service.ToolDetail{Kind: "plan", Plan: entries}
+}
+
+func itemPlanDetail(update *acpprocessor.Update) *service.ToolDetail {
+	if update.Value.PlanUpdate == nil || update.Value.PlanUpdate.Plan.Items == nil {
+		return nil
+	}
+	// The generated ACP decoder normalizes absent or malformed arrays. Keep
+	// an original supplied array so Pretty can distinguish a missing detail.
+	var raw struct {
+		Plan struct{ Entries json.RawMessage }
+	}
+	if json.Unmarshal(update.Raw, &raw) != nil || len(raw.Plan.Entries) == 0 ||
+		len(raw.Plan.Entries) > service.MaxPlanDetailBytes || raw.Plan.Entries[0] != '[' {
+		return nil
+	}
+	return &service.ToolDetail{Kind: "plan", Plan: raw.Plan.Entries}
 }
 
 // The SDK's readable preview can omit rawInput. Retain the one safe ID needed
@@ -263,7 +348,7 @@ func idleSourcedEvent(obs *model.Observation, ref *acpprocessor.Activity) servic
 		if activity, ok := acpScopedActivity(obs, "live"); ok {
 			e = activity
 		} else if decoded, ok := acpprocessor.ExtensionUpdate(ext); ok {
-			e = acpActivityEvent(&decoded, "live", obs.Cursor)
+			e = acpObservationActivity(&decoded, obs, "live")
 		} else if ext.Type == "acp.source_omitted" || ext.Type == "acp.permission_request" {
 			e = acpExtensionEvent(obs, "live")
 		} else {
