@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"agentcommander.network/pilot/internal/control"
 	"agentcommander.network/pilot/internal/devicekeys"
 	"agentcommander.network/pilot/internal/identity"
+	"agentcommander.network/pilot/internal/netlog"
 )
 
 const DefaultRelay = "https://srv01.agentmux.bytedesk.ai"
@@ -38,11 +40,16 @@ type Config struct {
 	OIDCHTTP                    *http.Client
 	// Pin, when set, replaces chain verification with a SubjectPublicKeyInfo
 	// SHA-256 match ("sha256/<base64>"). OnPinMismatch runs when it fails.
-	Pin                  string
-	OnPinMismatch        func()
-	GoogleDesktopConfig  string
+	Pin                 string
+	OnPinMismatch       func()
+	GoogleDesktopConfig string
+	// Log receives the network log's events. Nil discards them.
+	Log                  *slog.Logger
 	configureActions     func(actions.Config) actions.Config
 	onStartupCredentials func(bool)
+	// clock and sleep replace the system clock and wake-aware waits in tests.
+	clock clock
+	sleep func(context.Context, time.Duration) bool
 }
 type credentials struct {
 	Keys    *devicekeys.Keys
@@ -91,6 +98,8 @@ type Agent struct {
 	stop        context.CancelFunc
 	loginStop   context.CancelFunc
 	sessionStop context.CancelFunc
+	// refresh spaces out renewal retries. authMu guards it.
+	refresh refreshState
 }
 
 func key(text string) string { sum := sha256.Sum256([]byte(text)); return hex.EncodeToString(sum[:]) }
@@ -286,27 +295,12 @@ func (a *Agent) getSession(ctx context.Context) (identity.Session, error) {
 	s := a.creds.Session
 	a.mu.Unlock()
 	if s.User == "" {
-		return s, errors.New("sign in to the relay first")
+		return s, errNotSignedIn
 	}
 	if time.Until(s.ExpiresAt) > 30*time.Second {
 		return s, nil
 	}
-	n, e := a.identity.Refresh(ctx, s.RefreshToken)
-	if e != nil {
-		return s, e
-	}
-	if n.User != s.User || n.Device != s.Device {
-		return s, errors.New("refreshed identity changed")
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	next := a.creds
-	next.Session = n
-	if e = a.persistCredentials(next); e != nil {
-		return s, e
-	}
-	a.creds = next
-	return n, nil
+	return a.renew(ctx, s)
 }
 func (a *Agent) startLogin(handle, invite string) (any, error) {
 	a.mu.Lock()
@@ -335,10 +329,16 @@ func (a *Agent) startLogin(handle, invite string) (any, error) {
 			}
 			if e == nil {
 				a.creds = next
+				a.refresh = refreshState{}
 			}
 		}
 		a.mu.Unlock()
 		a.authMu.Unlock()
+		if e == nil && ctx.Err() == nil {
+			a.logger().Info("state", "state", "signedIn", "device", netlog.DevicePrefix(s.Device))
+		} else if e != nil {
+			a.logger().Warn("login", "outcome", "error", "err", errText(e))
+		}
 		if e == nil && ctx.Err() == nil && handle != "" {
 			e = a.remote(ctx, s, "PUT", "/v1/profile", map[string]string{"handle": handle}, nil)
 		}
@@ -346,7 +346,7 @@ func (a *Agent) startLogin(handle, invite string) (any, error) {
 		a.loginPending = false
 		a.loginStop = nil
 		if e != nil {
-			a.problem = e.Error()
+			a.problem = errText(e)
 		}
 		var refused identity.NotAdmittedError
 		switch {
@@ -399,7 +399,9 @@ func (a *Agent) signout(ctx context.Context) error {
 	}
 	a.creds = next
 	a.lease = control.Lease{}
+	a.refresh = refreshState{}
 	a.problem = ""
+	a.logger().Info("state", "state", "signedOut", "reason", "signout")
 	if remoteErr != nil {
 		a.problem = "Signed out on this device. The relay could not confirm remote sign-out."
 	}

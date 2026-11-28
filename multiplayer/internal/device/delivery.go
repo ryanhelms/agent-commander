@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentcommander.network/pilot/internal/actions"
@@ -296,10 +297,20 @@ func wait(ctx context.Context, d time.Duration) bool {
 	}
 }
 func (a *Agent) receiveLoop() {
+	var retry backoff
 	for a.ctx.Err() == nil {
 		s, e := a.getSession(a.ctx)
 		if e != nil {
-			if !wait(a.ctx, time.Second) {
+			if errors.Is(e, errNotSignedIn) {
+				// Local check only: wait for a sign-in.
+				retry.reset()
+				if !a.pause(a.ctx, "receive", time.Second) {
+					return
+				}
+				continue
+			}
+			a.noteSessionProblem(s.User, e)
+			if !a.pause(a.ctx, "receive", retryDelay(e, &retry)) {
 				return
 			}
 			continue
@@ -309,21 +320,54 @@ func (a *Agent) receiveLoop() {
 		if e == nil {
 			e = a.remote(a.ctx, s, "PUT", "/v1/session", proof(l), &l)
 		}
+		opened := time.Now()
 		if e == nil {
+			a.logger().Info("session_open", "generation", l.Generation)
 			e = a.connected(a.ctx, s, l)
+			a.logger().Info("session_drop", "err", errText(e), "duration_ms", time.Since(opened).Milliseconds())
+			// A session that held counts as recovery; one that drops at
+			// once keeps backing off.
+			if time.Since(opened) > retryMax {
+				retry.reset()
+			}
+		} else if a.ctx.Err() == nil {
+			a.logger().Warn("session_open_failed", "err", errText(e))
 		}
 		a.mu.Lock()
 		if a.creds.Session.User == s.User {
 			a.lease = control.Lease{}
-			if e != nil {
-				a.problem = e.Error()
-			}
 		}
 		a.mu.Unlock()
-		if !wait(a.ctx, time.Second) {
+		if a.ctx.Err() != nil {
+			return
+		}
+		a.noteSessionProblem(s.User, e)
+		if !a.pause(a.ctx, "receive", retryDelay(e, &retry)) {
 			return
 		}
 	}
+}
+
+// errText renders an error for the network log and the tray. Request URLs
+// lose their query and fragment: inbox and session routes carry lease
+// identifiers there.
+func errText(e error) string {
+	if e == nil {
+		return ""
+	}
+	text := e.Error()
+	for err := e; err != nil; {
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			break
+		}
+		if u, perr := url.Parse(ue.URL); perr == nil && (u.RawQuery != "" || u.Fragment != "") {
+			u.RawQuery, u.Fragment, u.ForceQuery = "", "", false
+			text = strings.ReplaceAll(text, ue.URL, u.String())
+		}
+		err = ue.Err
+	}
+	return text
 }
 func (a *Agent) connected(parent context.Context, who identity.Session, l control.Lease) error {
 	ctx, cancel := context.WithCancel(parent)
@@ -359,7 +403,10 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 	path := "/v1/inbox?wait=10&generation=" + strconv.FormatInt(l.Generation, 10) + "&session=" + url.QueryEscape(l.Session)
 	for ctx.Err() == nil {
 		s, e := a.getSession(ctx)
-		if e != nil || s.User != who.User {
+		if e != nil {
+			return e
+		}
+		if s.User != who.User {
 			return errors.New("device session changed")
 		}
 		if e = a.flushReceipts(ctx, s, l); e != nil {

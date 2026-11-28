@@ -273,3 +273,12 @@ func Start(t *testing.T) *Pilot {
 	}
 	return p
 }
+
+// StartIssuer starts only the fixture OIDC issuer (client "pilot-fixture"),
+// for tests that run the identity service in process. The returned Pilot sets
+// Issuer, IssuerCAPath and IssuerRoots, so OIDCHTTP and Browser work.
+func StartIssuer(t *testing.T) *Pilot {
+	t.Helper()
+	cert, ca, _, roots := certificate(t, t.TempDir())
+	return &Pilot{Issuer: startIssuer(t, cert), IssuerCAPath: ca, IssuerRoots: roots}
+}
