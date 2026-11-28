@@ -178,9 +178,17 @@ enum ActivityFailureWords {
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
     /// cancelled permission reads as blocked.
-    static func read(_ result: ToolResult, status: ToolStatus) -> ActivityFailure {
+    ///
+    /// The outcome and the fixed words are told from the message as it was sent. The texts the
+    /// failure shows (`reason` when it is the provider's sentence, `exact`, `rest`) are cut from
+    /// the message as `shown` gives it: with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) the whole message is masked first, so the failure line,
+    /// what VoiceOver reads and the opened Reason and Exact text never hold the value. A mask
+    /// can take part of a recognised phrase away; the outcome does not change with it. The
+    /// result and its stored record keep the text as sent, and Source shows that.
+    static func read(_ result: ToolResult, status: ToolStatus, hidesSecrets: Bool = false) -> ActivityFailure {
         let message = body(result)
-        let (first, rest) = firstSentence(message)
+        let (first, rest) = firstSentence(shown(message, hidesSecrets: hidesSecrets))
         switch status {
         case .declined:
             return ActivityFailure(outcome: .blocked, reason: "You denied this.", exact: first.isEmpty ? "Tool declined." : first, rest: rest)
@@ -201,6 +209,27 @@ enum ActivityFailureWords {
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)
+    }
+
+    /// A failure's whole text as it is drawn: as sent, or with `hidesSecrets` masked as
+    /// `SecretValues.masked(prose:)` masks it. Mask the whole text, then cut: a cut secret no
+    /// longer looks like one. The mask writes whole JSON one property per line. A text sent as
+    /// one line stays one line: the masked JSON's lines are joined again, so the first sentence
+    /// is still cut from its contents and never reads as a bare bracket. The line breaks of
+    /// that JSON are only between its parts; one inside a string is written escaped. A text
+    /// sent on several lines keeps the lines the mask gives it.
+    static func shown(_ text: String, hidesSecrets: Bool) -> String {
+        guard hidesSecrets else { return text }
+        let masked = SecretValues.masked(prose: text).text
+        guard !text.contains(where: \.isNewline), masked.contains(where: \.isNewline) else { return masked }
+        return masked.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.joined()
+    }
+
+    /// The failure of a result that states one only in its wrapper (`ok: false`, a non-empty
+    /// `error`) and has no failure of its own: the wrapper's error, whole, as `shown` gives it.
+    static func wrapper(_ error: String?, hidesSecrets: Bool = false) -> ActivityFailure {
+        let reason = error.map { shown($0, hidesSecrets: hidesSecrets) } ?? noReason
+        return ActivityFailure(outcome: .failed, reason: reason, exact: reason)
     }
 
     /// The provider's message: the error and the output, without the service's `Tool failed.` line.
@@ -308,6 +337,13 @@ struct ActivityStep: Identifiable, Equatable {
         if let tag { parts.append(tag.word) }
         if let failure { parts.append(failure.reason) }
         return parts.joined(separator: ", ")
+    }
+
+    /// What VoiceOver reads for the failure line: the sentence, the outcome, then the reason
+    /// the line shows. It is built from the failure as drawn, so it hides what the line hides.
+    var failureLabel: String {
+        sentence.plain + ", " + (failure?.outcome == .blocked ? "blocked" : "failed")
+            + (failure.map { ", " + $0.reason } ?? "")
     }
 }
 
@@ -1056,7 +1092,8 @@ enum ActivitySteps {
         }
     }
 
-    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?) {
+    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?,
+                              hidesSecrets: Bool) {
         step.phrase = wording.phrase
         step.help = wording.help
         switch step.state {
@@ -1069,7 +1106,7 @@ enum ActivitySteps {
             step.tag = status == .interrupted ? ActivityTag(word: "cancelled", tone: .wait) : wording.tag
         case .failed:
             step.sentence = wording.failed
-            let failure = result.map { ActivityFailureWords.read($0, status: status) }
+            let failure = result.map { ActivityFailureWords.read($0, status: status, hidesSecrets: hidesSecrets) }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag
@@ -1089,7 +1126,7 @@ enum ActivitySteps {
         let record = facts.record(entry.detailKey)
         apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record,
                                      hidesSecrets: facts.hidesSecrets),
-              to: &step, status: status, result: result)
+              to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
         if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
@@ -1113,14 +1150,14 @@ enum ActivitySteps {
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
                 ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key),
                                           hidesSecrets: facts.hidesSecrets)
-            apply(wording, to: &step, status: status, result: result)
+            apply(wording, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
             // The record kept under the result's exact tool call ID holds that call's diff.
             if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
             return step
         }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
                                 sentence: ActivitySentence(""))
-        apply(ActivityWords.orphanResult, to: &step, status: status, result: result)
+        apply(ActivityWords.orphanResult, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         return step
     }
 
@@ -1167,7 +1204,7 @@ enum ActivitySteps {
             if first.tool == .wait, status == .done, first.status == .waitingForReply {
                 wording.tag = ActivityTag(word: "waiting", tone: .wait)
             }
-            apply(wording, to: &step, status: status, result: first.result)
+            apply(wording, to: &step, status: status, result: first.result, hidesSecrets: facts.hidesSecrets)
             return step
         }
         // Several calls: the workflow's own state speaks. A failed call inside it stays visible
@@ -1223,7 +1260,9 @@ enum ActivitySteps {
             let failing = calls.last { ToolStatus(result: $0.result) == .failed || ToolStatus(result: $0.result) == .declined } ?? last
             let wording = ActivityWords.commander(failing, detail: nil)
             step.sentence = wording.failed
-            let failure = failing.result.map { ActivityFailureWords.read($0, status: ToolStatus(result: $0)) }
+            let failure = failing.result.map {
+                ActivityFailureWords.read($0, status: ToolStatus(result: $0), hidesSecrets: facts.hidesSecrets)
+            }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag
