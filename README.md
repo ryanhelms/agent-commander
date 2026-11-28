@@ -186,6 +186,21 @@ Create a Linear personal API key with **Read** permission and restrict it to the
 
 Ask a coordinator in that checkout to read an issue such as `ENG-123`. It can discover the tool through `commander_list_tools` and call it with ID `linear.issue.read`, version `1`, and arguments `{"issue_id":"ENG-123"}`. The response contains the issue's identifier, title, description, state, and URL. Commander checks the returned team UUID before releasing the result, and flags descriptions it truncates.
 
+## Add your own tools as plugins
+
+A plugin gives coordinators new read tools without changing Commander. It is a folder with a `plugin.json` manifest and a program, in any language, that serves MCP over stdio. Install it, then grant each tool to the checkouts that may use it.
+
+```sh
+agentctl plugin install examples/plugins/hello
+agentctl plugin grant example.hello.echo@1 --project /absolute/path/to/checkout --settings '{"greeting":"Howdy"}'
+agentctl plugin list
+make reload SERVICE=1
+```
+
+A coordinator in that checkout finds the tool through `commander_list_tools` and calls it with `commander_call_tool`. Grants take effect when the service restarts. `agentctl plugin revoke TOOL` withdraws a tool, and `agentctl plugin remove ID` uninstalls a plugin with its grants.
+
+Each plugin runs as its own process with a stripped environment, and never receives Commander's token or sockets. Install pins a digest of the plugin's files, and Commander refuses a plugin whose files changed until you reinstall it. The process still runs as you, so install only plugins you trust. [Writing a plugin](examples/plugins/README.md) · [Design](design/PLUGINS.md)
+
 ## Use the CLI
 
 ```sh
