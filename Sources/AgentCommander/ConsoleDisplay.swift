@@ -340,6 +340,7 @@ struct PrettyScrollEnd: Equatable {
 struct PrettyConsoleView: View {
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
     @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
+    @Environment(CompactionSummaryStore.self) private var compactions: CompactionSummaryStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
     /// The reader is at the end of the conversation, so new content keeps the end in view.
@@ -565,6 +566,8 @@ struct PrettyConsoleView: View {
             PrettyTurnEndLine(end: end, metrics: metrics)
         case .formOutcome(let outcome):
             PrettyFormOutcomeLine(outcome: outcome, metrics: metrics)
+        case .compaction(let compaction):
+            self.compaction(compaction, itemID: item.id, metrics: metrics)
         case .card(let card):
             let key = card.entry?.detailKey ?? card.step.id
             PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
@@ -596,6 +599,31 @@ struct PrettyConsoleView: View {
         }
     }
 
+    /// One provider compaction, by the status its message states: the live line while it runs,
+    /// the divider once it is done, a failure line when it failed. A finished row reads its own
+    /// source record once, for the provider's summary or error.
+    @ViewBuilder
+    private func compaction(_ compaction: PrettyCompaction, itemID: String, metrics: PrettyMetrics) -> some View {
+        let record = compactions?.record(worker: consoleID, mark: compaction.mark)
+        Group {
+            switch compaction.mark.status {
+            case .inProgress:
+                PrettyLiveLine(subject: .call(compaction.liveStep), live: live ?? PrettyLive(), isExpanded: false,
+                               metrics: metrics) {}
+            case .completed:
+                PrettyCompactionDivider(summary: record?.summary, isExpanded: isExpanded(itemID), metrics: metrics,
+                                        toggle: { toggle(itemID) })
+            case .failed:
+                ActivityFailureLine(step: compaction.failureStep(record), isExpanded: false, metrics: metrics,
+                                    opens: false, toggle: {}) { EmptyView() }
+                    .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+            }
+        }
+        .task(id: compaction.mark.cursor + " " + String(describing: compaction.mark.status)) {
+            await compactions?.load(worker: consoleID, mark: compaction.mark)
+        }
+    }
+
     /// The last item of the transcript while a turn runs and no call is open: Thinking, with its
     /// time and text when the provider sent them, or that the agent is responding.
     @ViewBuilder
@@ -621,6 +649,8 @@ struct PrettyConsoleView: View {
         case .live?, .approval?: true
         // A provider question that waits for its answer is the open call.
         case .card(let card)?: card.step.state == .running
+        // A running compaction is the live line.
+        case .compaction(let compaction)?: compaction.mark.status == .inProgress
         default: false
         }
     }

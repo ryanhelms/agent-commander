@@ -52,6 +52,9 @@ struct TranscriptOrigin: Equatable, Sendable {
     var messageID: String? = nil
     /// How many items the reference counts, such as a plan's entries.
     var itemCount: Int? = nil
+    /// Set on the service's own compaction message: its status and the record behind it. Pretty
+    /// draws it as the compaction row; see `PrettyCompaction`.
+    var compaction: CompactionMark? = nil
 }
 
 enum ConversationChunks {
@@ -151,6 +154,7 @@ extension TranscriptOrigin {
         promptMedia = message.role == "user" ? PromptMediaIndicator(acp: acp) : nil
         messageID = acp["messageId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         itemCount = acp["itemCount"]?.intValue
+        compaction = CompactionMark(message: message, acp: acp)
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.

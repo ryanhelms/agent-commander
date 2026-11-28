@@ -446,6 +446,8 @@ enum PrettyItem: Identifiable, Equatable {
     case turnEnd(PrettyTurnEnd)
     /// The line after the owner's reply to a form request, from its `form_outcome` record.
     case formOutcome(PrettyFormOutcome)
+    /// One provider compaction, at its message's own position. Never folded.
+    case compaction(PrettyCompaction)
 
     var id: String {
         switch self {
@@ -458,6 +460,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .card(let card): card.id
         case .turnEnd(let end): end.id + "#turn-end"
         case .formOutcome(let outcome): outcome.id + "#form-outcome"
+        case .compaction(let compaction): compaction.id + "#compaction"
         }
     }
 
@@ -469,6 +472,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .plan(let plan): plan.entries
         case .live(let step), .approval(let step): step.entries
         case .card(let card): card.step.entries
+        case .compaction(let compaction): [compaction.entry]
         case .turnEnd, .formOutcome: []
         }
     }
@@ -1189,8 +1193,8 @@ enum ActivitySteps {
 enum ActivityConversation {
     /// The Pretty conversation, in order. A run of consecutive finished calls and quiet lines
     /// inside one agent turn is one group. Agent prose, a prompt, a reported result, a pending
-    /// request, a plan, an attention-tone event and the open call each end it. A failed call is
-    /// drawn under the group it follows and ends it too.
+    /// request, a plan, a compaction, an attention-tone event and the open call each end it. A
+    /// failed call is drawn under the group it follows and ends it too.
     static func items(_ source: [ConversationItem], awaitingToolID: String? = nil, facts: ActivityFacts = .none,
                       reportsAsCoordinator: Bool = false) -> [PrettyItem] {
         var out: [PrettyItem] = []
@@ -1285,7 +1289,11 @@ enum ActivityConversation {
             case .output:
                 if let step = ActivitySteps.step(orphan: entry, facts: facts) { route(step) }
             case .other:
-                if let step = ActivitySteps.step(thought: entry, facts: facts) {
+                if let compaction = PrettyCompaction(entry: entry) {
+                    // One row per compaction, where its first update arrived. It ends the group.
+                    flush()
+                    out.append(.compaction(compaction))
+                } else if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)
                 } else if isPlanEvent(entry) {
                     // The record kept from this very event, by its console sequence.
@@ -1397,6 +1405,9 @@ enum ActivityConversation {
                 }
             case .live:
                 shown.append(item)
+            case .compaction(let compaction):
+                // A running compaction is a live line and a failed one a failure: both stay.
+                if compaction.mark.status != .completed { shown.append(item) }
             case .report:
                 if index == earlierReport { shown.append(item) }
             case .entry, .plan, .approval, .card, .turnEnd, .formOutcome:

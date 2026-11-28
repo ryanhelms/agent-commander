@@ -233,6 +233,7 @@ final class FloatingAttentionController: NSObject, NSWindowDelegate {
                                             ended: { [weak self] in self?.resizeEnded() }))
             .environment(consoleModes)
             .environment(model.toolDetails)
+            .environment(model.compactions)
             .environment(nativeTerminals)
             .preferredColorScheme(.dark)
         let host = NSHostingController(rootView: AnyView(root))
