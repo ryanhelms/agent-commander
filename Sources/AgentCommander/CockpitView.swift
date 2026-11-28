@@ -37,7 +37,23 @@ final class CockpitPresentationState {
     var activeRequestID: String?
     var dismissedRequests = Set<String>()
     var returnFocusWorkerID: String?
+    /// The pane that last actually held the keyboard. Unlike `returnFocusWorkerID`, following a
+    /// request never sets it, so another worker's request is never where the keyboard returns.
+    var lastPaneFocusID: String?
+    /// The coordinator's share of the split, as the developer last set it with the divider. It
+    /// holds across runs and returns to the wall; the live page keeps it between launches.
     var splitFraction = Metric.coordinatorFraction
+    /// Where the worker wall is scrolled to, so a zoom and the way back return to the same place.
+    /// The wall reports it; nothing reads it while drawing.
+    var wallScrollOffset: CGFloat = 0
+    /// The worker whose tile the wall brings into view, for a keyboard return to a tile that was
+    /// scrolled away.
+    private(set) var wallReveal: WallReveal?
+
+    /// Asks the wall to bring a worker's tile into view.
+    func revealOnWall(_ workerID: String) {
+        wallReveal = WallReveal(workerID: workerID, token: (wallReveal?.token ?? 0) + 1)
+    }
     var sidebarExpanded = false
     /// The redesigned shell's place, by `LiveShell` ID. The wall is the default, as before.
     var shellPlace = LiveShell.wall
@@ -468,6 +484,11 @@ struct CockpitScreen: View {
     @Environment(\.openSettings) private var openSettings
     @FocusState private var paneFocus: String?
     @FocusState private var replyFocus: String?
+    /// Keyboard focus among the wall's remote tiles, by remote worker ID.
+    @FocusState private var remoteFocus: String?
+    /// The pane that just gave up the keyboard, and when. A regrouped wall reads it to tell a
+    /// tile that lost the keyboard to the regrouping from one the developer left.
+    @State private var paneFocusLoss: (id: String, at: Date)?
 
     // MARK: Derived values
 
@@ -500,6 +521,13 @@ struct CockpitScreen: View {
     /// left out of `stack`, so the panel then shows the other runs' and workers' requests.
     private var showsDrawer: Bool {
         ui.attentionPresentation == .drawer && current != nil && !ui.drawerClosed
+    }
+
+    /// The worker region is open: the run lists a worker, in any state, or a remote worker is
+    /// zoomed. Without either the coordinator takes the whole width.
+    private var showsWorkerPane: Bool {
+        WorkspaceSplitGeometry.showsWorkers(localWorkers: run?.wall.workers.count ?? 0,
+                                            zoomsRemoteWorker: ui.zoomedRemoteWorkerID != nil)
     }
 
     /// The presentation menu's binding. Choosing a presentation shows it, even if the panel was closed.
@@ -567,8 +595,14 @@ struct CockpitScreen: View {
             .onChange(of: run?.id) { _, _ in runChanged() }
             // A key command is run here, where the page's values are current.
             .onChange(of: ui.keyCommandCount) { _, _ in if let command = ui.keyCommand { perform(command) } }
-            .onChange(of: paneFocus) { _, focus in
-                if let focus { ui.returnFocusWorkerID = focus }
+            .onChange(of: paneFocus) { old, focus in
+                if let focus {
+                    ui.returnFocusWorkerID = focus
+                    ui.lastPaneFocusID = focus
+                    paneFocusLoss = nil
+                } else if let old {
+                    paneFocusLoss = (old, Date())
+                }
             }
             .onChange(of: content.pending.map(\.id)) { old, new in pendingChanged(from: old, to: new) }
             .onChange(of: disconnectedRequestIDs) { old, new in disconnectedRequestsChanged(from: old, to: new) }
@@ -1029,7 +1063,10 @@ struct CockpitScreen: View {
                        cancel: { ui.composingRun = false },
                        signIn: shell?.harnesses.map { harnesses in { id in harnesses.actions.signIn(id) } })
         } else if let run = run {
-            CoordinatorSplit(fraction: $ui.splitFraction, showsFloating: showsStack) {
+            // The coordinator is the same view with the worker region open or closed, so the first
+            // worker arriving, or the last one leaving, changes its width and nothing else.
+            CoordinatorSplit(fraction: $ui.splitFraction, showsTrailing: showsWorkerPane, showsFloating: showsStack,
+                             showsDrawer: showsDrawer, drawerPinned: ui.drawerPinned) {
                 VStack(spacing: 0) {
                     RunHeader(run: run, canStop: run.canStop && isOnline && !content.isStopping,
                               showingDetails: $ui.showingRunDetails,
@@ -1050,7 +1087,17 @@ struct CockpitScreen: View {
                 workerPane(run)
             } floating: {
                 attentionStack
+            } drawer: {
+                attentionDrawer
             }
+            // The network's hand-offs, reviews and fan-outs are read while a run is in front,
+            // with or without a wall, so their counts and pages stay current.
+            .onAppear { shell?.wallActions.appeared() }
+            .onDisappear { shell?.wallActions.disappeared() }
+            // The last worker left: a pane that had the keyboard is gone, so it goes to the coordinator.
+            .onChange(of: showsWorkerPane) { _, open in if !open { workerPaneClosed() } }
+            // A worker moved into or out of a group: the keyboard stays with it.
+            .onChange(of: WallFocus.placement(of: run.wall)) { old, new in wallRegrouped(from: old, to: new) }
         } else {
             emptyState
         }
@@ -1073,7 +1120,8 @@ struct CockpitScreen: View {
             SectionBar {
                 WallHeading(symbol: "terminal", title: "Coordinator")
             } trailing: {
-                EmptyView()
+                // With no worker pane, the choice of attention presentation stays reachable here.
+                if !showsWorkerPane { AttentionPresentationMenu(selection: presentationChoice) }
             }
             if let coordinator = run.coordinator {
                 let sendMessage: ((String) -> Void)? = actions.messageCoordinator.map { send in { text in send(run.id, text) } }
@@ -1106,16 +1154,13 @@ struct CockpitScreen: View {
         return { text in await send(id, text) }
     }
 
-    /// The wall or the focused worker, with the attention side panel beside either one.
+    /// The wall or the focused worker. The attention side panel is the split's own overlay at its
+    /// trailing edge, beside either one or beside the coordinator when it is alone, so pinning,
+    /// unpinning and the worker region opening or closing keep the same panel with its draft,
+    /// focus and scroll position. Pinned, the pane beside it gives up the panel's width while a
+    /// readable tile is left; otherwise the panel lies over it.
     private func workerPane(_ run: RunContent) -> some View {
-        // The panel is one overlay at the pane's trailing edge in both states, so pinning and
-        // unpinning keep the same view with its draft, focus and scroll position. Pinned, the
-        // wall or focused worker gives up the panel's width; unpinned, the panel lies over it.
         VStack(spacing: 0) { workerRegion(run) }
-            .padding(.trailing, showsDrawer && ui.drawerPinned ? Metric.attentionDrawerWidth : 0)
-            .overlay(alignment: .trailing) {
-                if showsDrawer { attentionDrawer }
-            }
     }
 
     @ViewBuilder private func workerRegion(_ run: RunContent) -> some View {
@@ -1142,12 +1187,12 @@ struct CockpitScreen: View {
                 }
                 if let shell {
                     if let zoom = shell.wallActions.zoom {
-                        zoom(remoteID) { ui.zoomedRemoteWorkerID = nil }
+                        zoom(remoteID) { returnToWall() }
                     } else {
                         Color.clear.onAppear { ui.zoomedRemoteWorkerID = nil }
                     }
                 } else {
-                    MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { ui.zoomedRemoteWorkerID = nil }
+                    MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { returnToWall() }
                 }
             }
         } else if let zoomed = zoomed {
@@ -1193,14 +1238,17 @@ struct CockpitScreen: View {
                 }
                 WorkerWall(layout: run.wall, collapsed: ui.collapsedGroups,
                            reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
+                           scrollOffset: $ui.wallScrollOffset, reveal: ui.wallReveal,
                            toggleGroup: { id in toggleGroup(id) }) { worker in
                     // The dock sits under the tile, outside its shell.
                     VStack(spacing: 0) {
                         tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
                         controlDock(for: worker)
                     }
+                } footer: {
+                    // In the wall's own scroll, so remote work never takes height from the tiles.
+                    remoteBand
                 }
-                remoteBand
                 HStack(spacing: 17) {
                     KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
                     KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
@@ -1227,7 +1275,8 @@ struct CockpitScreen: View {
                                        ui.zoomedRemoteWorkerID = worker.id
                                    },
                                    openHandoffs: { show(place: NetworkPlace.handoffs) },
-                                   openWork: { item in openWork(item.kind, request: item.request, on: item.server) })
+                                   openWork: { item in openWork(item.kind, request: item.request, on: item.server) },
+                                   focus: $remoteFocus)
                         .padding(.top, Metric.wallRowGap)
                         .transition(.opacity)
                 }
@@ -1236,11 +1285,16 @@ struct CockpitScreen: View {
             .onAppear { shell.wallActions.appeared() }
             .onDisappear { shell.wallActions.disappeared() }
         } else {
-            MultiplayerRemoteWorkerBand(model: .shared) { worker in
+            MultiplayerRemoteWorkerBand(model: .shared, onZoom: { worker in
                 ui.zoomedWorkerID = nil
                 ui.zoomedRemoteWorkerID = worker.id
-            }
+            }, focus: $remoteFocus)
         }
+    }
+
+    /// The remote workers the wall lists, in the order it draws their tiles.
+    private var remoteWorkerIDs: [String] {
+        (shell?.wall.remoteWorkers ?? MultiplayerModel.shared.share.remoteWorkers).map(\.id)
     }
 
     /// Who holds control of this worker and what a friend suggests for it, under its tile.
@@ -1265,7 +1319,7 @@ struct CockpitScreen: View {
         show(place: WallLiveWork.place(for: kind))
     }
 
-    /// The drawer reaches the pane's trailing and bottom edges, outside the wall's insets.
+    /// The drawer reaches the split's trailing and bottom edges, outside the panes' insets.
     @ViewBuilder private var attentionDrawer: some View {
         if let current = current {
             let canControl = !current.workerIsCoordinator && (actions.canControlWorker?(current.workerID) ?? true)
@@ -1283,8 +1337,8 @@ struct CockpitScreen: View {
                 .frame(width: Metric.attentionDrawerWidth)
                 .padding(.top, 10)
                 .padding(.leading, 14)
-                .padding(.trailing, 6 - Metric.paneInset)
-                .padding(.bottom, 8 - Metric.paneBottom)
+                .padding(.trailing, 6)
+                .padding(.bottom, 8)
         }
     }
 
@@ -1606,17 +1660,108 @@ struct CockpitScreen: View {
         }
     }
 
+    /// Back to the wall, where it was scrolled to, with the keyboard on the tile that was zoomed.
+    /// A tile inside a folded group has its group opened, and one scrolled away is brought into
+    /// view. When the worker is gone the keyboard goes to the coordinator. A remote worker's way
+    /// back returns to its own tile (`returnFromRemote`).
     private func returnToWall() {
-        if ui.zoomedRemoteWorkerID != nil { ui.zoomedRemoteWorkerID = nil; return }
-        guard let workerID = ui.zoomedWorkerID else { return }
-        ui.zoomedWorkerID = nil
-        ui.returnFocusWorkerID = workerID
-        refocus(workerID)
+        let preferred: String?
+        if let remoteID = ui.zoomedRemoteWorkerID {
+            ui.zoomedRemoteWorkerID = nil
+            returnFromRemote(remoteID)
+            return
+        } else if let workerID = ui.zoomedWorkerID {
+            ui.zoomedWorkerID = nil
+            preferred = workerID
+        } else {
+            return
+        }
+        guard let run else { return }
+        let target = WallFocus.returnTarget(preferred: preferred, layout: run.wall, coordinator: run.coordinator?.id)
+        ui.returnFocusWorkerID = target
+        guard let target else { return }
+        if let group = WallFocus.foldedGroup(hiding: target, layout: run.wall, collapsed: ui.collapsedGroups) {
+            ui.collapsedGroups.remove(group)
+        }
+        refocus(target)
+        if target != run.coordinator?.id { revealAfterReturn(target) }
+    }
+
+    /// Back from a remote worker's zoom: the keyboard returns to that worker's own tile while the
+    /// wall still draws it. The tile is a native button, so it takes the keyboard only where
+    /// macOS lets buttons have it (Keyboard navigation). When the hand-off is gone, its tile is
+    /// not drawn or the button can't take the keyboard, the pane that last held it gets it back:
+    /// the pane the developer was actually in, never one a request pointed at.
+    private func returnFromRemote(_ remoteID: String) {
+        guard let run else { return }
+        let fallback = WallFocus.returnTarget(preferred: ui.lastPaneFocusID, layout: run.wall,
+                                              coordinator: run.coordinator?.id)
+        ui.returnFocusWorkerID = fallback
+        guard let tile = WallFocus.remoteReturnTarget(remoteID, listed: remoteWorkerIDs) else {
+            if let fallback { refocus(fallback) }
+            return
+        }
+        Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            guard replyFocus == nil, ui.zoomedWorkerID == nil, ui.zoomedRemoteWorkerID == nil else { return }
+            remoteFocus = tile
+            try? await Task.sleep(for: .milliseconds(160))
+            if remoteFocus != tile, replyFocus == nil, paneFocus == nil, !textHasKeyboard, let fallback {
+                paneFocus = fallback
+            }
+        }
+    }
+
+    /// A text field has the keyboard in the cockpit's window: a draft is being typed.
+    private var textHasKeyboard: Bool { NSApp.keyWindow?.firstResponder is NSText }
+
+    /// The wall's grouping changed. A worker that held the keyboard right before it moved into or
+    /// out of a group keeps the keyboard and is brought into view. Its tile is the same view, so
+    /// focus normally holds; this puts it back if the move dropped it. Nothing else is touched:
+    /// another pane, a reply field or a text field that has the keyboard keeps it, and a worker
+    /// that did not hold the keyboard is never given it.
+    private func wallRegrouped(from old: [String: String], to new: [String: String]) {
+        let justLost = paneFocusLoss.flatMap { loss in Date().timeIntervalSince(loss.at) < 0.4 ? loss.id : nil }
+        guard let held = paneFocus ?? justLost, WallFocus.regrouped(held, from: old, to: new) else { return }
+        Task {
+            // Twice, like every focus set after views move: AppKit can clear the first one.
+            for delay in [120, 240] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard ui.zoomedWorkerID == nil, ui.zoomedRemoteWorkerID == nil else { return }
+                if WallFocus.restoresFocus(paneFocus: paneFocus, replyFocus: replyFocus, textHasKeyboard: textHasKeyboard) {
+                    paneFocus = held
+                }
+            }
+            if paneFocus == held { ui.revealOnWall(held) }
+        }
+    }
+
+    /// Brings the tile into view once the wall is back and has returned to its kept offset.
+    private func revealAfterReturn(_ workerID: String) {
+        Task {
+            try? await Task.sleep(for: .milliseconds(160))
+            guard ui.zoomedWorkerID == nil, ui.zoomedRemoteWorkerID == nil else { return }
+            ui.revealOnWall(workerID)
+        }
+    }
+
+    /// The worker region closed with the last worker. Keyboard focus that was on a worker's pane
+    /// moves to the coordinator; focus in a reply field or on the coordinator stays where it is.
+    private func workerPaneClosed() {
+        guard let coordinator = run?.coordinator?.id else { return }
+        let hadWorkerFocus = ui.returnFocusWorkerID != nil && ui.returnFocusWorkerID != coordinator
+        ui.returnFocusWorkerID = coordinator
+        if hadWorkerFocus, replyFocus == nil { restorePaneFocus(coordinator) }
     }
 
     private func zoomFocused() {
         guard let run else { return }
         if ui.zoomedWorkerID != nil || ui.zoomedRemoteWorkerID != nil { returnToWall(); return }
+        // A remote tile that has the keyboard zooms as choosing it does.
+        if let remote = remoteFocus, remoteWorkerIDs.contains(remote) {
+            ui.zoomedRemoteWorkerID = remote
+            return
+        }
         let candidate = paneFocus ?? ui.returnFocusWorkerID
         guard let candidate, run.wall.workers.contains(where: { $0.id == candidate }) else { return }
         toggleZoom(candidate)
@@ -1650,6 +1795,7 @@ struct CockpitScreen: View {
         ui.zoomedWorkerID = ui.zoomAfterSelection
         ui.zoomAfterSelection = nil
         ui.collapsedGroups.removeAll()
+        ui.wallScrollOffset = 0
         ui.showingRunDetails = false
         ui.sourceInspectorWorkerID = nil
         // A panel left open on the previous run's worker would keep reading it out of view.
@@ -1804,6 +1950,16 @@ struct CockpitView: View {
     /// Where the developer's choice of attention presentation is kept on this Mac.
     private static let attentionPresentationKey = "attentionPresentation"
     private static let attentionPanelPinnedKey = "attentionPanelPinned"
+    /// Where the divider's position is kept on this Mac, once the developer has moved it.
+    static let coordinatorSplitKey = "coordinatorSplitFraction"
+
+    /// The kept divider position, when there is a usable one. A value outside the divider's own
+    /// limits is not a position the developer could have set, so the default applies.
+    static func storedSplitFraction(in defaults: UserDefaults = .standard) -> Double? {
+        guard let stored = defaults.object(forKey: coordinatorSplitKey) as? Double,
+              WorkspaceSplitGeometry.fractionLimits.contains(stored) else { return nil }
+        return stored
+    }
 
     /// Starts from the stored choice when there is one. Without one the side-panel default applies
     /// and nothing is written, so a default never replaces a choice.
@@ -1819,6 +1975,7 @@ struct CockpitView: View {
         if let pinned = UserDefaults.standard.object(forKey: attentionPanelPinnedKey) as? Bool {
             ui.drawerPinned = pinned
         }
+        if let fraction = storedSplitFraction() { ui.splitFraction = fraction }
         return ui
     }
 
@@ -1887,6 +2044,10 @@ struct CockpitView: View {
             }
             .onChange(of: ui.drawerPinned) { _, pinned in
                 UserDefaults.standard.set(pinned, forKey: Self.attentionPanelPinnedKey)
+            }
+            // Written only when the developer moves the divider: nothing else sets the share.
+            .onChange(of: ui.splitFraction) { _, fraction in
+                UserDefaults.standard.set(fraction, forKey: Self.coordinatorSplitKey)
             }
     }
 

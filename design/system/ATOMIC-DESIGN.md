@@ -54,6 +54,21 @@ The redesigned main-window shell (increment 2, design previews only) follows the
 
 The three sidebars take one `CommanderNavigation` and emit `CommanderNavigationAction`s, so a page never depends on which sidebar is showing.
 
+The coordinator split and the worker wall are laid out from plain values, so their rules are tested without a window:
+
+| Level | Component | Responsibility |
+| --- | --- | --- |
+| Value | `WorkspaceSplitGeometry` | When the worker region opens (`showsWorkers(localWorkers:zoomsRemoteWorker:)`), the coordinator's width as drawn, the share the divider reports and moves from, and what a pinned side panel takes from the pane beside it. |
+| Value | `WallPlan` | The wall's frames for one size: columns, every standalone tile, every group and its tiles, the room kept for the PiP, and whether it scrolls. Also the scroll offset that keeps the same worker at the top after a new layout (`anchoredOffset`) and the one that shows a tile (`offset(revealing:from:)`). |
+| Value | `WallFocus`, `WallReveal` | Where the keyboard lands on returning to the wall, the folded group to open for it, and a request to bring one tile into view. Also each worker's placement (standalone or its group), whether a worker was regrouped, whether the keyboard may go back to it (`restoresFocus`), and the remote tile a remote zoom returns to. |
+| Layout | `WallFrames`, `RemoteWorkerGrid` | Place each child in its planned frame. A child keeps its identity when the plan changes. `RemoteWorkerGrid` is the remote tiles' equal columns. |
+| Organism | `WorkerWall` | Receives the `WallLayout`, the folded groups, the PiP's reserved width, a binding to the scroll offset its owner keeps and a `WallReveal`. It takes a tile per worker and a `footer` drawn after the local workers in the same scroll. Every tile, standalone or grouped, is a child of one `WallFrames`, over its group's heading and frame. It emits `toggleGroup`. It reads no model. |
+| Organism | `RemoteWorkerGroup`, `WallRemoteBand` | Take an optional `focus` binding from the page, by remote worker ID, and bind each tile's native button to it. |
+| Organism | `NestedWorkerGroup` | Its heading's spoken label comes from `NestedWorkerGroupLabel`, which adds "needs input" while the group is folded. |
+| Template | `CoordinatorSplit` | Slots: header, leading, trailing, floating and drawer. It receives the remembered share as a binding and writes it only when the divider is moved. `showsTrailing` closes the trailing region; the leading slot is the same view either way. `showsDrawer` and `drawerPinned` place the side panel at the trailing edge in both forms. |
+| Feature state | `CockpitPresentationState` | Keeps `splitFraction` across runs, and `wallScrollOffset` and `wallReveal` for the open run, beside the zoom and the folded groups. The live page stores the share under `coordinatorSplitFraction`. |
+| Preview only | `PreviewWallStage`, `PreviewWallKeys` | The sample run's worker count, changed inside the cockpit that is on screen: none, one, two, three, three with one regrouped under a new nested worker, the concept's five, nine, last worker finished, last worker disconnected, cleared. Reached only in a design-preview launch. |
+
 The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
 
 ### Headless hosts
@@ -252,7 +267,7 @@ These are 28 page fixtures. Several are deliberately different states of one tem
 
 | Page | Composition and behavior under review |
 | --- | --- |
-| [01 Coordinator wall](../concepts/index.html#coordinator-wall) | Coordinator split with a draggable one-third pane, multirow wall and collapsible nested worker groups. |
+| [01 Coordinator wall](../concepts/index.html#coordinator-wall) | Coordinator split with a draggable one-third pane, multirow wall and collapsible nested worker groups. With no worker listed, the same page is the coordinator at full width. |
 | [02 Focused worker](../concepts/index.html#focused-worker) | Same split, one expanded tile, visible owner, handback and return to the previous wall position. |
 | [03 Worker actions](../concepts/index.html#tile-controls) | Tile action menu targets the identified assignment. Interrupt and stop communicate the affected worker. |
 | [04 Picture-in-picture reply](../concepts/index.html#attention-pip) | Attention stack, source identity, request reply and expand action over the wall. |

@@ -208,6 +208,8 @@ struct WallRemoteBand: View {
     let openHandoffs: () -> Void
     /// Opens a review or a fan-out on its page.
     let openWork: (MultiplayerRemoteWork) -> Void
+    /// The owner's keyboard focus among the remote tiles, by remote worker ID.
+    var focus: FocusState<String?>.Binding? = nil
 
     var body: some View {
         if !workers.isEmpty || !work.isEmpty {
@@ -215,7 +217,7 @@ struct WallRemoteBand: View {
             VStack(spacing: Metric.wallRowGap) {
                 // The network's own worker group: its heading, its tiles and its frame follow the theme.
                 if !workers.isEmpty {
-                    RemoteWorkerGroup(workers: workers, now: now, onOpen: zoom, onOpenAll: openHandoffs)
+                    RemoteWorkerGroup(workers: workers, now: now, onOpen: zoom, onOpenAll: openHandoffs, focus: focus)
                 }
                 if !rows.isEmpty {
                     VStack(spacing: 0) {
