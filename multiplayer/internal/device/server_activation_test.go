@@ -115,9 +115,29 @@ func startupTestManager(t *testing.T, holdSave bool) (*Manager, *gatedCredential
 	}
 	httpd := httptest.NewServer(m.Handler())
 	t.Cleanup(func() {
-		close(store.abort)
-		m.Close()
 		httpd.Close()
+		m.Close()
+
+		// Close cancels activation without waiting for Keychain. Join the
+		// remaining fixture activations before TempDir removes their state.
+		m.mu.Lock()
+		pending := make(map[string]<-chan struct{}, len(m.activations))
+		for id, attempt := range m.activations {
+			pending[id] = attempt.done
+		}
+		m.mu.Unlock()
+		close(store.abort)
+
+		timeout := time.NewTimer(2 * time.Second)
+		defer timeout.Stop()
+		for id, done := range pending {
+			select {
+			case <-done:
+			case <-timeout.C:
+				t.Errorf("relay %s activation did not finish before cleanup", id)
+				return
+			}
+		}
 	})
 	client := httpd.Client()
 	client.Timeout = 2 * time.Second
