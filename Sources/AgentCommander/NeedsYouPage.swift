@@ -14,7 +14,8 @@ import SwiftUI
 //   NeedsYouReplyField   the answer to a worker's question
 //   NeedsYouRow          one request (organism)
 //   NeedsYouList         the rows, ruled off by hairlines, or the empty note (organism)
-//   NeedsYouPage         header, readouts and the list (page)
+//   NeedsYouPage         header, readouts and the list (page); with a review context, the open
+//                        request beside the list or over it (NeedsYouReview.swift)
 
 enum NeedsYouLayout {
     /// The origin cell, so every request starts on the same line.
@@ -303,9 +304,28 @@ struct NeedsYouList: View {
     /// Where Reply goes when the answer is written somewhere else (the live Attention surfaces).
     /// Nil opens the reply field under the row.
     var reply: ((String) -> Void)? = nil
+    /// The list opens requests in place: each row is one button whose only action is Review, and
+    /// every decision, reply and outside action is in the review. False keeps the rows' own answers.
+    var opensReview = false
+    /// A review is beside the list: each row condenses.
+    var compact = false
+    /// The request shown in the review.
+    var selectedID: String? = nil
+    /// The row keyboard focus goes back to when the review closes.
+    var returnTo: NeedsYouReviewState.Return? = nil
+    /// Copies the link that opens a request. Nil offers no link.
+    var copyLink: ((String) -> Void)? = nil
     /// The question being answered, and its text so far. Presentation state of this list.
     @State private var replyingID: String?
     @State private var draft = ""
+    /// The row whose opening control has keyboard focus, and the one VoiceOver is on. Each row
+    /// binds both to its one button.
+    @FocusState private var focusedRow: String?
+    @AccessibilityFocusState private var spokenRow: String?
+
+    /// How long after a review closes focus is sent to its row, and once more if the first did not
+    /// hold: the row is still taking its full form, or the full view is still leaving.
+    static let returnDelays: [Duration] = [.milliseconds(90), .milliseconds(240)]
 
     var body: some View {
         if items.isEmpty {
@@ -315,18 +335,9 @@ struct NeedsYouList: View {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if index > 0 { ThemeRule() }
-                    NeedsYouRow(item: item, isReplying: replyingID == item.id, draft: $draft,
-                                open: { open(item.id) },
-                                choose: { verb in choose(verb, for: item) },
-                                sendReply: {
-                                    decide(item.id, .replied(draft))
-                                    replyingID = nil
-                                    draft = ""
-                                },
-                                cancelReply: {
-                                    replyingID = nil
-                                    draft = ""
-                                })
+                    row(item)
+                        // The open row, and the row a closed review returns to, are scrolled into view.
+                        .modifier(NeedsYouRowReveal(id: revealID(item.id)))
                         .transition(reduceMotion ? .opacity
                                     : .asymmetric(insertion: .opacity.combined(with: .offset(y: -theme.motion.travel)),
                                                   removal: .opacity.combined(with: .offset(x: theme.motion.travel))))
@@ -334,7 +345,51 @@ struct NeedsYouList: View {
             }
             .themePanel()
             .animation(theme.motion.animation(theme.motion.standard), value: items.map(\.id))
+            .onChange(of: returnTo) { _, target in
+                guard let target else { return }
+                Task { @MainActor in
+                    for delay in Self.returnDelays {
+                        try? await Task.sleep(for: delay)
+                        guard let row = items.contains(where: { $0.id == target.id }) ? target.id : items.first?.id else { return }
+                        if focusedRow == row { break }
+                        focusedRow = row
+                    }
+                    spokenRow = focusedRow
+                }
+            }
         }
+    }
+
+    @ViewBuilder private func row(_ item: NeedsYouItem) -> some View {
+        let focus = NeedsYouRowFocus(keyboard: $focusedRow, voiceOver: $spokenRow)
+        let copy = copyLink.map { copy in { copy(item.id) } }
+        if compact {
+            NeedsYouCompactRow(item: item, isSelected: item.id == selectedID, open: { open(item.id) },
+                               copyLink: copy, focus: focus)
+        } else if opensReview {
+            NeedsYouOpenRow(item: item, open: { open(item.id) }, copyLink: copy, focus: focus)
+        } else {
+            NeedsYouRow(item: item, isReplying: replyingID == item.id, draft: $draft,
+                        open: { open(item.id) },
+                        choose: { verb in choose(verb, for: item) },
+                        sendReply: {
+                            decide(item.id, .replied(draft))
+                            replyingID = nil
+                            draft = ""
+                        },
+                        cancelReply: {
+                            replyingID = nil
+                            draft = ""
+                        })
+        }
+    }
+
+    /// A name that is new each time a row should be brought into view: when it opens beside the
+    /// list, and when a closed review returns to it.
+    private func revealID(_ id: String) -> String? {
+        if compact, id == selectedID { return "needs-you-open-\(id)" }
+        if !compact, let returnTo, returnTo.id == id { return "needs-you-return-\(id)-\(returnTo.token)" }
+        return nil
     }
 
     private func choose(_ verb: NeedsYouVerb, for item: NeedsYouItem) {
@@ -349,17 +404,32 @@ struct NeedsYouList: View {
     }
 }
 
+/// Asks the page to scroll a row into view, once per name. With no name it asks nothing.
+struct NeedsYouRowReveal: ViewModifier {
+    let id: String?
+
+    func body(content: Content) -> some View {
+        if let id { content.shellRevealed(id) } else { content }
+    }
+}
+
 // MARK: - Page
 
-/// Needs you: everything that waits on the person, most urgent first.
+/// Needs you: everything that waits on the person, most urgent first. With a review context, a
+/// row's one action is Review, which opens that request here: beside the list when both fit,
+/// otherwise over it. Every answer is then given in the review. Without one, the rows keep their
+/// own answers (a fixture that opts out).
 struct NeedsYouPage: View {
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let inbox: NeedsYouInbox
     let decide: (String, NeedsYouDecision) -> Void
     let open: (String) -> Void
     var reply: ((String) -> Void)? = nil
     /// Why the network's requests can't be read or the last answer didn't go through.
     var notice: String? = nil
+    /// Opens a request in place. Nil keeps `open` as the row's only way in.
+    var review: NeedsYouReviewContext? = nil
 
     private var readouts: [ShellReadout] {
         var cells = [
@@ -382,11 +452,78 @@ struct NeedsYouPage: View {
     }
 
     var body: some View {
-        WorkspacePage {
-            PageHeader(kicker: "WORKSPACE / NEEDS YOU", title: "Needs you", subtitle: subtitle) { EmptyView() }
+        if let review {
+            GeometryReader { geometry in reviewed(review, width: geometry.size.width) }
+        } else {
+            list(compact: false)
+        }
+    }
+
+    /// The list with the open request beside it, or under the full view. The list stays in place
+    /// under a full view, so closing it returns to the same row at the same scroll position.
+    private func reviewed(_ review: NeedsYouReviewContext, width: CGFloat) -> some View {
+        let subject = review.state.subject(in: inbox, detail: review.detail, now: review.now)
+        let shown = subject.map { _ in NeedsYouReviewLayout.shown(review.state.mode, width: width) }
+        return HStack(spacing: 0) {
+            list(compact: shown == .aside, review: review, selectedID: subject?.id)
+                .frame(width: shown == .aside ? NeedsYouReviewLayout.listWidth : nil)
+                .disabled(shown == .full)
+                .accessibilityHidden(shown == .full)
+            if shown == .aside, let subject {
+                ThemeRule(vertical: true)
+                panel(subject, shown: .aside, review, width: width)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(x: theme.motion.travel)))
+            }
+        }
+        .overlay {
+            if shown == .full, let subject {
+                panel(subject, shown: .full, review, width: width).transition(.opacity)
+            }
+        }
+        .animation(theme.motion.animation(theme.motion.standard), value: shown)
+        .onAppear { keep(subject, review) }
+        .onChange(of: subject) { _, next in keep(next, review) }
+    }
+
+    private func panel(_ subject: NeedsYouReviewSubject, shown: NeedsYouReviewMode, _ review: NeedsYouReviewContext,
+                       width: CGFloat) -> some View {
+        NeedsYouReview(subject: subject, shown: shown, mode: review.state.mode,
+                       offersAside: NeedsYouReviewLayout.fitsAside(width: width),
+                       link: NeedsYouRequestLink(id: subject.id)?.url.absoluteString,
+                       draft: review.draft, isSending: review.isSending, isOnline: review.isOnline) { action in
+            switch action {
+            case .close: review.close(inbox.ordered.map(\.id))
+            case .setMode(let mode): review.setMode(mode)
+            case .copy(let text): review.copy(text)
+            case .answer(let text): review.answer(subject.id, text)
+            case .openSource: review.openSource(subject.id)
+            case .choose(let verb):
+                // The request's own answers, routed as they always were. One already on its way is not sent twice.
+                guard !review.isSending else { return }
+                if let decision = verb.decision { decide(subject.id, decision) } else { (reply ?? open)(subject.id) }
+            }
+        }
+    }
+
+    /// Keeps what the list says about the open request, so its outcome outlives its row.
+    private func keep(_ subject: NeedsYouReviewSubject?, _ review: NeedsYouReviewContext) {
+        guard let subject, let item = inbox.items.first(where: { $0.id == subject.id }),
+              let next = review.state.remembering(item, detail: review.detail, now: review.now) else { return }
+        review.remember(next)
+    }
+
+    private func list(compact: Bool, review: NeedsYouReviewContext? = nil, selectedID: String? = nil) -> some View {
+        var copyLink: ((String) -> Void)?
+        if let review {
+            copyLink = { id in
+                if let link = NeedsYouRequestLink(id: id)?.url.absoluteString { review.copy(link) }
+            }
+        }
+        return WorkspacePage {
+            PageHeader(kicker: "WORKSPACE / NEEDS YOU", title: "Needs you", subtitle: compact ? nil : subtitle) { EmptyView() }
         } content: {
             VStack(alignment: .leading, spacing: theme.space.sectionGap) {
-                ShellReadoutStrip(cells: readouts, large: true)
+                if !compact { ShellReadoutStrip(cells: readouts, large: true) }
                 VStack(alignment: .leading, spacing: Space.s + 2) {
                     HStack(spacing: Space.s) {
                         ThemeHeading(text: "Waiting")
@@ -401,7 +538,9 @@ struct NeedsYouPage: View {
                     if let notice {
                         ShellLoadNote(text: notice, lamp: .error).accessibilityIdentifier("needs-you-notice")
                     }
-                    NeedsYouList(items: inbox.ordered, decide: decide, open: open, reply: reply)
+                    NeedsYouList(items: inbox.ordered, decide: decide, open: review?.open ?? open, reply: reply,
+                                 opensReview: review != nil, compact: compact, selectedID: selectedID, returnTo: review?.state.returnTo,
+                                 copyLink: copyLink)
                 }
             }
         }

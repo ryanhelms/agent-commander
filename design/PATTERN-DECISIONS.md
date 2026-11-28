@@ -327,6 +327,8 @@ Live work opens from the wall. Watch and Control name a worker by its resource, 
 
 The request also says where it lands, in words. `CommanderOpenRequest.landingCrumbs` returns the breadcrumb of the place the request opens when its item exists. It takes the place from the same private mapping `destination(in:)` uses and the words from `LiveShell.navigation(...).crumbs`, read with every place listed and no workspace or run. A sender labels its link with these segments and keeps no table of its own, so the label and the landing can't drift.
 
+The macOS URL handler is an Adapter for the same window-opening Command. `NeedsYouRequestLink` translates `agentcommander://needs-you?request=…` to a request ID. It carries only the ID. The inbox resolves it against its live projection, including results that arrive after the window opens. Opening a link only selects a row. Any answer still passes through the same request owner and service checks as an answer opened from the inbox.
+
 ## Hosting a relay from the app
 
 The app starts and stops this Mac's relay through a GoF Adapter over the bundled `commander-relay` helper, the same shape as the `commander-network` adapter: positional arguments, no shell, one bounded JSON reply on stdout. `commander-relay host --json status|install|uninstall` answers `{"ok": true, "host": {...}}` with the host's state after the action, or `{"ok": false, "error": "..."}`. launchd stays the owner of the relay process, so the relay outlives the app and the helper is the only path that writes the launch agent.

@@ -49,6 +49,22 @@ final class CockpitPresentationState {
     var needsYouFailures: [String: String] = [:]
     /// Network requests whose answer is still on its way.
     var needsYouRunning = Set<String>()
+    /// The request open in Needs you, how each request is shown, and what was last seen of it.
+    var needsYouReview = NeedsYouReviewState()
+    /// How long a linked request may stay unlisted before it reads as not found: the lists that
+    /// would hold it are read after the window opens.
+    static let needsYouLinkGrace: Duration = .seconds(8)
+
+    /// Opens a request in Needs you from a link. Nothing is checked here: the page reads the
+    /// request from the live lists, and says it is looking until they have had time to arrive.
+    func openNeedsYou(linked id: String, grace: Duration = CockpitPresentationState.needsYouLinkGrace) {
+        needsYouReview.open(id, settled: false)
+        Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            guard let self, self.needsYouReview.selectedID == id, !self.needsYouReview.isSettled else { return }
+            self.needsYouReview.isSettled = true
+        }
+    }
     /// The network pages' own selections and each row's last result.
     let networkPages = NetworkPagesLiveState()
     /// The window's own place, reads and drafts on the Teams pages.
@@ -746,7 +762,8 @@ struct CockpitScreen: View {
                                  } else {
                                      openFromInbox(id, shell)
                                  }
-                             })
+                             },
+                             review: needsYouReview(shell))
         } else if selection == LiveShell.settings {
             PreferencesPage(projectName: run?.project ?? "", retention: "", retentionOptions: [],
                             showsSystemAppearance: false, presentation: ui.attentionPresentation,
@@ -849,6 +866,50 @@ struct CockpitScreen: View {
         ui.composingRun = false
         ui.shellPlace = LiveShell.wall
         open(request)
+    }
+
+    /// What Needs you needs to open a request in place. The state is the window's own; every
+    /// intent goes to the action that already owns it. While the service is still connecting, a
+    /// linked request that isn't listed reads as being looked for, never as missing.
+    private func needsYouReview(_ shell: ShellContext) -> NeedsYouReviewContext {
+        var state = ui.needsYouReview
+        if content.connection == .connecting { state.isSettled = false }
+        let id = state.selectedID
+        return NeedsYouReviewContext(
+            state: state,
+            detail: id.flatMap { LiveShell.detail(for: $0, pending: content.pending, network: shell.network,
+                                                  harnessAlerts: shell.harnesses?.alerts ?? []) },
+            now: shell.now ?? Date(),
+            // The request's one draft, by its ID: the same text the Attention surfaces hold.
+            draft: Binding(get: { id.flatMap { ui.drafts[$0] } ?? "" }, set: { if let id { ui.drafts[id] = $0 } }),
+            // A worker's reply in flight, or a network answer on its way through the network's actions.
+            isSending: id.map { content.sending.contains($0) || ui.needsYouRunning.contains($0) } ?? false,
+            isOnline: isOnline,
+            open: { ui.needsYouReview.open($0) },
+            close: { rows in ui.needsYouReview.close(rows: rows) },
+            setMode: { ui.needsYouReview.setMode($0) },
+            copy: { copy($0) },
+            answer: { id, text in answerFromReview(id, text) },
+            openSource: { openFromInbox($0, shell) },
+            remember: { ui.needsYouReview = $0 })
+    }
+
+    /// A worker's answer from the review: the text as written, or a choice's exact ID, through the
+    /// cockpit's one reply action. The model checks who answers the request at the moment of
+    /// sending. An accepted answer stays readable in the review; a refused one keeps the draft and
+    /// says so on the request.
+    private func answerFromReview(_ id: String, _ text: String) {
+        guard let request = content.pending.first(where: { $0.id == id }), !request.isWorkerDisconnected,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !content.sending.contains(id) else { return }
+        ui.needsYouFailures[id] = nil
+        Task {
+            if await actions.reply(id, text) {
+                ui.drafts[id] = nil
+                ui.needsYouReview.recordAnswer(id, .replied(text))
+            } else {
+                ui.needsYouFailures[id] = "The reply wasn’t accepted, so \(request.workerName) still waits. Your answer is kept here. Send it again."
+            }
+        }
     }
 
     /// One answer to a network request. The network model does the work and says how it ended

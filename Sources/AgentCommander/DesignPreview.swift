@@ -73,6 +73,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case shellB = "shell-b"
     case shellC = "shell-c"
     case needsYou = "needs-you"
+    case needsYouReview = "needs-you-review"
     // The full-size network pages, in sidebar B (NetworkPagesPreview.swift).
     case networkServers = "network-servers"
     case networkDirectory = "network-directory"
@@ -131,7 +132,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     }
 
     /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
-    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil || harnessPlace != nil }
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || self == .needsYouReview || networkPlace != nil || teamsPlace != nil || harnessPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -237,6 +238,9 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         case .needsYou:
             Info(title: "Needs you inbox", group: "Main window redesign", crumbs: ["Workspace", "Needs you"], active: "Needs you",
                  summary: "One list of local and network requests in order of urgency, decided in place.")
+        case .needsYouReview:
+            Info(title: "Needs you review", group: "Main window redesign", crumbs: ["Workspace", "Needs you"], active: "Needs you",
+                 summary: "One request read in full beside the list or as a full view, then answered there.")
         case .networkServers:
             Info(title: "Network · Servers", group: "Main window redesign", crumbs: ["Network", "Servers"], active: "Servers",
                  summary: "Every saved server, with the open one's certificate review or settings beside it.")
@@ -672,7 +676,7 @@ struct PreviewCanvas: View {
                             chooseTheme: { id in ThemeChoice.select(id) })
         case .coordinatorWall, .focusedWorker, .tileControls, .attentionPip, .pipArrival, .attentionPanel,
              .attentionSwitch, .startRun, .accessibleWall, .accessibleWorker,
-             .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
+             .shellA, .shellB, .shellC, .needsYou, .needsYouReview, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
              .networkThreads, .networkAudit, .networkFanout, .networkShared, .people,
              .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin,
              .harnesses, .harnessesAvailable:
