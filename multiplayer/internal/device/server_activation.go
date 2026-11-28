@@ -3,12 +3,24 @@ package device
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
 	"agentcommander.network/pilot/internal/devicekeys"
+	"agentcommander.network/pilot/internal/netlog"
 )
+
+// relayHost is the relay origin's host for the log.
+func relayHost(origin string) string {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
 
 const (
 	keychainWaitingText = "Respond to the macOS Keychain prompt if one appears. Agent Commander will continue when access is ready."
@@ -88,8 +100,26 @@ func (m *Manager) agentForInvite(ctx context.Context, id string) (*Agent, error)
 	return m.agentUseLocked(id, true)
 }
 
+func (m *Manager) logger() *slog.Logger {
+	if m.cfg.Log != nil {
+		return m.cfg.Log
+	}
+	return netlog.Discard()
+}
+
 func (m *Manager) activate(ctx context.Context, s Server, attempt *serverActivation) {
+	log := m.logger().With("server", s.ID)
+	log.Info("activation_start", "relay", relayHost(s.URL))
+	started := time.Now()
 	a, err := m.openAgent(ctx, s, attempt)
+	outcome := "ok"
+	switch {
+	case ctx.Err() != nil:
+		outcome = "canceled"
+	case err != nil:
+		outcome = "error"
+	}
+	log.Info("activation_result", "outcome", outcome, "err", errText(err), "duration_ms", time.Since(started).Milliseconds())
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	defer close(attempt.done)
@@ -132,6 +162,7 @@ func (m *Manager) openAgent(ctx context.Context, s Server, attempt *serverActiva
 		ServerID: s.ID, Relay: s.URL, Dir: dir, CommanderSocket: m.cfg.CommanderSocket,
 		Secrets: store, Roots: m.cfg.Roots, OIDCHTTP: m.cfg.OIDCHTTP, OpenBrowser: m.cfg.OpenBrowser,
 		Pin: s.Pin, GoogleDesktopConfig: filepath.Join(m.cfg.Dir, "google-desktop-client.json"),
+		Log: m.logger().With("server", s.ID),
 		OnPinMismatch: func() {
 			go func() {
 				m.mu.Lock()
@@ -145,6 +176,7 @@ func (m *Manager) openAgent(ctx context.Context, s Server, attempt *serverActiva
 	}
 	if devicekeys.IsKeychain(store) {
 		config.onStartupCredentials = func(waiting bool) {
+			m.logger().Info("keychain_wait", "server", s.ID, "waiting", waiting)
 			m.mu.Lock()
 			attempt.waitingForKeychain = waiting
 			m.mu.Unlock()

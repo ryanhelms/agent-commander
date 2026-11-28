@@ -130,7 +130,7 @@ func (a *Agent) eventsLoop() {
 		a.pollEvents(a.ctx)
 		a.pollReceipts(a.ctx)
 		a.refreshSummary(a.ctx)
-		if !wait(a.ctx, 15*time.Second) {
+		if !a.pause(a.ctx, "events", 15*time.Second) {
 			return
 		}
 	}
@@ -146,6 +146,7 @@ func (a *Agent) pollEvents(ctx context.Context) {
 	}
 	s, e := a.getSession(ctx)
 	if e != nil {
+		a.noteSessionProblem(s.User, e)
 		return
 	}
 	var res struct{ Events []Event }

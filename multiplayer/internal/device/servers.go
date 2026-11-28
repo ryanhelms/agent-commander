@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -92,6 +93,10 @@ type ManagerConfig struct {
 	// DirectoryURL is the public relay directory discovery reads; empty
 	// leaves it out.
 	DirectoryURL string
+	// Log receives network log events; nil discards them. LogPath is the
+	// file the diagnostics verb reads.
+	Log     *slog.Logger
+	LogPath string
 }
 
 // Manager runs one Agent per enabled server and serves the tray.
