@@ -468,6 +468,8 @@ enum PrettyItem: Identifiable, Equatable {
     case formOutcome(PrettyFormOutcome)
     /// One provider compaction, at its message's own position. Never folded.
     case compaction(PrettyCompaction)
+    /// One incoming message from another session, at its first reference. Never folded.
+    case message(SessionMessage)
 
     var id: String {
         switch self {
@@ -481,6 +483,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .turnEnd(let end): end.id + "#turn-end"
         case .formOutcome(let outcome): outcome.id + "#form-outcome"
         case .compaction(let compaction): compaction.id + "#compaction"
+        case .message(let message): message.id
         }
     }
 
@@ -493,6 +496,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .live(let step), .approval(let step): step.entries
         case .card(let card): card.step.entries
         case .compaction(let compaction): [compaction.entry]
+        case .message(let message): message.entries
         case .turnEnd, .formOutcome: []
         }
     }
@@ -514,6 +518,9 @@ struct ActivityFacts {
     /// What was read from a marked reply chunk's own source record. Nil until it is read, and
     /// when no such record is kept: the chunk then stays a folded session update.
     var replyAttachment: (ReplyAttachmentMark) -> ReplyAttachment? = { _ in nil }
+    /// What is known about the source record of a session message update. Nil when nothing is:
+    /// the update then stays a folded session update.
+    var sessionMessage: (SessionMessageMark) -> SessionMessageDetail? = { _ in nil }
     /// The transcript setting as the store answers it (`ToolDetailStore.hidesSecrets`): a
     /// provider notice's title is masked where its line is built.
     var hidesSecrets = false
@@ -1246,6 +1253,16 @@ enum ActivityConversation {
         var planIndex: Int?
         /// The identified ACP plans of the current turn: where each one's card or removal line is.
         var identified: [String: Int] = [:]
+        // Messages from other sessions, each read from the source records of its own references.
+        let references = source.flatMap { item -> [TranscriptEntry] in
+            switch item {
+            case .entry(let entry): [entry]
+            case .activity(let activity): activity.entries
+            case .commander: []
+            }
+        }
+        let messages = references.contains { !$0.sessionMessages.isEmpty }
+            ? SessionMessages(entries: references, detail: facts.sessionMessage) : .none
 
         func flush() {
             if let group = open { out.append(.group(group)); open = nil }
@@ -1369,7 +1386,14 @@ enum ActivityConversation {
             case .output:
                 if let step = ActivitySteps.step(orphan: entry, facts: facts) { route(step) }
             case .other:
-                if let compaction = PrettyCompaction(entry: entry) {
+                if let message = messages.anchored[entry.id] {
+                    // A message from another session, where its first reference arrived. It ends
+                    // the group, as prose does.
+                    flush()
+                    out.append(.message(message))
+                } else if messages.absorbed.contains(entry.id) {
+                    // A later reference of a message: it changed the row at the message's place.
+                } else if let compaction = PrettyCompaction(entry: entry) {
                     // One row per compaction, where its first update arrived. It ends the group.
                     flush()
                     out.append(.compaction(compaction))
@@ -1504,7 +1528,7 @@ enum ActivityConversation {
                 // stated level) stays, where it arrived. Every other entry is left out.
                 // Chosen by the notice's level alone: no title is read or prepared here.
                 if entry.origin?.notice?.folds == false { shown.append(item) }
-            case .plan, .approval, .card, .turnEnd, .formOutcome:
+            case .plan, .approval, .card, .turnEnd, .formOutcome, .message:
                 break
             }
         }

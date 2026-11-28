@@ -38,6 +38,7 @@ struct AgentCommander: App {
             .environment(model.toolDetails)
             .environment(model.compactions)
             .environment(model.replyAttachments)
+            .environment(model.sessionMessages)
             .environment(nativeTerminals)
             .appTheme()
             .frame(minWidth: 800, minHeight: 540)

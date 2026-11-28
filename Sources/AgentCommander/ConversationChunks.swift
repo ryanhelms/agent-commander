@@ -58,6 +58,10 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on a live reply chunk that is a resource link or a resource: the record behind it.
     /// Pretty draws what that record holds in the reply; see `ReplyAttachment`.
     var replyAttachment: ReplyAttachmentMark? = nil
+    /// Set on a live session message update: the record behind each update the message stands
+    /// for, in the order they arrived. Pretty draws the message those records hold; see
+    /// `SessionMessage`.
+    var sessionMessages: [SessionMessageMark] = []
     /// Set on a provider notice: the level its reference states, when it states one. Pretty keeps
     /// a warning, an error and a notice with no level in the open; see `NoticeMark`.
     var notice: NoticeMark? = nil
@@ -176,6 +180,7 @@ extension TranscriptOrigin {
         itemCount = acp["itemCount"]?.intValue
         compaction = CompactionMark(message: message, acp: acp)
         replyAttachment = ReplyAttachmentMark(message: message, acp: acp)
+        sessionMessages = SessionMessageMark.marks(message: message, acp: acp)
         notice = NoticeMark(message: message, acp: acp)
         planIdentity = Self.planIdentity(kind: kind, acp: acp)
         planIsLive = planIdentity != nil && acp["source"]?.stringValue == ConversationChunks.liveSource
@@ -456,7 +461,13 @@ struct ActivityEvent: Equatable, Sendable {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let kind = entry.origin?.kind ?? ""
 
-        if let notice = entry.origin?.notice {
+        if SessionMessageMark.Kind(rawValue: kind) != nil {
+            // An update of a message from another session that is not drawn as that message: its
+            // record is not read, is still being read, or says the message is not incoming. The
+            // line names the update and nothing else. The service's text for one update may hold
+            // a piece of a value that only the whole message's text shows to be a secret.
+            self.init(symbol: "circle.dashed", label: Self.sessionMessageLabel, detail: "", tone: .quiet)
+        } else if let notice = entry.origin?.notice {
             // Judged by its reference alone, before any text is read.
             self.init(notice: notice, body: body, hidesSecrets: hidesSecrets)
         } else if let rest = Self.after("[Provider stderr]", in: body) {
@@ -512,6 +523,9 @@ struct ActivityEvent: Equatable, Sendable {
         self.folds = folds ?? (tone == .quiet)
     }
 
+    /// The line for a session message update that is not drawn as its message. It holds no text
+    /// of the update and names no sender.
+    static let sessionMessageLabel = "Session message"
     /// The provider event name the ACP runner gives a live input request.
     static let permissionRequested = "Permission requested"
     /// The line Commander appends to a question that offers choices, before one `Label [id]` line
