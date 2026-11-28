@@ -242,52 +242,84 @@ private struct Dropped: Error {}
     }
 
     @Test(.timeLimit(.minutes(1))) func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async {
-        let exchange = Exchange()
+        // Issue #150: this test alone prints a timed trace, so a run that only hits the time limit
+        // still shows its last lifecycle event. "exchange" lines are events as the exchange
+        // recorded them; "call" lines are a call's own stages; "pilot" lines are this body's
+        // checkpoints, printed after the awaited step before them has ended.
+        let trace = Trace()
+        let exchange = Exchange(trace: trace)
         var events = exchange.events.makeAsyncIterator()
         let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
+        func pilot(_ step: String) {
+            trace("pilot", "\(step); link \(feed.link)\(Task.isCancelled ? "; TEST TASK CANCELLED" : "")")
+        }
         func follow(_ name: String) -> Task<Void, Never> {
             Task.immediate { @MainActor in
+                trace("call", "\(name) enters follow")
                 await feed.follow()
+                trace("call", "\(name) left follow; cancelled \(Task.isCancelled)")
                 exchange.returned(name)
             }
         }
+        pilot("body started")
 
         let first = follow("first")
         let second = follow("second")
         let third = follow("third")
         // A failed wait below must not leave a call following the feed after the test.
         defer { for call in [first, second, third] { call.cancel() } }
+        pilot("started first, second, third; awaiting opened(1)")
         await expectNext(&events, .opened(1), in: exchange, feed: feed)
+        pilot("wait for opened(1) ended")
         #expect(exchange.live == 1)
 
         // A waiting call that is cancelled returns without ever connecting.
+        pilot("cancelling second")
         second.cancel()
+        pilot("cancelled second; awaiting returned(second)")
         await expectNext(&events, .returned("second"), in: exchange, feed: feed)
+        pilot("wait for returned(second) ended")
         #expect(exchange.live == 1)
 
         // The next waiting call connects once the owner has let go.
+        pilot("cancelling first, the owner")
         first.cancel()
+        pilot("cancelled first; awaiting closed(1)")
         await expectNext(&events, .closed(1), in: exchange, feed: feed)
+        pilot("wait for closed(1) ended")
         await expectNext(&events, .returned("first"), in: exchange, feed: feed)
+        pilot("wait for returned(first) ended")
         await expectNext(&events, .opened(2), in: exchange, feed: feed)
+        pilot("wait for opened(2) ended")
         #expect(exchange.live == 1)
         exchange.send([fixture, other])
+        pilot("awaiting the feed to read the snapshot")
         let read = await until { feed.updates == [fixture, other] }
+        pilot("wait for the snapshot ended; read \(read)")
         #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
 
+        pilot("cancelling third, the owner")
         third.cancel()
+        pilot("cancelled third; awaiting closed(2)")
         await expectNext(&events, .closed(2), in: exchange, feed: feed)
+        pilot("wait for closed(2) ended")
         await expectNext(&events, .returned("third"), in: exchange, feed: feed)
+        pilot("wait for returned(third) ended")
         #expect(exchange.live == 0)
 
         // Nothing still holds the feed: a later call connects at once. It is cancelled as soon as
         // its connection opens, before it has read anything.
         let again = follow("again")
         defer { again.cancel() }
+        pilot("started again; awaiting opened(3)")
         await expectNext(&events, .opened(3), in: exchange, feed: feed)
+        pilot("wait for opened(3) ended; cancelling again before its first snapshot")
         again.cancel()
+        pilot("cancelled again; awaiting closed(3)")
         await expectNext(&events, .closed(3), in: exchange, feed: feed)
+        pilot("wait for closed(3) ended")
         await expectNext(&events, .returned("again"), in: exchange, feed: feed)
+        pilot("wait for returned(again) ended; body finished")
         #expect(exchange.live == 0, "\(progress(exchange, feed))")
     }
 
@@ -337,6 +369,22 @@ private final class Attempts: @unchecked Sendable {
     }
 }
 
+/// Prints one line per milestone, each with the seconds since the trace began on a monotonic
+/// clock. Search a run log for `[issue-150-overlap]`. Lines are printed and flushed on the
+/// caller's own path, so they survive a test that ends at its time limit.
+private struct Trace: Sendable {
+    private let start = ContinuousClock.now
+
+    var elapsed: Duration { start.duration(to: .now) }
+
+    func callAsFunction(_ source: String, _ what: String, at time: Duration? = nil) {
+        let parts = (time ?? elapsed).components
+        let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+        print("[issue-150-overlap] +\(String(format: "%.3f", seconds))s \(source): \(what)")
+        fflush(nil)
+    }
+}
+
 /// Connections that stay open until the feed lets go of them, with an ordered record of each one
 /// opening and closing and of each test call returning.
 private final class Exchange: @unchecked Sendable {
@@ -353,8 +401,10 @@ private final class Exchange: @unchecked Sendable {
     private var opened = 0
     /// Every event in the order it was recorded, whether or not the test has read it yet.
     private var history: [Event] = []
+    private let trace: Trace?
 
-    init() {
+    init(trace: Trace? = nil) {
+        self.trace = trace
         let stream = AsyncStream.makeStream(of: Event.self)
         events = stream.stream
         emit = stream.continuation
@@ -374,10 +424,14 @@ private final class Exchange: @unchecked Sendable {
 
     private func record(_ event: Event) {
         // Under one lock, so the history and the stream always agree on the order.
-        lock.withLock {
+        // The trace takes its number and time under the lock and prints after it, so a printed
+        // line can appear out of place but its number gives the recorded order.
+        let (number, time) = lock.withLock {
             history.append(event)
             _ = emit.yield(event)
+            return (history.count, trace?.elapsed)
         }
+        trace?("exchange", "#\(number) recorded \(event)", at: time)
     }
 
     func connect() -> AsyncThrowingStream<[AdapterUpdate], Error> {
@@ -387,7 +441,8 @@ private final class Exchange: @unchecked Sendable {
                 lines[opened] = line
                 return opened
             }
-            line.onTermination = { [self] _ in
+            line.onTermination = { [self] reason in
+                trace?("exchange", "connection \(id) terminated: \(reason)")
                 lock.withLock { lines[id] = nil }
                 record(.closed(id))
             }
@@ -396,7 +451,9 @@ private final class Exchange: @unchecked Sendable {
     }
 
     func send(_ updates: [AdapterUpdate]) {
-        for line in lock.withLock({ Array(lines.values) }) { line.yield(updates) }
+        let open = lock.withLock { Array(lines) }
+        for (_, line) in open { line.yield(updates) }
+        trace?("exchange", "sent a snapshot of \(updates.count) update(s) to connection(s) \(open.map(\.key).sorted())")
     }
 
     func returned(_ call: String) { record(.returned(call)) }
