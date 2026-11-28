@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const codexBridgeEnv = "AGENT_COMMANDER_CODEX_BRIDGE"
@@ -35,13 +36,18 @@ func (cfg codexBridgeConfig) validate() error {
 }
 
 type codexNativeReader struct {
-	mu        sync.Mutex
-	threadID  string
-	startID   string
-	preflight chan error
+	mu            sync.Mutex
+	threadID      string
+	startID       string
+	preflight     chan error
+	skillsPending map[string]struct{}
+	skillsIdle    chan struct{}
 }
 
 const codexPreflightID = `"commander-config-check"`
+
+// The ACP runtime gives its adapter one second to exit after closing stdin.
+const codexSkillsDrainTimeout = 400 * time.Millisecond
 
 // RunCodexBridge is a private CODEX_PATH entry point for the managed ACP
 // profile. The normal Codex binary and its user configuration are independent.
@@ -94,18 +100,69 @@ func RunCodexBridge(ctx context.Context, input io.Reader, output io.Writer) erro
 		_, err := output.Write(append(data, '\n'))
 		return err
 	}
-	done := make(chan error, 2)
+	nativeDone, adapterDone := make(chan error, 1), make(chan error, 1)
 	go func() {
-		done <- state.readNative(childOut, write)
+		nativeDone <- state.readNative(childOut, write)
 	}()
 	go func() {
-		done <- state.readAdapter(ctx, input, childIn, cfg.Policy, write)
+		adapterDone <- state.readAdapter(ctx, input, childIn, cfg.Policy, write)
 	}()
 	select {
-	case err := <-done:
+	case err := <-nativeDone:
+		return err
+	case err := <-adapterDone:
+		if err != nil {
+			return err
+		}
+		// Codex ACP can refresh available commands after a prompt finishes.
+		// Keep already-forwarded skill queries alive on orderly shutdown.
+		return state.drainSkills(ctx, nativeDone)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *codexNativeReader) beginSkillsRequest(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.skillsPending) == 0 {
+		s.skillsIdle = make(chan struct{})
+		s.skillsPending = make(map[string]struct{})
+	}
+	s.skillsPending[id] = struct{}{}
+}
+
+func (s *codexNativeReader) finishSkillsRequest(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, pending := s.skillsPending[id]; !pending {
+		return
+	}
+	delete(s.skillsPending, id)
+	if len(s.skillsPending) == 0 {
+		close(s.skillsIdle)
+		s.skillsIdle = nil
+	}
+}
+
+func (s *codexNativeReader) drainSkills(ctx context.Context, nativeDone <-chan error) error {
+	s.mu.Lock()
+	idle := s.skillsIdle
+	s.mu.Unlock()
+	if idle == nil {
+		return nil
+	}
+	timer := time.NewTimer(codexSkillsDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-idle:
+		return nil
+	case err := <-nativeDone:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -162,7 +219,11 @@ func (s *codexNativeReader) readNative(input io.Reader, write func([]byte) error
 			s.startID = ""
 			s.mu.Unlock()
 		}
-		return write(line)
+		if err := write(line); err != nil {
+			return err
+		}
+		s.finishSkillsRequest(string(msg.ID))
+		return nil
 	})
 }
 
@@ -214,6 +275,9 @@ func (s *codexNativeReader) readAdapter(ctx context.Context, input io.Reader, ou
 				s.startID = string(r.ID)
 				s.mu.Unlock()
 			}
+		}
+		if r.Method == "skills/list" && len(r.ID) != 0 {
+			s.beginSkillsRequest(string(r.ID))
 		}
 		return encode.Encode(r)
 	})
