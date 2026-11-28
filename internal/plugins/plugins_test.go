@@ -345,3 +345,115 @@ func TestBareCommandFallsBackToInstallPath(t *testing.T) {
 		t.Fatal("used a fallback whose name does not match the command")
 	}
 }
+
+// installPackage installs a fixture package with the fixture's environment.
+func installPackage(t *testing.T, state, id string, mutate func(*Manifest)) (Record, error) {
+	t.Helper()
+	t.Setenv(fixtureMode, "serve")
+	return Install(context.Background(), state, fixturePackage(t, id, mutate), InstallOptions{environ: fixtureEnv})
+}
+
+func TestUpgradeKeepsEveryGrantServable(t *testing.T) {
+	state, project := t.TempDir(), t.TempDir()
+	install(t, state, "example.hello")
+	if err := Grant(state, "example.hello.echo", 1, project, json.RawMessage(`{"site":"acme"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Grant(state, "example.hello.fail", 1, project, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, upgrade := range map[string]struct {
+		mutate func(*Manifest)
+		want   string
+	}{
+		"tool version bumped": {func(m *Manifest) {
+			m.Version = "2.0.0"
+			m.Contributes.Tools[0].Version = 2
+		}, "example.hello.echo@1 for " + project + ": version 2.0.0 provides tool version 2"},
+		"tool dropped": {func(m *Manifest) {
+			m.Version = "2.0.0"
+			m.Contributes.Tools = m.Contributes.Tools[:2]
+		}, "example.hello.fail@1 for " + project + ": version 2.0.0 no longer provides this tool"},
+		"settings no longer accepted": {func(m *Manifest) {
+			m.Version = "2.0.0"
+			m.SettingsSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"region":{"type":"string"}}}`)
+		}, "example.hello.echo@1 for " + project + ": plugin settings do not match"},
+	} {
+		_, err := installPackage(t, state, "example.hello", upgrade.mutate)
+		if err == nil || !strings.Contains(err.Error(), upgrade.want) || !strings.Contains(err.Error(), "agentctl plugin revoke") {
+			t.Fatalf("%s: err = %v, want it to name %q", name, err, upgrade.want)
+		}
+	}
+	// Nothing changed: the old version is still installed and the service still starts.
+	installed, err := List(state)
+	if err != nil || len(installed) != 1 || installed[0].Version != "1.0.0" {
+		t.Fatalf("installed = %+v, %v", installed, err)
+	}
+	if _, err := os.Stat(installed[0].Dir(state)); err != nil {
+		t.Fatalf("old package removed: %v", err)
+	}
+	_, registry := loadRegistry(t, state)
+	if _, err := runTool(t, registry.Project(project), "example.hello.echo", 10*time.Second, `{"text":"still"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A compatible upgrade goes through and the grants still bind.
+	if _, err := installPackage(t, state, "example.hello", func(m *Manifest) { m.Version = "1.1.0" }); err != nil {
+		t.Fatalf("compatible upgrade: %v", err)
+	}
+	host, err := Load(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := toolregistry.Load(state, host.Tools()...); err != nil {
+		t.Fatalf("service would not start after a compatible upgrade: %v", err)
+	}
+}
+
+func TestReservedVersionsCannotReplacePluginData(t *testing.T) {
+	good := `{"schema":1,"id":"acme.jira","version":"1.0.0","name":"Jira","command":["bin/server"],
+		"contributes":{"tools":[{"mcp_tool":"get","id":"acme.jira.get","version":1,"action":"read"}]}}`
+	for _, version := range []string{"data", "Data", "plugin.log", "PLUGIN.LOG"} {
+		if _, err := ParseManifest([]byte(strings.Replace(good, `"1.0.0"`, `"`+version+`"`, 1))); err == nil {
+			t.Errorf("version %q accepted", version)
+		}
+	}
+	state := t.TempDir()
+	record := install(t, state, "example.hello")
+	saved := filepath.Join(record.DataDir(state), "saved.json")
+	if err := os.MkdirAll(record.DataDir(state), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(saved, []byte(`{"keep":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installPackage(t, state, "example.hello", func(m *Manifest) { m.Version = "data" }); err == nil {
+		t.Fatal("installed a version named data")
+	}
+	if raw, err := os.ReadFile(saved); err != nil || string(raw) != `{"keep":true}` {
+		t.Fatalf("plugin data lost: %q, %v", raw, err)
+	}
+}
+
+func TestColdStartHonorsTheCallersDeadline(t *testing.T) {
+	checked := errors.New("package check finished")
+	sup := newSupervisor(launch{id: "example.slow"}, func() error {
+		time.Sleep(300 * time.Millisecond)
+		return checked
+	})
+	defer sup.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	if _, _, err := sup.get(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first caller err = %v, want its deadline", err)
+	}
+	if waited := time.Since(began); waited > 150*time.Millisecond {
+		t.Fatalf("the caller that began the start waited %v past a 20ms deadline", waited)
+	}
+	// The start carries on without that caller; the next caller sees how it ended.
+	if _, _, err := sup.get(context.Background()); !errors.Is(err, checked) {
+		t.Fatalf("second caller err = %v, want the start's result", err)
+	}
+}

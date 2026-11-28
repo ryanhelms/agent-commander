@@ -173,7 +173,7 @@ func newSupervisor(l launch, verify func() error) *supervisor {
 var errStopped = errors.New("plugin host stopped")
 
 // get returns a live session, starting the process if needed. Concurrent
-// callers share one start.
+// callers share one start, and each stops waiting when its ctx ends.
 func (s *supervisor) get(ctx context.Context) (*mcp.ClientSession, int, error) {
 	for {
 		s.mu.Lock()
@@ -201,33 +201,36 @@ func (s *supervisor) get(ctx context.Context) (*mcp.ClientSession, int, error) {
 			s.mu.Unlock()
 			return nil, 0, err
 		}
+		// The start runs on its own, so the caller that began it waits on it or
+		// its own deadline like every other caller: a slow package check or
+		// handshake never holds a call past the tool's deadline.
 		done := make(chan struct{})
 		s.starting = done
 		s.mu.Unlock()
-
-		session, err := s.start()
-
-		s.mu.Lock()
-		s.starting = nil
-		close(done)
-		if err != nil {
-			s.startErr, s.lastFail = err, time.Now()
-			s.mu.Unlock()
-			return nil, 0, err
-		}
-		if s.closed {
-			s.mu.Unlock()
-			_ = session.Close()
-			return nil, 0, errStopped
-		}
-		s.session, s.startErr, s.lastFail = session, nil, time.Time{}
-		s.generation++
-		generation := s.generation
-		s.touchLocked()
-		s.mu.Unlock()
-		go s.watch(session, generation)
-		return session, generation, nil
+		go s.finishStart(done)
 	}
+}
+
+// finishStart starts the process and publishes the session, or the failure
+// that callers see until the restart backoff passes.
+func (s *supervisor) finishStart(done chan struct{}) {
+	session, err := s.start()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.starting = nil
+	defer close(done)
+	if err != nil {
+		s.startErr, s.lastFail = err, time.Now()
+		return
+	}
+	if s.closed {
+		go session.Close()
+		return
+	}
+	s.session, s.startErr, s.lastFail = session, nil, time.Time{}
+	s.generation++
+	s.touchLocked()
+	go s.watch(session, s.generation)
 }
 
 func (s *supervisor) start() (*mcp.ClientSession, error) {

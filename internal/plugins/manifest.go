@@ -117,6 +117,9 @@ func (m Manifest) Validate() error {
 	if !versionRule.MatchString(m.Version) {
 		return fmt.Errorf("plugin version %q is invalid", m.Version)
 	}
+	if reservedVersion(m.Version) {
+		return fmt.Errorf("plugin version %q is reserved: the plugin's data directory and log use that name", m.Version)
+	}
 	if strings.TrimSpace(m.Name) == "" || len(m.Name) > 128 || len(m.Description) > maxDescription {
 		return errors.New("plugin name is required and must be short")
 	}
@@ -203,4 +206,18 @@ func resolveObjectSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 		return nil, fmt.Errorf("schema must be self-contained: %w", err)
 	}
 	return resolved, nil
+}
+
+// reservedNames are the entries beside a plugin's version directories. A
+// version with one of these names would install over the plugin's data or log.
+// The comparison ignores case because the default macOS volume does.
+var reservedNames = []string{dataDirName, logName}
+
+func reservedVersion(version string) bool {
+	for _, name := range reservedNames {
+		if strings.EqualFold(version, name) {
+			return true
+		}
+	}
+	return false
 }

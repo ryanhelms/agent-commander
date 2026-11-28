@@ -93,7 +93,17 @@ func Install(ctx context.Context, stateDir, src string, opts InstallOptions) (Re
 		return Record{}, err
 	}
 
+	// An upgrade must still serve every existing grant of the plugin's tools:
+	// the service refuses to start on a grant it can't bind. Nothing is
+	// changed until the check passes.
+	if err := checkGrantsServed(stateDir, installed, record); err != nil {
+		return Record{}, err
+	}
+
 	dest := record.Dir(stateDir)
+	if reservedVersion(record.Version) {
+		return Record{}, fmt.Errorf("plugin version %q is reserved", record.Version)
+	}
 	if err := ensurePrivateDir(filepath.Dir(dest)); err != nil {
 		return Record{}, err
 	}
@@ -119,6 +129,79 @@ func Install(ctx context.Context, stateDir, src string, opts InstallOptions) (Re
 		_ = os.RemoveAll(previous.Dir(stateDir))
 	}
 	return record, nil
+}
+
+// checkGrantsServed refuses an install that would leave a grant the new
+// version can't serve: a tool it no longer provides, a version it doesn't
+// provide, or settings its settings_schema rejects. It names each grant, so
+// the operator can revoke it before installing and grant again after.
+func checkGrantsServed(stateDir string, installed []Record, next Record) error {
+	ids := map[string]bool{}
+	for _, r := range installed {
+		if r.ID == next.ID {
+			for _, t := range r.Tools {
+				ids[t.ID] = true
+			}
+		}
+	}
+	provided := map[string]ToolRecord{}
+	for _, t := range next.Tools {
+		ids[t.ID] = true
+		provided[t.ID] = t
+	}
+	file, err := readGrants(stateDir)
+	if err != nil {
+		return err
+	}
+	var problems []string
+	for _, project := range file.Projects {
+		for id, raw := range project.Tools {
+			if !ids[id] {
+				continue
+			}
+			version, settings, err := parseGrant(raw)
+			where := fmt.Sprintf("%s@%d for %s", id, version, project.Path)
+			tool, ok := provided[id]
+			switch {
+			case err != nil:
+				problems = append(problems, fmt.Sprintf("%s: %v", id+" for "+project.Path, err))
+			case !ok:
+				problems = append(problems, where+": version "+next.Version+" no longer provides this tool")
+			case tool.Version != version:
+				problems = append(problems, fmt.Sprintf("%s: version %s provides tool version %d", where, next.Version, tool.Version))
+			default:
+				if err := validateSettings(next, settings); err != nil {
+					problems = append(problems, fmt.Sprintf("%s: %v", where, err))
+				}
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	slices.Sort(problems)
+	return fmt.Errorf("installing %s %s would leave grants it can't serve, and the service would not start:\n  %s\n"+
+		"Revoke these grants (agentctl plugin revoke <tool> --project <path>), install, then grant the new versions",
+		next.ID, next.Version, strings.Join(problems, "\n  "))
+}
+
+// parseGrant reads a grant value as the tool registry does: a bare version,
+// or an object with version and settings.
+func parseGrant(raw json.RawMessage) (int, json.RawMessage, error) {
+	var version int
+	if err := json.Unmarshal(raw, &version); err == nil {
+		return version, nil, nil
+	}
+	var grant struct {
+		Version  int             `json:"version"`
+		Settings json.RawMessage `json:"settings,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&grant); err != nil {
+		return 0, nil, errors.New("expected a tool version or an object with version and settings")
+	}
+	return grant.Version, grant.Settings, nil
 }
 
 // probeTools starts the plugin once and reads each contributed tool's schema.
