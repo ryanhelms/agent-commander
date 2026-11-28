@@ -23,7 +23,7 @@ import SwiftUI
 //                            agent's form and URL requests with accept, decline and cancel)
 //   NestedWorkerGroup   = disclosure header + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
-//   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
+//   CoordinatorConsole  = ConsoleTitleBar (CoordinatorAssignmentButton) + TerminalWell + AttentionNotice + TerminalStatusLine
 //                         (+ TerminalComposer as the footer line: the owner's follow-up to a
 //                            recovered coordinator the owner controls, else the preview's message)
 //   AttentionStack      = request controls + ConsoleTitleBar + TerminalWell + RequestPrompt
@@ -790,8 +790,9 @@ extension Array {
 
 // MARK: - CoordinatorConsole
 
-/// The coordinator in the stationary left pane: who it is, the assignment the developer gave this
-/// run, its live terminal output and any request waiting inside the run.
+/// The coordinator in the stationary left pane: who it is, its live terminal output and any
+/// request waiting inside the run. The assignment the developer gave this run stays out of the
+/// scrollback in every display mode; the title bar's assignment button opens it in a sheet.
 struct CoordinatorConsole: View {
     let coordinator: WorkerPresentation
     let assignment: String
@@ -826,6 +827,10 @@ struct CoordinatorConsole: View {
             ConsoleTitleBar(title: coordinator.name, client: coordinator.client, host: coordinator.host,
                             platform: coordinator.platform, location: coordinator.location,
                             locationIsBranch: coordinator.locationIsBranch, density: .console) {
+                // The assignment is not in the scrollback in any mode; this opens it.
+                if CoordinatorAssignmentButton.isOffered(for: assignment) {
+                    CoordinatorAssignmentButton(assignment: assignment, startedAt: startedAt)
+                }
                 ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name,
                                            client: coordinator.client, source: source,
                                            providerSession: providerSession,
@@ -834,15 +839,9 @@ struct CoordinatorConsole: View {
             if let session = prettySession {
                 prettyScrollback(session: session)
             } else {
-                // One scrollback: the assignment, the transcript, then any waiting request directly
-                // after it. A long transcript scrolls in place while the notices stay visible beneath it.
+                // One scrollback: the transcript, then any waiting request directly after it. A long
+                // transcript scrolls in place while the notices stay visible beneath it.
                 VStack(alignment: .leading, spacing: 0) {
-                    ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
-                                      rawOutput: coordinator.output) {
-                        AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                            .padding(.bottom, 9)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                     ConsoleScrollback(worker: coordinator, density: .regular, horizontalInset: 0,
                                       terminal: NativeTerminalTarget(worker: coordinator),
                                       live: PrettyLive(state: coordinator.state, workerName: coordinator.name,
@@ -908,17 +907,11 @@ struct CoordinatorConsole: View {
                             + (coordinator.hostIsReconnecting ? ", host reconnecting" : ""))
     }
 
-    /// Pretty on an ACP-bound coordinator: the assignment, the structured console at the
+    /// Pretty on an ACP-bound coordinator: the structured console at the
     /// console's own inset, then the error and the waiting-request notices. Each notice opens its
     /// request where it is answered; the coordinator holds no reply form.
     private func prettyScrollback(session: NativeSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
-                              rawOutput: coordinator.output) {
-                AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                    .padding(.horizontal, 17).padding(.top, 12).padding(.bottom, 9)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             // Stories open each waiting request through the same route as its notice below.
             PrettyACPConsole(worker: coordinator, session: session, density: .regular, inset: 17,
                              stories: .opens(awaiting) { request in openRequest(request) })
