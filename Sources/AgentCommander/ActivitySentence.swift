@@ -841,7 +841,7 @@ enum ActivityWords {
     }
 
     static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
-                         record: ToolDetailRecord? = nil) -> ActivityWording {
+                         record: ToolDetailRecord? = nil, hidesSecrets: Bool = false) -> ActivityWording {
         if let special = special(name: name, detail: detail, summary: summary, record: record) { return special }
         let kind = providerKind(name)
         let fact = fact(name, detail: detail, summary: summary, record: record)
@@ -904,11 +904,13 @@ enum ActivityWords {
                                    fallback: ActivitySentence("Updated the plan"),
                                    failed: ActivitySentence("Couldn't update the plan"), phrase: nil, help: name)
         case .other:
+            // A tool Commander does not know takes its verb from the provider's own kind.
+            if let stated = self.kind(summary: summary, hidesSecrets: hidesSecrets) { return stated }
             let bare = bareName(name)
             return ActivityWording(
                 running: ActivitySentence(.text("Using "), .mono(bare)), done: ActivitySentence(.text("Used "), .mono(bare)),
                 fallback: ActivitySentence(.text("Used "), .mono(bare)), failed: ActivitySentence(.mono(bare), .text(" failed")),
-                phrase: ActivityPhrase(key: "other", one: "used another tool", many: "used %d other tools"), help: name)
+                phrase: otherToolPhrase, help: name)
         }
     }
 
@@ -1067,7 +1069,8 @@ enum ActivitySteps {
                                                    owner: facts.approvalOwner)
         }
         let record = facts.record(entry.detailKey)
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record,
+                                     hidesSecrets: facts.hidesSecrets),
               to: &step, status: status, result: result)
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
@@ -1090,7 +1093,8 @@ enum ActivitySteps {
             var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
             let named = TranscriptEntry(id: entry.id, kind: .tool(name: name, detail: nil, result: result))
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
-                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
+                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key),
+                                          hidesSecrets: facts.hidesSecrets)
             apply(wording, to: &step, status: status, result: result)
             // The record kept under the result's exact tool call ID holds that call's diff.
             if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
