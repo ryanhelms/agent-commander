@@ -494,6 +494,9 @@ struct ActivityFacts {
     /// What was read from a marked reply chunk's own source record. Nil until it is read, and
     /// when no such record is kept: the chunk then stays a folded session update.
     var replyAttachment: (ReplyAttachmentMark) -> ReplyAttachment? = { _ in nil }
+    /// The transcript setting as the store answers it (`ToolDetailStore.hidesSecrets`): a
+    /// provider notice's title is masked where its line is built.
+    var hidesSecrets = false
 
     static var none: ActivityFacts { ActivityFacts() }
 
@@ -1307,7 +1310,7 @@ enum ActivityConversation {
                 } else if isPlanEvent(entry) {
                     // The record kept from this very event, by its console sequence.
                     plan(entry, items: facts.plan(for: entry)?.plan, count: entry.origin?.itemCount, replaces: true)
-                } else if let event = ActivityEvent(entry: entry), event.folds {
+                } else if let event = ActivityEvent(entry: entry, hidesSecrets: facts.hidesSecrets), event.folds {
                     add(ActivitySteps.step(quiet: entry, event: event))
                 } else {
                     // An attention event, a notice with no stated level, or a role note: in the
@@ -1424,7 +1427,8 @@ enum ActivityConversation {
             case .entry(let entry):
                 // A provider notice that does not fold (a warning, an error, or one with no
                 // stated level) stays, where it arrived. Every other entry is left out.
-                if entry.origin?.notice != nil, ActivityEvent(entry: entry)?.folds == false { shown.append(item) }
+                // Chosen by the notice's level alone: no title is read or prepared here.
+                if entry.origin?.notice?.folds == false { shown.append(item) }
             case .plan, .approval, .card, .turnEnd, .formOutcome:
                 break
             }

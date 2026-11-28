@@ -414,7 +414,9 @@ struct ActivityEvent: Equatable, Sendable {
 
     /// Nil for an entry that is not activity: a prompt, reply, tool, result or thought, and a
     /// note with neither an ACP kind nor a relayed marker, which keeps its role note.
-    init?(entry: TranscriptEntry) {
+    /// - Parameter hidesSecrets: the transcript setting (`ToolDetailStore.hidesSecrets`). It
+    ///   masks a provider notice's title; every other event is unchanged by it.
+    init?(entry: TranscriptEntry, hidesSecrets: Bool = false) {
         guard case .other(let role, let text) = entry.kind, !entry.isThought,
               role != "user", role != "assistant" else { return nil }
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -422,7 +424,7 @@ struct ActivityEvent: Equatable, Sendable {
 
         if let notice = entry.origin?.notice {
             // Judged by its reference alone, before any text is read.
-            self.init(notice: notice, body: body)
+            self.init(notice: notice, body: body, hidesSecrets: hidesSecrets)
         } else if let rest = Self.after("[Provider stderr]", in: body) {
             self.init(symbol: "exclamationmark.bubble", label: "stderr", detail: rest, tone: .attention)
         } else if let rest = Self.after("[Provider stdout]", in: body) {

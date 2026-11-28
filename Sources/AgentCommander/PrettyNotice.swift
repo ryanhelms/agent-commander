@@ -41,11 +41,19 @@ struct NoticeMark: Equatable, Sendable {
         self.level = level
     }
 
-    /// The title as sent: the message's text without the service's marker. A title that starts
-    /// with a word such as "Notice" or "Warning" keeps it.
-    static func title(in body: String) -> String {
-        guard body.hasPrefix(marker) else { return body }
-        return body.dropFirst(marker.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The notice joins the group of finished lines beside it: only one the provider sent as
+    /// `info`. A warning, an error and a notice with no level stay in the open. Read from the
+    /// level alone, so choosing what stays needs no title.
+    var folds: Bool { level == .info }
+
+    /// The title as Pretty shows it: the message's text without the service's marker. A title
+    /// that starts with a word such as "Notice" or "Warning" keeps it. With `hidesSecrets` (the
+    /// transcript setting, `ToolDetailStore.hidesSecrets`), a value that looks like a secret is
+    /// hidden as `SecretValues.masked(prose:)` hides it; the record keeps the title as sent.
+    static func title(in body: String, hidesSecrets: Bool = false) -> String {
+        let title = body.hasPrefix(marker)
+            ? body.dropFirst(marker.count).trimmingCharacters(in: .whitespacesAndNewlines) : body
+        return hidesSecrets ? SecretValues.masked(prose: title).text : title
     }
 }
 
@@ -55,8 +63,11 @@ extension ActivityEvent {
     /// - `warning`, `error`: the attention row, labelled "Warning" or "Error", never folded.
     /// - `info`: the quiet line "Notice", folded with the session updates beside it.
     /// - no level: the row "Notice" in secondary ink, never folded. It names no severity.
-    init(notice: NoticeMark, body: String) {
-        let title = NoticeMark.title(in: body)
+    ///
+    /// The title is prepared once, here, so the row, the folded line and VoiceOver read the same
+    /// text: with `hidesSecrets`, the masked one.
+    init(notice: NoticeMark, body: String, hidesSecrets: Bool = false) {
+        let title = NoticeMark.title(in: body, hidesSecrets: hidesSecrets)
         switch notice.level {
         case .warning?:
             self.init(symbol: "exclamationmark.triangle", label: "Warning", detail: title, tone: .attention)
@@ -67,5 +78,6 @@ extension ActivityEvent {
         case nil:
             self.init(symbol: "bell", label: "Notice", detail: title, tone: .quiet, folds: false)
         }
+        assert(folds == notice.folds)
     }
 }

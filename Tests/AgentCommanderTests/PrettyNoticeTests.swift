@@ -39,6 +39,13 @@ private func pretty(_ messages: [AGUIMessage]) -> [PrettyItem] {
     ActivityConversation.items(ConversationActivity.items(entries(messages)))
 }
 
+/// The conversation as a console builds it under the transcript setting.
+private func pretty(_ messages: [AGUIMessage], hidesSecrets: Bool) -> [PrettyItem] {
+    var facts = ActivityFacts.none
+    facts.hidesSecrets = hidesSecrets
+    return ActivityConversation.items(ConversationActivity.items(entries(messages)), facts: facts)
+}
+
 /// The event of the one notice a conversation holds at `id`.
 private func event(_ messages: [AGUIMessage], id: String = "w:3") throws -> ActivityEvent {
     let entry = try #require(entries(messages).first { $0.id == id })
@@ -253,6 +260,128 @@ private func run() throws -> [AGUIMessage] {
         #expect(full.contains { $0.id == "w:101" } && full.contains { $0.id == "w:900" })
         // Each kept row is the item the focused worker draws, unchanged.
         #expect(shown.prefix(3).allSatisfy { full.contains($0) })
+    }
+
+    // MARK: Secrets
+
+    @Test func aHiddenValueInANoticeTitleIsHiddenWhereverPrettyShowsOrSaysIt() throws {
+        // An overtly synthetic value: the keyed and Bearer contexts around it are what is masked.
+        let placeholder = "fixture-placeholder-for-masking"
+        let keyed = "Refresh failed for token=\(placeholder) on the build host"
+        let bearer = "Sent Authorization: Bearer \(placeholder) to the proxy"
+        let messages = [
+            try prose(1, "Go on.", role: "user"),
+            try usage(2),
+            try notice(3, bearer, severity: #""info""#),
+            try notice(4, keyed, severity: #""warning""#),
+            try notice(5, bearer, severity: #""error""#),
+            try notice(6, keyed),
+            try prose(7, "After.")
+        ]
+        let built = entries(messages)
+        let ids = ["w:1", "w:2#group", "w:4", "w:5", "w:6", "w:7"]
+
+        // With the setting off, every title is the provider's text.
+        let open = pretty(messages, hidesSecrets: false)
+        #expect(open.map(\.id) == ids)
+        guard case .group(let plain) = open[1] else { Issue.record("expected the group"); return }
+        #expect(plain.lines[1].sentence.plain == "Notice " + bearer)
+        #expect(ActivityEvent(entry: built[3])?.detail == keyed)
+
+        // With it on: the same items, in the same order, with the same levels.
+        let hidden = pretty(messages, hidesSecrets: true)
+        #expect(hidden.map(\.id) == ids)
+        guard case .group(let group) = hidden[1] else { Issue.record("expected the group"); return }
+        // The folded line: what is drawn and what VoiceOver reads hold no secret.
+        let line = group.lines[1]
+        #expect(line.id == "w:3" && line.kind == .quiet)
+        #expect(!line.sentence.plain.contains(placeholder) && !line.accessibilityLabel.contains(placeholder))
+        #expect(line.sentence.plain.hasPrefix("Notice Sent Authorization: Bearer "))
+        #expect(line.sentence.plain.hasSuffix(" to the proxy"))
+        // The rows in the open, as the console draws them.
+        let expected: [(index: Int, label: String, tone: ActivityEvent.Tone, lead: String, trail: String)] = [
+            (3, "Warning", .attention, "Refresh failed for token=", " on the build host"),
+            (4, "Error", .attention, "Sent Authorization: Bearer ", " to the proxy"),
+            (5, "Notice", .quiet, "Refresh failed for token=", " on the build host")
+        ]
+        for row in expected {
+            let shown = try #require(ActivityEvent(entry: built[row.index], hidesSecrets: true))
+            #expect(shown.label == row.label && shown.tone == row.tone && !shown.folds)
+            #expect(!shown.detail.contains(placeholder) && !shown.accessibilityLabel.contains(placeholder))
+            #expect(shown.detail.hasPrefix(row.lead) && shown.detail.hasSuffix(row.trail))
+            #expect(shown.accessibilityLabel == row.label + ": " + shown.detail)
+            // Only the title's text differs from the unmasked row.
+            let unmasked = try #require(ActivityEvent(entry: built[row.index]))
+            #expect(unmasked.symbol == shown.symbol && unmasked.label == shown.label && unmasked.folds == shown.folds)
+            #expect(unmasked.detail.contains(placeholder))
+        }
+
+        // The record is untouched: the entries the items hold, Console and Terminal keep the
+        // service's text, and each notice still reaches its own message.
+        #expect(hidden.flatMap(\.entries).map(\.kind) == built.map(\.kind))
+        #expect(built[3].kind == .other(role: "system", text: "[ACP notice] " + keyed))
+        for mode in [ConsoleDisplayMode.console, .terminal] {
+            let shown = TranscriptEntry.displayed(TranscriptEntry.entries(from: messages), mode: mode)
+            #expect(shown[2].kind == .other(role: "system", text: "[ACP notice] " + bearer))
+            #expect(shown[3].kind == .other(role: "system", text: "[ACP notice] " + keyed))
+        }
+        #expect(ConsoleRecordDetail.messageIDs(entryID: "w:4", in: messages) == ["w:4"])
+        // The PiP keeps the same rows: what stays is chosen by level, not by the title.
+        #expect(ActivityConversation.recent(hidden).map(\.id) == ActivityConversation.recent(open).map(\.id))
+    }
+
+    @Test func anOrdinaryTitleAndEveryOtherEventReadTheSameWithTheSettingOn() throws {
+        let messages = try run() + [
+            try prose(8, "[Provider stderr] token=fixture-placeholder-for-masking was refused", role: "system"),
+            try usage(9)
+        ]
+        let built = entries(messages)
+        // Ordinary notice titles are the provider's text, masked or not.
+        for entry in built where entry.origin?.notice != nil {
+            #expect(ActivityEvent(entry: entry, hidesSecrets: true) == ActivityEvent(entry: entry))
+        }
+        #expect(pretty(try run(), hidesSecrets: true) == pretty(try run()))
+        // Harness stderr and a usage row are not notices: this change leaves them as they were.
+        for id in ["w:8", "w:9"] {
+            let entry = try #require(built.first { $0.id == id })
+            #expect(entry.origin?.notice == nil)
+            #expect(ActivityEvent(entry: entry, hidesSecrets: true) == ActivityEvent(entry: entry))
+        }
+        // The level alone says whether a notice folds.
+        #expect(NoticeMark(level: .info).folds)
+        #expect(!NoticeMark(level: .warning).folds && !NoticeMark(level: .error).folds && !NoticeMark(level: nil).folds)
+    }
+
+    @Test func aChildsFoldedNoticeIsMaskedInItsParentsBackgroundLine() throws {
+        let placeholder = "fixture-placeholder-for-masking"
+        let child = TranscriptEntry.entries(from: [
+            try prose(1, "Go on.", role: "user"),
+            try notice(2, "Using token=\(placeholder) from the cache", severity: #""info""#)
+        ])
+        #expect(BackgroundTurn(child).summary == "Notice Using token=\(placeholder) from the cache")
+        let masked = try #require(BackgroundTurn(child, hidesSecrets: true).summary)
+        #expect(!masked.contains(placeholder) && masked.hasPrefix("Notice Using token=") && masked.hasSuffix(" from the cache"))
+    }
+
+    @Test func theTitleFollowsTheStoresPolicyAndIsHiddenUntilTheSettingIsRead() async throws {
+        let placeholder = "fixture-placeholder-for-masking"
+        let entry = try #require(entries([try notice(1, "Rejected token=\(placeholder)", severity: #""warning""#)]).first)
+        func shown(_ store: ToolDetailStore) -> String? {
+            // The policy the console passes on, as the store answers it.
+            ActivityEvent(entry: entry, hidesSecrets: store.hidesSecrets)?.detail
+        }
+        // Fixed values read their own setting.
+        #expect(shown(ToolDetailStore(summaries: [:], settings: TranscriptSettings(hideSecrets: true)))?.contains(placeholder) == false)
+        #expect(shown(ToolDetailStore(summaries: [:])) == "Rejected token=\(placeholder)")
+        // A store that reads the service hides until the saved setting has answered.
+        let store = ToolDetailStore(source: ToolDetailSource(
+            page: { _, _ in ToolDetailPage(revision: 0, records: []) },
+            record: { _, key in ToolDetailRecord(key: key, kind: "tool", input: "{}") },
+            readSettings: { TranscriptSettings() },
+            writeSettings: { $0 }))
+        #expect(store.hidesSecrets && shown(store)?.contains(placeholder) == false)
+        await store.loadSettings()
+        #expect(!store.hidesSecrets && shown(store) == "Rejected token=\(placeholder)")
     }
 
     /// Headless pictures of the run on the three Pretty surfaces, for comparison with the
