@@ -21,7 +21,9 @@ import SwiftUI
 //                            TerminalComposer when the session accepts file links or snapshots)
 //                         (+ ElicitationPanel popover from the action list for a bound worker: the
 //                            agent's form and URL requests with accept, decline and cancel)
-//   NestedWorkerGroup   = disclosure header + WorkerTile row
+//                         (identityOnly: the title bar and the status line alone, for the parent
+//                            pinned over an opened group in a short pane)
+//   NestedWorkerGroup   = disclosure header (+ Open group) + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
 //   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
 //                         (+ TerminalComposer as the footer line: the owner's follow-up to a
@@ -76,6 +78,9 @@ struct WorkerTile: View {
 
     let worker: WorkerPresentation
     var variant: Variant = .wall
+    /// The wall variant without its console: the title bar and the status line alone. An opened
+    /// group pins its parent this way where the pane is too short for the parent's tile.
+    var identityOnly = false
     var isKeyFocused = false
     /// Present in the focused variant when this worker's request is answered inline.
     var reply: ReplyContext? = nil
@@ -113,19 +118,22 @@ struct WorkerTile: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if isFocusedVariant { conversation } else { well }
+            if isFocusedVariant { conversation } else if !identityOnly { well }
             // While the service checks the session, the availability strip shows its explanation
             // as the restart reason, so it is not repeated here.
-            if let error = worker.error, !error.isEmpty, worker.availabilityStatement?.suppressesConsoleNotice != true {
+            if !identityOnly, let error = worker.error, !error.isEmpty,
+               worker.availabilityStatement?.suppressesConsoleNotice != true {
                 ConsoleNotice(text: error, state: worker.state)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
                     .background(Term.background)
             }
-            availabilityRow
-            progressRow
-            interruptRow
-            followUpRow
+            if !identityOnly {
+                availabilityRow
+                progressRow
+                interruptRow
+                followUpRow
+            }
             footer
             // A follow-up cannot reach a disconnected worker, or a Claude adapter that has exited or
             // is being checked, so its compose line waits with it.
@@ -158,8 +166,11 @@ struct WorkerTile: View {
                     .lineLimit(1).fixedSize()
                     .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
             }
-            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
-                                       source: source, terminal: NativeTerminalTarget(worker: worker))
+            // The display modes belong to a console, and the strip draws none.
+            if !identityOnly {
+                ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
+                                           source: source, terminal: NativeTerminalTarget(worker: worker))
+            }
             actionMenu
                 // The action list's own popover is on the button; the session panel is anchored
                 // beside it, so the two never share a presenter.
@@ -627,7 +638,8 @@ struct WorkerActionMenu: View {
 
 // MARK: - NestedWorkerGroup
 
-/// A parent worker with the workers it delegated to. The header is one disclosure button.
+/// A parent worker with the workers it delegated to. The header is a disclosure button, then,
+/// where the group can be opened, a separate Open group button.
 struct NestedWorkerGroup<Content: View>: View {
     let name: String
     let nestedCount: Int
@@ -639,39 +651,61 @@ struct NestedWorkerGroup<Content: View>: View {
     /// Shown on the collapsed header, where the tiles are hidden.
     var reconnectingHost: String? = nil
     let toggle: () -> Void
+    /// Opens the group in the worker pane: the parent pinned over its direct children. Folded or
+    /// expanded, the disclosure stays as it is. Nil where the group cannot be opened.
+    var open: (() -> Void)? = nil
     @ViewBuilder let content: Content
     /// The group is part of the wall's frame, so it follows the theme. The tiles inside do not.
     @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(spacing: 0) {
-            Button(action: toggle) {
-                HStack(spacing: 7) {
-                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold)).frame(width: 12)
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
-                    Text(name).themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.color.foreground))
-                    Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
-                        .themeType(theme.wall.groupNoteType)
-                    Spacer(minLength: 8)
-                    if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
-                    if collapsed, let reconnectingHost {
-                        HostLinkStatus(host: reconnectingHost, style: .label, size: 10.5)
+            HStack(spacing: Space.s) {
+                Button(action: toggle) {
+                    HStack(spacing: 7) {
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold)).frame(width: 12)
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
+                        Text(name).themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.color.foreground))
+                            .lineLimit(1)
+                        Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
+                            .themeType(theme.wall.groupNoteType).lineLimit(1)
+                        Spacer(minLength: 8)
+                        if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
+                        if collapsed, let reconnectingHost {
+                            HostLinkStatus(host: reconnectingHost, style: .label, size: 10.5)
+                        }
+                        if collapsed && hasRequest {
+                            StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
+                        }
                     }
-                    if collapsed && hasRequest {
-                        StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
-                    }
+                    .foregroundStyle(.inkSecondary)
+                    .frame(minHeight: Metric.groupHeaderHeight)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.inkSecondary)
-                .frame(minHeight: Metric.groupHeaderHeight)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(NestedWorkerGroupLabel.spoken(name: name, nestedCount: nestedCount, collapsed: collapsed,
+                                                                  hasRequest: hasRequest, hasDisconnected: hasDisconnected,
+                                                                  reconnectingHost: reconnectingHost))
+                .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+                .accessibilityHint("Shows or hides this worker group")
+                if let open {
+                    Button(action: open) {
+                        HStack(spacing: 5) {
+                            Text("Open group")
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        }
+                        .themeType(theme.type.state)
+                        .foregroundStyle(.theme(\.color.secondary))
+                        .frame(minHeight: Metric.groupHeaderHeight)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show \(name) over the workers it delegated to")
+                    .accessibilityLabel("Open group \(name)")
+                    .accessibilityHint("Shows this worker pinned over the workers it delegated to")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(NestedWorkerGroupLabel.spoken(name: name, nestedCount: nestedCount, collapsed: collapsed,
-                                                              hasRequest: hasRequest, hasDisconnected: hasDisconnected,
-                                                              reconnectingHost: reconnectingHost))
-            .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
-            .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
         }
         .wallGroupFrame(bottom: collapsed ? 0 : WallFrameLayout.groupInset)
@@ -708,6 +742,8 @@ struct WorkerWall<Tile: View, Footer: View>: View {
     /// The worker whose tile is brought into view when this changes.
     var reveal: WallReveal? = nil
     let toggleGroup: (String) -> Void
+    /// Opens a group in the worker pane, by its parent's ID. Nil offers no Open group.
+    var openGroup: ((String) -> Void)? = nil
     @ViewBuilder let tile: (WorkerPresentation) -> Tile
     @ViewBuilder let footer: Footer
 
@@ -794,7 +830,8 @@ struct WorkerWall<Tile: View, Footer: View>: View {
                           hasRequest: group.all.contains { $0.request != nil },
                           hasDisconnected: group.all.contains(where: \.isDisconnected),
                           reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
-                          toggle: { toggleGroup(group.id) }) {
+                          toggle: { toggleGroup(group.id) },
+                          open: openGroup.map { open in { open(group.id) } }) {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
         }
     }
@@ -804,9 +841,10 @@ extension WorkerWall where Footer == EmptyView {
     /// A wall with nothing after its local workers.
     init(layout: WallLayout, collapsed: Set<String>, reservedTrailing: CGFloat = 0,
          scrollOffset: Binding<CGFloat>? = nil, reveal: WallReveal? = nil,
-         toggleGroup: @escaping (String) -> Void, @ViewBuilder tile: @escaping (WorkerPresentation) -> Tile) {
+         toggleGroup: @escaping (String) -> Void, openGroup: ((String) -> Void)? = nil,
+         @ViewBuilder tile: @escaping (WorkerPresentation) -> Tile) {
         self.init(layout: layout, collapsed: collapsed, reservedTrailing: reservedTrailing, scrollOffset: scrollOffset,
-                  reveal: reveal, toggleGroup: toggleGroup, tile: tile, footer: { EmptyView() })
+                  reveal: reveal, toggleGroup: toggleGroup, openGroup: openGroup, tile: tile, footer: { EmptyView() })
     }
 }
 
