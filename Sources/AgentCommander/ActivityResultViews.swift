@@ -22,8 +22,9 @@ import SwiftUI
 //              ResultSourceDisclosure   wire name, tool ID, call and result text; Copy is exact
 //   Organism   ActivityResultView       selects the renderer, then adds More fields and Source
 //
-// Hide-secrets is applied here, when a value is drawn. It covers Source too, and Copy needs
-// Reveal first. The stored record is never changed.
+// Hide-secrets is applied here, when a value is drawn. It covers the failure renderer's "Tried"
+// and Source, its wire name included, and Copy needs Reveal first. The stored record is never
+// changed.
 
 struct ActivityResultSource: Equatable {
     /// The tool's wire name. Empty for a result with no recorded call.
@@ -31,6 +32,10 @@ struct ActivityResultSource: Equatable {
     var toolID: String
     /// What was tried, in plain words, for the failure renderer.
     var tried: String
+    /// `tried` with its secret-looking values hidden: what the failure renderer draws under the
+    /// hide-secrets setting. The tool's name and its subject are each masked whole before
+    /// anything is cut from them.
+    var triedHidden: String
     var callText: String?
     var resultText: String?
     var statusWord: String
@@ -73,13 +78,13 @@ struct ActivityResultSource: Equatable {
             }
             if let call = CommanderCall(entry: entry) {
                 tried = call.tool.label
+                triedHidden = tried
                 liveState = call.facts?.liveOperationStatus ?? call.facts?.liveRequestStatus
             } else {
                 // What was tried, in plain words: the tool's label and its subject.
                 let subject = ActivityWords.fact(name, detail: detail, summary: summary, record: record)
-                    .map { ActivityWords.middle($0) }
-                tried = [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(name), subject]
-                    .compactMap { $0 }.joined(separator: ": ")
+                tried = Self.tried(name: name, subject: subject, hidesSecrets: false)
+                triedHidden = Self.tried(name: name, subject: subject, hidesSecrets: true)
             }
         case .output(let result):
             // A record stored under the result's exact tool call ID names the call.
@@ -91,15 +96,38 @@ struct ActivityResultSource: Equatable {
             callCut = StoredCut(record: record, field: "input", isStored: callText != nil)
             resultText = result.output
             statusWord = result.error == nil ? "completed" : ToolStatus(result: result).word
-            tried = stored.map { CommanderTool(name: $0)?.label ?? ProviderTool(name: $0)?.label ?? "Use " + ActivityWords.bareName($0) }
+            tried = stored.map { CommanderTool(name: $0)?.label ?? Self.tried(name: $0, subject: nil, hidesSecrets: false) }
                 ?? "A call that was not recorded"
+            triedHidden = stored.map { CommanderTool(name: $0)?.label ?? Self.tried(name: $0, subject: nil, hidesSecrets: true) }
+                ?? tried
         default:
             name = ""
             callText = nil
             resultText = nil
             statusWord = ""
             tried = ""
+            triedHidden = ""
         }
+    }
+
+    /// "Tried" as the failure renderer draws it: as sent, or with secret-looking values hidden.
+    func tried(hidesSecrets: Bool) -> String { hidesSecrets ? triedHidden : tried }
+
+    /// The tool's wire name as Source draws it, and how many values are hidden in it. A tool
+    /// Commander does not know can carry the provider's title as its name.
+    func shownName(hidesSecrets: Bool) -> (text: String, hidden: Int) {
+        guard hidesSecrets else { return (name, 0) }
+        let masked = SecretValues.masked(prose: name)
+        return (masked.text, masked.count)
+    }
+
+    /// A provider tool's "Tried": its label, or "Use name" for a tool Commander does not know,
+    /// then its subject cut in the middle.
+    private static func tried(name: String, subject: String?, hidesSecrets: Bool) -> String {
+        func shown(_ text: String) -> String { ActivityWords.shownName(text, hidesSecrets: hidesSecrets) }
+        return [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(shown(name)),
+                subject.map { ActivityWords.middle(shown($0)) }]
+            .compactMap { $0 }.joined(separator: ": ")
     }
 }
 
@@ -728,10 +756,13 @@ struct ResultSourceDisclosure: View {
             ResultDisclosure(title: "Source", metrics: metrics, mono: true) {
                 let call = part(source.callText, cut: source.callCut)
                 let result = part(source.resultText, cut: source.resultCut)
-                let hidden = call.hidden + result.hidden
+                // The name is hidden and revealed with the texts: one count, one Reveal.
+                let name = source.shownName(hidesSecrets: hidesSecrets)
+                let hidden = name.hidden + call.hidden + result.hidden
                 VStack(alignment: .leading, spacing: 6) {
                     VStack(alignment: .leading, spacing: 3) {
-                        (Text(verbatim: source.name.isEmpty ? "result" : source.name).foregroundColor(Palette.foreground)
+                        (Text(verbatim: source.name.isEmpty ? "result" : (isRevealed ? source.name : name.text))
+                            .foregroundColor(Palette.foreground)
                          + Text(verbatim: "  " + source.toolID + "  " + source.statusWord))
                             .fixedSize(horizontal: false, vertical: true)
                         if let text = call.text {
@@ -952,7 +983,10 @@ struct ActivityResultView: View {
                                exact: payload.wrapperError ?? ActivityFailureWords.noReason)
         return VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
-                row("Tried") { Text(verbatim: source.tried).foregroundStyle(Palette.foreground) }
+                // As hidden as the line above it, which follows the store's answer.
+                row("Tried") {
+                    Text(verbatim: source.tried(hidesSecrets: hidesChangeText ?? hidesSecrets)).foregroundStyle(Palette.foreground)
+                }
                 row("Outcome") {
                     HStack(spacing: 6) {
                         StatusLamp(word: failure.tag.word, size: metrics.detailSize + 0.5)

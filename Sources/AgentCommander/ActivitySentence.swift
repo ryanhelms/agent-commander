@@ -602,6 +602,14 @@ enum ActivityWords {
         return name
     }
 
+    /// A tool's name as a line shows it. A tool Commander does not know by name can carry the
+    /// provider's own title there, so with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) a secret-looking value in it is hidden before the name
+    /// enters a sentence, its help or what VoiceOver reads. Mask before `bareName` cuts it.
+    static func shownName(_ name: String, hidesSecrets: Bool) -> String {
+        hidesSecrets ? SecretValues.masked(prose: name).text : name
+    }
+
     static func fileName(_ path: String) -> String {
         let name = (path as NSString).lastPathComponent
         return name.isEmpty ? path : name
@@ -848,9 +856,11 @@ enum ActivityWords {
     }
 
     static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
-                         record: ToolDetailRecord? = nil) -> ActivityWording {
+                         record: ToolDetailRecord? = nil, hidesSecrets: Bool = false) -> ActivityWording {
         if let special = special(name: name, detail: detail, summary: summary, record: record) { return special }
         let kind = providerKind(name)
+        // Only the generic sentence of an unknown tool names the tool, and its help repeats it.
+        let name = kind == .other ? shownName(name, hidesSecrets: hidesSecrets) : name
         let fact = fact(name, detail: detail, summary: summary, record: record)
         func file(_ running: String, _ done: String, _ failed: String, fallback: String, key: String,
                   one: String, many: String) -> ActivityWording {
@@ -1021,13 +1031,14 @@ enum ActivityWords {
     /// coordinator or parent answers (`owner`), it names them and asks nothing of the reader:
     /// "Waiting for the coordinator's approval to run `command`".
     static func approval(name: String, detail: String?, summary: ToolDetailSummary?,
-                         owner: WorkerInputOwner? = nil) -> ActivitySentence {
+                         owner: WorkerInputOwner? = nil, hidesSecrets: Bool = false) -> ActivitySentence {
         let lead = owner.map { "Waiting for \($0.phrase)'s approval to " } ?? "Needs your approval to "
         if CommanderTool(name: name) == nil, providerKind(name) == .shell,
            let command = fact(name, detail: detail, summary: summary) {
             return ActivitySentence(.text(lead + "run "), .mono(middle(command)))
         }
-        return ActivitySentence(.text(lead + "use "), .mono(CommanderTool(name: name)?.rawValue ?? bareName(name)))
+        return ActivitySentence(.text(lead + "use "),
+                                .mono(CommanderTool(name: name)?.rawValue ?? bareName(shownName(name, hidesSecrets: hidesSecrets))))
     }
 }
 
@@ -1071,10 +1082,11 @@ enum ActivitySteps {
         var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
         if status == .awaitingApproval {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary,
-                                                   owner: facts.approvalOwner)
+                                                   owner: facts.approvalOwner, hidesSecrets: facts.hidesSecrets)
         }
         let record = facts.record(entry.detailKey)
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record,
+                                     hidesSecrets: facts.hidesSecrets),
               to: &step, status: status, result: result)
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
@@ -1097,7 +1109,8 @@ enum ActivitySteps {
             var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
             let named = TranscriptEntry(id: entry.id, kind: .tool(name: name, detail: nil, result: result))
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
-                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
+                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key),
+                                          hidesSecrets: facts.hidesSecrets)
             apply(wording, to: &step, status: status, result: result)
             // The record kept under the result's exact tool call ID holds that call's diff.
             if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
