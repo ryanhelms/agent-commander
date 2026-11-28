@@ -337,15 +337,34 @@ private actor Reads {
         let reads = Reads()
         let empty = try page([])
         let ready = try page([observation(cursor: "c-3", content: linkContent)])
+        // Two signals and no clock. `entered` says the old read is inside its wait; `hold` keeps
+        // it there until the read is cancelled or the test lets it go.
+        let (entered, announce) = AsyncStream<Void>.makeStream()
+        let (hold, release) = AsyncStream<Void>.makeStream()
         let store = ReplyAttachmentStore(read: { _, _, cursor in
             await reads.record(cursor)
             return await reads.cursors.count == 1 ? empty : ready
-        }, pause: { try await Task.sleep(for: .seconds(60)) })
+        }, pause: {
+            announce.yield()
+            // Ends when the read's task is cancelled, or when the stream is finished.
+            for await _ in hold {}
+            try Task.checkCancellation()
+        })
         let link = try mark("resource_link")
 
-        let waiting = Task { await store.load(worker: "w", mark: link) }
-        for _ in 0..<10_000 where await reads.cursors.isEmpty { await Task.yield() }
+        let waiting = Task {
+            await store.load(worker: "w", mark: link)
+            // A load that ended without waiting ends the signal, so the test fails and never hangs.
+            announce.finish()
+        }
+        var signal = entered.makeAsyncIterator()
+        try #require(await signal.next() != nil, "the first read found no record, so it must wait")
+        // The old read is in its wait, after exactly one read.
+        #expect(await reads.cursors.count == 1)
+
         store.serviceChanged()
+        // Were the read not cancelled, letting it go would show as a second old read below.
+        release.finish()
         await waiting.value
         // The cancelled wait made no further read and cached nothing.
         #expect(await reads.cursors.count == 1)
