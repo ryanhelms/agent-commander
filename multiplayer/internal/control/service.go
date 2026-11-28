@@ -146,8 +146,9 @@ func (s *Service) Handler() http.Handler {
 		"POST /v1/session": s.openLease, "PUT /v1/session": s.updateLease, "DELETE /v1/session": s.updateLease,
 		"GET /v1/me": s.me, "GET /v1/admin/membership": s.membership, "PUT /v1/admin/membership": s.setMembership,
 		"GET /v1/admin/policy": s.policy, "PUT /v1/admin/policy": s.setPolicy,
-		"POST /v1/invites":     s.createInvite,
-		"POST /v1/submissions": s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
+		"POST /v1/invites":                           s.createInvite,
+		"POST /v1/children/{id}/workspace-admission": s.workspaceHandoffAdmission,
+		"POST /v1/submissions":                       s.submit, "GET /v1/submissions/{id}": s.submission, "GET /v1/inbox": s.inbox, "POST /v1/children/{id}/claim": s.claim, "PUT /v1/children/{id}/receipt": s.receipt,
 	}
 	s.groupRoutes(routes)
 	s.workspaceRoutes(routes)

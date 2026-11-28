@@ -56,8 +56,8 @@ extension MultiplayerShareModel {
         let rows = allHandoffs.map { pending -> (worker: MultiplayerRemoteWorker, settled: Bool) in
             let row = pending.item
             let entry = entry(row.resource, on: pending.server)
-            let state = handoffState(row)
-            let raw = reports[row.request]?.state ?? ""
+            let progress = MultiplayerHandoffProgress(row: row, report: reports[row.request])
+            let state = (title: progress.title, tone: progress.tone)
             let worker = MultiplayerRemoteWorker(
                 server: pending.server, request: row.request, resource: row.resource, canWatch: entry?.canWatch == true,
                 task: row.title.isEmpty ? "Untitled hand-off" : row.title.multiplayerDisplay,
@@ -66,7 +66,7 @@ extension MultiplayerShareModel {
                 serverName: tray?.server(pending.server)?.displayName ?? "a server",
                 harness: entry?.capabilities?.harness ?? "",
                 state: state.title, tone: state.tone, at: row.at)
-            let settled = raw.isEmpty ? (!row.succeeded && MultiplayerRequestState.isSettled(row.status)) : MultiplayerRequestState.isSettled(raw)
+            let settled = progress.isSettled
             return (worker, settled)
         }
         return rows.enumerated().sorted { a, b in

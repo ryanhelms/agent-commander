@@ -173,6 +173,9 @@ func PrepareResource(ctx context.Context, r Resource) (Resource, error) {
 	if !identifier.MatchString(r.ID) || len(r.Name) > 128 {
 		return r, ErrInvalid
 	}
+	if r.Workspace != "" && (r.Kind != "agent" || !identifier.MatchString(r.Workspace) || r.Coordinator) || r.Workspace == "" && r.AutoStart {
+		return r, ErrInvalid
+	}
 	if r.Kind == "agent" {
 		if !identifier.MatchString(r.Target) {
 			return r, ErrInvalid

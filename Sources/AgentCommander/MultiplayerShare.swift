@@ -239,14 +239,20 @@ struct MultiplayerDirectoryEntry: Decodable, Equatable, Sendable, Identifiable {
     let capabilities: MultiplayerCapabilities?
     /// Skills people who used it vouch for (increment 5).
     let endorsements: [MultiplayerEndorsement]
+    /// The workspace this agent takes hand-offs for. Empty for a shared worker or coordinator.
+    let workspace: String
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, owner, handle, ownerHandle, actions, offered, granted, grantedActions, capabilities, endorsements
+        case id, name, kind, owner, handle, ownerHandle, actions, offered, granted, grantedActions, capabilities, endorsements, workspace
     }
 
+    /// An agent that queues hand-offs for a workspace, not one shared worker.
+    var isWorkspaceInbox: Bool { !workspace.isEmpty }
+
     init(id: String, name: String, kind: String, owner: String, offered: [String], granted: [String] = [],
-         capabilities: MultiplayerCapabilities? = nil, endorsements: [MultiplayerEndorsement] = []) {
+         capabilities: MultiplayerCapabilities? = nil, endorsements: [MultiplayerEndorsement] = [], workspace: String = "") {
         self.endorsements = endorsements
+        self.workspace = workspace
         self.id = id
         self.name = name
         self.kind = kind
@@ -270,12 +276,14 @@ struct MultiplayerDirectoryEntry: Decodable, Equatable, Sendable, Identifiable {
         let capabilities = (try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil
         self.capabilities = capabilities.flatMap { $0.isEmpty ? nil : $0 }
         endorsements = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerEndorsement>.self, forKey: .endorsements)) ?? nil)?.items ?? []
+        workspace = container.text(.workspace)
     }
 
     /// A row of the older `shared` list: everything it lists is granted.
     init(shared: MultiplayerShared) {
         self.init(id: shared.id, name: shared.name, kind: shared.kind, owner: shared.owner,
-                  offered: shared.actions, granted: shared.actions, capabilities: shared.capabilities)
+                  offered: shared.actions, granted: shared.actions, capabilities: shared.capabilities,
+                  workspace: shared.workspace)
     }
 
     /// Offered actions you don't hold yet, without the ones that only ride along with another.
@@ -521,13 +529,24 @@ struct MultiplayerSentRequest: Decodable, Equatable, Sendable, Identifiable {
     let status: String
     let value: MultiplayerJSON?
     let failure: String
+    /// The hand-off's own state, as `handoffs` reports it. Empty on a reply and on an older row.
+    let state: String
+    /// When a recipient device stored the hand-off, when one coordinator claimed it, and when
+    /// its result evidence was checked. Each is nil until the owner's device signs it; a
+    /// hand-off to a shared worker never has them.
+    let deliveredAt: Date?
+    let acceptedAt: Date?
+    let verifiedAt: Date?
 
-    private enum CodingKeys: String, CodingKey { case request, resource, action, title, at, status, value, failure, error }
+    private enum CodingKeys: String, CodingKey {
+        case request, resource, action, title, at, status, value, failure, error, state, deliveredAt, acceptedAt, verifiedAt
+    }
 
     var id: String { request }
 
     init(request: String, resource: String = "", action: String = "", title: String = "", at: Date? = nil,
-         status: String = "", value: MultiplayerJSON? = nil, failure: String = "") {
+         status: String = "", value: MultiplayerJSON? = nil, failure: String = "", state: String = "",
+         deliveredAt: Date? = nil, acceptedAt: Date? = nil, verifiedAt: Date? = nil) {
         self.request = request
         self.resource = resource
         self.action = action
@@ -536,6 +555,10 @@ struct MultiplayerSentRequest: Decodable, Equatable, Sendable, Identifiable {
         self.status = status
         self.value = value
         self.failure = failure
+        self.state = state
+        self.deliveredAt = deliveredAt
+        self.acceptedAt = acceptedAt
+        self.verifiedAt = verifiedAt
     }
 
     init(from decoder: any Decoder) throws {
@@ -549,6 +572,10 @@ struct MultiplayerSentRequest: Decodable, Equatable, Sendable, Identifiable {
         let value = (try? container.decodeIfPresent(MultiplayerJSON.self, forKey: .value)) ?? nil
         self.value = value == .null ? nil : value
         failure = container.text(.failure, .error)
+        state = container.text(.state)
+        deliveredAt = container.date(.deliveredAt)
+        acceptedAt = container.date(.acceptedAt)
+        verifiedAt = container.date(.verifiedAt)
     }
 
     /// The run a hand-off started on the owner's Mac.
@@ -644,6 +671,171 @@ struct MultiplayerArtifact: Equatable, Sendable {
     }
 }
 
+/// One stage a hand-off to a workspace passes: stored by a recipient device, claimed by one
+/// coordinator, result evidence checked.
+struct MultiplayerHandoffMilestone: Equatable, Sendable, Identifiable {
+    enum Stage: String, CaseIterable, Sendable {
+        case delivered, accepted, verified
+
+        var title: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+    }
+
+    enum Outcome: Equatable, Sendable {
+        /// The owner's device signed the time it happened.
+        case reached(Date)
+        /// The hand-off is still open and has not got this far.
+        case pending
+        /// The hand-off ended without it. `failed` when it ended in a failure.
+        case missed(failed: Bool)
+        /// The owner's device keeps no milestones for this hand-off: an older one, or one a
+        /// shared worker ran.
+        case unrecorded
+    }
+
+    let stage: Stage
+    let outcome: Outcome
+
+    var id: String { stage.rawValue }
+
+    var lamp: MultiplayerLamp.Kind {
+        switch outcome {
+        case .reached: .on
+        case .pending, .unrecorded: .off
+        case .missed(let failed): failed ? .error : .busy
+        }
+    }
+
+    var tone: Tone {
+        switch outcome {
+        case .reached: .working
+        case .pending, .unrecorded: .neutral
+        case .missed(let failed): failed ? .failure : .attention
+        }
+    }
+
+    /// The words beside the lamp when there is no time to show.
+    var word: String {
+        switch outcome {
+        case .reached: stage.title
+        case .pending: "Pending"
+        case .missed: "Not \(stage.rawValue)"
+        case .unrecorded: "Not recorded"
+        }
+    }
+
+    /// The line as VoiceOver reads it: "Accepted, 2:07 PM", "Verified, pending".
+    func spoken(now: Date) -> String {
+        if case .reached(let at) = outcome { return "\(stage.title), \(MultiplayerActivityRow.time(at, now: now))" }
+        return "\(stage.title), \(word.lowercased())"
+    }
+}
+
+/// How far a hand-off got, from its row and the last status or result read for it. One value
+/// holds the rule, so the list, the detail, the wall and the tray say the same state.
+struct MultiplayerHandoffProgress: Equatable {
+    let milestones: [MultiplayerHandoffMilestone]
+    let title: String
+    let tone: Tone
+    /// Why a hand-off that tracks milestones stopped short, in the reader's terms.
+    let problem: String?
+    /// Nothing more will happen to it: it ended, was verified or was refused.
+    let isSettled: Bool
+
+    init(row: MultiplayerSentRequest, report: MultiplayerHandoffReport? = nil) {
+        // A milestone counts only with the ones before it, so a stray later stamp proves nothing.
+        let delivered = row.deliveredAt ?? report?.deliveredAt
+        let accepted = delivered == nil ? nil : row.acceptedAt ?? report?.acceptedAt
+        let verified = accepted == nil ? nil : row.verifiedAt ?? report?.verifiedAt
+        let reported = report?.state ?? ""
+
+        guard delivered != nil else {
+            // No milestones: the labels a hand-off had before workspaces, unchanged. A run's
+            // "done" stays "Done" and is never read as Verified.
+            if !reported.isEmpty {
+                title = MultiplayerRequestState.title(reported)
+                tone = MultiplayerRequestState.tone(reported)
+            } else if row.succeeded {
+                title = "Started"
+                tone = .working
+            } else {
+                title = MultiplayerRequestState.title(row.status)
+                tone = MultiplayerRequestState.tone(row.status)
+            }
+            let outcome: MultiplayerHandoffMilestone.Outcome
+            if row.succeeded {
+                outcome = .unrecorded
+            } else if row.isSettled {
+                outcome = .missed(failed: MultiplayerRequestState.tone(row.status) == .failure)
+            } else {
+                outcome = .pending
+            }
+            milestones = MultiplayerHandoffMilestone.Stage.allCases.map { MultiplayerHandoffMilestone(stage: $0, outcome: outcome) }
+            problem = nil
+            isSettled = reported.isEmpty ? (!row.succeeded && MultiplayerRequestState.isSettled(row.status))
+                                         : MultiplayerRequestState.isSettled(reported)
+            return
+        }
+
+        let state = (reported.isEmpty ? row.state : reported).lowercased()
+        let failed = Self.failures.contains(state)
+        let ended = failed || verified != nil || !Self.open.contains(state)
+        isSettled = ended
+        let unreached: MultiplayerHandoffMilestone.Outcome = ended ? .missed(failed: failed) : .pending
+        let times: [Date?] = [delivered, accepted, verified]
+        milestones = zip(MultiplayerHandoffMilestone.Stage.allCases, times).map { stage, at in
+            let outcome: MultiplayerHandoffMilestone.Outcome
+            if let at { outcome = .reached(at) } else { outcome = unreached }
+            return MultiplayerHandoffMilestone(stage: stage, outcome: outcome)
+        }
+        if failed {
+            title = MultiplayerRequestState.title(state)
+            tone = .failure
+        } else if verified != nil {
+            title = "Verified"
+            tone = .working
+        } else if ended {
+            // The run ended and nothing proved its result. "uncertain" is the device's word for
+            // an outcome it can't tell either way.
+            title = state == "uncertain" ? "Uncertain" : "Not verified"
+            tone = .attention
+        } else if accepted != nil {
+            title = "Accepted"
+            tone = .working
+        } else {
+            // Stored on the owner's device; no coordinator has taken it yet.
+            title = "Delivered"
+            tone = .attention
+        }
+        if ended, verified == nil {
+            problem = Self.problem(row.value?.firstText("failure") ?? "", state: state)
+        } else {
+            problem = nil
+        }
+    }
+
+    /// The states a workspace hand-off is still moving in.
+    private static let open: Set<String> = ["", "delivered", "queued", "accepted", "started", "running", "working", "active"]
+    private static let failures: Set<String> = ["failed", "error", "denied", "expired", "cancelled", "canceled", "stopped", "budget_exhausted"]
+
+    /// The owner's device names a failure by a code. These are the ones it sends.
+    static func problem(_ code: String, state: String) -> String {
+        switch code {
+        case "missing_evidence": return "The coordinator finished, but nothing was sent to check the result against."
+        case "revision_mismatch": return "The coordinator finished on a different commit from the one you asked it to reach."
+        case "workspace_handoff_expired": return "No coordinator took this hand-off before it expired."
+        case "workspace_handoff_revoked": return "The owner stopped offering this workspace, so the hand-off was not started."
+        case "coordinator_unavailable", "provider_unavailable": return "The workspace’s coordinator was not available to finish this."
+        case "coordinator_failed": return "The workspace’s coordinator failed before it finished."
+        case "coordinator_stopped", "coordinator_turn_cancelled": return "The workspace’s coordinator was stopped before it finished."
+        default:
+            let detail = MultiplayerText.clean(code.replacingOccurrences(of: "_", with: " "), limit: 200, redact: true)
+            if !detail.isEmpty { return "The owner’s device reported: \(detail)." }
+            return failures.contains(state) ? "The hand-off ended as “\(MultiplayerRequestState.title(state))”."
+                                            : "The run ended without evidence to check its result."
+        }
+    }
+}
+
 /// What `agent.status` or `agent.result` said about a hand-off's run.
 struct MultiplayerHandoffReport: Equatable, Sendable {
     /// The `agent.result` request that carries the artifacts. `apply-artifact` names it.
@@ -654,6 +846,10 @@ struct MultiplayerHandoffReport: Equatable, Sendable {
     let artifacts: [MultiplayerArtifact]
     /// True once `agent.result` answered; false after `agent.status` only.
     let isResult: Bool
+    /// The milestones the reply carried, so a check shows them before the list is read again.
+    let deliveredAt: Date?
+    let acceptedAt: Date?
+    let verifiedAt: Date?
 
     init?(reply: MultiplayerSentRequest, isResult: Bool) {
         guard reply.succeeded, let value = reply.value else { return nil }
@@ -663,6 +859,9 @@ struct MultiplayerHandoffReport: Equatable, Sendable {
         updatedAt = value["updatedAt"]?.text.flatMap(MultiplayerTime.parse)
         artifacts = (value["artifacts"]?.items ?? []).compactMap(MultiplayerArtifact.init)
         self.isResult = isResult
+        deliveredAt = reply.deliveredAt
+        acceptedAt = reply.acceptedAt
+        verifiedAt = reply.verifiedAt
     }
 
     /// The report artifact's text, when the run wrote one.
@@ -1169,21 +1368,44 @@ struct MultiplayerHandoffDraft: Equatable {
     var title = ""
     var task = ""
     var context: [MultiplayerContextItem] = []
+    /// The commit a workspace's checkout must be at for the hand-off to count as Verified.
+    /// Optional, and only a workspace inbox takes it: `addressed(toWorkspaceInbox:)` drops it
+    /// for any other recipient.
+    var expectedHead = ""
 
     var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     var trimmedTask: String { task.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// The hash as it is sent. Hex reads the same in either case; the device takes lowercase only.
+    var trimmedExpectedHead: String { expectedHead.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 
     var problem: String? {
         if trimmedTitle.count > 120 { return "Keep the title under 120 characters." }
         return MultiplayerContextBundle.problem(context, prompt: task)
     }
 
-    var canSend: Bool { !trimmedTitle.isEmpty && !trimmedTask.isEmpty && problem == nil }
+    /// The device's own rule for a commit: all 40 hexadecimal characters. Empty is allowed.
+    var expectedHeadProblem: String? {
+        let head = trimmedExpectedHead
+        if head.isEmpty || head.wholeMatch(of: /[0-9a-f]{40}/) != nil { return nil }
+        return "Enter the full 40-character commit hash."
+    }
+
+    var canSend: Bool { !trimmedTitle.isEmpty && !trimmedTask.isEmpty && problem == nil && expectedHeadProblem == nil }
 
     var payload: MultiplayerJSON {
         var fields: [String: MultiplayerJSON] = ["title": .string(trimmedTitle), "task": .string(trimmedTask)]
         if !context.isEmpty { fields["context"] = .array(context.map(\.json)) }
+        if !trimmedExpectedHead.isEmpty { fields["expectedHead"] = .string(trimmedExpectedHead) }
         return .object(fields)
+    }
+
+    /// The draft as its recipient takes it. Only a workspace inbox checks a commit, so any other
+    /// recipient gets the payload it always did.
+    func addressed(toWorkspaceInbox isInbox: Bool) -> MultiplayerHandoffDraft {
+        guard !isInbox, !expectedHead.isEmpty else { return self }
+        var draft = self
+        draft.expectedHead = ""
+        return draft
     }
 }
 

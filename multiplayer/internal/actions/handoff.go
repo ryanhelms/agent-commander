@@ -105,6 +105,9 @@ func handoffHandler(ctx context.Context, cfg Config, r Resource, req Request, id
 	if !identifier.MatchString(r.Target) {
 		return nil, ErrInvalid
 	}
+	if r.Workspace != "" {
+		return workspaceHandoff(cfg, r, req)
+	}
 	client, e := commanderClient(cfg.CommanderSocket)
 	if e != nil {
 		return nil, e

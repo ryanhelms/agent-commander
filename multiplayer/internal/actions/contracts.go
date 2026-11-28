@@ -62,8 +62,8 @@ var registry = register(
 	},
 	descriptor{
 		kind: "agent", name: "agent.handoff", recoverable: true, run: handoffHandler,
-		description:   "Hand a task to the owner's agent. The owner's Commander starts a new run for it in the shared worker's project and returns the run ID at once. Track it with agent.status and agent.result.",
-		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
+		description:   "Hand a task to the owner's agent. An offered workspace durably queues the task and returns its handoff ID. A legacy shared worker starts a new run. Track either with agent.status and agent.result.",
+		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},"expectedHead":{"type":"string","pattern":"^[0-9a-f]{40}$","description":"Optional commit to verify after a workspace handoff completes."},` + contextProperty + `}}`,
 	},
 	descriptor{
 		kind: "agent", name: "agent.watch", recoverable: true, run: watchHandler,

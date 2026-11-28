@@ -34,6 +34,7 @@ DO $$ BEGIN
     END IF;
 END $$;
 ALTER TABLE mp_resources ADD COLUMN IF NOT EXISTS capabilities jsonb;
+ALTER TABLE mp_resources ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT '';
 ALTER TABLE mp_resources ADD COLUMN IF NOT EXISTS coordinator_inbox_ended boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS mp_access_requests (
     id text PRIMARY KEY, resource text NOT NULL REFERENCES mp_resources,

@@ -135,8 +135,11 @@ func (s *Service) inbox(ctx context.Context, p Principal, r *http.Request) (any,
 				}
 			}
 			rows, err := tx.Query(ctx, `SELECT `+childFields+` FROM mp_children c
-			WHERE device=$1 AND owner_id=$2 AND status='pending' AND expires_at>statement_timestamp()
-			AND `+activeChildGrant+` ORDER BY expires_at,id LIMIT 32`, p.Device, p.User)
+			WHERE device=$1 AND owner_id=$2 AND expires_at>statement_timestamp()
+			AND ((status='pending' AND `+activeChildGrant+`) OR
+				(status='uncertain' AND action='agent.handoff' AND EXISTS (
+				    SELECT FROM mp_resources r WHERE r.id=c.resource AND `+workspaceGrantActive+`)))
+			ORDER BY expires_at,id LIMIT 32`, p.Device, p.User)
 			if err != nil {
 				return err
 			}
@@ -152,7 +155,11 @@ func (s *Service) inbox(ctx context.Context, p Principal, r *http.Request) (any,
 	if len(out) == 0 && wait > 0 {
 		// Ingress may send this request to a different edge than the session’s
 		// wake subscriber. Poll authoritative storage on a short bounded interval.
-		timer := time.NewTimer(min(time.Duration(wait)*time.Second, 2*time.Second))
+		fallback := 2 * time.Second
+		if q.Get("workspace") == "1" {
+			fallback = time.Second
+		}
+		timer := time.NewTimer(min(time.Duration(wait)*time.Second, fallback))
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():

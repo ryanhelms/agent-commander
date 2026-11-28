@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,8 @@ type pilotPeer struct {
 	otherRun                           *pilotPeer
 	turns                              atomic.Int32
 	ended                              atomic.Bool
+	workspaceStarts                    atomic.Int32
+	workspaceRuns                      sync.Map
 }
 
 func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
@@ -94,6 +97,44 @@ func startPilotCommander(t *testing.T, handle string) (*pilotPeer, string) {
 			}}},
 		}})
 		event(map[string]any{"type": "RUN_FINISHED", "runId": in.RunID})
+	})
+	mux.HandleFunc("GET /v1/runs/"+who.run, func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"id": who.run, "path": socketDir, "client": "codex", "status": "completed"})
+	})
+	mux.HandleFunc("/v1/network/workspace-handoffs/{handoff}", func(w http.ResponseWriter, req *http.Request) {
+		id := req.PathValue("handoff")
+		if accepted, ok := who.workspaceRuns.Load(id); ok {
+			json.NewEncoder(w).Encode(accepted)
+			return
+		}
+		if req.Method == http.MethodGet {
+			http.NotFound(w, req)
+			return
+		}
+		var in struct {
+			Anchor       string
+			AutoStart    bool
+			ExpectedHead string
+			ExpiresAt    time.Time
+		}
+		if json.NewDecoder(req.Body).Decode(&in) != nil || in.Anchor != who.run || !time.Now().Before(in.ExpiresAt) {
+			http.Error(w, "invalid workspace binding or deadline", http.StatusBadRequest)
+			return
+		}
+		if !in.AutoStart {
+			http.Error(w, "coordinator ended and auto-start is off", http.StatusConflict)
+			return
+		}
+		now := time.Now().UTC()
+		observed := map[string]any{"run": who.otherRun.run, "state": "unverified", "acceptedAt": now}
+		if in.ExpectedHead == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+			observed["state"], observed["verifiedAt"], observed["head"] = "verified", now, in.ExpectedHead
+		}
+		row, existing := who.workspaceRuns.LoadOrStore(id, observed)
+		if !existing {
+			who.workspaceStarts.Add(1)
+		}
+		json.NewEncoder(w).Encode(row)
 	})
 	server := &http.Server{Handler: mux}
 	go server.Serve(ln)

@@ -64,6 +64,7 @@ type input struct {
 	Path          string                `json:"path"`
 	Body          json.RawMessage       `json:"body"`
 	Workspace     string                `json:"workspace"`
+	AutoStart     *bool                 `json:"autoStart,omitempty"`
 	Goal          string                `json:"goal"`
 	Repository    string                `json:"repository"`
 	Base          string                `json:"base"`
@@ -165,6 +166,9 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		if r.InboxEnded {
 			row["inboxEnded"] = true
 		}
+		if r.Workspace != "" {
+			row["workspace"] = r.Workspace
+		}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
 		}
@@ -177,6 +181,15 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 			own = append(own, row)
 		} else if r.Owner != s.User && !r.InboxEnded {
 			shared = append(shared, row)
+		}
+	}
+	for _, row := range own {
+		for _, resource := range local {
+			if row["id"] == resource.ID && resource.Workspace != "" {
+				row["workspace"] = resource.Workspace
+				row["autoStart"] = resource.AutoStart
+				break
+			}
 		}
 	}
 	result["resources"], result["shared"] = own, shared
@@ -589,26 +602,36 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 	resources := slices.Clone(a.policy.Resources)
 	a.mu.Unlock()
 	i := slices.IndexFunc(resources, func(v actions.Resource) bool { return v.ID == id })
-	r := actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target, Capabilities: in.Capabilities}
+	r := actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target, Workspace: in.Workspace, Capabilities: in.Capabilities}
+	if !update && in.AutoStart != nil {
+		r.AutoStart = *in.AutoStart
+	}
 	if update {
 		if i < 0 {
 			return nil, errors.New("unknown local resource")
 		}
 		r = resources[i]
-		if in.Target != "" && in.Target != r.Target || in.Kind != "" && in.Kind != r.Kind {
+		if in.Target != "" && in.Target != r.Target || in.Kind != "" && in.Kind != r.Kind ||
+			in.Workspace != "" && in.Workspace != r.Workspace {
 			return nil, errors.New("resource id is already mapped to a different target")
 		}
 		if in.Name != "" {
 			r.Name = in.Name
 		}
 		r.Capabilities = in.Capabilities.WithDefaults(r.Capabilities)
+		if in.AutoStart != nil {
+			if r.Workspace == "" {
+				return nil, errors.New("auto-start requires a workspace handoff resource")
+			}
+			r.AutoStart = *in.AutoStart
+		}
 		if r.Kind == "host" {
 			var err error
 			if r, err = actions.PrepareResource(ctx, r); err != nil {
 				return nil, err
 			}
 		}
-		if r.Kind == "agent" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
+		if r.Kind == "agent" && r.Workspace == "" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
 			// An enrolled target can be edited even while Commander is offline.
 			if info, err := actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, r); err == nil {
 				r.Capabilities = info.Capabilities
@@ -631,11 +654,17 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 		}
 	}
 	if i < 0 {
+		if r.Workspace != "" && slices.ContainsFunc(resources, func(other actions.Resource) bool { return other.Workspace == r.Workspace }) {
+			return nil, errors.New("this device already offers an inbox for that workspace")
+		}
 		resources = append(resources, r)
 	} else {
 		resources[i] = r
 	}
 	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": a.advertisedResourceActions(s, r)}
+	if r.Workspace != "" {
+		body["workspace"] = r.Workspace
+	}
 	if r.Capabilities != nil {
 		body["capabilities"] = r.Capabilities
 	}

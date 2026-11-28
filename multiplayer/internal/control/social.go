@@ -192,6 +192,7 @@ type Resource struct {
 	Handle       string        `json:"handle"`
 	Actions      []string      `json:"actions"`
 	Capabilities *Capabilities `json:"capabilities,omitempty"`
+	Workspace    string        `json:"workspace,omitempty"`
 	InboxEnded   bool          `json:"inboxEnded,omitempty"`
 	Listed       bool          `json:"listed"`
 	Endorsements []Endorsement `json:"endorsements"`
@@ -206,6 +207,7 @@ type DirectoryResource struct {
 func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request) (any, error) {
 	var in struct {
 		Kind         string        `json:"kind"`
+		Workspace    string        `json:"workspace"`
 		Name         string        `json:"name"`
 		Actions      []string      `json:"actions"`
 		Capabilities *Capabilities `json:"capabilities"`
@@ -226,14 +228,29 @@ func (s *Service) putResource(ctx context.Context, p Principal, r *http.Request)
 			return nil, bad("slots must be nonnegative")
 		}
 	}
+	if in.Workspace != "" && (in.Kind != "agent" || !identifier.MatchString(in.Workspace) ||
+		slices.ContainsFunc(in.Actions, func(action string) bool {
+			return !slices.Contains([]string{"agent.handoff", "agent.result", "agent.status", "thread.comment", "thread.read"}, action)
+		})) {
+		return nil, bad("invalid workspace handoff resource")
+	}
 	slices.Sort(in.Actions)
 	err := s.write(ctx, func(tx pgx.Tx) error {
 		if err := s.requireDevice(ctx, tx, p); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions,capabilities,listed) VALUES($1,$2,$3,$4,$5,$6,$7,coalesce($8,false))
+		if in.Workspace != "" {
+			participation, err := readWorkspaces(ctx, tx, p.User, in.Workspace)
+			if err != nil {
+				return err
+			}
+			if len(participation) != 1 {
+				return forbidden()
+			}
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO mp_resources(id,owner_id,device,kind,name,actions,capabilities,listed,workspace_id) VALUES($1,$2,$3,$4,$5,$6,$7,coalesce($8,false),$9)
 		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,actions=EXCLUDED.actions,capabilities=EXCLUDED.capabilities,listed=coalesce($8,mp_resources.listed)
-		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind`, id, p.User, p.Device, in.Kind, in.Name, in.Actions, in.Capabilities, in.Listed)
+		WHERE mp_resources.owner_id=EXCLUDED.owner_id AND mp_resources.device=EXCLUDED.device AND mp_resources.kind=EXCLUDED.kind AND mp_resources.workspace_id=EXCLUDED.workspace_id`, id, p.User, p.Device, in.Kind, in.Name, in.Actions, in.Capabilities, in.Listed, in.Workspace)
 		if err != nil {
 			return err
 		}
@@ -293,12 +310,13 @@ func (s *Service) setCoordinatorInboxStatus(ctx context.Context, p Principal, r 
 
 func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (any, error) {
 	rows, err := s.pool.Query(ctx, `SELECT r.id,r.owner_id,r.device,r.kind,r.name,coalesce(p.handle,''),
-	r.actions,r.capabilities,r.coordinator_inbox_ended,r.listed,`+resourceEndorsements+`,coalesce(access.actions,'{}'),coalesce(f.accepted,false) FROM mp_resources r
+	r.actions,r.capabilities,r.coordinator_inbox_ended,r.listed,r.workspace_id,`+resourceEndorsements+`,coalesce(access.actions,'{}'),coalesce(f.accepted,false) FROM mp_resources r
     JOIN mp_profiles p ON p.user_id=r.owner_id
     LEFT JOIN mp_friends f ON f.a=least($1,r.owner_id) AND f.b=greatest($1,r.owner_id)
     LEFT JOIN LATERAL (SELECT array_agg(action ORDER BY action) AS actions FROM mp_available_actions
         WHERE resource=r.id AND grantee=$1 AND action=ANY(r.actions)) access ON true
-    WHERE r.owner_id=$1 OR (cardinality(r.actions)>0 AND f.accepted) OR cardinality(access.actions)>0
+    WHERE r.owner_id=$1 OR (mp_workspace_handoff_allowed(r.workspace_id,r.owner_id,$1)
+        AND ((cardinality(r.actions)>0 AND f.accepted) OR cardinality(access.actions)>0))
     ORDER BY p.handle,r.id`, p.User)
 	if err != nil {
 		return nil, err
@@ -309,7 +327,7 @@ func (s *Service) resources(ctx context.Context, p Principal, _ *http.Request) (
 	for rows.Next() {
 		var v DirectoryResource
 		var friend bool
-		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions, &v.Capabilities, &v.InboxEnded, &v.Listed, &v.Endorsements, &v.GrantedActions, &friend); err != nil {
+		if err = rows.Scan(&v.ID, &v.Owner, &v.Device, &v.Kind, &v.Name, &v.Handle, &v.Actions, &v.Capabilities, &v.InboxEnded, &v.Listed, &v.Workspace, &v.Endorsements, &v.GrantedActions, &friend); err != nil {
 			return nil, err
 		}
 		if v.Owner != p.User {

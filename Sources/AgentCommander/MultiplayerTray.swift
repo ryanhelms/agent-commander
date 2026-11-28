@@ -1467,7 +1467,8 @@ private struct MultiplayerPanelContent: View {
             if let session {
                 MultiplayerSessionContent(model: session,
                                           onShare: { model.share.startGrant(on: server.id, handle: $0, resourceID: $1) },
-                                          onAudit: { pages.show(.audit(resource: $0), on: server.id) })
+                                          onAudit: { pages.show(.audit(resource: $0), on: server.id) },
+                                          workspaces: model.share.teams.workspaces[server.id] ?? [])
             }
         }
     }

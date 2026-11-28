@@ -181,7 +181,7 @@ enum NetworkSample {
             MultiplayerSentRequest(request: "ho-1", resource: "d-mira", action: MultiplayerSharePolicy.handoff, title: "Move the retry budget to each request",
                                    at: ago(3_400), status: "ok", value: .object(["run": .string("run-7f3a")])),
             MultiplayerSentRequest(request: "ho-2", resource: "d-mira", action: MultiplayerSharePolicy.handoff, title: "Port the lease tests to the fake clock",
-                                   at: ago(900), status: "pending"),
+                                   at: ago(900), status: "ok", state: "accepted", deliveredAt: ago(899), acceptedAt: ago(840)),
             MultiplayerSentRequest(request: "ho-3", resource: "d-ines", action: MultiplayerSharePolicy.handoff, title: "Draft the migration note",
                                    at: ago(88_000), status: "denied", failure: "ines denied this request.")
         ]

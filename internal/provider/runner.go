@@ -761,7 +761,7 @@ func Runner(jobPath string) error {
 		}
 		return nil
 	}
-	if j.Worker.Role == "worker" && !j.FocusedProof {
+	if (j.Worker.Role == "worker" || j.Worker.WorkspaceCoordinator) && !j.FocusedProof {
 		defer s.close()
 		return runManagedWorker(ctx, j, filepath.Dir(jobPath), a, s)
 	}

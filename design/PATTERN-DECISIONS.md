@@ -307,6 +307,12 @@ The app writes its immutable startup build into its existing owner-only launch l
 
 
 
+### Durable workspace handoffs
+
+The Go device daemon stores a per-operation handoff record before emitting the signed delivery receipt and independently schedules after the relay rechecks admission. The join between relay child, durable inbox, local coordinator operation and signed updates is the Correlation Identifier. The file-backed Message Store and idempotent local reservation cover helper loss between delivery, claim and response. Direct local state transitions bind the exact managed turn and separate checkout revision evidence from provider completion. Legacy resources use the existing executor and result projection.
+
+See [relay architecture](MULTIPLAYER-RELAY.md#online-workspace-handoffs), [device action store](../multiplayer/internal/actions/workspace_handoff.go), [owner service](../internal/service/workspace_handoff.go) and [live pilot and restart regression](../multiplayer/internal/device/workspace_handoffs_test.go).
+
 ### Reattaching an existing provider session
 
 An owner command reserves a new control generation and a fresh worker credential after the service verifies that the original worker is inactive. The provider adapter verifies the saved checkout and executable identity before bringing up a replacement runner. The runner reports the same native session identity before the service accepts follow-ups. Discovery uses the saved provider and checkout without establishing a new conversation. The Idempotent Receiver reuses the original reservation on command retry. An unresolved earlier operation keeps its delivery receipt and requires the owner's explicit acknowledgement before reattachment. A stopped-history load and reattachment for the same worker cannot overlap.
