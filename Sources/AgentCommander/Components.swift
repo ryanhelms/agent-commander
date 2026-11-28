@@ -417,6 +417,9 @@ struct WorkerPresentation: Identifiable, Equatable {
     let isCoordinator: Bool
     /// Run title, then each parent worker, then this worker.
     let lineage: [String]
+    /// The worker that delegated this one, by its stable ID. Nil for a coordinator, and where the
+    /// service names none.
+    var parentID: String? = nil
     let control: InputControl
     /// The worker's first pending request in the service's order: the one its inline form answers
     /// and its tile marks. Further requests from the same worker are in `pendingRequests`.
@@ -1145,6 +1148,7 @@ extension RunContent {
                 state: state,
                 isCoordinator: isCoordinator,
                 lineage: isCoordinator ? [runTitle] : [runTitle] + ancestors + [worker.name],
+                parentID: isCoordinator || worker.parentID.isEmpty ? nil : worker.parentID,
                 // The service's control record is the authority on who directs a worker. The
                 // coordinator is never taken over.
                 control: !isCoordinator && worker.control?.held == true

@@ -334,6 +334,9 @@ enum PreviewWallStage: String, CaseIterable, Identifiable {
     case regrouped
     /// Seven standalone workers and the nested group: an incomplete row and a wall that scrolls.
     case many
+    /// The concept's wall with a deeper branch for group zoom: Failure paths delegated Timeout
+    /// cases and Partial bodies, and Partial bodies delegated two workers of its own.
+    case nested
     /// One worker left, and its turn has completed.
     case finished
     /// One worker left, and its host has dropped.
@@ -352,6 +355,7 @@ enum PreviewWallStage: String, CaseIterable, Identifiable {
         case .three: "3 workers"
         case .regrouped: "3 workers, one gains a nested worker"
         case .many: "9 workers"
+        case .nested: "Concept wall with a nested branch, 8 workers"
         case .finished: "Last worker finished"
         case .disconnected: "Last worker disconnected"
         case .cleared: "Cleared"
@@ -359,7 +363,15 @@ enum PreviewWallStage: String, CaseIterable, Identifiable {
     }
 
     /// The nested group, with Timeout cases and its request, is on the wall.
-    var hasGroup: Bool { self == .concept || self == .many }
+    var hasGroup: Bool { self == .concept || self == .many || self == .nested }
+
+    /// Preview only: the groups to open in the worker pane at launch, outermost first, by their
+    /// parents' IDs in `AGENT_COMMANDER_PREVIEW_GROUP` ("W-046" or "W-046,W-066"). It applies to
+    /// the coordinator wall. A group the stage does not list is not drawn.
+    static let requestedGroups: [String] = {
+        (ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_GROUP"] ?? "")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }()
 
     /// The stage `offset` steps on, staying at either end.
     func stepped(_ offset: Int) -> PreviewWallStage {
@@ -901,6 +913,7 @@ enum DesignFixture {
         switch scenario {
         case .coordinatorWall:
             ui.dismissedRequests = ["Q-018", "Q-021"]
+            ui.groupPath = PreviewWallStage.requestedGroups.map { GroupZoomLevel(groupID: $0) }
         case .focusedWorker, .accessibleWorker:
             ui.zoomedWorkerID = "W-047"
             ui.dismissedRequests = ["Q-021"]
@@ -1143,7 +1156,7 @@ enum DesignFixture {
                     members: [
                         worker(store, id: "W-047", name: "Timeout cases", client: .codex, host: .build01,
                                branch: "main", state: .needsInput, started: "14:12:41", run: run,
-                               parents: ["Failure paths"], request: timeoutRequest,
+                               parents: ["Failure paths"], parentID: "W-046", request: timeoutRequest,
                                task: "Cover timeout behavior before headers, after headers, and after the first body chunk.\nReport any ambiguous cases.",
                                output: timeoutOutput)
                     ])
@@ -1170,7 +1183,7 @@ enum DesignFixture {
         case .regrouped:
             let nested = worker(store, id: "W-065", name: "Counter names", client: .codex, host: .build01,
                                 branch: "feat/telemetry", state: .working, started: "14:17:44", run: run,
-                                parents: ["Retry telemetry"],
+                                parents: ["Retry telemetry"], parentID: "W-044",
                                 task: "Check the new counter names against the metrics naming guide.",
                                 output: telemetryOutput)
             return WallLayout(leaves: [concept.leaves[0], concept.leaves[2]],
@@ -1195,6 +1208,29 @@ enum DesignFixture {
                        output: compatibilityOutput)
             ]
             return WallLayout(leaves: concept.leaves + more, groups: concept.groups)
+        case .nested:
+            // A true hierarchy under Failure paths: two direct children, one with two of its own.
+            guard let group = concept.groups.first else { return concept }
+            let branch = ["Failure paths", "Partial bodies"]
+            let deeper = [
+                worker(store, id: "W-066", name: "Partial bodies", client: .claude, host: .build01,
+                       branch: "main", state: .working, started: "14:13:05", run: run,
+                       parents: ["Failure paths"], parentID: "W-046",
+                       task: "Decide what a retry may do once part of a response body has arrived. Delegate the cases that need a test.",
+                       output: failurePathsOutput),
+                worker(store, id: "W-067", name: "Chunk boundaries", client: .codex, host: .build01,
+                       branch: "main", state: .working, started: "14:13:52", run: run,
+                       parents: branch, parentID: "W-066",
+                       task: "Test a retry that starts between two body chunks.",
+                       output: telemetryOutput),
+                worker(store, id: "W-068", name: "Trailer handling", client: .codex, host: .lab02,
+                       branch: "main", state: .idle, started: "14:14:10", run: run,
+                       parents: branch, parentID: "W-066",
+                       task: "Check that trailers from a failed attempt never reach the caller.",
+                       output: compatibilityOutput)
+            ]
+            return WallLayout(leaves: concept.leaves,
+                              groups: [WorkerGroup(parent: group.parent, members: group.members + deeper)])
         }
     }
 
@@ -1241,7 +1277,7 @@ enum DesignFixture {
 
     private static func worker(_ store: PreviewStore, id: String, name: String, client: AgentClient, host: SampleHost,
                                branch: String, state: TaskState, started: String, run: String,
-                               parents: [String] = [], request: RequestPresentation? = nil,
+                               parents: [String] = [], parentID: String? = nil, request: RequestPresentation? = nil,
                                disconnected: Bool = false,
                                task: String, output: String) -> WorkerPresentation {
         let holder = parents.last ?? run
@@ -1278,7 +1314,7 @@ enum DesignFixture {
         return WorkerPresentation(
             id: id, shortID: id, name: name, client: client, host: host.name, platform: host.platform,
             location: branch, locationIsBranch: true, task: task, output: output, error: error,
-            state: state, isCoordinator: false, lineage: [run] + parents + [name],
+            state: state, isCoordinator: false, lineage: [run] + parents + [name], parentID: parentID,
             control: control, request: held ? pending : nil, startedAt: started,
             transcript: ConversationFixture.transcript(workerID: id),
             unconfirmedReply: id == unconfirmedWorkerID ? "Q-016" : nil,

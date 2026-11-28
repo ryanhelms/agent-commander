@@ -32,6 +32,14 @@ final class CockpitPresentationState {
     /// A remote worker (a hand-off on a friend's Mac) shown in the zoom view, by `server/request`.
     var zoomedRemoteWorkerID: String?
     var zoomAfterSelection: String?
+    /// The groups opened in the worker pane, outermost first, each by its parent's ID with the
+    /// pane the keyboard returns to. Empty on the wall. The page reads it through
+    /// `WallRoute.surviving`, so a group that is gone is never drawn.
+    var groupPath: [GroupZoomLevel] = []
+    /// Where each opened group's child grid is scrolled, by the group's ID, so a child's zoom, a
+    /// deeper group and the way back return to the same place. The grids report it; nothing
+    /// reads it while drawing.
+    var groupScrollOffsets: [String: CGFloat] = [:]
     var collapsedGroups = Set<String>()
     var drafts: [String: String] = [:]
     var activeRequestID: String?
@@ -499,6 +507,34 @@ struct CockpitScreen: View {
         guard let id = ui.zoomedWorkerID else { return nil }
         return run?.wall.workers.first { $0.id == id }
     }
+
+    /// Where the worker pane is, as far as the wall still lists it: the opened groups, then the
+    /// zoomed worker. Derived on every read, so a passive update that removes a group or a worker
+    /// only changes what is drawn. It never moves the keyboard.
+    private func route(in run: RunContent) -> WallRoute {
+        WallRoute(groups: ui.groupPath, zoomedWorkerID: ui.zoomedWorkerID).surviving(in: run.wall)
+    }
+
+    /// The group the worker pane shows, with the names of every opened group down to it.
+    private struct OpenGroup {
+        /// The parent, its direct children and what is under each branch child.
+        let inside: GroupInside
+        /// Names of the opened groups, outermost first. The last is this group's.
+        let trail: [String]
+
+        var parent: WorkerPresentation { inside.parent }
+        func hasChild(_ workerID: String) -> Bool { inside.children.contains { $0.id == workerID } }
+    }
+
+    private func openGroup(in run: RunContent) -> OpenGroup? {
+        let route = route(in: run)
+        guard let id = route.groupID, let inside = run.wall.inside(id) else { return nil }
+        let names = Dictionary(run.wall.workers.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        return OpenGroup(inside: inside, trail: route.groups.compactMap { names[$0.groupID] })
+    }
+
+    /// The ⌘[ hint for the level the pane is at: the wall, or the group it goes back to.
+    private func backTitle(trail: [String]) -> String { trail.isEmpty ? "Return to wall" : "Back to group" }
 
     /// A request answered inline in the focused worker is left out of the PiP, so each request has
     /// exactly one reply field on screen.
@@ -992,7 +1028,8 @@ struct CockpitScreen: View {
     private var crumbs: [String] {
         if ui.composingRun { return (run.map { [$0.project] } ?? []) + ["New run"] }
         guard let run else { return [] }
-        return [run.project, run.title] + (zoomed.map { [$0.name] } ?? [])
+        // The opened groups, then the zoomed worker, as the worker pane's own crumb names them.
+        return [run.project, run.title] + (openGroup(in: run)?.trail ?? []) + (zoomed.map { [$0.name] } ?? [])
     }
 
     /// Keyboard paths that must work whichever region is showing. Native defaults from the design
@@ -1195,13 +1232,19 @@ struct CockpitScreen: View {
                     MultiplayerRemoteWorkerZoomHost(model: .shared, workerID: remoteID) { returnToWall() }
                 }
             }
+        } else if let group = openGroup(in: run), zoomed.map({ group.hasChild($0.id) }) ?? true {
+            // An opened group: its parent pinned over its direct children, or over one zoomed child.
+            groupRegion(group)
         } else if let zoomed = zoomed {
+            // Inside an opened group this is a worker the group does not hold as a child (its own
+            // parent, or one a request pointed at): the crumb keeps the path, and back returns to it.
+            let trail = openGroup(in: run)?.trail ?? []
             VStack(spacing: 0) {
                 SectionBar {
-                    WallCrumb(name: zoomed.name, back: { returnToWall() })
+                    WallCrumb(trail: trail, name: zoomed.name, back: { returnToWall() })
                 } trailing: {
                     HStack(spacing: 12) {
-                        KeyHint(keys: "⌘[", title: "Return to wall") { returnToWall() }
+                        KeyHint(keys: "⌘[", title: backTitle(trail: trail)) { returnToWall() }
                         AttentionPresentationMenu(selection: presentationChoice)
                     }
                 }
@@ -1239,7 +1282,8 @@ struct CockpitScreen: View {
                 WorkerWall(layout: run.wall, collapsed: ui.collapsedGroups,
                            reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
                            scrollOffset: $ui.wallScrollOffset, reveal: ui.wallReveal,
-                           toggleGroup: { id in toggleGroup(id) }) { worker in
+                           toggleGroup: { id in toggleGroup(id) },
+                           openGroup: { id in openGroup(id) }) { worker in
                     // The dock sits under the tile, outside its shell.
                     VStack(spacing: 0) {
                         tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1259,6 +1303,98 @@ struct CockpitScreen: View {
                 .padding(.bottom, -11)
             }
         }
+    }
+
+    /// An opened group in the worker pane. The parent stays pinned across the top, outside the
+    /// scroll, while its direct children tile under it as a wall of their own, or while one of
+    /// them is zoomed under it. The remote band belongs to the wall and is not drawn here.
+    private func groupRegion(_ group: OpenGroup) -> some View {
+        let child = zoomed
+        // The crumb names the levels above what is shown: over the children that is every opened
+        // group but this one, over a zoomed child it is all of them.
+        let trail = child == nil ? Array(group.trail.dropLast()) : group.trail
+        let count = group.inside.children.count
+        return VStack(spacing: 0) {
+            SectionBar {
+                WallCrumb(trail: trail, name: child?.name ?? group.parent.name, back: { returnToWall() }) {
+                    if child == nil { WallCount(count: count, noun: count == 1 ? "nested worker" : "nested workers") }
+                }
+            } trailing: {
+                HStack(spacing: 12) {
+                    KeyHint(keys: "⌘[", title: backTitle(trail: trail)) { returnToWall() }
+                    AttentionPresentationMenu(selection: presentationChoice)
+                }
+            }
+            // The parent's slot is the frame's own, planned from the height alone: zooming a child
+            // or leaving it swaps only the content under the parent.
+            GroupZoomFrame(zoomsChild: child != nil) { form in
+                pinnedParent(group.parent, form: form)
+            } content: {
+                if let child {
+                    VStack(spacing: 0) {
+                        tile(child, variant: .focused)
+                            .coordinateSpace(.named(ConsoleVisibility.viewport))
+                        controlDock(for: child)
+                    }
+                } else {
+                    groupWall(group)
+                }
+            } hints: {
+                HStack(spacing: 17) {
+                    KeyHint(keys: "⌘1", title: "Coordinator") { focusCoordinator() }
+                    KeyHint(keys: "⇧⌘A", title: "Next request", isEnabled: !content.pending.isEmpty) { nextRequest() }
+                    KeyHint(keys: "⌘]", title: "Zoom worker") { zoomFocused() }
+                    Spacer(minLength: 0)
+                }
+                .frame(height: 31, alignment: .bottom)
+                .padding(.bottom, -11)
+            }
+        }
+    }
+
+    /// The opened group's parent, pinned: its wall tile where the pane leaves a readable row
+    /// under it, otherwise its identity and status alone. Keyed by the parent, so a deeper group's
+    /// parent is its own view.
+    @ViewBuilder private func pinnedParent(_ parent: WorkerPresentation, form: GroupZoomPlan.Parent) -> some View {
+        switch form {
+        case .tile(let height):
+            VStack(spacing: 0) {
+                tile(parent, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                controlDock(for: parent)
+            }
+            .frame(height: height)
+            // The pinned tile is always in view, so its request counts as shown.
+            .coordinateSpace(.named(ConsoleVisibility.viewport))
+            .id(parent.id)
+        case .strip:
+            tile(parent, variant: .wall, identityOnly: true)
+                .fixedSize(horizontal: false, vertical: true)
+                .id(parent.id)
+        }
+    }
+
+    /// The opened group's direct children as one grid of peers, laid out by the wall's own plan
+    /// in the room under the parent. A child that delegated workers of its own carries a dock
+    /// under its tile with the way into its group. Each opened group keeps its own scroll
+    /// position by its ID.
+    private func groupWall(_ group: OpenGroup) -> some View {
+        let id = group.parent.id
+        let offset = Binding<CGFloat>(get: { ui.groupScrollOffsets[id] ?? 0 },
+                                      set: { ui.groupScrollOffsets[id] = $0 })
+        return WorkerWall(layout: group.inside.wall, collapsed: [],
+                          reservedTrailing: showsStack ? Metric.pipReservedWidth : 0,
+                          scrollOffset: offset, reveal: ui.wallReveal,
+                          toggleGroup: { _ in }) { worker in
+            VStack(spacing: 0) {
+                tile(worker, variant: .wall).frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let nested = group.inside.branches[worker.id] {
+                    WallBranchDock(name: worker.name, status: GroupBranchStatus(nested: nested)) { openGroup(worker.id) }
+                }
+                controlDock(for: worker)
+            }
+        }
+        // A deeper group is another grid, with its own scroll position.
+        .id(id)
     }
 
     /// Hand-offs running on friends' Macs, as remote workers, and the reviews and fan-outs that
@@ -1342,7 +1478,7 @@ struct CockpitScreen: View {
         }
     }
 
-    private func tile(_ worker: WorkerPresentation, variant: WorkerTile.Variant) -> some View {
+    private func tile(_ worker: WorkerPresentation, variant: WorkerTile.Variant, identityOnly: Bool = false) -> some View {
         let openRequest: (() -> Void)? = worker.request.map { request in { open(request) } }
         // The worker's further requests, by ID. Repeated presses step past the one already shown.
         let further = worker.allRequests.dropFirst()
@@ -1407,7 +1543,8 @@ struct CockpitScreen: View {
                 if open { ui.actionMenuWorkerID = worker.id }
                 else if ui.actionMenuWorkerID == worker.id { ui.actionMenuWorkerID = nil }
             }) : nil
-        return WorkerTile(worker: worker, variant: variant, isKeyFocused: paneFocus == worker.id,
+        return WorkerTile(worker: worker, variant: variant, identityOnly: identityOnly,
+                          isKeyFocused: paneFocus == worker.id,
                           reply: variant == .focused ? replyContext : nil, actions: tileActions,
                           menuPresented: menuPresented, source: sourceAccess(worker),
                           providerSession: providerSessionAccess(worker),
@@ -1660,23 +1797,64 @@ struct CockpitScreen: View {
         }
     }
 
-    /// Back to the wall, where it was scrolled to, with the keyboard on the tile that was zoomed.
-    /// A tile inside a folded group has its group opened, and one scrolled away is brought into
-    /// view. When the worker is gone the keyboard goes to the coordinator. A remote worker's way
-    /// back returns to its own tile (`returnFromRemote`).
+    /// Opens a group in the worker pane, from the wall or from inside the group that holds it.
+    /// The pane that has the keyboard now is where going back returns it. The keyboard moves to
+    /// the group's pinned parent, as a zoom moves it to the zoomed worker.
+    private func openGroup(_ groupID: String) {
+        guard let run else { return }
+        var route = route(in: run)
+        route.open(groupID, from: paneFocus ?? ui.lastPaneFocusID, in: run.wall)
+        ui.zoomedRemoteWorkerID = nil
+        ui.zoomedWorkerID = route.zoomedWorkerID
+        ui.groupPath = route.groups
+        // A group opened again starts at the top; one returned to keeps its place.
+        ui.groupScrollOffsets[groupID] = nil
+        ui.returnFocusWorkerID = groupID
+        refocus(groupID)
+    }
+
+    /// Back exactly one level: a zoomed worker to the group or the wall it was zoomed in, a
+    /// nested group to the group it was opened from, the outer group to the wall. Each level comes
+    /// back where it was scrolled to. After a zoom the keyboard is on the tile that was zoomed; a
+    /// tile inside a folded group has its group opened, and one scrolled away is brought into
+    /// view. After a group the keyboard is on the pane that had it when the group was opened. When
+    /// that pane is gone the keyboard goes to the nearest level's parent or the coordinator. A
+    /// remote worker's way back returns to its own tile (`returnFromRemote`).
     private func returnToWall() {
-        let preferred: String?
         if let remoteID = ui.zoomedRemoteWorkerID {
             ui.zoomedRemoteWorkerID = nil
             returnFromRemote(remoteID)
             return
-        } else if let workerID = ui.zoomedWorkerID {
-            ui.zoomedWorkerID = nil
-            preferred = workerID
-        } else {
-            return
         }
         guard let run else { return }
+        var route = route(in: run)
+        let stale = ui.zoomedWorkerID
+        guard let back = route.back() else {
+            // A zoomed worker the run no longer lists: the wall is already showing.
+            ui.zoomedWorkerID = nil
+            ui.groupPath = []
+            if let stale { returnToWallTile(stale, in: run) }
+            return
+        }
+        ui.zoomedWorkerID = route.zoomedWorkerID
+        ui.groupPath = route.groups
+        switch back {
+        case .unzoomed(let workerID):
+            guard route.groupID != nil else { returnToWallTile(workerID, in: run); return }
+        case .closed(let level):
+            ui.groupScrollOffsets[level.groupID] = nil
+        }
+        let target = route.focus(after: back, in: run.wall, collapsed: ui.collapsedGroups, coordinator: run.coordinator?.id)
+        ui.returnFocusWorkerID = target
+        guard let target else { return }
+        refocus(target)
+        // Leaving a group only restores where its level was scrolled to. A zoomed child is also
+        // brought into view, as a zoomed tile is on the wall.
+        if case .unzoomed = back, target != run.coordinator?.id { revealAfterReturn(target) }
+    }
+
+    /// Back on the wall from a zoomed worker, with the keyboard on its tile.
+    private func returnToWallTile(_ preferred: String, in run: RunContent) {
         let target = WallFocus.returnTarget(preferred: preferred, layout: run.wall, coordinator: run.coordinator?.id)
         ui.returnFocusWorkerID = target
         guard let target else { return }
@@ -1795,6 +1973,8 @@ struct CockpitScreen: View {
         ui.zoomedWorkerID = ui.zoomAfterSelection
         ui.zoomAfterSelection = nil
         ui.collapsedGroups.removeAll()
+        ui.groupPath = []
+        ui.groupScrollOffsets = [:]
         ui.wallScrollOffset = 0
         ui.showingRunDetails = false
         ui.sourceInspectorWorkerID = nil
