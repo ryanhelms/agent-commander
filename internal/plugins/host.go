@@ -184,3 +184,7 @@ func encodeResult(result *mcp.CallToolResult) (json.RawMessage, error) {
 	}
 	return out, nil
 }
+
+// Verify reports whether the installed files still match the digest pinned at
+// install. The service refuses a plugin that fails it.
+func (r Record) Verify(stateDir string) error { return r.check(stateDir) }

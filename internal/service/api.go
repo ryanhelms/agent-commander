@@ -128,6 +128,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/catalog/notices/events", s.streamCatalogNotices)
 	(&harnessRoutes{stateDir: stateDir, launcher: launcher}).register(mux)
+	newPluginRoutes(stateDir).register(mux)
 	mux.HandleFunc("GET /v1/network/coordinator", s.handleJSON(s.networkCoordinator))
 	mux.HandleFunc("GET /v1/runs/{run}/workers/{worker}/tools", s.listScopedTools)
 	mux.HandleFunc("POST /v1/runs/{run}/workers/{worker}/tools/calls", s.callScopedTool)

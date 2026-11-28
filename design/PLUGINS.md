@@ -70,13 +70,28 @@ Each tool uses `Bind`. Binding validates the grant's settings and warms the plug
 
 A plugin whose installed files no longer match its digest is reported at startup, and `agentctl plugin list` shows it as a problem. Its tools stay registered so existing grants still load and other tools keep working, but every call returns `scoped tool unavailable` until the plugin is reinstalled.
 
+## Cockpit Plugins page (increment 2)
+
+The cockpit's **Plugins** mode lists installed plugins, their problems and their per-project grants, grants and revokes tools, and shows the tail of `plugin.log`. It talks to owner-only service routes ([`internal/service/plugins.go`](../internal/service/plugins.go)). A request that carries a bearer credential or arrives through the hosted relay is refused with 403, as for the harness routes. [Issue #180](https://github.com/ryanhelms/agent-commander/issues/180)
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/plugins` | Installed plugins with their tools, settings schema, grants and a `problem` when the installed files fail the digest check |
+| `POST /v1/plugins/grants` | `{"tool","version","project","settings"?}` through `plugins.Grant`, so the version, the project directory and the settings are checked exactly as `agentctl plugin grant` checks them |
+| `POST /v1/plugins/grants/revoke` | `{"tool","project"}` through `plugins.Revoke`. Only tools an installed plugin provides; compiled tool grants are not the page's to change |
+| `GET /v1/plugins/{id}/log` | The last 16 KiB of `plugin.log`, starting at a line boundary |
+
+Grant changes return the same body as the list. The service still reads plugins and grants only at startup, so the routes keep a snapshot of what it loaded. Each grant carries `active`, and the plugin `loaded`, comparing the file with that snapshot; `restart_required` is true when anything differs, including a revoked grant the service still holds. The page says so and the change applies at the next service restart.
+
+For `adag.mqtt` the page adds a native MQTT panel. It reads the MQTT Bridge daemon's own loopback HTTP API (`http://127.0.0.1:18830`: `/api/status`, `/api/topics`, `/api/messages` and the `/api/stream` server-sent events) directly, not through Commander, and shows broker statistics, a topic tree, the live message list and a payload inspector. Publishing stays in the bridge's web UI.
+
 ## Limits of increment 1
 
 The process boundary keeps plugin code out of Commander's address space and credentials. It does not sandbox the plugin: the process runs as the user and can read what the user can read. Install only plugins you trust, as you would any program. Later increments add capabilities that each need their own authorization story.
 
 | Increment | Adds | Needs first |
 | --- | --- | --- |
-| 2 | A Plugins page in the cockpit: list, grant per project, view the log | DESIGN.md additions, frontend owner |
+| 2 | A Plugins page in the cockpit: list, grant per project, view the log (shipped, see above) | DESIGN.md additions, frontend owner |
 | 3 | `contributes.harnesses`: a plugin ships an ACP adapter that becomes an `acp-profiles.json` entry | Reuse of the ACP profile validation |
 | 4 | `write` tools | Per-call human approval through the elicitation and Needs You path |
 | 5 | An optional macOS sandbox profile per plugin with declared network and filesystem capabilities | A decision on depending on `sandbox-exec` |
@@ -91,5 +106,7 @@ The process boundary keeps plugin code out of Commander's address space and cred
 | A call hangs | `TestHungCallRestartsPlugin`: the call fails at its deadline, and the next call runs in a new process |
 | A tool ID collides, or a contributed MCP tool is missing | `TestInstallRejectsCollisions`, `TestInstallRejectsMissingMCPTool` |
 | Remove a plugin | `TestRemoveWithdrawsGrants`: its grants go, other grants stay |
+
+`TestPluginGrantRevokeAndRestartState`, `TestPluginListReportsTamperedFiles`, `TestPluginLogTail` and `TestPluginRoutesServeOnlyTheOwner` cover the cockpit routes.
 
 Run the end-to-end proof with `AGENT_COMMANDER_TEST_INTEGRATION=1 go test -count=1 ./cmd/agentctl -run '^TestPluginToolsThroughAgentctlMCP$'`. It needs `node` on `PATH`.
