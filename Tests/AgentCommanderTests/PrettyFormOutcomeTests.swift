@@ -274,16 +274,20 @@ private func store(_ pages: Pages, answer: @escaping @Sendable (_ read: Int) asy
         #expect(await pages.reads == [0, 4, 5])
     }
 
-    @Test func anOrdinaryReadDuringAnotherIsStillDropped() async throws {
+    /// An ordinary call no longer returns at once (issue #206): it waits for the read in flight,
+    /// then reads the page asked for after it arrived. `PrettyDetailRefreshCoalescingTests`
+    /// holds each read to show the order.
+    @Test func anOrdinaryReadDuringAnotherIsFollowedByOneMore() async throws {
         let pages = Pages()
         let store = Self.heldStore(pages)
         let first = Task { await store.refresh(worker: "w") }
         while await pages.reads.isEmpty { await Task.yield() }
-        await store.refresh(worker: "w")
+        let second = Task { await store.refresh(worker: "w") }
         await pages.release()
         await first.value
-        #expect(await pages.reads == [0])
-        #expect(store.summary(worker: "w", key: "form-outcome:e-1") == nil)
+        await second.value
+        #expect(await pages.reads == [0, 4])
+        #expect(store.summary(worker: "w", key: "form-outcome:e-1")?.name == "accept")
     }
 
     @Test func theReplysRecordIsReadOnceWithNoProviderActivity() async throws {
