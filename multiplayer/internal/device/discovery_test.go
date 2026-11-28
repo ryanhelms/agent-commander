@@ -81,7 +81,29 @@ func newDiscoveryFixture(t *testing.T, status string) *discoveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(m.Close)
+	t.Cleanup(func() {
+		m.Close()
+		// Live shutdown does not wait for Keychain. This fixture owns only
+		// disposable stores, so let canceled activations finish using them
+		// before TempDir removes the state and credential directories.
+		m.mu.Lock()
+		settled := make([]<-chan struct{}, 0, len(m.activations))
+		for _, attempt := range m.activations {
+			settled = append(settled, attempt.done)
+		}
+		m.mu.Unlock()
+
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		for _, done := range settled {
+			select {
+			case <-done:
+			case <-deadline.C:
+				t.Error("fixture relay activation did not settle during cleanup")
+				return
+			}
+		}
+	})
 	f.m, f.h = m, m.Handler()
 	return f
 }
