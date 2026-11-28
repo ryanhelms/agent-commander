@@ -156,6 +156,10 @@ struct ShellContext {
     /// The harnesses this Mac can run, with the sign-in and install intents. Nil shows the
     /// Harnesses mode as unavailable.
     var harnesses: HarnessesContext? = nil
+    /// The installed tool plugins, with the grant intents. Nil shows the Plugins mode as unavailable.
+    var plugins: PluginsContext? = nil
+    /// The MQTT Bridge plugin's panel. Nil leaves its place without a page.
+    var mqtt: MQTTContext? = nil
 }
 
 enum LiveShell {
@@ -204,7 +208,8 @@ enum LiveShell {
     static func navigation(runs: [RunSummary], openRunPath: String?, composing: Bool, place: String,
                            needsYou: Int, network: ShellNetwork, isOnline: Bool = true,
                            showsHosts: Bool = false, serviceHost: String? = nil,
-                           harnesses: HarnessTally = HarnessTally()) -> CommanderNavigation {
+                           harnesses: HarnessTally = HarnessTally(),
+                           plugins: PluginTally = PluginTally()) -> CommanderNavigation {
         func row(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                  hot: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -231,7 +236,7 @@ enum LiveShell {
             row("network.fanout", "Fan-out", "arrow.triangle.branch"),
             row("network.shared", "Shared", "square.and.arrow.up.on.square")
         ]
-        let places = [
+        let workPlaces = [
             CommanderPlace(id: Self.needsYou, title: "Needs you", mark: .symbol("tray"), count: needsYou, isHot: needsYou > 0),
             CommanderPlace(id: wall, title: "Runs", mark: .symbol("rectangle.split.2x1"), count: runs.count, countNoun: "runs"),
             // A run can't start while the local service is offline, so the row is off like ⌘N.
@@ -240,7 +245,9 @@ enum LiveShell {
                                           figure: serviceHost)] : []) + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
         ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin, requests: network.membershipRequests)
-            + HarnessPlace.places(harnesses) + [
+            + HarnessPlace.places(harnesses)
+        // Its own statement: one more operand makes the sum above too long to type-check.
+        let places: [CommanderPlace] = workPlaces + PluginPlace.places(plugins) + [
             CommanderPlace(id: settings, title: "Settings", mark: .symbol("gearshape"))
         ]
 
@@ -260,6 +267,7 @@ enum LiveShell {
             CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
                           sections: teamsSections(workspaces: teams.isEmpty ? [workspaces] : teams.map(\.id), isAdmin: network.isAdmin)),
             HarnessPlace.mode(harnesses),
+            PluginPlace.mode(plugins),
             CommanderMode(id: settings, title: "Settings", symbol: "gearshape", sections: [
                 CommanderPlaceGroup(id: settings, title: "Settings", placeIDs: [settings])
             ], isTrailing: true)
@@ -275,6 +283,9 @@ enum LiveShell {
         } else if HarnessPlace.hasPage(place), !known.contains(place) {
             // Needs sign-in leaves the list once every harness is signed in. The mode stays open.
             selection = HarnessPlace.installed
+        } else if PluginPlace.hasPage(place), !known.contains(place) {
+            // Problems leaves the list once every plugin passes, and a panel when its plugin is removed.
+            selection = PluginPlace.installed
         } else if place == wall || !known.contains(place) {
             selection = openRunPath.map(project).flatMap { known.contains($0) ? $0 : nil } ?? wall
         } else {

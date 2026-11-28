@@ -50,7 +50,7 @@ import Testing
         #expect(pinned.inboxItem?.shortcut == 1)
         #expect(pinned.sections(pinningInbox: true).first?.items.first?.shortcut == 2)
         #expect(pinned.footerItems.allSatisfy { $0.shortcut == nil })
-        #expect(pinned.modeItems.map(\.shortcut) == [1, 2, 3, 4, 5, 6])
+        #expect(pinned.modeItems.map(\.shortcut) == [1, 2, 3, 4, 5, 6, 7])
     }
 
     @Test func pinningTheInboxLeavesOutThePlacesItStandsInFor() {
@@ -69,7 +69,7 @@ import Testing
         let navigation = Self.sample(selection: "network.approvals")
         #expect(navigation.selectedModeID == "network")
         let modes = navigation.modeItems
-        #expect(modes.map(\.mode.title) == ["Agents", "Network", "People", "Teams", "Harnesses", "Settings"])
+        #expect(modes.map(\.mode.title) == ["Agents", "Network", "People", "Teams", "Harnesses", "Plugins", "Settings"])
         #expect(modes.last?.mode.isTrailing == true)
         #expect(modes.filter(\.isSelected).map(\.id) == ["network"])
         // Agents holds the inbox (7) and Attention (2), which the inbox already counts.

@@ -79,7 +79,7 @@ let harnessRenderDirectory = ProcessInfo.processInfo.environment["HARNESS_RENDER
                                               needsYou: 0, network: ShellNetwork(), harnesses: tally)
         let mode = navigation.modeItems[4]
         #expect(mode.mode.title == "Harnesses" && mode.isSelected && mode.hotCount == 1 && mode.shortcut == 5)
-        #expect(navigation.modeItems[5].mode.id == LiveShell.settings && navigation.modeItems[5].shortcut == 6)
+        #expect(navigation.modeItems[6].mode.id == LiveShell.settings && navigation.modeItems[6].shortcut == 7)
         #expect(navigation.contextSections.flatMap(\.items).map(\.place.title) == ["Needs sign-in", "Installed", "Available"])
         #expect(navigation.crumbs == ["Harnesses", "Installed"])
         // With nothing to sign in, the place leaves the list and the mode opens on Installed.

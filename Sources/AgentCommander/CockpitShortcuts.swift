@@ -15,7 +15,7 @@ import SwiftUI
 /// Something a key can ask the cockpit window to do.
 enum CockpitCommand: Hashable, Sendable {
     /// The mode at this place on the rail, counting from zero: Agents, Network, People, Teams,
-    /// Harnesses, Settings.
+    /// Harnesses, Plugins, Settings.
     case mode(Int)
     case focusCoordinator, zoomWorker, returnToWall, nextRequest, newRun
 }
@@ -48,8 +48,8 @@ struct CockpitShortcut: Identifiable, Hashable, Sendable {
 }
 
 enum CockpitShortcuts {
-    /// The modes on the rail, in order. ⌥⌘1 to ⌥⌘6.
-    static let modeTitles = ["Agents", "Network", "People", "Teams", "Harnesses", "Settings"]
+    /// The modes on the rail, in order. ⌥⌘1 to ⌥⌘7.
+    static let modeTitles = ["Agents", "Network", "People", "Teams", "Harnesses", "Plugins", "Settings"]
 
     static let modes: [CockpitShortcut] = modeTitles.enumerated().map { index, title in
         CockpitShortcut(.mode(index), title, Character("\(index + 1)"), LiveShell.modeModifiers)
@@ -66,10 +66,10 @@ enum CockpitShortcuts {
     /// Every shortcut the cockpit's hidden buttons bind.
     static let all: [CockpitShortcut] = modes + [focusCoordinator, zoomWorker, returnToWall, nextRequest, newRun]
 
-    /// The key codes of the digit row's 1 to 6, for a layout whose digits need Shift.
-    private static let digitKeyCodes: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5]
+    /// The key codes of the digit row's 1 to 7, for a layout whose digits need Shift.
+    private static let digitKeyCodes: [UInt16: Int] = [18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6]
 
-    /// The mode a key press asks for: ⌥⌘ and a digit from 1 to 6, and no other modifier.
+    /// The mode a key press asks for: ⌥⌘ and a digit from 1 to 7, and no other modifier.
     /// `characters` is the key without its modifiers; the key code decides where that isn't a digit.
     static func modeCommand(characters: String?, keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> CockpitCommand? {
         guard modifiers.intersection([.command, .option, .control, .shift]) == [.command, .option] else { return nil }
