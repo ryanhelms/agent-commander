@@ -176,7 +176,7 @@ struct PrettyWorkingMark: View {
     }
 
     /// One full cycle.
-    static let period: TimeInterval = 2.0
+    static let period: TimeInterval = 3.0
     /// The turn the dots hold with Reduce Motion: three clearly different sizes, none touching.
     static let restingTurn = 0.944
     /// A dot's radius at the 12 pt mark: the measured 3 : 2 : 1.2 trio, sized to leave air
@@ -235,9 +235,9 @@ struct PrettyWorkingMark: View {
 /// line sweeps in phase. The values here are pure; `prettyShimmer` draws them.
 enum PrettyShimmer {
     /// One sweep and its rest.
-    static let period: TimeInterval = 3.0
+    static let period: TimeInterval = 2.0
     /// How long the band takes to cross the label.
-    static let sweep: TimeInterval = 0.6
+    static let sweep: TimeInterval = 1.2
     /// Frames drawn each second while the band moves. None are drawn at rest.
     static let framesPerSecond = 60.0
     /// How far the glyphs lift from their own ink toward `foreground` at the band's centre.

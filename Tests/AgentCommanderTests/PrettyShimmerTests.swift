@@ -3,27 +3,27 @@ import SwiftUI
 import Testing
 @testable import AgentCommander
 
-// The running shimmer (DESIGN.md, Motion, `shimmer`): one 0.6 s sweep every 3 s, eased at both
+// The running shimmer (DESIGN.md, Motion, `shimmer`): one 1.2 s sweep every 2 s, eased at both
 // ends, then rest. The curve and the schedule are pure values; the modifier changes no layout.
 
 @MainActor @Suite struct PrettyShimmerTests {
-    @Test func theBandSweepsForSixTenthsOfASecondThenRests() {
+    @Test func theBandSweepsForOnePointTwoSecondsThenRests() {
         #expect(PrettyShimmer.progress(at: 0) == 0)
-        #expect(PrettyShimmer.progress(at: 0.3) == 0.5)
-        #expect(PrettyShimmer.progress(at: 0.6) == nil)
+        #expect(PrettyShimmer.progress(at: 0.6) == 0.5)
+        #expect(PrettyShimmer.progress(at: 1.2) == nil)
         #expect(PrettyShimmer.progress(at: 1.5) == nil)
-        #expect(PrettyShimmer.progress(at: 2.999) == nil)
+        #expect(PrettyShimmer.progress(at: 1.999) == nil)
         // The next period starts the next sweep, at any reference time.
-        #expect(PrettyShimmer.progress(at: 3) == 0)
-        #expect(abs((PrettyShimmer.progress(at: 3_000_000.3) ?? -1) - 0.5) < 1e-6)
+        #expect(PrettyShimmer.progress(at: 2) == 0)
+        #expect(abs((PrettyShimmer.progress(at: 2_000_000.6) ?? -1) - 0.5) < 1e-6)
     }
 
     @Test func theSweepIsSlowAtBothEnds() throws {
-        let early = try #require(PrettyShimmer.progress(at: 0.06))
-        let late = try #require(PrettyShimmer.progress(at: 0.54))
+        let early = try #require(PrettyShimmer.progress(at: 0.12))
+        let late = try #require(PrettyShimmer.progress(at: 1.08))
         #expect(early < 0.1 * 0.5)
         #expect(1 - late < 0.1 * 0.5)
-        let steps = stride(from: 0.0, to: 0.6, by: 0.01).compactMap(PrettyShimmer.progress(at:))
+        let steps = stride(from: 0.0, to: 1.2, by: 0.01).compactMap(PrettyShimmer.progress(at:))
         #expect(steps == steps.sorted())
     }
 
@@ -36,21 +36,21 @@ import Testing
 
     @Test func theTimelineTicksOnlyWhileTheBandMoves() {
         // Asked in the rest: one entry that draws no band, then the next sweep's frames.
-        let rest = Date(timeIntervalSinceReferenceDate: 3 * 1000 + 1.7)
+        let rest = Date(timeIntervalSinceReferenceDate: 2 * 1000 + 1.5)
         var entries = PrettyShimmer.Schedule().entries(from: rest, mode: .normal)
         let first = entries.next()!.timeIntervalSinceReferenceDate
         #expect(first <= rest.timeIntervalSinceReferenceDate)
         #expect(PrettyShimmer.progress(at: first) == nil)
-        let sweep = (0..<37).map { _ in entries.next()!.timeIntervalSinceReferenceDate }
-        #expect(sweep[0] == 3003.0)
-        #expect(abs(sweep.last! - (3 * 1001 + 0.6)) < 0.002)
+        let sweep = (0..<73).map { _ in entries.next()!.timeIntervalSinceReferenceDate }
+        #expect(abs(sweep[0] - 2 * 1001) < 1e-6)
+        #expect(abs(sweep.last! - (2 * 1001 + 1.2)) < 0.002)
         #expect(sweep.dropLast().allSatisfy { PrettyShimmer.progress(at: $0 + 1e-7) != nil })
         #expect(PrettyShimmer.progress(at: sweep.last!) == nil)
         // Then nothing until the sweep after it.
-        #expect(entries.next()!.timeIntervalSinceReferenceDate == 3006.0)
+        #expect(abs(entries.next()!.timeIntervalSinceReferenceDate - 2 * 1002) < 1e-6)
 
         // Asked mid-sweep: starts at the frame already due.
-        let moving = Date(timeIntervalSinceReferenceDate: 3 * 1000 + 0.305)
+        let moving = Date(timeIntervalSinceReferenceDate: 2 * 1000 + 0.605)
         var later = PrettyShimmer.Schedule().entries(from: moving, mode: .normal)
         let frame = later.next()!.timeIntervalSinceReferenceDate
         #expect(frame <= moving.timeIntervalSinceReferenceDate)
@@ -66,13 +66,13 @@ import Testing
         #expect(still.fittingSize == moving.fittingSize)
     }
 
-    // The working mark: three dots circling one centre, one turn every 2 s.
+    // The working mark: three dots circling one centre, one turn every 3 s.
 
     @Test func theWorkingMarkTurnsOnceEveryTwoSeconds() {
         #expect(PrettyWorkingMark.turn(at: 0) == 0)
-        #expect(PrettyWorkingMark.turn(at: 0.5) == 0.25)
-        #expect(PrettyWorkingMark.turn(at: 2) == 0)
-        #expect(abs(PrettyWorkingMark.turn(at: 2_000_001) - 0.5) < 1e-6)
+        #expect(PrettyWorkingMark.turn(at: 0.75) == 0.25)
+        #expect(PrettyWorkingMark.turn(at: 3) == 0)
+        #expect(abs(PrettyWorkingMark.turn(at: 3_000_001.5) - 0.5) < 1e-6)
     }
 
     @Test func theDotsKeepThreeSizesInsideTheMark() {
