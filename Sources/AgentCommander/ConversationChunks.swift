@@ -55,6 +55,9 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on the service's own compaction message: its status and the record behind it. Pretty
     /// draws it as the compaction row; see `PrettyCompaction`.
     var compaction: CompactionMark? = nil
+    /// Set on a live reply chunk that is a resource link or a resource: the record behind it.
+    /// Pretty draws what that record holds in the reply; see `ReplyAttachment`.
+    var replyAttachment: ReplyAttachmentMark? = nil
 }
 
 enum ConversationChunks {
@@ -155,6 +158,7 @@ extension TranscriptOrigin {
         messageID = acp["messageId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
         itemCount = acp["itemCount"]?.intValue
         compaction = CompactionMark(message: message, acp: acp)
+        replyAttachment = ReplyAttachmentMark(message: message, acp: acp)
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.

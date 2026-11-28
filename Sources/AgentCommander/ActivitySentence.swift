@@ -491,6 +491,9 @@ struct ActivityFacts {
     /// Who approves the console's held call when that is not the developer: the coordinator or
     /// parent that answers a delegated worker's request (`WorkerInputRoute`). Nil: the developer.
     var approvalOwner: WorkerInputOwner? = nil
+    /// What was read from a marked reply chunk's own source record. Nil until it is read, and
+    /// when no such record is kept: the chunk then stays a folded session update.
+    var replyAttachment: (ReplyAttachmentMark) -> ReplyAttachment? = { _ in nil }
 
     static var none: ActivityFacts { ActivityFacts() }
 
@@ -1293,6 +1296,11 @@ enum ActivityConversation {
                     // One row per compaction, where its first update arrived. It ends the group.
                     flush()
                     out.append(.compaction(compaction))
+                } else if let mark = entry.replyAttachment, facts.replyAttachment(mark) != nil {
+                    // A link or a text resource the agent sent as part of its reply: it ends the
+                    // group where it arrived, as prose does.
+                    flush()
+                    out.append(.entry(entry))
                 } else if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)
                 } else if isPlanEvent(entry) {

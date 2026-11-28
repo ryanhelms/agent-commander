@@ -341,6 +341,7 @@ struct PrettyConsoleView: View {
     @Environment(ConsoleModeStore.self) private var modes: ConsoleModeStore?
     @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     @Environment(CompactionSummaryStore.self) private var compactions: CompactionSummaryStore?
+    @Environment(ReplyAttachmentStore.self) private var replyAttachments: ReplyAttachmentStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
     /// The reader is at the end of the conversation, so new content keeps the end in view.
@@ -396,6 +397,8 @@ struct PrettyConsoleView: View {
         facts.summary = { key in store?.summary(worker: worker, key: key) }
         facts.record = { key in store?.record(worker: worker, key: key) }
         facts.approvalOwner = approvalOwner
+        let attachments = replyAttachments
+        facts.replyAttachment = { mark in attachments?.attachment(worker: worker, mark: mark) }
         // The older runner sends no console event for a thought: its record is placed by sequence.
         let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
         let records = Array(summaries.values)
@@ -514,8 +517,21 @@ struct PrettyConsoleView: View {
                 await details?.open(worker: consoleID, key: key)
             }
         }
+        // A link or a resource sent as a reply chunk is read from that chunk's own record, in a
+        // task of its own: a record that is not there yet never holds up the stored details.
+        .task(id: replyAttachmentRevision) {
+            let marks = entries.compactMap(\.replyAttachment)
+            guard let store = replyAttachments, !marks.isEmpty else { return }
+            // Latest first, a few at a time: a long transcript does not start every read at once.
+            await store.load(worker: consoleID, marks: marks)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
+    }
+
+    /// Changes when the console gains or loses a marked reply chunk. Nothing is read on a timer.
+    private var replyAttachmentRevision: String {
+        ([consoleID] + entries.compactMap { $0.replyAttachment?.cursor }).joined(separator: "\u{1F}")
     }
 
     private func spacing(before item: PrettyItem, after previous: PrettyItem, metrics: PrettyMetrics) -> CGFloat {
@@ -771,7 +787,18 @@ struct PrettyConsoleView: View {
             // Every call and result is a line of a group; none reaches here.
             EmptyView()
         case .other(let role, let text):
-            if let event = ActivityEvent(entry: entry) {
+            if let attachment = entry.replyAttachment.flatMap({ replyAttachments?.attachment(worker: consoleID, mark: $0) }) {
+                // Part of the reply, in the place it was sent.
+                Group {
+                    switch attachment {
+                    case .link(let link):
+                        ReplyLinkRow(link: link, metrics: metrics, hidesSecrets: details?.hidesSecrets ?? false)
+                    case .resource(let resource):
+                        ReplyResourceQuote(resource: resource, metrics: metrics, hidesSecrets: details?.hidesSecrets ?? false)
+                    }
+                }
+                .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
+            } else if let event = ActivityEvent(entry: entry) {
                 // A warning, harness stderr or a permission notice: one visible line in the
                 // attention ink. It never carries a reply; a request is answered only in its form.
                 PrettyActivityRow(event: event, metrics: metrics)
