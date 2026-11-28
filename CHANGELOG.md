@@ -13,6 +13,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ### Changed
 
+- In the Pretty transcript, the last line shows three circling coral dots while an agent works on its turn, and a soft band of light sweeps across its label. A running background job's label shimmers the same way. Both stand still with Reduce Motion.
 - GitHub publishes pilot releases for public download. Source builds can fetch the pinned Go build inputs without a GitHub login.
 
 ### Fixed
