@@ -56,8 +56,11 @@ struct ActivityResultSource: Equatable {
     var changes: ResultChanges? = nil
 
     /// One call of a line. `record` is the stored full record, once it has been read; `summary`
-    /// is the same record without its large values.
-    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?, summary: ToolDetailSummary? = nil) {
+    /// is the same record without its large values. `hidesSecrets` is the transcript setting as
+    /// the line's own step read it (`ToolDetailStore.hidesSecrets`): a failing call inside a
+    /// group reads its own failure here, and its texts are masked as the step's are.
+    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?, summary: ToolDetailSummary? = nil,
+         hidesSecrets: Bool = false) {
         toolID = entry.detailKey
         fields = summary?.fields
         callIsStored = record?.input.map { !$0.isEmpty } ?? false
@@ -74,7 +77,7 @@ struct ActivityResultSource: Equatable {
             resultCut = StoredCut(record: record, field: "result", isStored: record?.result.map { !$0.isEmpty } ?? false)
             statusWord = result == nil ? "running" : (result?.error == nil ? "completed" : ToolStatus(result: result).word)
             if failure == nil, let result, result.error != nil {
-                failure = ActivityFailureWords.read(result, status: ToolStatus(result: result))
+                failure = ActivityFailureWords.read(result, status: ToolStatus(result: result), hidesSecrets: hidesSecrets)
             }
             if let call = CommanderCall(entry: entry) {
                 tried = call.tool.label
@@ -978,9 +981,9 @@ struct ActivityResultView: View {
     }
 
     private func failure(_ payload: ResultPayload) -> some View {
+        // The wrapper's error is as hidden as the line above it, which follows the store's answer.
         let failure = source.failure
-            ?? ActivityFailure(outcome: .failed, reason: payload.wrapperError ?? ActivityFailureWords.noReason,
-                               exact: payload.wrapperError ?? ActivityFailureWords.noReason)
+            ?? ActivityFailureWords.wrapper(payload.wrapperError, hidesSecrets: hidesChangeText ?? hidesSecrets)
         return VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
                 // As hidden as the line above it, which follows the store's answer.
