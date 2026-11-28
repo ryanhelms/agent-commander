@@ -22,6 +22,7 @@ import (
 	"agentcommander/internal/linear"
 	"agentcommander/internal/localapi"
 	"agentcommander/internal/mcpbridge"
+	"agentcommander/internal/plugins"
 	"agentcommander/internal/provider"
 	"agentcommander/internal/service"
 	"agentcommander/internal/toolregistry"
@@ -49,6 +50,8 @@ const usage = `Agent Commander
   agentctl catalog update-source ID ENTRY_URL SIGNATURE_URL PUBLIC_KEY
                                          Configure the pinned publisher's HTTPS proof endpoints
   agentctl catalog refresh ID             Check and stage a verified update
+  agentctl plugin install|list|grant|revoke|remove ...
+                                         Manage user plugins (see agentctl plugin)
   agentctl list                          List runs
   agentctl show RUN                      Inspect a run and its consoles
   agentctl session status WORKER            Read negotiated and usable provider capabilities
@@ -95,6 +98,9 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	token := os.Getenv("AGENT_COMMANDER_TOKEN")
+	if args[0] == "plugin" {
+		return pluginCommand(ctx, paths.State, args[1:])
+	}
 	if args[0] == "catalog" {
 		if len(args) > 1 && args[1] == "update-source" {
 			if len(args) != 6 {
@@ -575,7 +581,15 @@ func serve(ctx context.Context, p localapi.Paths) error {
 	if err != nil {
 		return err
 	}
-	registry, err := toolregistry.Load(p.State, linear.IssueRead(p.State, nil))
+	pluginHost, err := plugins.Load(p.State)
+	if err != nil {
+		return fmt.Errorf("read installed plugins: %w", err)
+	}
+	defer pluginHost.Close()
+	for _, problem := range pluginHost.Problems {
+		fmt.Fprintln(os.Stderr, problem)
+	}
+	registry, err := toolregistry.Load(p.State, append([]toolregistry.Tool{linear.IssueRead(p.State, nil)}, pluginHost.Tools()...)...)
 	if err != nil {
 		return err
 	}

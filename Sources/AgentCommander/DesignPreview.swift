@@ -97,6 +97,23 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     case harnesses = "harnesses"
     case harnessesAvailable = "harnesses-available"
 
+    // The Plugins mode, in sidebar B (PluginsPage.swift, MQTTPanel.swift), from PluginFixture and MQTTFixture.
+    case plugins = "plugins"
+    case pluginsProblem = "plugins-problem"
+    case pluginsGrant = "plugins-grant"
+    case pluginsMQTT = "plugins-mqtt"
+    case pluginsMQTTOffline = "plugins-mqtt-offline"
+
+    /// The Plugins place a scenario opens on.
+    var pluginPlace: String? {
+        switch self {
+        case .plugins, .pluginsGrant: PluginPlace.installed
+        case .pluginsProblem: PluginPlace.problems
+        case .pluginsMQTT, .pluginsMQTTOffline: PluginPlace.mqtt
+        default: nil
+        }
+    }
+
     /// The Harnesses place a scenario opens on.
     var harnessPlace: String? {
         switch self {
@@ -133,7 +150,7 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     }
 
     /// States drawn by the redesigned shell: its own navigation, toolbar and canvas.
-    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil || harnessPlace != nil }
+    var isShell: Bool { self == .shellA || self == .shellB || self == .shellC || self == .needsYou || networkPlace != nil || teamsPlace != nil || harnessPlace != nil || pluginPlace != nil }
 
     /// States shown with the reduced-transparency and increased-contrast roles.
     var usesAccessibleAppearance: Bool {
@@ -293,6 +310,21 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
         case .harnessesAvailable:
             Info(title: "Harnesses · Available", group: "Main window redesign", crumbs: ["Harnesses", "Available"], active: "Available",
                  summary: "Harnesses that aren’t installed yet, each with its own install command.")
+        case .plugins:
+            Info(title: "Plugins · Installed", group: "Main window redesign", crumbs: ["Plugins", "Installed"], active: "Installed",
+                 summary: "The installed tool plugins, with the chosen one’s tools, grants per project and log.")
+        case .pluginsProblem:
+            Info(title: "Plugins · Problem", group: "Main window redesign", crumbs: ["Plugins", "Problems"], active: "Problems",
+                 summary: "A plugin the service refuses because its files no longer match its digest.")
+        case .pluginsGrant:
+            Info(title: "Plugins · Grant", group: "Main window redesign", crumbs: ["Plugins", "Installed"], active: "Installed",
+                 summary: "The grant sheet after a Save the settings schema refused, with each problem beside its field.")
+        case .pluginsMQTT:
+            Info(title: "Plugins · MQTT", group: "Main window redesign", crumbs: ["Plugins", "Panels", "MQTT"], active: "MQTT",
+                 summary: "The MQTT Bridge panel: broker figures, the topic tree, live messages and a payload.")
+        case .pluginsMQTTOffline:
+            Info(title: "Plugins · MQTT offline", group: "Main window redesign", crumbs: ["Plugins", "Panels", "MQTT"], active: "MQTT",
+                 summary: "The MQTT Bridge panel while the bridge doesn’t answer.")
         }
     }
 
@@ -781,7 +813,8 @@ struct PreviewCanvas: View {
              .shellA, .shellB, .shellC, .needsYou, .networkServers, .networkDirectory, .networkApprovals, .networkHandoffs,
              .networkThreads, .networkAudit, .networkFanout, .networkShared, .people,
              .teamsWorkspace, .teamsBoard, .teamsGroups, .teamsHosts, .teamsKnowledge, .teamsDirectory, .teamsAdmin,
-             .harnesses, .harnessesAvailable:
+             .harnesses, .harnessesAvailable,
+             .plugins, .pluginsProblem, .pluginsGrant, .pluginsMQTT, .pluginsMQTTOffline:
             // Drawn by CockpitScreen or ShellPreviewPage in DesignPreviewPage.
             EmptyView()
         }

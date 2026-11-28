@@ -42,7 +42,7 @@ enum ShellConcept: String, CaseIterable, Identifiable, Sendable {
         case .shellC, .needsYou: self = .needsYouFirst
         default:
             // A network or Teams page opens in the chosen sidebar, B.
-            guard scenario.networkPlace != nil || scenario.teamsPlace != nil || scenario.harnessPlace != nil else { return nil }
+            guard scenario.networkPlace != nil || scenario.teamsPlace != nil || scenario.harnessPlace != nil || scenario.pluginPlace != nil else { return nil }
             self = .modeRail
         }
     }
@@ -102,7 +102,8 @@ enum ShellSample {
                            servers: CommanderServerHealth = servers, approvals: Int? = nil, friendRequests: Int? = nil,
                            sent: Int = 0, workspaces: [CommanderPlace] = TeamsSample.workspacePlaces(TeamsSample.content),
                            isAdmin: Bool = true, membershipRequests: Int = 0,
-                           harnesses: HarnessTally = HarnessTally(HarnessFixture.harnesses)) -> CommanderNavigation {
+                           harnesses: HarnessTally = HarnessTally(HarnessFixture.harnesses),
+                           plugins: PluginTally = PluginTally(PluginFixture.plugins)) -> CommanderNavigation {
         func place(_ id: String, _ title: String, _ symbol: String, count: Int = 0, figure: String? = nil,
                    hot: Bool = false, detail: Bool = false, noun: String = "waiting") -> CommanderPlace {
             CommanderPlace(id: id, title: title, mark: .symbol(symbol), count: count, figure: figure,
@@ -129,7 +130,7 @@ enum ShellSample {
             place("network.fanout", "Fan-out", "arrow.triangle.branch", detail: true),
             place("people.requests", "Friend requests", "person.badge.plus", count: friendRequests, hot: true, detail: true),
             place("people.groups", "Groups", "person.3", detail: true),
-        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin, requests: membershipRequests) + HarnessPlace.places(harnesses) + [
+        ] + workspaces + LiveShell.teamTools(isAdmin: isAdmin, requests: membershipRequests) + HarnessPlace.places(harnesses) + PluginPlace.places(plugins) + [
             place("hosts", "Hosts", "desktopcomputer"),
             place("settings", "Settings", "gearshape")
         ]
@@ -163,6 +164,7 @@ enum ShellSample {
                 CommanderMode(id: "teams", title: "Teams", symbol: "rectangle.3.group",
                               sections: LiveShell.teamsSections(workspaces: workspaces.map(\.id), isAdmin: isAdmin)),
                 HarnessPlace.mode(harnesses),
+                PluginPlace.mode(plugins),
                 CommanderMode(id: "settings", title: "Settings", symbol: "gearshape", sections: [
                     CommanderPlaceGroup(id: "settings", title: "Settings", placeIDs: ["settings", "hosts"])
                 ], isTrailing: true)
@@ -204,6 +206,11 @@ final class ShellPreviewState {
     /// The sample harnesses behind the Harnesses mode, and the one in its inspector.
     let harnesses = HarnessFixture.feed()
     var harnessShown: String?
+    /// The sample plugins behind the Plugins mode, the one in its inspector, and the sample broker
+    /// behind the MQTT panel.
+    var plugins = PluginFixture.feed()
+    var pluginShown: String?
+    var mqtt = MQTTFixture.feed()
     /// What the sample network adds to the wall. Take back removes the hold.
     var wall = WallSample.work()
 
@@ -216,8 +223,20 @@ final class ShellPreviewState {
 
     /// The state a scenario opens with.
     convenience init(scenario: DesignPreviewScenario) {
-        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? scenario.harnessPlace ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
+        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? scenario.harnessPlace ?? scenario.pluginPlace
+                      ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
                   teams: scenario.teamsPlace == nil ? nil : TeamsPreviewState(scenario: scenario))
+        // The Plugins scenarios: which plugin is shown, the grant sheet as a refused Save left it,
+        // and a bridge that doesn't answer.
+        switch scenario {
+        case .plugins: pluginShown = MQTTBridge.pluginID
+        case .pluginsProblem: pluginShown = "example.hello"
+        case .pluginsGrant:
+            pluginShown = "acme.jira"
+            plugins.draft = PluginFixture.invalidDraft
+        case .pluginsMQTTOffline: mqtt = MQTTFixture.offline()
+        default: break
+        }
     }
 
     /// The inbox without the questions already answered in the Attention queue.
@@ -233,7 +252,7 @@ final class ShellPreviewState {
                                approvals: network.approvalCount, friendRequests: network.friendRequestCount,
                                sent: network.sentCount, workspaces: teams.workspacePlaces,
                                isAdmin: teams.content.isAdmin, membershipRequests: teams.content.requestsWaiting,
-                               harnesses: harnesses.tally)
+                               harnesses: harnesses.tally, plugins: plugins.tally)
     }
 
     func apply(_ action: CommanderNavigationAction, to navigation: CommanderNavigation) {
@@ -421,6 +440,16 @@ struct ShellPreviewCanvas: View {
                 // The sample sign-in: the same sheet over sample text, with no terminal behind it.
                 .sheet(item: Binding(get: { harnesses.session }, set: { if $0 == nil { harnesses.actions.endSession(nil, nil) } })) { session in
                     HarnessSessionSheet(session: session) { code, line in harnesses.actions.endSession(code, line) }
+                }
+        case PluginPlace.mqtt:
+            MQTTPanelPage(crumbs: navigation.crumbs, context: MQTTContext(feed: state.mqtt))
+        case let place where PluginPlace.hasPage(place):
+            let plugins = PluginsContext(feed: state.plugins, projects: PluginFixture.projects)
+            PluginsPage(place: place, crumbs: navigation.crumbs, context: plugins,
+                        shown: Binding(get: { state.pluginShown }, set: { state.pluginShown = $0 }),
+                        openPanel: { act(.select($0)) })
+                .sheet(item: Binding(get: { plugins.draft }, set: { if $0 == nil { plugins.actions.closeGrant() } })) { draft in
+                    PluginGrantSheet(draft: draft, projects: plugins.projects, actions: plugins.actions)
                 }
         default:
             ShellPlaceholderPage(crumbs: navigation.crumbs, title: navigation.selectedPlace?.title ?? "",

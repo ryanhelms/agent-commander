@@ -6,6 +6,7 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ### Added
 
+- Add your own tools as plugins. A plugin is a folder with a `plugin.json` manifest and a program that serves MCP over stdio, in any language. `agentctl plugin install` pins its files, and `agentctl plugin grant` makes a tool available to coordinators in one checkout. Plugins run as separate processes and never see Commander's credentials.
 - See the relays near you at the top of the network tray and in Add server: each relay found on your tailnet or local network, how it admits people, and a checklist that walks you through joining it. A new relay marks the menu bar icon and posts one notification, which you can turn off on the Network tab.
 - Ask to join a relay that turned your sign-in away, with an optional note, and follow the request to its answer in the network tray. Relay admins approve or deny requests on the Admin page, and Hosting on this Mac can list your relay in the public directory under an https address.
 

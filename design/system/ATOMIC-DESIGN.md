@@ -91,6 +91,15 @@ The atoms in `Atoms.swift` stay on the black-glass tokens because the console su
 | Molecules (Harnesses) | `HarnessRow`, `RunHarnessGateRow` (New run form) | `HarnessesPage.swift`, `RunViews.swift` |
 | Organisms (Harnesses) | `HarnessList`, `HarnessDetail` (on `NetworkInspector`), `HarnessSessionSheet` over the AppKit leaf `HarnessTerminalWell` | `HarnessesPage.swift`, `HarnessTerminal.swift` |
 | Pages (Harnesses) | `HarnessesPage`, on `WorkspacePage` with `NetworkSplit` | `HarnessesPage.swift` |
+| Feature model (Plugins) | `PluginFeed`: every call to `/v1/plugins` (list, grant, revoke, log), the open grant draft and each plugin's log. `PluginsContext` hands its state to the window as values with `PluginActions`. | `Plugins.swift` |
+| Values (Plugins) | `PluginSettingsSchema` (a plugin's `settings_schema` as form fields), `PluginSchemaCheck` (the checks made before a grant is sent), `PluginGrantDraft` (the tool, project and settings being written) | `PluginSettingsSchema.swift`, `Plugins.swift` |
+| Molecules (Plugins) | `PluginRow`, `PluginGrantRow` (on `MultiplayerVerbStrip`), `PluginToolBlock`, `PluginSettingField` (on `MultiplayerField`) | `PluginsPage.swift` |
+| Organisms (Plugins) | `PluginList`, `PluginDetail` (on `NetworkInspector`, with `MultiplayerOutputWell` for the log), `PluginGrantSheet` | `PluginsPage.swift` |
+| Pages (Plugins) | `PluginsPage`, on `WorkspacePage` with `NetworkSplit` | `PluginsPage.swift` |
+| Feature model (MQTT panel) | `MQTTBridgeFeed`: the one connection to the MQTT Bridge daemon's `/api/stream`, its reads, the chosen topic, pause and the shown message. `MQTTContext` hands its state to the window as values with `MQTTActions`. | `MQTTBridge.swift` |
+| Molecules (MQTT panel) | `MQTTTopicTreeRow` (on `ShellSelectable`), `MQTTMessageRow` (on `ShellTableRow`) | `MQTTPanel.swift` |
+| Organisms (MQTT panel) | `MQTTTopicBrowser`, `MQTTMessageList` (on `ShellTableHeader`), `MQTTPayloadInspector` (on `NetworkInspector`, with `MultiplayerSegments` and `MultiplayerOutputWell`) | `MQTTPanel.swift` |
+| Pages (MQTT panel) | `MQTTPanelPage`, on `WorkspacePage` with `ShellReadoutStrip` and `NetworkSplit` | `MQTTPanel.swift` |
 
 ## Native composition and ownership
 
