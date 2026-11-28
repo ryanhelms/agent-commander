@@ -2,7 +2,7 @@
 
 Read the [Agent Commander design specification](../../DESIGN.md) before any design or interface work. It defines the visual language for the main window, zoom, PiP, and network tray.
 
-Use the specified colors, radii, type, spacing, and motion tokens in components. Reuse existing atoms and molecules first. When a view needs a new design rule, propose it and update the design specification in the same change. Update the specification in the same commit whenever you add or alter a component, token, or motion.
+Use the specified colors, radii, type, spacing, and motion tokens for every component value they cover. Reuse existing atoms and molecules first. When a view needs a new design rule, propose it and update the design specification in the same change. Update the specification in the same commit whenever you add or alter a component, token, or motion.
 
 Keep all design tokens, components, fixtures and assets in this repository. The repository named `design-system` is a separate project.
 
@@ -14,4 +14,4 @@ When changing a screen, identify its actual Swift components and compare the ren
 
 ## Console, Terminal, and Pretty
 
-Preserve Console mode rendering and the provider's output in Terminal mode. Follow the [Quiet theme section](../../DESIGN.md#quiet-theme-two-speeds-approved-target-not-yet-built) for changes to the Terminal well or frame. Follow the [Pretty transcript section](../../DESIGN.md#pretty-transcript) for the Pretty transcript.
+Preserve Console mode rendering and the provider's output in Terminal mode. Limit changes to the Terminal well or frame to those described in the [Quiet theme section](../../DESIGN.md#quiet-theme-two-speeds-approved-target-not-yet-built). Follow the [Pretty transcript section](../../DESIGN.md#pretty-transcript) for the Pretty transcript.
