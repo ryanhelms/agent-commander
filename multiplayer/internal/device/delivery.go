@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"agentcommander.network/pilot/internal/actions"
@@ -49,9 +50,10 @@ type outbound struct {
 	Children []control.Addressed `json:"children"`
 }
 type sendRecord struct {
-	Digest string
-	Wire   outbound
-	Audit  []AuditEntry `json:"audit,omitempty"`
+	Digest          string
+	Wire            outbound
+	Audit           []AuditEntry                             `json:"audit,omitempty"`
+	BuildChallenges map[string]actions.DesktopBuildChallenge `json:"buildChallenges,omitempty"`
 }
 
 func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any, error) {
@@ -87,8 +89,8 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 		}
 		record = sendRecord{Digest: digest, Wire: outbound{ID: in.ID}}
 		started := time.Now().UTC()
-		expiry := started.Add(maxApprovalWait).Truncate(time.Microsecond)
 		for _, t := range in.Targets {
+			expiry := started.Add(maxApprovalWait).Truncate(time.Microsecond)
 			i := slices.IndexFunc(resources, func(r control.Resource) bool {
 				return r.ID == t.Resource && r.Owner != s.User && slices.Contains(r.Actions, t.Action)
 			})
@@ -101,6 +103,21 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 				return nil, e
 			}
 			id := newID()
+			if t.Action == "app.build" {
+				challenge, err := actions.ParseDesktopBuildChallenge(t.Payload)
+				if err != nil {
+					return nil, err
+				}
+				now := time.Now().UTC()
+				expiry = challenge.ExpiresAt().Truncate(time.Microsecond)
+				if !challenge.FreshAt(now) || !expiry.After(now) {
+					return nil, actions.ErrBuildRequestExpired
+				}
+				if record.BuildChallenges == nil {
+					record.BuildChallenges = make(map[string]actions.DesktopBuildChallenge)
+				}
+				record.BuildChallenges[id] = challenge
+			}
 			h := devicekeys.Header{Sender: s.User, SenderDevice: s.Device, Recipient: r.Owner, RecipientDevice: r.Device, Operation: id, Resource: r.ID, Action: t.Action, Kind: "request", ExpiresAt: expiry}
 			env, e := a.keys.Seal(p, h, t.Payload)
 			if e != nil {
@@ -181,6 +198,17 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 			return nil, errors.New("receipt sender differs from the pinned device")
 		}
 		row := map[string]any{"id": c.ID, "peer": c.Owner, "resource": c.Resource, "action": c.Action, "status": c.Status}
+		challenge, hasChallenge := record.BuildChallenges[c.ID]
+		now := time.Now().UTC()
+		if c.Action == "app.build" && hasChallenge && !now.Before(challenge.ExpiresAt()) && len(c.Result) == 0 &&
+			(c.Status == "pending" || c.Status == "processing" || c.Status == "expired") {
+			// A claimed request can remain at the relay during a disconnect.
+			// This is local timeout evidence, not a signed peer outcome.
+			row["status"], row["buildEvidence"] = "expired", "expired"
+		}
+		if c.Action == "app.build" && c.Status == "completed" {
+			row["buildEvidence"] = "invalid"
+		}
 		var value json.RawMessage
 		if len(c.Result) > 0 {
 			r, e := a.keys.Open(peer, header(c, "result"), c.Result)
@@ -195,7 +223,18 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 				return nil, errors.New("receipt status does not match signed outcome")
 			}
 			value = signed.Value
-			row["result"] = value
+			if c.Action == "app.build" && c.Status == "completed" {
+				proof := challenge.ProofState(value, now)
+				row["buildEvidence"] = proof
+				switch proof {
+				case "verified":
+					row["result"] = value
+				case "invalid":
+					value = nil
+				}
+			} else {
+				row["result"] = value
+			}
 		}
 		if updated.updateAudit(c, value) {
 			changed = true
@@ -258,10 +297,20 @@ func wait(ctx context.Context, d time.Duration) bool {
 	}
 }
 func (a *Agent) receiveLoop() {
+	var retry backoff
 	for a.ctx.Err() == nil {
 		s, e := a.getSession(a.ctx)
 		if e != nil {
-			if !wait(a.ctx, time.Second) {
+			if errors.Is(e, errNotSignedIn) {
+				// Local check only: wait for a sign-in.
+				retry.reset()
+				if !a.pause(a.ctx, "receive", time.Second) {
+					return
+				}
+				continue
+			}
+			a.noteSessionProblem(s.User, e)
+			if !a.pause(a.ctx, "receive", retryDelay(e, &retry)) {
 				return
 			}
 			continue
@@ -271,21 +320,54 @@ func (a *Agent) receiveLoop() {
 		if e == nil {
 			e = a.remote(a.ctx, s, "PUT", "/v1/session", proof(l), &l)
 		}
+		opened := time.Now()
 		if e == nil {
+			a.logger().Info("session_open", "generation", l.Generation)
 			e = a.connected(a.ctx, s, l)
+			a.logger().Info("session_drop", "err", errText(e), "duration_ms", time.Since(opened).Milliseconds())
+			// A session that held counts as recovery; one that drops at
+			// once keeps backing off.
+			if time.Since(opened) > retryMax {
+				retry.reset()
+			}
+		} else if a.ctx.Err() == nil {
+			a.logger().Warn("session_open_failed", "err", errText(e))
 		}
 		a.mu.Lock()
 		if a.creds.Session.User == s.User {
 			a.lease = control.Lease{}
-			if e != nil {
-				a.problem = e.Error()
-			}
 		}
 		a.mu.Unlock()
-		if !wait(a.ctx, time.Second) {
+		if a.ctx.Err() != nil {
+			return
+		}
+		a.noteSessionProblem(s.User, e)
+		if !a.pause(a.ctx, "receive", retryDelay(e, &retry)) {
 			return
 		}
 	}
+}
+
+// errText renders an error for the network log and the tray. Request URLs
+// lose their query and fragment: inbox and session routes carry lease
+// identifiers there.
+func errText(e error) string {
+	if e == nil {
+		return ""
+	}
+	text := e.Error()
+	for err := e; err != nil; {
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			break
+		}
+		if u, perr := url.Parse(ue.URL); perr == nil && (u.RawQuery != "" || u.Fragment != "") {
+			u.RawQuery, u.Fragment, u.ForceQuery = "", "", false
+			text = strings.ReplaceAll(text, ue.URL, u.String())
+		}
+		err = ue.Err
+	}
+	return text
 }
 func (a *Agent) connected(parent context.Context, who identity.Session, l control.Lease) error {
 	ctx, cancel := context.WithCancel(parent)
@@ -299,6 +381,8 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 	a.sessionStop = cancel
 	a.problem = ""
 	a.mu.Unlock()
+	go a.syncCoordinatorInboxes(ctx, who, l)
+	go a.syncWorkspaceHandoffs(ctx, who, l)
 	go func() {
 		defer cancel()
 		for wait(ctx, 15*time.Second) {
@@ -320,14 +404,24 @@ func (a *Agent) connected(parent context.Context, who identity.Session, l contro
 	path := "/v1/inbox?wait=10&generation=" + strconv.FormatInt(l.Generation, 10) + "&session=" + url.QueryEscape(l.Session)
 	for ctx.Err() == nil {
 		s, e := a.getSession(ctx)
-		if e != nil || s.User != who.User {
+		if e != nil {
+			return e
+		}
+		if s.User != who.User {
 			return errors.New("device session changed")
 		}
 		if e = a.flushReceipts(ctx, s, l); e != nil {
 			return e
 		}
 		var inbox struct{ Children []control.Child }
-		if e = a.remote(ctx, s, "GET", path, nil, &inbox); e != nil {
+		poll := path
+		a.mu.Lock()
+		offersWorkspace := slices.ContainsFunc(a.policy.Resources, func(resource actions.Resource) bool { return resource.Workspace != "" })
+		a.mu.Unlock()
+		if offersWorkspace {
+			poll += "&workspace=1"
+		}
+		if e = a.remote(ctx, s, "GET", poll, nil, &inbox); e != nil {
 			return e
 		}
 		for _, c := range inbox.Children {
@@ -416,7 +510,20 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 	}
 	c.GrantGroup = claim.Child.GrantGroup
 	p := claimedRequest{child: c, payload: payload, peer: peer, arrived: time.Now().UTC()}
-	if verify == nil && a.needsApproval(c) {
+	if verify == nil && c.Action == "app.build" {
+		challenge, err := actions.ParseDesktopBuildChallenge(payload)
+		if err != nil {
+			return a.finish(ctx, s, l, p, nil, actions.FailureCode(err), "")
+		}
+		if !challenge.FreshAt(p.arrived) || !p.arrived.Before(challenge.ExpiresAt()) {
+			return a.finish(ctx, s, l, p, nil, actions.FailureCode(actions.ErrBuildRequestExpired), "")
+		}
+		p.buildExpires = challenge.ExpiresAt()
+	}
+	workspace := c.Action == "agent.handoff" && slices.ContainsFunc(a.localConfig(s).Resources, func(r actions.Resource) bool {
+		return r.ID == c.Resource && r.Workspace != ""
+	})
+	if verify == nil && !workspace && a.needsApproval(c) {
 		req := actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: payload}
 		if errors.Is(actions.CheckBudget(a.localConfig(s), req), actions.ErrBudgetExhausted) {
 			return a.finish(ctx, s, l, p, nil, "budget_exhausted", "")
@@ -435,8 +542,12 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 	var result json.RawMessage
 	var e error
 	if verify == nil && denial == "" {
-		task, cancel := context.WithDeadline(ctx, c.ExpiresAt)
-		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload})
+		deadline := c.ExpiresAt
+		if !p.buildExpires.IsZero() && p.buildExpires.Before(deadline) {
+			deadline = p.buildExpires
+		}
+		task, cancel := context.WithDeadline(ctx, deadline)
+		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload, Deadline: c.ExpiresAt})
 		cancel()
 	}
 	status := "completed"
@@ -480,4 +591,24 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 		return e
 	}
 	return a.flushReceipts(ctx, s, l)
+}
+
+func (a *Agent) syncWorkspaceHandoffs(ctx context.Context, who identity.Session, lease control.Lease) {
+	for ctx.Err() == nil {
+		session, err := a.getSession(ctx)
+		if err != nil || session.User != who.User || session.Device != who.Device {
+			return
+		}
+		actions.ProcessWorkspaceHandoffs(ctx, a.localConfig(session), func(ctx context.Context, id string) (bool, error) {
+			var admission struct{ Ready, Allowed bool }
+			err := a.remote(ctx, session, "POST", "/v1/children/"+url.PathEscape(id)+"/workspace-admission", proof(lease), &admission)
+			if err == nil && !admission.Ready {
+				err = errors.New("workspace delivery receipt is not ready")
+			}
+			return admission.Allowed, err
+		})
+		if !wait(ctx, 500*time.Millisecond) {
+			return
+		}
+	}
 }

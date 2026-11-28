@@ -131,6 +131,7 @@ final class TeamsPagesLiveState {
                 server.devices = TeamsLiveMapper.devices(roster)
             }
             server.adminProblem = adminProblems[id]
+            server.requests = server.isAdmin ? model.requests.waiting[id] : nil
             return server
         }
         for server in content.servers {
@@ -196,6 +197,9 @@ final class TeamsPagesLiveState {
         let roster = await teams.loadRoster(on: server)
         if let found = roster.value { rosters[server] = found }
         adminProblems[server] = policy.failure ?? roster.failure
+        // The requests to join are the model's own list, read on the tray's cadence too. A relay
+        // that won't list them leaves the band out, with no problem shown.
+        await model.requests.readWaiting(on: server)?.value
     }
 
     func readWorkspace(_ key: String, _ model: MultiplayerModel) async {
@@ -365,6 +369,12 @@ final class TeamsPagesLiveState {
         }
         actions.revokeDevice = { [self] device, server in
             let result = NetworkActionResult(await model.revokeDevice(device, on: server))
+            await readAdmin(server, model)
+            return result
+        }
+        actions.decideRequest = { [self] request, server, approve in
+            let result = NetworkActionResult(await model.decideMembershipRequest(request, on: server, approve: approve))
+            // An approval is a member the next time they sign in; the lists are read again either way.
             await readAdmin(server, model)
             return result
         }

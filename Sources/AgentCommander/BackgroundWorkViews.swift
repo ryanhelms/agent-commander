@@ -35,16 +35,23 @@ extension EnvironmentValues {
 struct PrettyLinkButton: View {
     let title: String
     let size: CGFloat
+    /// The title may take several lines in a column narrower than it. Off, the link keeps its
+    /// own width on one line, as every caller but a reply's link row draws it.
+    var wraps = false
     let action: () -> Void
 
     var body: some View {
-        Button(title, action: action)
+        let link = Button(title, action: action)
             .buttonStyle(.plain)
             .font(.system(size: size))
             .foregroundStyle(Palette.focus)
             .underline()
             .textSelection(.disabled)
-            .fixedSize()
+        if wraps {
+            link.multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+        } else {
+            link.fixedSize()
+        }
     }
 }
 
@@ -102,16 +109,33 @@ struct BackgroundJobLine<Detail: View>: View {
                      failure: row.line.reason.map { ActivityFailure(outcome: .failed, reason: $0, exact: $0) })
     }
 
+    /// A running job's sentence and chevron shimmer. The mark, the time and the tag stay still.
     private var label: some View {
+        labelParts(shimmerMask: false)
+            .prettyShimmer(isActive: row.line.mark == .spinner, band: PrettyShimmer.band(bodySize: metrics.bodySize)) {
+                labelParts(shimmerMask: true)
+            }
+            .contentShape(Rectangle())
+    }
+
+    /// The label, or its shimmer mask: the same layout with the still parts hidden.
+    private func labelParts(shimmerMask: Bool) -> some View {
         HStack(alignment: .center, spacing: 8) {
-            BackgroundMark(mark: row.line.mark, size: metrics.density == .pip ? 10 : 12)
+            let markSize: CGFloat = metrics.density == .pip ? 10 : 12
+            if shimmerMask {
+                // The mark's footprint, without a second spinner running unseen.
+                Color.clear.frame(width: markSize, height: markSize)
+            } else {
+                BackgroundMark(mark: row.line.mark, size: markSize)
+            }
             ActivitySentenceText(sentence: row.line.sentence, metrics: metrics)
                 .lineLimit(metrics.density == .regular ? 2 : 1).truncationMode(.middle)
-            if let started = row.line.started { PrettyElapsedText(started: started, metrics: metrics) }
-            if let tag = row.line.tag { ActivityTagView(tag: tag, metrics: metrics) }
+            if let started = row.line.started {
+                PrettyElapsedText(started: started, metrics: metrics).opacity(shimmerMask ? 0 : 1)
+            }
+            if let tag = row.line.tag { ActivityTagView(tag: tag, metrics: metrics).opacity(shimmerMask ? 0 : 1) }
             if opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
         }
-        .contentShape(Rectangle())
     }
 }
 
@@ -150,6 +174,7 @@ struct BackgroundStack: View {
     var openSource: (@MainActor (String) -> Void)? = nil
 
     @Environment(\.backgroundWork) private var access
+    @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     /// The finished and failed lines already spoken, so each is announced once.
     @State private var announced: Set<String>? = nil
 
@@ -233,7 +258,7 @@ struct BackgroundStack: View {
         VStack(alignment: .leading, spacing: 8) {
             switch job.kind {
             case .worker, .stop:
-                let turn = BackgroundTurn(job.console)
+                let turn = BackgroundTurn(job.console, hidesSecrets: details?.hidesSecrets ?? false)
                 if let summary = turn.summary {
                     Text(verbatim: summary).font(metrics.body).foregroundStyle(.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -323,8 +348,13 @@ struct BackgroundTurn {
     var failures: [ActivityStep] = []
     var live: ActivityStep? = nil
 
-    init(_ entries: [TranscriptEntry]) {
-        let items = ActivityConversation.items(ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty)))
+    /// - Parameter hidesSecrets: the transcript setting, so a folded notice's title in the
+    ///   summary is masked as it is in the child's own transcript.
+    init(_ entries: [TranscriptEntry], hidesSecrets: Bool = false) {
+        var facts = ActivityFacts.none
+        facts.hidesSecrets = hidesSecrets
+        let items = ActivityConversation.items(ConversationActivity.items(TranscriptEntry.displayed(entries, mode: .pretty)),
+                                               facts: facts)
         for item in items.reversed() {
             if case .group(let group) = item {
                 let closed = group.summary

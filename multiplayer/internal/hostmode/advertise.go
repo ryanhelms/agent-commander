@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"path/filepath"
 
 	"agentcommander.network/pilot/internal/bonjour"
+	"agentcommander.network/pilot/internal/directory"
 )
 
 // A host-mode relay advertises itself over Bonjour so Macs on the same LAN,
@@ -85,4 +87,31 @@ func ParseOnOff(v string) (bool, error) {
 		return false, nil
 	}
 	return false, errors.New(`expected "on" or "off"`)
+}
+
+// SetPublicListing lists the relay in the public directory under origin, or
+// stops listing it when origin is empty. directoryURL, when set, replaces the
+// directory's origin.
+func SetPublicListing(dir, origin, directoryURL string) error {
+	cfg, err := ReadConfig(dir)
+	if err != nil {
+		return err
+	}
+	if origin != "" {
+		if origin, err = directory.NormalizeURL(origin); err != nil {
+			return fmt.Errorf("public URL: %w", err)
+		}
+	}
+	if directoryURL != "" {
+		if directoryURL, err = directory.NormalizeURL(directoryURL); err != nil {
+			return fmt.Errorf("directory URL: %w", err)
+		}
+		cfg.DirectoryURL = directoryURL
+	}
+	cfg.PublicListing = origin
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return publishFile(filepath.Join(dir, "host.json"), append(data, '\n'), true)
 }

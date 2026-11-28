@@ -18,7 +18,7 @@ final class CockpitModel {
     var isStopping = false
     var sending: Set<String> = []
     private(set) var workerActions: Set<String> = []
-    private var replyAttempts: [String: (text: String, id: String)] = [:]
+    private var replyAttempts: [String: (text: String, generation: Int?, id: String)] = [:]
     private var followUpAttempts: [String: (text: String, generation: Int, id: String)] = [:]
     private var receivedStreamState = false
     private var usingLegacyService = false
@@ -56,6 +56,12 @@ final class CockpitModel {
     /// What Pretty shows beyond the console preview: stored tool arguments, results, plan items
     /// and times, and the transcript setting. Read beside the client's other requests.
     let toolDetails: ToolDetailStore
+    /// The provider's summary and error of each compaction row, read from its source record.
+    let compactions: CompactionSummaryStore
+    /// The link or text of each reply chunk that is a resource, read from its source record.
+    let replyAttachments: ReplyAttachmentStore
+    /// The sender and text of each message from another session, read from its source records.
+    let sessionMessages: SessionMessageStore
 
     init(endpoint: ServiceEndpoint = .live) {
         api = ServiceClient(endpoint: endpoint)
@@ -64,6 +70,9 @@ final class CockpitModel {
         attachments = .live(reader: reader)
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
+        compactions = CompactionFixture.isRequested ? CompactionFixture.store : .live(reader: reader)
+        replyAttachments = .live(reader: reader)
+        sessionMessages = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         toolDetails = ToolDetailStore(source: ToolDetailSource(
             page: { try await reader.toolDetails($0, after: $1) },
@@ -88,6 +97,11 @@ final class CockpitModel {
             try await reader.workerHistory(workerID, source: kind, cursor: cursor)
         }
         readProjects = { try await reader.projects() }
+        // An accepted form reply has a stored record and may bring no console event. The service
+        // stores it before it answers, so one read now holds it.
+        elicitations.formReplied = { [toolDetails] workerID, _ in
+            Task { await toolDetails.refresh(worker: workerID, afterInFlight: true) }
+        }
         hosts.serviceChanged = { [weak self] in self?.serviceChanged() }
         hosts.serviceInterrupted = { [weak self] in self?.serviceInterrupted(host: $0) }
         hosts.serviceResumed = { [weak self] in self?.serviceResumed() }
@@ -136,6 +150,9 @@ final class CockpitModel {
         usingLegacyService = false
         // The new service's transcript setting is not known yet: values stay hidden until it is.
         toolDetails.serviceChanged()
+        compactions.serviceChanged()
+        replyAttachments.serviceChanged()
+        sessionMessages.serviceChanged()
         sending = []
         replyAttempts = [:]
         followUpAttempts = [:]
@@ -143,15 +160,59 @@ final class CockpitModel {
 
     var selected: Run? { runs.first { $0.id == selectedID } }
 
+    /// The pending requests the developer answers, by the shared rule (`WorkerInputRoute`): a
+    /// coordinator's own, and a delegated worker's only while the developer controls that worker.
     var pending: [PendingDecision] {
         runs.flatMap { run in
             (run.requests ?? []).compactMap { request in
                 guard request.status == "pending",
-                      let worker = run.workers?.first(where: { $0.id == request.workerID })
+                      let worker = run.workers?.first(where: { $0.id == request.workerID }),
+                      run.inputRoute(of: worker).isDeveloper
                 else { return nil }
                 return PendingDecision(run: run, worker: worker, request: request)
             }
         }
+    }
+
+    /// What a reply to a request would do right now, read from the current runs.
+    enum ReplyTarget: Equatable {
+        /// Send it, under this worker-control generation. Nil for a coordinator's own request
+        /// and a worker with no control record.
+        case send(generation: Int?)
+        /// The request is its owner's again: the developer handed the worker back, or never held it.
+        case owner(worker: String, owner: WorkerInputOwner)
+        /// No pending request with this ID is in the current runs.
+        case gone
+    }
+
+    /// Checks a request against the authoritative state at the moment of sending, so a reply
+    /// control drawn before a hand-back cannot answer for the developer.
+    func replyTarget(requestID: String) -> ReplyTarget {
+        for run in runs {
+            guard let request = run.requests?.first(where: { $0.id == requestID }) else { continue }
+            guard request.status == "pending",
+                  let worker = run.workers?.first(where: { $0.id == request.workerID }) else { return .gone }
+            switch run.inputRoute(of: worker) {
+            case .developer(let generation): return .send(generation: generation)
+            case .owner: return .owner(worker: worker.name, owner: run.inputOwner(of: worker))
+            }
+        }
+        return .gone
+    }
+
+    /// Answers a request by its exact ID from a reply surface. A request that is no longer the
+    /// developer's is not sent, and the notice says who answers it.
+    func reply(requestID: String, text: String) async -> Bool {
+        if let item = pending.first(where: { $0.id == requestID }) { return await reply(to: item, text: text) }
+        if case .owner(let worker, let owner) = replyTarget(requestID: requestID) {
+            notice = Self.returnedToOwner(worker: worker, owner: owner, request: requestID)
+        }
+        return false
+    }
+
+    static func returnedToOwner(worker: String, owner: WorkerInputOwner, request: String) -> String {
+        "Reply to \(worker): request \(Identifier.short(request)) is with \(owner.phrase) again. "
+            + "Take control of \(worker) to answer it."
     }
 
     func select(_ id: String?) {
@@ -362,13 +423,26 @@ final class CockpitModel {
             notice = "Reply to \(worker.name): the worker is disconnected. The request stays pending until it is reconciled."
             return false
         }
+        // The route as it is now, not as it was when the surface was drawn. A request the current
+        // runs do not hold keeps the item's own route, as before.
+        let generation: Int?
+        switch replyTarget(requestID: item.id) {
+        case .send(let current): generation = current
+        case .owner(let name, let owner):
+            notice = Self.returnedToOwner(worker: name, owner: owner, request: item.id)
+            return false
+        case .gone:
+            guard case .developer(let own) = item.run.inputRoute(of: item.worker) else { return false }
+            generation = own
+        }
+        // The same answer retried under the same generation keeps its idempotency key.
         let prior = replyAttempts[item.id]
-        let key = prior?.text == text ? prior!.id : UUID().uuidString
-        replyAttempts[item.id] = (text, key)
+        let key = prior.flatMap { $0.text == text && $0.generation == generation ? $0.id : nil } ?? UUID().uuidString
+        replyAttempts[item.id] = (text, generation, key)
         sending.insert(item.id)
         defer { sending.remove(item.id) }
         do {
-            try await api.reply(to: item.id, answer: text, operationID: key)
+            try await api.reply(to: item.id, answer: text, operationID: key, generation: generation)
             replyAttempts.removeValue(forKey: item.id)
             if usingLegacyService { await refresh() }
             return true
@@ -441,9 +515,36 @@ final class CockpitModel {
         }
     }
 
+    /// The one gate for the owner's text to a coordinator. Open only after the service has verified
+    /// a native resume: it then reports the coordinator bound to its session, `available`, and
+    /// under a control record the owner holds. Before and during recovery (`starting`, `unknown`,
+    /// `reattaching`, no session, no record) and once the record is no longer held, it is closed.
+    /// It grants nothing else: taking and handing back control, interrupting, stopping, file
+    /// context and structured requests stay with delegated workers (`workerTarget`).
+    func canSendCoordinatorFollowUp(_ id: String) -> Bool { coordinatorFollowUpControl(id) != nil }
+
+    private func coordinatorFollowUpControl(_ id: String) -> WorkerControl? {
+        guard let run = runs.first(where: { $0.coordinatorID == id }),
+              let worker = run.workers?.first(where: { $0.id == id }), worker.role == "coordinator",
+              worker.boundSession != nil, controlRecordApplies(run, worker),
+              ProviderAvailability.allowsControl(ProviderAvailability(worker: worker)),
+              // An absent or unknown value is normal for a worker. A coordinator is sent to only
+              // on the service's own word that the resumed session answers.
+              worker.allFields[ProviderAvailability.fieldName]?.stringValue == ProviderAvailability.availableValue,
+              let control = worker.control, control.held else { return nil }
+        return control
+    }
+
+    /// The held control record a text follow-up is sent under: a delegated worker's, or the
+    /// record of a coordinator whose gate is open. Read again on every send, so the request
+    /// always carries the current generation of exactly the worker it names.
+    private func followUpControl(_ id: String) -> WorkerControl? {
+        guard canControlWorker(id) else { return coordinatorFollowUpControl(id) }
+        return workerTarget(id)?.1.control.flatMap { $0.held ? $0 : nil }
+    }
+
     func sendFollowUp(to id: String, text: String) async -> Bool {
-        guard canControlWorker(id), let control = workerTarget(id)?.1.control, control.held,
-              !workerActions.contains(id) else { return false }
+        guard let control = followUpControl(id), !workerActions.contains(id) else { return false }
         let prior = followUpAttempts[id]
         let operationID = prior.flatMap { attempt in
             attempt.text == text && attempt.generation == control.generation ? attempt.id : nil

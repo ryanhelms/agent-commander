@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ACTIVITY RESULT VIEWS
@@ -10,17 +11,20 @@ import SwiftUI
 //   Molecules  ResultFieldList          label and typed value rows (the generic renderer)
 //              ResultRecordTable        a uniform list as a table
 //              ResultQuote              quoted text that keeps its line breaks, clamped
-//              ResultWell               file lines or terminal output in the terminal face
+//              ResultWell               file lines, terminal output or a change in the terminal face
 //              ResultEmptyState         the sentence an empty result reads as
 //              ResultTruncationBanner   a result the service cut short
+//              ResultShortenedTag       "Shortened", beside one value the service shortened
+//              ResultImageRow           an image result's thumbnails, from `ResultImages`
 //              SecretValue              "Hidden, N characters" with Reveal
 //              SecretText               prose with its secret-looking values hidden, with Reveal
 //              ResultDisclosure         a quiet nested disclosure ("3 more fields, 1 empty")
 //              ResultSourceDisclosure   wire name, tool ID, call and result text; Copy is exact
 //   Organism   ActivityResultView       selects the renderer, then adds More fields and Source
 //
-// Hide-secrets is applied here, when a value is drawn. It covers Source too, and Copy needs
-// Reveal first. The stored record is never changed.
+// Hide-secrets is applied here, when a value is drawn. It covers the failure renderer's "Tried"
+// and Source, its wire name included, and Copy needs Reveal first. The stored record is never
+// changed.
 
 struct ActivityResultSource: Equatable {
     /// The tool's wire name. Empty for a result with no recorded call.
@@ -28,64 +32,105 @@ struct ActivityResultSource: Equatable {
     var toolID: String
     /// What was tried, in plain words, for the failure renderer.
     var tried: String
+    /// `tried` with its secret-looking values hidden: what the failure renderer draws under the
+    /// hide-secrets setting. The tool's name and its subject are each masked whole before
+    /// anything is cut from them.
+    var triedHidden: String
     var callText: String?
     var resultText: String?
     var statusWord: String
     var failure: ActivityFailure?
     /// The state now, from the run record by exact ID. Nil when the run record does not hold it.
     var liveState: String?
-    /// The stored values the service shortened: `input`, `result`.
-    var cut: [String] = []
+    /// Where the service cut the call and result texts in hand.
+    var callCut = StoredCut.unrecorded
+    var resultCut = StoredCut.unrecorded
     /// The stored short values of the call's arguments. They are exact, so they are read before
     /// the call's own text, which is the console's preview.
     var fields: [String: AGUIValue]? = nil
     /// `callText` is the stored record's full input.
     var callIsStored = false
+    /// The PNG images of the stored record's result, when it is exactly an image result.
+    var images: ResultImages? = nil
+    /// The typed diff blocks of the stored record's tool content (`ResultChanges.swift`).
+    var changes: ResultChanges? = nil
 
     /// One call of a line. `record` is the stored full record, once it has been read; `summary`
-    /// is the same record without its large values.
-    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?, summary: ToolDetailSummary? = nil) {
+    /// is the same record without its large values. `hidesSecrets` is the transcript setting as
+    /// the line's own step read it (`ToolDetailStore.hidesSecrets`): a failing call inside a
+    /// group reads its own failure here, and its texts are masked as the step's are.
+    init(entry: TranscriptEntry, step: ActivityStep, record: ToolDetailRecord?, summary: ToolDetailSummary? = nil,
+         hidesSecrets: Bool = false) {
         toolID = entry.detailKey
         fields = summary?.fields
         callIsStored = record?.input.map { !$0.isEmpty } ?? false
         failure = step.entries.count == 1 || step.entries.last?.id == entry.id ? step.failure : nil
         liveState = nil
-        cut = record?.truncated ?? []
         switch entry.kind {
         case .tool(let name, let detail, let result):
             self.name = name
+            images = record?.resultImages
+            changes = record?.resultChanges
             callText = record?.input.flatMap { $0.isEmpty ? nil : $0 } ?? detail
             resultText = record?.result.flatMap { $0.isEmpty ? nil : $0 } ?? result?.output
+            callCut = StoredCut(record: record, field: "input", isStored: callIsStored)
+            resultCut = StoredCut(record: record, field: "result", isStored: record?.result.map { !$0.isEmpty } ?? false)
             statusWord = result == nil ? "running" : (result?.error == nil ? "completed" : ToolStatus(result: result).word)
             if failure == nil, let result, result.error != nil {
-                failure = ActivityFailureWords.read(result, status: ToolStatus(result: result))
+                failure = ActivityFailureWords.read(result, status: ToolStatus(result: result), hidesSecrets: hidesSecrets)
             }
             if let call = CommanderCall(entry: entry) {
                 tried = call.tool.label
+                triedHidden = tried
                 liveState = call.facts?.liveOperationStatus ?? call.facts?.liveRequestStatus
             } else {
                 // What was tried, in plain words: the tool's label and its subject.
                 let subject = ActivityWords.fact(name, detail: detail, summary: summary, record: record)
-                    .map { ActivityWords.middle($0) }
-                tried = [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(name), subject]
-                    .compactMap { $0 }.joined(separator: ": ")
+                tried = Self.tried(name: name, subject: subject, hidesSecrets: false)
+                triedHidden = Self.tried(name: name, subject: subject, hidesSecrets: true)
             }
         case .output(let result):
             // A record stored under the result's exact tool call ID names the call.
             let stored = entry.toolCallID == nil ? nil : (record?.name ?? summary?.name)
             name = stored ?? ""
             callText = entry.toolCallID == nil ? nil : record?.input.flatMap { $0.isEmpty ? nil : $0 }
+            // Only a result that names its call by exact ID takes that call's stored diff.
+            changes = entry.toolCallID == nil ? nil : record?.resultChanges
+            callCut = StoredCut(record: record, field: "input", isStored: callText != nil)
             resultText = result.output
             statusWord = result.error == nil ? "completed" : ToolStatus(result: result).word
-            tried = stored.map { CommanderTool(name: $0)?.label ?? ProviderTool(name: $0)?.label ?? "Use " + ActivityWords.bareName($0) }
+            tried = stored.map { CommanderTool(name: $0)?.label ?? Self.tried(name: $0, subject: nil, hidesSecrets: false) }
                 ?? "A call that was not recorded"
+            triedHidden = stored.map { CommanderTool(name: $0)?.label ?? Self.tried(name: $0, subject: nil, hidesSecrets: true) }
+                ?? tried
         default:
             name = ""
             callText = nil
             resultText = nil
             statusWord = ""
             tried = ""
+            triedHidden = ""
         }
+    }
+
+    /// "Tried" as the failure renderer draws it: as sent, or with secret-looking values hidden.
+    func tried(hidesSecrets: Bool) -> String { hidesSecrets ? triedHidden : tried }
+
+    /// The tool's wire name as Source draws it, and how many values are hidden in it. A tool
+    /// Commander does not know can carry the provider's title as its name.
+    func shownName(hidesSecrets: Bool) -> (text: String, hidden: Int) {
+        guard hidesSecrets else { return (name, 0) }
+        let masked = SecretValues.masked(prose: name)
+        return (masked.text, masked.count)
+    }
+
+    /// A provider tool's "Tried": its label, or "Use name" for a tool Commander does not know,
+    /// then its subject cut in the middle.
+    private static func tried(name: String, subject: String?, hidesSecrets: Bool) -> String {
+        func shown(_ text: String) -> String { ActivityWords.shownName(text, hidesSecrets: hidesSecrets) }
+        return [ProviderTool(name: name)?.label ?? "Use " + ActivityWords.bareName(shown(name)),
+                subject.map { ActivityWords.middle(shown($0)) }]
+            .compactMap { $0 }.joined(separator: ": ")
     }
 }
 
@@ -152,6 +197,22 @@ struct ResultTruncationBanner: View {
     }
 }
 
+/// The mark on one value the service shortened: the existing tag atom in the waiting tone. It
+/// sits with the value, so the row reads "Label, value, Shortened".
+struct ResultShortenedTag: View {
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        ActivityTagView(tag: .shortened, metrics: metrics)
+            .help("Commander kept only the first part of this value.")
+            .textSelection(.disabled)
+    }
+}
+
+extension ActivityTag {
+    static let shortened = ActivityTag(word: "Shortened", tone: .wait)
+}
+
 struct ResultQuote: View {
     let text: String
     let metrics: PrettyMetrics
@@ -170,9 +231,48 @@ struct ResultQuote: View {
     }
 }
 
-/// Lines in the terminal face inside a well: a file's numbered lines, or a command's output.
+/// Lines in the terminal face inside a well: a file's numbered lines, a command's output, or a
+/// change's added and removed lines.
 struct ResultWell: View {
-    struct Line: Equatable { var number: String? = nil; let text: String; var isPrompt = false }
+    /// What a line is, in a change. An added or removed line takes its ink and a 9% wash of it
+    /// across the well; a note is a quiet line that stands for lines not drawn.
+    enum Tone: Equatable {
+        case plain, added, removed, note
+
+        var ink: Color? {
+            switch self {
+            case .plain: nil
+            case .added: Palette.working
+            case .removed: Palette.failure
+            case .note: Palette.secondary.opacity(0.7)
+            }
+        }
+
+        var wash: Color? {
+            switch self {
+            case .added: Palette.working.opacity(0.09)
+            case .removed: Palette.failure.opacity(0.09)
+            case .plain, .note: nil
+            }
+        }
+
+        /// What VoiceOver says before the line, where the ink and the sign say it to the eye.
+        var spoken: String? {
+            switch self {
+            case .added: "Added"
+            case .removed: "Removed"
+            case .plain, .note: nil
+            }
+        }
+    }
+
+    struct Line: Equatable {
+        /// The gutter: a file's line number, or a change's sign.
+        var number: String? = nil
+        let text: String
+        var isPrompt = false
+        var tone = Tone.plain
+    }
 
     let lines: [Line]
     let metrics: PrettyMetrics
@@ -181,26 +281,39 @@ struct ResultWell: View {
     var keepsEnd = false
     @State private var showsAll = false
 
+    /// The well's inset. A change line's wash reaches the well's edges across it.
+    private static let inset: CGFloat = 10
+    private static let rowSpacing: CGFloat = 1.5
+
     var body: some View {
         let hidden = showsAll ? 0 : max(0, lines.count - limit)
         let shown = hidden == 0 ? lines : (keepsEnd ? Array(lines.prefix(1).filter(\.isPrompt)) + lines.suffix(limit) : Array(lines.prefix(limit)))
         VStack(alignment: .leading, spacing: 4) {
-            VStack(alignment: .leading, spacing: 1.5) {
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
                 ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         if let number = line.number {
-                            Text(verbatim: number).foregroundStyle(Palette.secondary.opacity(0.7))
+                            Text(verbatim: number).foregroundStyle(line.tone.ink ?? Palette.secondary.opacity(0.7))
                                 .frame(width: 26, alignment: .trailing)
                         }
                         Text(verbatim: line.text.isEmpty ? " " : line.text)
-                            .foregroundStyle(line.isPrompt ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary))
+                            .foregroundStyle(line.tone.ink.map { AnyShapeStyle($0) }
+                                             ?? (line.isPrompt ? AnyShapeStyle(Palette.foreground) : AnyShapeStyle(.inkSecondary)))
                             .fontWeight(line.isPrompt ? .medium : .regular)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        // Washes of neighbouring lines meet: each covers half the row spacing.
+                        if let wash = line.tone.wash {
+                            wash.padding(.horizontal, -Self.inset).padding(.vertical, -Self.rowSpacing / 2)
+                        }
+                    }
+                    .modifier(ResultWellLineVoice(tone: line.tone, text: line.text))
                 }
             }
             .font(Term.font(metrics.codeSize))
-            .padding(.horizontal, 10).padding(.vertical, 7)
+            .padding(.horizontal, Self.inset).padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.well, in: RoundedRectangle(cornerRadius: metrics.chipRadius, style: .continuous))
             .overlay {
@@ -236,6 +349,80 @@ struct ResultWell: View {
         while let last = rows.last, last.text.isEmpty { rows.removeLast() }
         if let prompt { rows.insert(Line(text: "$ " + prompt, isPrompt: true), at: 0) }
         return rows
+    }
+}
+
+/// An added or removed line is one VoiceOver element, "Added: …" or "Removed: …". Any other
+/// line is left as it is.
+private struct ResultWellLineVoice: ViewModifier {
+    let tone: ResultWell.Tone
+    let text: String
+
+    func body(content: Content) -> some View {
+        if let spoken = tone.spoken {
+            content.accessibilityElement(children: .ignore)
+                .accessibilityLabel(text.isEmpty ? spoken + ": empty line" : spoken + ": " + text)
+        } else {
+            content
+        }
+    }
+}
+
+/// The images of an image result: one thumbnail per distinct PNG over its media type, then the
+/// fallback sentence when a part's bytes were not kept. Each thumbnail is decoded on this Mac
+/// from the bytes in the record, reduced as it is read; nothing is fetched.
+struct ResultImageRow: View {
+    let images: ResultImages
+    let metrics: PrettyMetrics
+
+    /// The approved thumbnail box (spec section H). A smaller image keeps its own size.
+    static let box = CGSize(width: 176, height: 108)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(images.images.enumerated()), id: \.offset) { _, data in
+                ResultImageThumbnail(data: data, metrics: metrics)
+            }
+            if images.unkept > 0 {
+                ResultEmptyState(sentence: ResultImages.unkeptSentence, metrics: metrics)
+                    .accessibilityLabel(images.unkept == 1 ? ResultImages.unkeptSentence
+                                        : "\(images.unkept) images. " + ResultImages.unkeptSentence)
+            }
+        }
+        .textSelection(.disabled)
+    }
+}
+
+/// One thumbnail and its media type. Bytes no decoder reads fall back to the sentence.
+private struct ResultImageThumbnail: View {
+    let data: Data
+    let metrics: PrettyMetrics
+    @State private var image: NSImage?
+    @State private var decoded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let image {
+                let shape = RoundedRectangle(cornerRadius: metrics.chipRadius, style: .continuous)
+                Image(nsImage: image)
+                    .resizable().interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: min(image.size.width, ResultImageRow.box.width),
+                           maxHeight: min(image.size.height, ResultImageRow.box.height), alignment: .leading)
+                    .clipShape(shape)
+                    .overlay { shape.strokeBorder(Palette.border, lineWidth: 1) }
+                    .accessibilityLabel("Thumbnail of the returned image")
+                Text(verbatim: ResultImages.mediaType)
+                    .font(.system(size: metrics.detailSize - 1)).foregroundStyle(.inkSecondary)
+            } else if decoded {
+                ResultEmptyState(sentence: ResultImages.unkeptSentence, metrics: metrics)
+            }
+        }
+        .task(id: data) {
+            // Twice the box, for a Retina display. The decoder never builds the full image.
+            image = SourceAttachment.thumbnail(of: data, maxPixel: Int(ResultImageRow.box.width) * 2)
+            decoded = true
+        }
     }
 }
 
@@ -360,7 +547,19 @@ struct ResultFieldList: View {
         }
     }
 
+    /// The value by its kind, with the tag beneath it when the service shortened it.
     @ViewBuilder private func value(_ row: ResultField) -> some View {
+        if row.isShortened || (row.kind == .scalarList && !row.shortened.isEmpty) {
+            VStack(alignment: .leading, spacing: 4) {
+                typed(row)
+                ResultShortenedTag(metrics: metrics)
+            }
+        } else {
+            typed(row)
+        }
+    }
+
+    @ViewBuilder private func typed(_ row: ResultField) -> some View {
         let size = metrics.detailSize + 0.5
         switch row.kind {
         case .status:
@@ -406,15 +605,17 @@ struct ResultFieldList: View {
                 .fixedSize(horizontal: false, vertical: true)
         case .longText:
             let text = row.value.string ?? ""
-            // A string that is itself JSON is read and nested.
-            if depth < 4, let inner = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines))?.value,
+            // A string that is itself JSON is read and nested. A shortened one is not whole JSON.
+            if !row.isShortened, depth < 4, let inner = OrderedJSON.read(text.trimmingCharacters(in: .whitespacesAndNewlines))?.value,
                inner.members != nil {
                 ResultFieldList(rows: ResultField.rows(inner), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
             } else {
                 ResultQuote(text: text, metrics: metrics)
             }
         case .scalarList:
-            let items = (row.value.items ?? []).compactMap(\.scalarText)
+            let items = (row.value.items ?? []).enumerated().compactMap { index, item in
+                row.shortened.under(index).isHere ? item.scalarText.map(ShortenedPaths.unmarked) : item.scalarText
+            }
             if items.count <= 6 {
                 Text(verbatim: items.joined(separator: ", ")).font(.system(size: size)).foregroundStyle(Palette.foreground)
                     .fixedSize(horizontal: false, vertical: true)
@@ -428,12 +629,19 @@ struct ResultFieldList: View {
         case .table:
             let items = row.value.items ?? []
             if ResultShape.uniform(items), items.count > 1 {
-                ResultRecordTable(items: items, metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultRecordTable(items: items, metrics: metrics, hidesSecrets: hidesSecrets, shortened: row.shortened)
             } else if depth < 4 {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         if item.members != nil {
-                            ResultFieldList(rows: ResultField.rows(item), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
+                            ResultFieldList(rows: ResultField.rows(item, shortened: row.shortened.under(index)), metrics: metrics,
+                                            hidesSecrets: hidesSecrets, depth: depth + 1)
+                        } else if row.shortened.under(index).isHere, let text = item.string {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: "\(index + 1). " + ShortenedPaths.unmarked(text)).font(.system(size: size))
+                                    .foregroundStyle(Palette.foreground)
+                                ResultShortenedTag(metrics: metrics)
+                            }
                         } else {
                             Text(verbatim: "\(index + 1). " + (item.scalarText ?? "list")).font(.system(size: size))
                                 .foregroundStyle(Palette.foreground)
@@ -451,7 +659,8 @@ struct ResultFieldList: View {
                 // Open when it has four or fewer scalar fields.
                 ResultDisclosure(title: members.count == 1 ? "1 field" : "\(members.count) fields", metrics: metrics,
                                  startsOpen: members.filter { $0.value.isScalar }.count <= 4 && members.count <= 4) {
-                    ResultFieldList(rows: ResultField.rows(row.value), metrics: metrics, hidesSecrets: hidesSecrets, depth: depth + 1)
+                    ResultFieldList(rows: ResultField.rows(row.value, shortened: row.shortened), metrics: metrics,
+                                    hidesSecrets: hidesSecrets, depth: depth + 1)
                 }
             }
         case .secret:
@@ -474,23 +683,11 @@ struct ResultRecordTable: View {
     /// Columns a renderer names. Nil picks them from the records.
     var columns: [String]? = nil
     var limit = 12
+    /// The strings the service shortened in `items`, as paths from the list.
+    var shortened = ShortenedPaths.none
     @State private var showsAll = false
 
-    static let identifying = ["name", "title", "id", "label", "peer", "resource"]
-
-    static func columns(of items: [OrderedJSON]) -> [String] {
-        var seen: [String] = []
-        for item in items {
-            for member in item.members ?? [] where member.value.isScalar && !seen.contains(member.key) {
-                seen.append(member.key)
-            }
-        }
-        if let lead = identifying.first(where: seen.contains) {
-            seen.removeAll { $0 == lead }
-            seen.insert(lead, at: 0)
-        }
-        return Array(seen.prefix(5))
-    }
+    static func columns(of items: [OrderedJSON]) -> [String] { ResultShape.columns(of: items) }
 
     var body: some View {
         let keys = columns ?? Self.columns(of: items)
@@ -503,10 +700,21 @@ struct ResultRecordTable: View {
                             .foregroundStyle(.inkSecondary).lineLimit(1)
                     }
                 }
-                ForEach(Array(shown.enumerated()), id: \.offset) { _, item in
+                ForEach(Array(shown.enumerated()), id: \.offset) { index, item in
                     Rectangle().fill(Palette.hairline).frame(height: 1).gridCellUnsizedAxes(.horizontal)
                     GridRow {
-                        ForEach(keys, id: \.self) { key in cell(key, item[key]) }
+                        ForEach(keys, id: \.self) { key in
+                            if shortened.under(index).under(key).isHere, let text = item[key]?.string {
+                                // The cell's own value was shortened: the tag sits in the cell.
+                                VStack(alignment: .leading, spacing: 4) {
+                                    cell(key, .string(ShortenedPaths.unmarked(text)))
+                                    ResultShortenedTag(metrics: metrics)
+                                }
+                                .accessibilityElement(children: .combine)
+                            } else {
+                                cell(key, item[key])
+                            }
+                        }
                     }
                 }
             }
@@ -549,12 +757,15 @@ struct ResultSourceDisclosure: View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(Palette.hairline).frame(height: 1).padding(.bottom, 8)
             ResultDisclosure(title: "Source", metrics: metrics, mono: true) {
-                let call = part(source.callText)
-                let result = part(source.resultText)
-                let hidden = call.hidden + result.hidden
+                let call = part(source.callText, cut: source.callCut)
+                let result = part(source.resultText, cut: source.resultCut)
+                // The name is hidden and revealed with the texts: one count, one Reveal.
+                let name = source.shownName(hidesSecrets: hidesSecrets)
+                let hidden = name.hidden + call.hidden + result.hidden
                 VStack(alignment: .leading, spacing: 6) {
                     VStack(alignment: .leading, spacing: 3) {
-                        (Text(verbatim: source.name.isEmpty ? "result" : source.name).foregroundColor(Palette.foreground)
+                        (Text(verbatim: source.name.isEmpty ? "result" : (isRevealed ? source.name : name.text))
+                            .foregroundColor(Palette.foreground)
                          + Text(verbatim: "  " + source.toolID + "  " + source.statusWord))
                             .fixedSize(horizontal: false, vertical: true)
                         if let text = call.text {
@@ -565,8 +776,8 @@ struct ResultSourceDisclosure: View {
                             Text(source.failure == nil ? "result" : "error").foregroundStyle(Palette.foreground)
                             Text(verbatim: text).fixedSize(horizontal: false, vertical: true)
                         }
-                        if call.isCut || result.isCut || !source.cut.isEmpty {
-                            Text("The text ends here: it was cut short before it was stored.").foregroundStyle(Palette.attention)
+                        if let note = Self.note(call: call.cut, result: result.cut) {
+                            Text(verbatim: note).foregroundStyle(Palette.attention)
                         }
                     }
                     .font(Term.font(metrics.codeSize - 0.5))
@@ -603,13 +814,35 @@ struct ResultSourceDisclosure: View {
         }
     }
 
+    /// How one text of Source was cut, from the service's record and the text's own end.
+    enum Cut: Equatable { case none, end, values }
+
+    static func cut(_ formatted: PrettyJSON.Formatted, stored: StoredCut) -> Cut {
+        switch stored {
+        case .complete: .none
+        case .unrecorded: formatted.isCut ? .end : .none
+        case .end: .end
+        // Listed with no path. Whole JSON was shortened inside; any other text lost its end.
+        case .unlocated: formatted.isJSON && !formatted.isCut ? .values : .end
+        case .strings: .values
+        }
+    }
+
+    /// The line that ends Source's text when the service shortened the call or the result.
+    static func note(call: Cut, result: Cut) -> String? {
+        if call == .end || result == .end { return "The text ends here: it was cut short before it was stored." }
+        if call == .values || result == .values { return "One or more values were shortened before this text was stored." }
+        return nil
+    }
+
     /// One text as Source shows it: JSON indented, secrets hidden unless revealed.
-    private func part(_ text: String?) -> (text: String?, hidden: Int, isCut: Bool) {
-        guard let text, text.contains(where: { !$0.isWhitespace }) else { return (nil, 0, false) }
-        let formatted = PrettyJSON.format(text)
-        guard hidesSecrets else { return (formatted.text, 0, formatted.isCut) }
+    private func part(_ text: String?, cut: StoredCut) -> (text: String?, hidden: Int, cut: Cut) {
+        guard let text, text.contains(where: { !$0.isWhitespace }) else { return (nil, 0, .none) }
+        let formatted = PrettyJSON.format(text, cut: cut)
+        let how = Self.cut(formatted, stored: cut)
+        guard hidesSecrets else { return (formatted.text, 0, how) }
         let masked = SecretValues.masked(text: formatted.text)
-        return (isRevealed ? formatted.text : masked.text, masked.count, formatted.isCut)
+        return (isRevealed ? formatted.text : masked.text, masked.count, how)
     }
 }
 
@@ -621,20 +854,37 @@ struct ActivityResultView: View {
     let source: ActivityResultSource
     let metrics: PrettyMetrics
     var hidesSecrets = false
+    /// Whether a change's lines hide their secret-looking values, when the caller knows better
+    /// than `hidesSecrets`: the store's answer, which hides until the saved setting is read.
+    var hidesChangeText: Bool? = nil
     var copy: (String) -> Void = { _ in }
 
     var body: some View {
-        let payload = ResultPayload.read(source.resultText)
+        let payload = ResultPayload.read(source.resultText, cut: source.resultCut)
         let failed = source.failure != nil
         let selection = ResultShape.select(tool: source.name, payload: payload, resultText: source.resultText, failed: failed)
+        // An image result is its thumbnails. A failure keeps the failure renderer.
+        let images = selection.shape == .failure ? nil : source.images
+        // The call's typed diff blocks come from its tool content, so they are drawn whatever the
+        // result holds. They stand in only for the Change renderer's own body: an edit's result
+        // text, which stays in Source. Images and a structured result's fields are drawn as before.
+        let changes = selection.shape == .failure ? nil : source.changes
+        let replaced = Self.replacesBody(selection, changes: changes)
         VStack(alignment: .leading, spacing: 10) {
-            if !failed, payload.isCut || source.cut.contains("result") {
-                ResultTruncationBanner(text: "Commander kept only the first part of this result. The end is missing.",
-                                       metrics: metrics)
+            // The end of the result is gone, or values were shortened that no tag below marks.
+            if !failed, images == nil, !replaced, let sentence = ResultShape.notice(selection, payload: payload).sentence {
+                ResultTruncationBanner(text: sentence, metrics: metrics)
             }
-            typed(selection, payload: payload)
-            if let value = payload.value, !selection.remaining.isEmpty {
-                let rows = ResultField.rows(value, keys: selection.remaining)
+            if let changes {
+                ResultChangeList(changes: changes, metrics: metrics, hidesSecrets: hidesChangeText ?? hidesSecrets)
+            }
+            if let images {
+                ResultImageRow(images: images, metrics: metrics)
+            } else if !replaced, !Self.isAbsentDiff(selection, changes: changes) {
+                typed(selection, payload: payload)
+            }
+            if images == nil, let value = payload.value, !selection.remaining.isEmpty {
+                let rows = ResultField.rows(value, keys: selection.remaining, shortened: payload.shortened)
                 let empty = rows.filter { $0.kind == .empty }.count
                 ResultDisclosure(title: (rows.count == 1 ? "1 more field" : "\(rows.count) more fields")
                                  + (empty > 0 ? ", \(empty) empty" : ""), metrics: metrics) {
@@ -670,7 +920,8 @@ struct ActivityResultView: View {
         case .checklist(let key):
             PrettyPlanCard(items: PlanItem.items(key.flatMap { value[$0] } ?? value) ?? [], metrics: metrics)
         case .recordTable(let key):
-            ResultRecordTable(items: (key.flatMap { value[$0] } ?? value).items ?? [], metrics: metrics, hidesSecrets: hidesSecrets)
+            ResultRecordTable(items: (key.flatMap { value[$0] } ?? value).items ?? [], metrics: metrics, hidesSecrets: hidesSecrets,
+                              shortened: key.map { payload.shortened.under($0) } ?? payload.shortened)
         case .messageList(let key):
             messages((key.flatMap { value[$0] } ?? value).items ?? [], truncated: value["truncated"]?.bool == true)
         case .runRoster:
@@ -678,17 +929,31 @@ struct ActivityResultView: View {
         case .report:
             ResultFieldList(rows: ResultField.rows(value, keys: ["id"]), metrics: metrics, labels: ["id": "Reported by"])
         case .workerCard, .questionCard, .acknowledgement, .operationReceipt, .followUp, .controlState:
-            ResultFieldList(rows: ResultField.rows(value, keys: selection.placed), metrics: metrics, hidesSecrets: hidesSecrets,
-                            liveState: source.liveState, labels: Self.labels(selection.shape))
+            ResultFieldList(rows: ResultField.rows(value, keys: selection.placed, shortened: payload.shortened), metrics: metrics,
+                            hidesSecrets: hidesSecrets, liveState: source.liveState, labels: Self.labels(selection.shape))
         case .generic:
             if value.members != nil {
-                ResultFieldList(rows: ResultField.rows(value), metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultFieldList(rows: ResultField.rows(value, shortened: payload.shortened), metrics: metrics, hidesSecrets: hidesSecrets)
             } else if let items = value.items {
-                ResultFieldList(rows: [ResultField(key: "items", value: .array(items))], metrics: metrics, hidesSecrets: hidesSecrets)
+                ResultFieldList(rows: [ResultField(key: "items", value: .array(items), shortened: payload.shortened)], metrics: metrics,
+                                hidesSecrets: hidesSecrets)
             } else {
                 ResultEmptyState(sentence: "This result could not be read as data. Its text is in Source.", metrics: metrics)
             }
         }
+    }
+
+    /// The "no diff" sentence of an edit with no result text is left out when the record does
+    /// hold diff parts: what is said of them stands in its place.
+    static func isAbsentDiff(_ selection: ResultShape.Selection, changes: ResultChanges?) -> Bool {
+        changes != nil && selection.shape == .empty(ResultChanges.absentSentence)
+    }
+
+    /// Whether the diff blocks stand in for the typed body: only for an edit's own result text
+    /// (the Change renderer), and only when a block has lines or a sentence to draw. Any other
+    /// result keeps its body and its More fields beside the change.
+    static func replacesBody(_ selection: ResultShape.Selection, changes: ResultChanges?) -> Bool {
+        changes?.hasDrawableBlock == true && selection.shape == .change
     }
 
     static func labels(_ shape: ResultShape) -> [String: String] {
@@ -716,12 +981,15 @@ struct ActivityResultView: View {
     }
 
     private func failure(_ payload: ResultPayload) -> some View {
+        // The wrapper's error is as hidden as the line above it, which follows the store's answer.
         let failure = source.failure
-            ?? ActivityFailure(outcome: .failed, reason: payload.wrapperError ?? ActivityFailureWords.noReason,
-                               exact: payload.wrapperError ?? ActivityFailureWords.noReason)
+            ?? ActivityFailureWords.wrapper(payload.wrapperError, hidesSecrets: hidesChangeText ?? hidesSecrets)
         return VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
-                row("Tried") { Text(verbatim: source.tried).foregroundStyle(Palette.foreground) }
+                // As hidden as the line above it, which follows the store's answer.
+                row("Tried") {
+                    Text(verbatim: source.tried(hidesSecrets: hidesChangeText ?? hidesSecrets)).foregroundStyle(Palette.foreground)
+                }
                 row("Outcome") {
                     HStack(spacing: 6) {
                         StatusLamp(word: failure.tag.word, size: metrics.detailSize + 0.5)

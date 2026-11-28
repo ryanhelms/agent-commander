@@ -41,7 +41,7 @@ The panel will instead hold a list of relay servers that you enter. Commander co
 - **Status per server.** Signed out, connecting, online, offline (with last seen), or certificate changed.
 - **Remove server.** Signs out, deletes this device's keys for that server from Keychain, and deletes its local policy files.
 - **Invite links.** `agentcommander://join?server=…&pin=…&from=…` adds the server with its certificate pin and can carry a friend request from the sender. A link can also be shown as a short code or QR code.
-- **Proposed: discovery.** A host-mode relay advertises itself over Bonjour (`_agentcommander._tcp`). The panel lists relays it finds on the LAN as one-click suggestions. Bonjour does not cross Headscale, so invite links remain the main path.
+- **Proposed: discovery.** Relays on the tailnet, the LAN, other VPNs and a public directory, with a join checklist per relay. See [relay discovery](COMMANDER-NETWORK-DISCOVERY.md).
 
 ### 2. Identity and presence
 

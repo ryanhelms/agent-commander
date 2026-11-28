@@ -22,6 +22,10 @@ type networkSubmit struct {
 type networkReceipt struct {
 	ID string `json:"id" jsonschema:"original operation ID"`
 }
+type networkInbox struct {
+	AfterMessageID string `json:"afterMessageId,omitempty" jsonschema:"last inbox message ID processed; omit to read the retained window"`
+	WaitSeconds    int    `json:"waitSeconds,omitempty" jsonschema:"wait up to 10 seconds for a message; omit for an immediate snapshot"`
+}
 type networkThread struct {
 	Request string `json:"request" jsonschema:"request ID for the thread"`
 	Text    string `json:"text,omitempty" jsonschema:"comment to add to the thread"`
@@ -44,7 +48,7 @@ func registerNetworkTools(s *mcp.Server, run, actor, token, path string) error {
 		path = filepath.Join(home, ".agent-commander", "network.sock")
 	}
 	c := localapi.New(path, token)
-	register(s, "commander_network_inbox", "Read recent private messages addressed to this coordinator. A paired coordinator can reply with agent.message on a peer resource that grants it.", func(ctx context.Context, in struct{}) (json.RawMessage, error) {
+	register(s, "commander_network_inbox", "Read or wait for private messages addressed to this active coordinator. Reuse the last message ID to receive subsequent messages. A peer can reply with agent.message when the owner has shared this coordinator and granted that action.", func(ctx context.Context, in networkInbox) (json.RawMessage, error) {
 		return c.Coordinator(ctx, "inbox", run, actor, in)
 	})
 	register(s, "commander_network_discover", "List granted peer resources and actions, with descriptions and JSON Schema payloads in actionContracts. Select the action from the chosen resource's actions list.", func(ctx context.Context, in struct{}) (json.RawMessage, error) {

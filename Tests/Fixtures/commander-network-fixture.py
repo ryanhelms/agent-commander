@@ -83,6 +83,36 @@ A pending login turns into `running` on the third `tailnet-status` read after it
 running is refused, as the device agent refuses it. The state is kept in the scratch file and starts
 again when the variable changes. These verbs name no server and refuse any field they don't know.
 
+Relay discovery (design/COMMANDER-NETWORK-DISCOVERY.md): `relay-discover`, `relay-discover-seen` and
+`relay-join` answer for made-up relays. Nothing is browsed or dialled.
+COMMANDER_NETWORK_FIXTURE_DISCOVERY picks what is nearby:
+
+    nearby    (the default) build-relay on the tailnet (verified, open, joins with no pin), den-mini
+              on the local network (invite only, its fingerprint needs confirming, and the pin it
+              advertises matches), attic-relay on the tailnet (unreachable), and studio-relay, which
+              is already in the list. The first three are `new` until `relay-discover-seen`.
+    none      both sources ran and found nothing.
+    offnet    this Mac is not on a tailnet: only den-mini is listed, and it can't be reached.
+
+`relay-join` adds the relay as `server-add` would. It refuses a relay that needs confirming unless
+`pin` is the observed pin, and never accepts another pin. The seen marks are kept in the scratch file.
+
+Membership requests (design/COMMANDER-NETWORK-DISCOVERY.md): COMMANDER_NETWORK_FIXTURE_ACCESS makes
+every `login` to a server that isn't signed in a refused one, and picks what follows. Unset, a
+sign-in succeeds as before.
+
+    requestable  the refusal can be followed by `membership-request`, which is taken (pending) and
+                 approved on the third `membership-request-status` read after it.
+    pending      a request made about two hours ago is still waiting.
+    approved     a request was approved five minutes ago; the next `login` is admitted.
+    denied       a request was declined three hours ago; asking again is refused for a day.
+    full         `membership-request` is refused because the relay's queue is full.
+
+After a refusal `status` carries `accessRequest` and the refusal as `error`. `membership-request`
+without a refusal is refused ("sign in first…"), and on a signed-in server too ("already a member…").
+`admin-requests` lists two people waiting on ryan-mac's admin and is refused on any other server;
+`admin-request-decide` takes one off the list. Each refuses any field it doesn't know.
+
 Increment 5: ryan-mac has two groups (relay-team, which you own, and ios-crew), two workspaces
 (Relay reconnect on a merge queue with claims, a board and three queued branches; iOS onboarding on
 pull requests), a host you lend (studio-mac) and two that friends lend (jonas-mac-mini is granted,
@@ -1340,6 +1370,103 @@ def teams(state, verb, request):
     return {"queue": rows}
 
 
+ACCESS_MODES = ("requestable", "pending", "approved", "denied", "full")
+REFUSED = "this relay did not admit your account."
+ASKABLE = " You can ask the relay's admins to let you in."
+MEMBERSHIP_REQUESTS = [
+    ("mr-noor", "noor@lab.example", "I'm on the relay team from next sprint. Sam said to ask here.", -25),
+    ("mr-jules", "jules@example.org", "", -300),
+]
+
+
+def refuse_login(state, server):
+    """A sign-in the relay turns away, as COMMANDER_NETWORK_FIXTURE_ACCESS says. True when refused."""
+    mode = os.environ.get("COMMANDER_NETWORK_FIXTURE_ACCESS", "")
+    if mode not in ACCESS_MODES or server["signedIn"]:
+        return False
+    asked = state.setdefault("access", {})
+    row = asked.get(server["id"])
+    if row and row["state"] == "approved":
+        # Approval admits the person once, on their next sign-in.
+        row["state"] = "admitted"
+        return False
+    if row and row["state"] in ("pending", "denied"):
+        return True
+    row = {"mode": mode, "state": "requestable", "note": "", "reads": 0}
+    if mode == "pending":
+        row.update(state="pending", id="mr-you", note="I work with Sam on the relay.", createdAt=now(-125))
+    elif mode == "approved":
+        row.update(state="approved", id="mr-you", createdAt=now(-125), decidedAt=now(-5))
+    elif mode == "denied":
+        row.update(state="denied", id="mr-you", createdAt=now(-300), decidedAt=now(-180))
+    asked[server["id"]] = row
+    return True
+
+
+def access_status(state, server):
+    """What `status` adds for a server whose sign-in was refused."""
+    row = state.get("access", {}).get(server["id"])
+    if not row or row["state"] == "admitted" or server["signedIn"]:
+        return {}
+    word = row["state"]
+    return {"accessRequest": word, "error": REFUSED + (ASKABLE if word == "requestable" else "")}
+
+
+def membership(state, verb, request):
+    """A person's request to join after a refused sign-in, and an admin's list and answer."""
+    allowed = {"membership-request": {"server", "note"}, "membership-request-status": {"server"},
+               "admin-requests": {"server"}, "admin-request-decide": {"server", "id", "decision"}}[verb]
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    server = find(state, request)
+    if verb in ("admin-requests", "admin-request-decide"):
+        if server["id"] != "s-fixture-home" or not server["signedIn"]:
+            raise ValueError("only a relay admin can list membership requests")
+        decided = state.setdefault("membershipDecided", [])
+        waiting = [{"id": ident, "email": email, "note": note, "status": "pending", "createdAt": now(minutes)}
+                   for ident, email, note, minutes in MEMBERSHIP_REQUESTS if ident not in decided]
+        if verb == "admin-requests":
+            return {"requests": waiting}
+        if request.get("decision") not in ("approve", "deny"):
+            raise ValueError("decision must be approve or deny")
+        if not any(row["id"] == request.get("id") for row in waiting):
+            raise ValueError("no pending membership request with that ID")
+        decided.append(request["id"])
+        save(state)
+        return {}
+    row = state.setdefault("access", {}).get(server["id"])
+
+    def shown():
+        out = {"id": row.get("id", ""), "status": row["state"], "note": row.get("note", ""), "createdAt": row.get("createdAt", "")}
+        if row.get("decidedAt"):
+            out["decidedAt"] = row["decidedAt"]
+        return out
+
+    if verb == "membership-request-status":
+        if not row or row["state"] in ("requestable", "full"):
+            return {"status": ""}
+        if row["state"] == "pending" and row.get("mode") == "requestable":
+            row["reads"] = row.get("reads", 0) + 1
+            if row["reads"] >= 3:
+                row.update(state="approved", decidedAt=now())
+            save(state)
+        return shown()
+    if server["signedIn"]:
+        raise ValueError("already a member of this relay")
+    if not row or row["state"] == "admitted":
+        raise ValueError("sign in first; a request must follow a refused sign-in from this Mac within 15 minutes")
+    if row["state"] == "denied":
+        raise ValueError("the relay's admins declined a request from this account in the last day")
+    if row.get("mode") == "full":
+        row["state"] = "full"
+        save(state)
+        raise ValueError("the relay has too many pending requests; ask an admin directly")
+    if row["state"] == "requestable":
+        row.update(state="pending", id="mr-you", note=(request.get("note") or "").strip()[:280], createdAt=now(), reads=0)
+        save(state)
+    return shown()
+
+
 def summary(server, state=None):
     live = server["state"] == "online" and server["id"] in FRIENDS
     home = live and server["id"] == "s-fixture-home"
@@ -1392,12 +1519,100 @@ def probe(request):
     return result
 
 
+DISCOVERY_MODES = ("nearby", "none", "offnet")
+
+
+def discovery(state, verb, request):
+    """The relays nearby, the seen marks, and adding one to the list. Nothing is browsed or dialled."""
+    allowed = {"relay-discover": {"refresh"}, "relay-discover-seen": {"relays"},
+               "relay-join": {"relay", "pin", "name"}}[verb]
+    if set(request) - allowed:
+        raise ValueError("invalid request")
+    mode = os.environ.get("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "nearby")
+    if mode not in DISCOVERY_MODES:
+        mode = "nearby"
+    seen = state.setdefault("discovery", {"seen": []})["seen"]
+
+    def relay(name, url, sources, reachable=True, verified=False, membership="open", error="", advertised=False,
+              contact=""):
+        pin, fingerprint = presented(url)
+        saved = next((server for server in state["servers"] if server["url"] == url), None)
+        row = {"id": "r-" + hashlib.sha256(url.encode()).hexdigest()[:12], "name": name, "url": url,
+               "sources": sources, "reachable": reachable, "systemTrusted": False, "added": saved is not None,
+               "lastSeen": now()}
+        if reachable:
+            row.update(pin=pin, fingerprint=fingerprint, version="0.4.0", mode="host", membership=membership,
+                       issuer="https://accounts.example", clientId="fixture.apps.example")
+            if contact:
+                row["adminContact"] = contact
+            if verified:
+                row.update(verified="tailnet", tailnetNode=name)
+            if advertised:
+                row.update(advertisedPin=pin, advertisedPinMatches=True)
+        else:
+            row["error"] = error
+        if saved:
+            row.update(serverId=saved["id"], next="done" if saved["signedIn"] else "sign-in")
+        elif not reachable:
+            row["next"] = "unreachable"
+        else:
+            row["next"] = "add" if verified else "confirm"
+        row["new"] = not saved and row["id"] not in seen
+        return row
+
+    den = ("den-mini", "https://den-mini.local:8443", ["bonjour"])
+    if mode == "none":
+        relays = []
+    elif mode == "offnet":
+        relays = [relay(*den, reachable=False, error="dial tcp 100.64.0.31:8443: connect: no route to host")]
+    else:
+        relays = [
+            relay("build-relay", "https://build-relay.%s" % TAILNET_SUFFIX, ["tailnet"], verified=True),
+            relay(*den, membership="invite", advertised=True, contact="ops@lab.example"),
+            relay("attic-relay", "https://attic-relay.%s" % TAILNET_SUFFIX, ["tailnet"], reachable=False,
+                  error="dial tcp 100.64.0.23:443: i/o timeout"),
+            relay("studio-relay", "https://studio.example", ["tailnet", "bonjour"], verified=True),
+        ]
+    if verb == "relay-discover":
+        tailnet_source = ({"name": "tailnet", "ok": False, "detail": "this Mac is not on a tailnet"}
+                          if mode == "offnet" else {"name": "tailnet", "ok": True})
+        return {"relays": relays, "sources": [tailnet_source, {"name": "bonjour", "ok": True}], "refreshedAt": now()}
+    if verb == "relay-discover-seen":
+        for row in relays:
+            if (not request.get("relays") or row["id"] in request["relays"]) and row["id"] not in seen:
+                seen.append(row["id"])
+        save(state)
+        return {}
+    row = next((row for row in relays if row["id"] == request.get("relay")), None)
+    if row is None:
+        raise ValueError("unknown relay; refresh discovery")
+    if row["added"]:
+        raise ValueError("That server is already in your list.")
+    if not row["reachable"]:
+        raise ValueError("the relay is unreachable")
+    sent = request.get("pin") or ""
+    if row["next"] == "confirm" and not sent:
+        raise ValueError("confirm the certificate fingerprint %s to add this relay" % row["fingerprint"])
+    if sent and sent != row["pin"]:
+        raise ValueError("the server's certificate does not match the pin")
+    server = {"id": "s-" + hashlib.sha256(row["url"].encode()).hexdigest()[:8], "url": row["url"],
+              "name": request.get("name") or row["name"], "favorite": False, "autoConnect": True, "pin": row["pin"],
+              "lastUsedAt": now(), "state": "signedOut", "signedIn": False, "handle": "", "lastSeen": "", "error": ""}
+    state["servers"].append(server)
+    save(state)
+    return summary(server)
+
+
 def run(verb, request):
     state = load()
+    if verb in ("relay-discover", "relay-discover-seen", "relay-join"):
+        return discovery(state, verb, request)
     if verb in ("remote-enable", "remote-disable", "remote-devices", "remote-revoke", "remote-rename"):
         return remote(state, verb, request)
     if verb in ("tailnet-status", "tailnet-join", "tailnet-relays"):
         return tailnet(state, verb, request)
+    if verb in ("membership-request", "membership-request-status", "admin-requests", "admin-request-decide"):
+        return membership(state, verb, request)
     if verb == "servers":
         ordered = sorted(state["servers"], key=lambda s: (not s["favorite"], s.get("lastUsedAt") or ""), reverse=False)
         favorites = sorted([s for s in ordered if s["favorite"]], key=lambda s: s.get("lastUsedAt") or "", reverse=True)
@@ -1431,15 +1646,17 @@ def run(verb, request):
         elif verb == "server-trust":
             server.update(pin=request.get("pin") or "", state="signedOut")
         elif verb == "login":
-            server.update(state="online", signedIn=True, handle="fixture-ryan", lastUsedAt=now(), lastSeen=now())
+            if not refuse_login(state, server):
+                server.update(state="online", signedIn=True, handle="fixture-ryan", lastUsedAt=now(), lastSeen=now())
         elif verb == "logout":
             server.update(state="signedOut", signedIn=False, handle="")
         else:
             if server["id"] in FRIENDS and server["state"] == "online":
                 return status(state, server)
             online = server["state"] == "online"
-            return {"online": online, "signedIn": server["signedIn"], "handle": server["handle"], "friends": [],
-                    "incoming": [], "outgoing": [], "grants": [], "resources": [], "shared": []}
+            return dict({"online": online, "signedIn": server["signedIn"], "handle": server["handle"], "friends": [],
+                         "incoming": [], "outgoing": [], "grants": [], "resources": [], "shared": []},
+                        **access_status(state, server))
         save(state)
         return summary(server, state) if verb.startswith("server-") else {}
     if verb == "contacts":

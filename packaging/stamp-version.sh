@@ -12,3 +12,16 @@ pb=/usr/libexec/PlistBuddy
 "$pb" -c "Set :CFBundleVersion $build" "$plist"
 "$pb" -c "Delete :AgentCommanderGitVersion" "$plist" 2>/dev/null || true
 "$pb" -c "Add :AgentCommanderGitVersion string $describe" "$plist"
+
+# Capture the revision and worktree state at packaging, independently of the
+# human-readable label. Untracked, non-ignored source can affect the app too.
+revision=$(git rev-parse --verify HEAD 2>/dev/null || true)
+tree=unknown
+if [ -n "$revision" ] && state=$(git status --porcelain --untracked-files=normal); then
+    tree=clean
+    [ -z "$state" ] || tree=dirty
+fi
+"$pb" -c "Delete :AgentCommanderGitRevision" "$plist" 2>/dev/null || true
+[ -z "$revision" ] || "$pb" -c "Add :AgentCommanderGitRevision string $revision" "$plist"
+"$pb" -c "Delete :AgentCommanderGitTree" "$plist" 2>/dev/null || true
+"$pb" -c "Add :AgentCommanderGitTree string $tree" "$plist"

@@ -108,11 +108,13 @@ final class SingleInstanceCoordinator {
         self.membership = membership
     }
 
-    /// Replays a request that arrived while this process was starting.
+    /// Replays a request that arrived while this process was starting, then records the
+    /// production app's startup evidence on the lease. The evidence never affects the launch.
     func applicationDidFinishLaunching() {
         hasFinishedLaunching = true
         receiveFocusRequest()
         presentCockpitIfRequested()
+        if let membership { LaunchEvidence.record(on: membership) }
     }
 
     var canPresentCockpit: Bool { visibleCockpit != nil || openCockpit != nil }

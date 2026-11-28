@@ -1065,7 +1065,7 @@ struct MultiplayerHandoffComposer: View {
     let onDetach: (MultiplayerContextItem) -> Void
     @FocusState private var focus: Field?
 
-    enum Field: Hashable { case title, task }
+    enum Field: Hashable { case title, task, expectedHead }
 
     var body: some View {
         MultiplayerEditorTemplate(title: "Hand off to \(entry.map { "\($0.owner.multiplayerDisplay)’s \($0.name.multiplayerDisplay)" } ?? "a friend’s agent")",
@@ -1079,6 +1079,16 @@ struct MultiplayerHandoffComposer: View {
             MultiplayerField(label: "Task", hint: "Say what done looks like. The agent has only this and the files below.") {
                 MultiplayerTextArea(label: "Task", text: $draft.task, lines: 6)
                     .focused($focus, equals: .task)
+            }
+            // Only a workspace inbox checks a commit. Any other recipient never sees the field.
+            if entry?.isWorkspaceInbox == true {
+                MultiplayerField(label: "Expected commit (optional)",
+                                 hint: "The hand-off is Verified only if their checkout is at this commit when the coordinator finishes. Without one, it ends as Not verified.",
+                                 problem: draft.expectedHeadProblem) {
+                    MultiplayerTextField(label: "Expected commit, optional", placeholder: "Full 40-character hash",
+                                         text: $draft.expectedHead, monospaced: true, isFocused: focus == .expectedHead)
+                        .focused($focus, equals: .expectedHead)
+                }
             }
             MultiplayerContextField(items: draft.context, problem: attachProblem ?? draft.problem,
                                     onChoose: onChoose, onDrop: onDrop, onDetach: onDetach)
@@ -1113,8 +1123,17 @@ struct MultiplayerHandoffDetail: View {
                 MultiplayerSummaryLine(label: "Handed to", value: target)
                 MultiplayerSummaryLine(label: "Sent", value: MultiplayerActivityRow.time(row.at, now: now), isTime: true)
                 if let run = row.run { MultiplayerSummaryLine(label: "Run", value: run, monospaced: true) }
+                // Delivered, Accepted, Verified: always all three, in the order they happen.
+                let progress = MultiplayerHandoffProgress(row: row, report: report)
+                ForEach(progress.milestones) { MultiplayerMilestoneLine(milestone: $0, now: now) }
                 if let updated = report?.updatedAt {
                     MultiplayerSummaryLine(label: "Checked", value: MultiplayerActivityRow.time(updated, now: now), isTime: true)
+                }
+                if let problem = progress.problem {
+                    Text(problem)
+                        .font(MultiplayerTheme.sub)
+                        .foregroundStyle(progress.tone == .failure ? AnyShapeStyle(MultiplayerTheme.failure) : AnyShapeStyle(.inkSecondary))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if row.run == nil, let refusal = row.refusal {
                     Text(refusal)

@@ -2,59 +2,73 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// A small send buffer lets the test exhaust the slow socket without depending
-// on the host's default TCP buffer size.
-type smallSendBuffer struct{ *net.TCPListener }
+// Hold one subscriber at an actual delta write instead of assuming an
+// unread client socket has exhausted its TCP buffers.
+type heldWorkspaceWriter struct {
+	http.ResponseWriter
+	ctx          context.Context
+	marker       []byte
+	writeStarted chan struct{}
+	releaseWrite <-chan struct{}
+}
 
-func (l smallSendBuffer) Accept() (net.Conn, error) {
-	conn, err := l.AcceptTCP()
-	if err != nil {
-		return nil, err
+func (w *heldWorkspaceWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *heldWorkspaceWriter) Write(data []byte) (int, error) {
+	if w.writeStarted != nil && bytes.Contains(data, w.marker) {
+		close(w.writeStarted)
+		w.writeStarted = nil
+		select {
+		case <-w.releaseWrite:
+		case <-w.ctx.Done():
+			return 0, w.ctx.Err()
+		}
 	}
-	if err := conn.SetWriteBuffer(4096); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	return conn, nil
+	return w.ResponseWriter.Write(data)
 }
 
 func TestWorkspaceSlowSocketRecoversPendingApproval(t *testing.T) {
 	f := newFixture(t)
 	writer, approval := f.run(), f.run()
-	server := httptest.NewUnstartedServer(f.api)
-	server.Listener = smallSendBuffer{server.Listener.(*net.TCPListener)}
-	server.Start()
+	const heldMarker = "hold-this-workspace-delta"
+	const subscriberHeader = "X-Workspace-Test-Subscriber"
+	writeStarted, releaseWrite := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(releaseWrite) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(subscriberHeader) == "slow" {
+			w = &heldWorkspaceWriter{
+				ResponseWriter: w, ctx: r.Context(), marker: []byte(heldMarker),
+				writeStarted: writeStarted, releaseWrite: releaseWrite,
+			}
+		}
+		f.api.ServeHTTP(w, r)
+	}))
 	defer server.Close()
+	defer release()
 
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		dialer := &net.Dialer{}
-		conn, err := dialer.DialContext(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		if err := conn.(*net.TCPConn).SetReadBuffer(4096); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	}}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 12 * time.Second}
+	client := server.Client()
+	client.Timeout = 12 * time.Second
 	const route = "/v1/ag-ui/events?projection=incremental"
-	open := func() (*http.Response, *bufio.Scanner) {
+	open := func(name string) (*http.Response, *bufio.Scanner) {
 		t.Helper()
-		response, err := client.Get(server.URL + route)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+route, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set(subscriberHeader, name)
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,54 +99,98 @@ func TestWorkspaceSlowSocketRecoversPendingApproval(t *testing.T) {
 	if err := json.Unmarshal(payload, &question); err != nil || question.ID == "" {
 		t.Fatalf("could not create addressed approval: %s (%v)", payload, err)
 	}
-	assertPending := func(snapshot string) {
+	assertPending := func(snapshot string) string {
 		t.Helper()
 		var event struct {
 			Type     string
 			Snapshot struct {
-				Runs []Run
+				Runs []struct {
+					Requests []Question
+					Workers  []struct {
+						ID           string
+						OutputChunks []string
+					}
+				}
 			}
 		}
 		if err := json.Unmarshal([]byte(snapshot), &event); err != nil || event.Type != "STATE_SNAPSHOT" {
 			t.Fatalf("expected a workspace snapshot (%v, %d bytes)", err, len(snapshot))
 		}
+		pending := false
+		var output string
 		for _, run := range event.Snapshot.Runs {
 			for _, request := range run.Requests {
 				if request.ID == question.ID && request.WorkerID == approval.ID && request.Status == "pending" {
-					return
+					pending = true
+				}
+			}
+			for _, worker := range run.Workers {
+				if worker.ID == writer.ID {
+					output = strings.Join(worker.OutputChunks, "")
 				}
 			}
 		}
-		t.Fatal("workspace snapshot lost the addressed pending approval")
+		if !pending {
+			t.Fatal("workspace snapshot lost the addressed pending approval")
+		}
+		return output
 	}
-	slow, delayed := open()
+	slow, delayed := open("slow")
 	defer slow.Body.Close()
 	assertPending(next(delayed))
+	fast, current := open("fast")
+	defer fast.Body.Close()
+	assertPending(next(current))
 
-	// Leave the socket unread while publishing more than one history window.
 	outputPath := "/v1/workers/" + writer.ID + "/output"
-	burst := strings.Repeat("f", 16<<10)
+	publish := func(marker string) {
+		t.Helper()
+		f.call("POST", outputPath, writer.Token, map[string]string{"text": marker + "\n"}, 200, "")
+	}
+	assertDelta := func(reader *bufio.Scanner, marker string) {
+		t.Helper()
+		raw := next(reader)
+		var event aguiStateEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil || event.Type != "STATE_DELTA" {
+			t.Fatalf("expected a workspace delta for %s (%v, %d bytes)", marker, err, len(raw))
+		}
+		var output strings.Builder
+		for _, patch := range event.Delta {
+			if chunk, ok := patch.Value.(string); ok && strings.Contains(patch.Path, "/outputChunks/") {
+				output.WriteString(chunk)
+			}
+		}
+		if !strings.HasSuffix(output.String(), marker+"\n") {
+			t.Fatalf("workspace delta missed the output marker %s", marker)
+		}
+	}
+
+	publish(heldMarker)
+	select {
+	case <-writeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow subscriber did not reach the held workspace write")
+	}
+	assertDelta(current, heldMarker)
+
+	// Deliver more than the retained 64 revisions to the fast subscriber
+	// while the slow subscriber is still writing its first delta.
 	const revisions = 96
 	lastMarker := fmt.Sprintf("burst-%03d", revisions)
 	for i := 1; i <= revisions; i++ {
-		f.call("POST", outputPath, writer.Token, map[string]string{"text": fmt.Sprintf("burst-%03d\n%s\n", i, burst)}, 200, "")
+		marker := fmt.Sprintf("burst-%03d", i)
+		publish(marker)
+		assertDelta(current, marker)
 	}
-	fast, current := open()
-	defer fast.Body.Close()
-	snapshot := next(current)
-	assertPending(snapshot)
-	if !strings.Contains(snapshot, lastMarker) {
-		t.Fatal("fresh workspace subscriber did not receive the latest output")
+
+	release()
+	assertDelta(delayed, heldMarker)
+	recovery := next(delayed)
+	output := assertPending(recovery)
+	if !strings.Contains(recovery, `"reason":"workspace_delta_expired"`) || !strings.HasSuffix(output, lastMarker+"\n") {
+		t.Fatalf("slow subscriber did not recover the latest expired revision (payload %d bytes)", len(recovery))
 	}
-	recovered, reachedLatest := false, false
-	for !recovered || !reachedLatest {
-		event := next(delayed)
-		if strings.Contains(event, `"reason":"workspace_delta_expired"`) {
-			assertPending(event)
-			recovered = true
-		}
-		reachedLatest = reachedLatest || strings.Contains(event, lastMarker)
-	}
+
 	f.call("POST", "/v1/requests/"+question.ID+"/reply", "", map[string]string{"answer": "allow_once"}, 200, "slow-approval")
 	for _, reader := range []*bufio.Scanner{delayed, current} {
 		event := next(reader)

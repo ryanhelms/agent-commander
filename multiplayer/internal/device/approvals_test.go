@@ -24,6 +24,8 @@ func TestApprovalModes(t *testing.T) {
 		{"agent.suggest", "auto", false, true},
 		{"agent.suggest", "ask", true, false},
 		{"agent.ask", "ask", true, false},
+		{"agent.message", "ask", false, false},
+		{"agent.message", "", false, false},
 		{"agent.status", "ask", false, false},
 		{"agent.result", "ask", false, false},
 		{"thread.read", "", false, false},
@@ -36,6 +38,15 @@ func TestApprovalModes(t *testing.T) {
 		}
 		if got := a.needsApproval(child); got != tc.ask {
 			t.Errorf("needsApproval(%+v) = %t", tc, got)
+		}
+	}
+}
+
+func TestCoordinatorNoteGrantUsesAutomaticDelivery(t *testing.T) {
+	for _, approval := range []string{"", "ask", "auto"} {
+		grant := grantDefaults(actions.Grant{Action: "agent.message", Approval: approval})
+		if grant.Approval != "auto" {
+			t.Fatalf("coordinator note with approval %q was stored as %q", approval, grant.Approval)
 		}
 	}
 }

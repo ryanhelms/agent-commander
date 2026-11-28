@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"agentcommander/internal/buildinfo"
@@ -113,7 +114,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	for _, run := range s.state.Runs {
 		if run.Status != "stopping" && run.Status != "stopped" {
 			for _, w := range run.Workers {
-				if w.Role == "worker" && w.State == "stopping" {
+				if w.State == "stopping" {
 					individualStops = append(individualStops, w.ID)
 				}
 			}
@@ -129,6 +130,8 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 	mux.HandleFunc("GET /v1/catalog/notices/events", s.streamCatalogNotices)
 	(&harnessRoutes{stateDir: stateDir, launcher: launcher}).register(mux)
 	mux.HandleFunc("GET /v1/network/coordinator", s.handleJSON(s.networkCoordinator))
+	mux.HandleFunc("GET /v1/network/workspace-handoffs/{handoff}", s.handle(s.getWorkspaceHandoff))
+	mux.HandleFunc("POST /v1/network/workspace-handoffs/{handoff}", s.handle(s.postWorkspaceHandoff))
 	mux.HandleFunc("GET /v1/runs/{run}/workers/{worker}/tools", s.listScopedTools)
 	mux.HandleFunc("POST /v1/runs/{run}/workers/{worker}/tools/calls", s.callScopedTool)
 	mux.HandleFunc("GET /v1/ag-ui/events", s.streamConsole)
@@ -166,6 +169,7 @@ func NewWithToolRegistry(stateDir string, launcher Launcher, registry *toolregis
 		"GET /v1/runs/{run}": s.getRun, "POST /v1/runs/{run}/workers": s.delegate,
 		"POST /v1/runs/{run}/stop":            s.stopRun,
 		"POST /v1/workers/{worker}/questions": s.ask, "GET /v1/workers/{worker}/questions/{qid}": s.getQuestion,
+		"POST /v1/workers/{worker}/questions/{qid}/withdraw":   s.withdrawQuestion,
 		"POST /v1/workers/{worker}/questions/dismiss-provider": s.dismissProviderPermission,
 		"POST /v1/requests/{qid}/reply":                        s.reply, "POST /v1/workers/{worker}/state": s.workerState,
 		"POST /v1/ag-ui/workers/{worker}/requests/{qid}/reply":                       s.replyToWorkerRun,
@@ -691,10 +695,11 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 		return outcome{}, err
 	}
 	var in struct {
-		Question        string
-		Choices         []QuestionChoice `json:",omitempty"`
-		ProviderTurn    string           `json:"provider_turn,omitempty"`
-		ProviderRequest string           `json:"provider_request,omitempty"`
+		Question           string
+		Choices            []QuestionChoice `json:",omitempty"`
+		ProviderTurn       string           `json:"provider_turn,omitempty"`
+		ProviderRequest    string           `json:"provider_request,omitempty"`
+		ProviderToolCallID string           `json:"provider_tool_call_id,omitempty"`
 	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
@@ -733,6 +738,9 @@ func (s *service) ask(req *http.Request, actor string) (outcome, error) {
 	}
 	q := &Question{ID: randomID("q-"), WorkerID: w.ID, Question: formatQuestion(in.Question, in.Choices), Status: "pending", Choices: in.Choices}
 	if in.ProviderTurn != "" {
+		if len(in.ProviderToolCallID) <= 256 {
+			q.ProviderToolCallID = in.ProviderToolCallID
+		}
 		if s.state.Permissions == nil {
 			s.state.Permissions = make(map[string]providerPermission)
 		}
@@ -758,6 +766,30 @@ func (s *service) getQuestion(req *http.Request, actor string) (outcome, error) 
 	}
 	return read(q), nil
 }
+
+func (s *service) withdrawQuestion(req *http.Request, actor string) (outcome, error) {
+	_, w, err := s.own(req, actor)
+	if err != nil {
+		return outcome{}, err
+	}
+	_, q := s.question(req.PathValue("qid"))
+	if q == nil || q.WorkerID != w.ID {
+		return outcome{}, missing("question")
+	}
+	if _, providerPermission := s.state.Permissions[q.ID]; providerPermission || len(q.Choices) != 0 {
+		return outcome{}, conflict("provider permission requests cannot be withdrawn as ordinary questions")
+	}
+	switch q.Status {
+	case "cancelled":
+		return read(q), nil
+	case "pending":
+		q.Status = "cancelled"
+		return changed(q), nil
+	default:
+		return outcome{}, conflict("only pending questions can be withdrawn")
+	}
+}
+
 func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	r, q := s.question(req.PathValue("qid"))
 	if q == nil {
@@ -767,7 +799,10 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	if actor != "" && (actor == w.ID || (actor != r.CoordinatorID && actor != w.ParentID)) {
 		return outcome{}, denied()
 	}
-	var in struct{ Answer string }
+	var in struct {
+		Answer     string
+		Generation *int
+	}
 	if err := decode(req, &in); err != nil {
 		return outcome{}, err
 	}
@@ -788,6 +823,12 @@ func (s *service) reply(req *http.Request, actor string) (outcome, error) {
 	}
 	if actor != "" && w.Control != nil && w.Control.Held {
 		return outcome{}, conflict("developer holds worker input")
+	}
+	// Native worker replies are bound to the input grant the developer saw. The
+	// explicit owner API still accepts unversioned replies from existing clients.
+	if actor == "" && w.ID != r.CoordinatorID && in.Generation != nil &&
+		(w.Control == nil || !w.Control.Held || w.Control.Generation != *in.Generation) {
+		return outcome{}, conflict("worker input control changed before the reply")
 	}
 	backgroundPermission := w.Role == "worker" && w.State == "completed" && w.Control != nil &&
 		r.Status == "running" && !w.providerBlocksControl() &&
@@ -831,6 +872,19 @@ func (s *service) workerState(req *http.Request, actor string) (outcome, error) 
 	}
 	if ended(w.State) && w.State != in.State {
 		return outcome{}, conflict("worker has already ended")
+	}
+	if w.ID == r.CoordinatorID && r.InitialWorkspaceHandoffID != "" {
+		if in.State == "working" {
+			if h := s.state.WorkspaceHandoffs[r.InitialWorkspaceHandoffID]; h != nil && h.expiredBeforeClaim(time.Now()) {
+				return s.expireWorkspaceHandoff(r, w, nil), nil
+			}
+			s.acceptWorkspaceHandoff(r.InitialWorkspaceHandoffID, w)
+		} else if ended(in.State) {
+			s.finishWorkspaceHandoff(req.Context(), r.InitialWorkspaceHandoffID, w, in.State, "")
+			if in.State == "failed" {
+				s.failWorkspaceHandoff(r.InitialWorkspaceHandoffID, w, "coordinator_failed")
+			}
+		}
 	}
 	w.State, w.Error = in.State, in.Error
 	if ended(in.State) {

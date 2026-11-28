@@ -131,7 +131,7 @@ func runACP(ctx context.Context, j job, a *api, s *screen) error {
 	}
 	path := "/v1/workers/" + j.Worker.ID
 	nativeSession := service.NativeSession{HarnessInstance: ref.HarnessInstance, SessionID: ref.SessionId}
-	managed := j.Worker.Role == "worker"
+	managed := j.Worker.Role == "worker" || j.Worker.Reattach != nil || j.Worker.WorkspaceCoordinator
 	capabilities := session.GetCapabilities()
 	protocolVersion := 1
 	if negotiated, ok := rt.(interface {
@@ -530,7 +530,11 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 						}
 					}
 					screen.line(previewText(entry.TerminalText()))
-					screen.recordEvent(entry)
+					if entry.ACP != nil && entry.ACP.PlanIdentity != "" {
+						screen.recordDetailed(entry, planDetail(event, entry.ACP))
+					} else {
+						screen.recordEvent(entry)
+					}
 				}
 				continue
 			}
@@ -746,7 +750,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					event.ACP.TurnID = e.TurnId
 				}
 				s.line(event.TerminalText())
-				s.recordDetailed(event, planDetail(e))
+				s.recordDetailed(event, planDetail(e, event.ACP))
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_SYSTEM:
 				flushText()
 				value := consoleText(e.GetText().Text)
@@ -769,6 +773,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 				if err := a.requestContext(ctx, "POST", path+"/questions", map[string]any{
 					"question": request.Prompt, "choices": choices,
 					"idempotency_key": request.RequestId, "provider_turn": turnID, "provider_request": request.RequestId,
+					"provider_tool_call_id": acpPermissionToolCallID(e, false),
 				}, &q); err != nil {
 					return "failed", false, err
 				}

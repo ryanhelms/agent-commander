@@ -55,3 +55,17 @@ CREATE TABLE IF NOT EXISTS mp_workspace_departures (
     FOREIGN KEY (workspace_id,group_id) REFERENCES mp_workspaces(id,group_id) ON DELETE CASCADE,
     FOREIGN KEY (group_id,user_id) REFERENCES mp_group_members(group_id,user_id) ON DELETE CASCADE
 );
+
+
+-- A workspace resource addresses an owner's device, but is usable only by
+-- a current workspace participant who is also a paired friend of that owner.
+CREATE OR REPLACE FUNCTION mp_workspace_handoff_allowed(workspace text, owner_user text, sender_user text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+    SELECT workspace='' OR EXISTS (
+        SELECT FROM mp_workspaces w
+        JOIN mp_group_members owner ON owner.group_id=w.group_id AND owner.user_id=owner_user
+        JOIN mp_group_members sender ON sender.group_id=w.group_id AND sender.user_id=sender_user
+        JOIN mp_friends f ON f.a=least(owner_user,sender_user) AND f.b=greatest(owner_user,sender_user) AND f.accepted
+        WHERE w.id=workspace AND NOT EXISTS (SELECT FROM mp_workspace_departures d
+            WHERE d.workspace_id=w.id AND d.user_id IN (owner_user,sender_user)))
+$$;

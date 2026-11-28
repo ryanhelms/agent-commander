@@ -563,11 +563,8 @@ final class MultiplayerShareModel {
 
     /// A hand-off's state in words: the run's, once asked; otherwise the request's own.
     func handoffState(_ row: MultiplayerSentRequest) -> (title: String, tone: Tone) {
-        if let state = reports[row.request]?.state, !state.isEmpty {
-            return (MultiplayerRequestState.title(state), MultiplayerRequestState.tone(state))
-        }
-        if row.succeeded { return ("Started", .working) }
-        return (MultiplayerRequestState.title(row.status), MultiplayerRequestState.tone(row.status))
+        let progress = MultiplayerHandoffProgress(row: row, report: reports[row.request])
+        return (progress.title, progress.tone)
     }
 
     /// Who a hand-off went to: "priya’s agent sam-agent".
@@ -732,7 +729,9 @@ final class MultiplayerShareModel {
     func reconcileGrantActions() {
         let choices = grantResource?.choices ?? []
         grantDraft.actions = grantDraft.actions.filter(choices.contains)
-        if grantDraft.actions.isEmpty, choices.count == 1 { grantDraft.actions = [choices[0]] }
+        if grantDraft.actions.isEmpty, choices.count == 1, choices[0] != MultiplayerSharePolicy.appBuild {
+            grantDraft.actions = [choices[0]]
+        }
     }
 
     func toggleGrantAction(_ action: String) {
@@ -884,6 +883,8 @@ final class MultiplayerShareModel {
     func sendHandoff(_ draft: MultiplayerHandoffDraft, to resource: String, on server: String,
                      report: (@MainActor (_ failure: String?) -> Void)? = nil,
                      then: (@MainActor (MultiplayerSentRequest) -> Void)? = nil) -> Task<Void, Never>? {
+        // Every hand-off is sent here, so this is where an expected commit is kept to an inbox.
+        let draft = draft.addressed(toWorkspaceInbox: entry(resource, on: server)?.isWorkspaceInbox == true)
         guard draft.canSend, let tray else { return nil }
         let name = resourceName(resource, on: server).multiplayerDisplay
         return tray.act("Handing off to \(name)…", failing: "Couldn’t hand off the task.", report: report) { client in
@@ -892,13 +893,15 @@ final class MultiplayerShareModel {
                                               payload: draft.payload, name: draft.trimmedTitle)
             let row = MultiplayerSentRequest(request: reply.request, resource: resource, action: MultiplayerSharePolicy.handoff,
                                              title: draft.trimmedTitle, at: self.clock(), status: reply.status,
-                                             value: reply.value, failure: reply.failure)
+                                             value: reply.value, failure: reply.failure, deliveredAt: reply.deliveredAt,
+                                             acceptedAt: reply.acceptedAt, verifiedAt: reply.verifiedAt)
             self.handoffs[server] = [row] + (self.handoffs[server] ?? []).filter { $0.request != row.request }
             if let next = try? await scoped.handoffs(), next.contains(where: { $0.request == row.request }) {
                 self.handoffs[server] = next
             }
             then?(row)
-            self.tray?.post(notice: reply.succeeded ? "Handed off. \(name) started a run for it."
+            self.tray?.post(notice: reply.deliveredAt != nil ? "Handed off. \(name) has it; a coordinator takes it from there."
+                                    : reply.succeeded ? "Handed off. \(name) started a run for it."
                                                     : (reply.refusal ?? "The hand-off is waiting for the owner."))
         }
     }

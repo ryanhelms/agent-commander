@@ -26,6 +26,7 @@ type LaunchSpec struct {
 	Host, Worktree                                             string
 	CodingSource                                               *worktrees.Checkout
 	Reattach                                                   *ReattachSpec `json:",omitempty"`
+	WorkspaceCoordinator                                       bool          `json:",omitempty"`
 }
 
 type Launcher interface {
@@ -88,25 +89,29 @@ type Question struct {
 	Answer   string           `json:"answer"`
 	Delivery string           `json:"delivery,omitempty"`
 	Choices  []QuestionChoice `json:"choices,omitempty"`
+	// The normalized console tool ID supplied by this provider permission.
+	ProviderToolCallID string `json:"provider_tool_call_id,omitempty"`
 }
 
 type Run struct {
-	ID            string         `json:"id"`
-	Project       string         `json:"project"`
-	ProjectID     string         `json:"project_id,omitempty"`
-	Path          string         `json:"path"`
-	Task          string         `json:"task"`
-	Title         string         `json:"title,omitempty"`
-	Branch        string         `json:"branch,omitempty"`
-	CreatedAt     string         `json:"created_at,omitempty"`
-	Client        string         `json:"client"`
-	CoordinatorID string         `json:"coordinator_id"`
-	Workers       []*Worker      `json:"workers"`
-	Requests      []*Question    `json:"requests"`
-	Status        string         `json:"status"`
-	WorkerLimit   int            `json:"worker_limit"`
-	TestCommand   []string       `json:"test_command,omitempty"`
-	Integrations  []*Integration `json:"integrations,omitempty"`
+	ID                          string         `json:"id"`
+	Project                     string         `json:"project"`
+	ProjectID                   string         `json:"project_id,omitempty"`
+	Path                        string         `json:"path"`
+	Task                        string         `json:"task"`
+	Title                       string         `json:"title,omitempty"`
+	Branch                      string         `json:"branch,omitempty"`
+	CreatedAt                   string         `json:"created_at,omitempty"`
+	Client                      string         `json:"client"`
+	CoordinatorID               string         `json:"coordinator_id"`
+	Workers                     []*Worker      `json:"workers"`
+	Requests                    []*Question    `json:"requests"`
+	Status                      string         `json:"status"`
+	WorkerLimit                 int            `json:"worker_limit"`
+	TestCommand                 []string       `json:"test_command,omitempty"`
+	Integrations                []*Integration `json:"integrations,omitempty"`
+	WorkspaceHandoffDestination string         `json:"workspace_handoff_destination,omitempty"`
+	InitialWorkspaceHandoffID   string         `json:"initial_workspace_handoff_id,omitempty"`
 }
 
 type retryReceipt struct {
@@ -120,13 +125,14 @@ type providerPermission struct {
 }
 
 type database struct {
-	Projects      []*Project                    `json:"projects,omitempty"`
-	Permissions   map[string]providerPermission `json:"provider_permissions,omitempty"`
-	OutputBatches map[string]outputReceipt      `json:"output_batches,omitempty"` // legacy workers persist their output
-	Runs          []*Run                        `json:"runs"`
-	Tokens        map[string]string             `json:"tokens"` // SHA-256(token) to worker ID
-	Receipts      map[string]retryReceipt       `json:"receipts"`
-	PromptParts   map[string][]PromptPart       `json:"prompt_parts,omitempty"`
+	Projects          []*Project                    `json:"projects,omitempty"`
+	Permissions       map[string]providerPermission `json:"provider_permissions,omitempty"`
+	OutputBatches     map[string]outputReceipt      `json:"output_batches,omitempty"` // legacy workers persist their output
+	Runs              []*Run                        `json:"runs"`
+	Tokens            map[string]string             `json:"tokens"` // SHA-256(token) to worker ID
+	Receipts          map[string]retryReceipt       `json:"receipts"`
+	PromptParts       map[string][]PromptPart       `json:"prompt_parts,omitempty"`
+	WorkspaceHandoffs map[string]*workspaceHandoff  `json:"workspace_handoffs,omitempty"`
 }
 
 type service struct {
@@ -430,6 +436,9 @@ func (s *service) launch(spec LaunchSpec) {
 				failReattachment(r, w, err.Error())
 			} else {
 				w.State, w.Error = "failed", err.Error()
+				if w.ID == r.CoordinatorID {
+					s.failWorkspaceHandoff(r.InitialWorkspaceHandoffID, w, "coordinator_launch_failed")
+				}
 				r.cancelQuestions(w.ID)
 				r.refreshOutcome()
 			}

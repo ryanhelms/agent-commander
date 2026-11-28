@@ -114,6 +114,16 @@ func PrepareLocalResource(ctx context.Context, socket string, resource Resource)
 		return r, e
 	}
 	defer client.CloseIdleConnections()
+	if r.Workspace != "" {
+		run, err := readRun(ctx, client, r.Target)
+		if err != nil {
+			return r, err
+		}
+		if !filepath.IsAbs(run.Path) || run.Client == "" {
+			return r, ErrInvalid
+		}
+		return r, nil
+	}
 	info, e := workerInfo(ctx, client, r.Target)
 	if e != nil {
 		return r, e

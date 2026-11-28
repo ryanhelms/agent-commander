@@ -130,7 +130,7 @@ func (a *Agent) eventsLoop() {
 		a.pollEvents(a.ctx)
 		a.pollReceipts(a.ctx)
 		a.refreshSummary(a.ctx)
-		if !wait(a.ctx, 15*time.Second) {
+		if !a.pause(a.ctx, "events", 15*time.Second) {
 			return
 		}
 	}
@@ -146,6 +146,7 @@ func (a *Agent) pollEvents(ctx context.Context) {
 	}
 	s, e := a.getSession(ctx)
 	if e != nil {
+		a.noteSessionProblem(s.User, e)
 		return
 	}
 	var res struct{ Events []Event }
@@ -403,24 +404,26 @@ func (m *Manager) join(ctx context.Context, link string) (any, error) {
 	}
 	m.mu.Lock()
 	i := slices.IndexFunc(m.servers, func(s Server) bool { return s.URL == inv.Server })
-	m.mu.Unlock()
 	var sum ServerSummary
+	if i >= 0 {
+		sum = m.summary(m.servers[i])
+	}
+	m.mu.Unlock()
 	if i < 0 {
 		res, e := m.serverVerb(ctx, "server-add", serverInput{URL: inv.Server, Pin: inv.Pin})
 		if e != nil {
 			return nil, e
 		}
 		sum = res.(ServerSummary)
-	} else {
-		m.mu.Lock()
-		sum = m.summary(m.servers[i])
-		m.mu.Unlock()
 	}
-	a, e := m.agentFor(sum.ID)
+	a, e := m.agentForInvite(ctx, sum.ID)
 	if e != nil {
 		return nil, e
 	}
-	if !sum.SignedIn {
+	a.mu.Lock()
+	signedIn := a.creds.Session.User != ""
+	a.mu.Unlock()
+	if !signedIn {
 		if _, e = a.startLogin("", inv.Code); e != nil {
 			return nil, e
 		}

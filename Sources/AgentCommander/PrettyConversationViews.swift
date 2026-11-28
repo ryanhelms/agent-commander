@@ -10,13 +10,16 @@ import SwiftUI
 //   Atoms      ActivityTagView         the small monospaced state tag
 //              ActivityChevron         the disclosure mark after a sentence
 //              PrettySpinner           the live line's spinner; a hollow dot without evidence
+//              PrettyWorkingMark       the live line's mark while the agent works on its turn
+//              PrettyShimmer           the band of light across a running task's label
 //              StatusLamp              a lamp and a word
 //   Molecules  ActivitySentenceText    a sentence's plain, strong and monospaced parts
 //              ActivityLine            one sentence, its tag and chevron: a native button
 //              ActivityGroupSummary    the secondary-ink summary line and its "N failed"
 //              ActivityFailureLine     a failed or blocked call with its reason, never folded
 //              PrettyReportBlock       a reported result as quoted prose
-//              PrettyLiveLine          the open call, or Thinking with its elapsed time
+//              PrettyLiveLine          the open call, or Thinking with its elapsed time: the
+//                                      working mark and a shimmering label while the turn runs
 //              PrettyElapsedText       the time since a record's own start
 //              PrettyThoughtBody       a thought's text, in italic beside a rule
 //              PrettyPlanCard          a task checklist
@@ -161,6 +164,187 @@ struct PrettySpinner: View {
     }
 }
 
+/// The live line's mark while the agent works on its turn (DESIGN.md, "Pretty transcript"):
+/// three dots of different sizes in `live` ink circling one centre. Each dot swells and shrinks
+/// once a cycle, a third of a cycle after the one before, and a small dot falls in toward the
+/// centre, so the trio seems to tumble. One cycle takes `PrettyWorkingMark.period`, at a steady
+/// rate. It has the spinner's footprint. With Reduce Motion the dots stand still.
+struct PrettyWorkingMark: View {
+    struct Dot: Equatable {
+        var centre: CGPoint
+        var radius: CGFloat
+    }
+
+    /// One full cycle.
+    static let period: TimeInterval = 3.0
+    /// The turn the dots hold with Reduce Motion: three clearly different sizes, none touching.
+    static let restingTurn = 0.944
+    /// A dot's radius at the 12 pt mark: the measured 3 : 2 : 1.2 trio, sized to leave air
+    /// between the dots inside the mark.
+    static let largest: CGFloat = 1.75, smallest: CGFloat = 0.7
+
+    /// The three dots at `turn` (0 to 1, one cycle) inside a square `size` wide. The dots go
+    /// round the centre once while their sizes pass round the trio the other way. The largest
+    /// dot rides the outer orbit and the smallest sits near the centre. No dot leaves the square.
+    static func dots(turn: Double, size: CGFloat) -> [Dot] {
+        let unit = size / 12
+        return (0..<3).map { index in
+            let slot = Double(index) / 3
+            let angle = (slot + turn) * 2 * .pi
+            let swell = (1 + cos((slot - turn) * 2 * .pi)) / 2
+            let radius = (smallest + (largest - smallest) * swell) * unit
+            let orbit = (1.1 + 3.0 * swell) * unit
+            return Dot(centre: CGPoint(x: size / 2 + orbit * cos(angle), y: size / 2 + orbit * sin(angle)), radius: radius)
+        }
+    }
+
+    static func turn(at time: TimeInterval) -> Double {
+        time / period - (time / period).rounded(.down)
+    }
+
+    var size: CGFloat = 12
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                dots(turn: Self.restingTurn)
+            } else {
+                TimelineView(.animation) { context in
+                    dots(turn: Self.turn(at: context.date.timeIntervalSinceReferenceDate))
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+
+    private func dots(turn: Double) -> some View {
+        Canvas { context, canvas in
+            for dot in Self.dots(turn: turn, size: min(canvas.width, canvas.height)) {
+                let box = CGRect(x: dot.centre.x - dot.radius, y: dot.centre.y - dot.radius,
+                                 width: dot.radius * 2, height: dot.radius * 2)
+                context.fill(Path(ellipseIn: box), with: .color(Palette.live))
+            }
+        }
+    }
+}
+
+/// The band of light that crosses a running task's label (DESIGN.md, Motion, `shimmer`): one
+/// sweep from left to right, then rest. Time comes from the reference date, so every running
+/// line sweeps in phase. The values here are pure; `prettyShimmer` draws them.
+enum PrettyShimmer {
+    /// One sweep and its rest.
+    static let period: TimeInterval = 2.0
+    /// How long the band takes to cross the label.
+    static let sweep: TimeInterval = 1.2
+    /// Frames drawn each second while the band moves. None are drawn at rest.
+    static let framesPerSecond = 60.0
+    /// How far the glyphs lift from their own ink toward `foreground` at the band's centre.
+    static let peak = 0.92
+
+    /// The band's eased travel at `time`, 0 at the leading edge to 1 at the trailing edge.
+    /// Nil while the label rests.
+    static func progress(at time: TimeInterval) -> Double? {
+        let phase = time - (time / period).rounded(.down) * period
+        guard phase < sweep else { return nil }
+        let linear = phase / sweep
+        return linear * linear * (3 - 2 * linear)
+    }
+
+    /// The band's centre across a label `width` wide. It starts and ends wholly outside the label.
+    static func centre(progress: Double, width: CGFloat, band: CGFloat) -> CGFloat {
+        -band / 2 + CGFloat(progress) * (width + band)
+    }
+
+    /// The band's width for a transcript's body size: 182 pt at the focused worker's 14 pt.
+    static func band(bodySize: CGFloat) -> CGFloat { bodySize * 13 }
+
+    /// Ticks only while the band moves: each frame of a sweep, then one at its end that clears
+    /// the band. Nothing is drawn through the rest.
+    struct Schedule: TimelineSchedule {
+        func entries(from startDate: Date, mode: TimelineScheduleMode) -> Entries {
+            let time = startDate.timeIntervalSinceReferenceDate
+            let cycle = (time / PrettyShimmer.period).rounded(.down)
+            let frame = ((time - cycle * PrettyShimmer.period) * PrettyShimmer.framesPerSecond).rounded(.down)
+            return Entries(cycle: cycle, frame: min(frame, Entries.lastFrame))
+        }
+
+        struct Entries: Sequence, IteratorProtocol {
+            /// The frame at the sweep's end. It is drawn a moment into the rest, so it clears the band.
+            static let lastFrame = (PrettyShimmer.sweep * PrettyShimmer.framesPerSecond).rounded()
+            var cycle: Double
+            var frame: Double
+
+            mutating func next() -> Date? {
+                let isLast = frame >= Self.lastFrame
+                let offset = isLast ? PrettyShimmer.sweep + 0.001 : frame / PrettyShimmer.framesPerSecond
+                if isLast { cycle += 1; frame = 0 } else { frame += 1 }
+                return Date(timeIntervalSinceReferenceDate: (isLast ? cycle - 1 : cycle) * PrettyShimmer.period + offset)
+            }
+        }
+    }
+}
+
+/// Draws `PrettyShimmer` over a label. The band is `foreground` ink cut to the shape of `mask`,
+/// so only glyphs light up and the label's own inks, size and layout stay as they are.
+private struct PrettyShimmerModifier<Mask: View>: ViewModifier {
+    let isActive: Bool
+    let band: CGFloat
+    @ViewBuilder let mask: () -> Mask
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        if isActive, !reduceMotion {
+            content.overlay {
+                TimelineView(PrettyShimmer.Schedule()) { context in
+                    GeometryReader { proxy in
+                        if let progress = PrettyShimmer.progress(at: context.date.timeIntervalSinceReferenceDate) {
+                            light
+                                .frame(width: band, height: proxy.size.height)
+                                .position(x: PrettyShimmer.centre(progress: progress, width: proxy.size.width, band: band),
+                                          y: proxy.size.height / 2)
+                        }
+                    }
+                }
+                .mask { mask() }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        } else {
+            content
+        }
+    }
+
+    /// A soft band: clear at both edges, `foreground` at the centre, eased between.
+    private var light: some View {
+        let ink = Palette.foreground
+        return LinearGradient(stops: [
+            .init(color: ink.opacity(0), location: 0),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.15), location: 0.2),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.65), location: 0.38),
+            .init(color: ink.opacity(PrettyShimmer.peak), location: 0.5),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.65), location: 0.62),
+            .init(color: ink.opacity(PrettyShimmer.peak * 0.15), location: 0.8),
+            .init(color: ink.opacity(0), location: 1),
+        ], startPoint: .leading, endPoint: .trailing)
+    }
+}
+
+extension View {
+    /// The running shimmer over this whole view. Still, and no timeline, when `isActive` is
+    /// false or Reduce Motion is on.
+    func prettyShimmer(isActive: Bool, band: CGFloat) -> some View {
+        modifier(PrettyShimmerModifier(isActive: isActive, band: band) { self })
+    }
+
+    /// The running shimmer over the parts of this view that `mask` draws. `mask` has this
+    /// view's layout, with each part that must stay still hidden.
+    func prettyShimmer<Mask: View>(isActive: Bool, band: CGFloat, @ViewBuilder mask: @escaping () -> Mask) -> some View {
+        modifier(PrettyShimmerModifier(isActive: isActive, band: band, mask: mask))
+    }
+}
+
 struct StatusLamp: View {
     let word: String
     var size: CGFloat = 12.5
@@ -234,8 +418,7 @@ struct ActivityLine: View {
                 .buttonStyle(ActivityRowButtonStyle())
                 .textSelection(.disabled)
                 .help(step.help ?? step.sentence.plain)
-                .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-                .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+                .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
                 .accessibilityLabel(step.accessibilityLabel)
                 .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
         } else {
@@ -255,6 +438,7 @@ struct ActivityLine: View {
                     .accessibilityHidden(true)
             }
             ActivitySentenceText(sentence: step.sentence, metrics: metrics)
+            if let change = step.change { ChangeCountsText(counts: change, size: metrics.bodySize * 0.9) }
             if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
             if step.opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
             Spacer(minLength: 0)
@@ -282,15 +466,93 @@ struct ActivityRowButtonStyle: ButtonStyle {
     }
 }
 
+/// Keyboard focus for a Pretty line that opens: an activity line, a group's summary, a failure
+/// line and Thinking with its thought text. The button is one stop in the Tab order under macOS
+/// Keyboard navigation, with the inset focus ring (DESIGN.md): 2 pt of `focus` inside the line's
+/// edge while it holds keyboard focus. Space or Return toggles it, Right opens it and Left
+/// closes it. Focus is set before the keys are heard: a key press goes to the focused
+/// view, and with the arrow handlers alone Tab passed the line over.
+private struct PrettyDisclosureKeys: ViewModifier {
+    let isExpanded: Bool
+    /// The ring's corner: the line's own, from `PrettyMetrics`.
+    let radius: CGFloat
+    let toggle: () -> Void
+    /// True only while this line's layer holds keyboard focus.
+    @FocusState private var isKeyboardFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            // One stop, not two: the button gives up its own, and the layer round it takes the
+            // only one. The button still takes the pointer and the accessibility press.
+            .focusable(false)
+            .focusable(true, interactions: .activate)
+            .focused($isKeyboardFocused)
+            // The inset ring below stands for the system's, which did not show round a line.
+            .focusEffectDisabled()
+            // The layer holds focus, so it presses for the button: once per key down, never on
+            // a repeat.
+            .onKeyPress(keys: [.space, .return], phases: .down) { _ in toggle(); return .handled }
+            .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
+            .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+            // Drawn over the line, inside its edge: no layout change, and no clipping in a list.
+            .overlay {
+                if isKeyboardFocused {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Palette.focus, lineWidth: 2)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+}
+
+extension View {
+    /// Apply to the button itself, after its style, and only on a line that opens.
+    func prettyDisclosureKeys(isExpanded: Bool, radius: CGFloat, toggle: @escaping () -> Void) -> some View {
+        modifier(PrettyDisclosureKeys(isExpanded: isExpanded, radius: radius, toggle: toggle))
+    }
+}
+
+/// What a pointer press of a group's summary button asks for, read from the event the app is
+/// handling. Only the pointer comes here: the keyboard's keys and the accessibility press have
+/// their own handlers, which toggle the group alone.
+enum PrettySummaryPress: Equatable {
+    /// Open or close the group alone.
+    case toggle
+    /// Open or close the group and every step beneath it: an Option-click.
+    case everyStep
+
+    /// Only a primary click's own mouse-up that carries Option opens every step. The Option
+    /// state is the event's, not the keyboard's at the time of reading
+    /// (`NSEvent.modifierFlags`), which a posted click does not change.
+    static func of(type: NSEvent.EventType?, modifiers: NSEvent.ModifierFlags) -> PrettySummaryPress {
+        type == .leftMouseUp && modifiers.contains(.option) ? .everyStep : .toggle
+    }
+
+    /// The press the app is handling now.
+    @MainActor static func current() -> PrettySummaryPress {
+        let event = NSApp?.currentEvent
+        return of(type: event?.type, modifiers: event?.modifierFlags ?? [])
+    }
+}
+
 /// The secondary-ink line that stands for a run of finished calls. It never animates.
 struct ActivityGroupSummary: View {
     let summary: ActivityGroup.Summary
     let isExpanded: Bool
     let metrics: PrettyMetrics
+    /// Opens or closes the group alone: a plain click, the keyboard and the accessibility press.
     let toggle: () -> Void
+    /// Opens or closes the group and every step beneath it: an Option-click.
+    let toggleEveryStep: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
+        Button {
+            switch PrettySummaryPress.current() {
+            case .toggle: toggle()
+            case .everyStep: toggleEveryStep()
+            }
+        } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 (Text(verbatim: ([summary.text] + summary.notes).filter { !$0.isEmpty }.joined(separator: ", "))
                     .foregroundColor(Palette.secondary)
@@ -306,9 +568,11 @@ struct ActivityGroupSummary: View {
         }
         .buttonStyle(ActivityRowButtonStyle())
         .textSelection(.disabled)
-        .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-        .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+        .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
         .help("Option-click opens every step")
+        // The accessibility press toggles the group alone, as the keys do. Left to the button's
+        // action it would be read from whatever event was last current: an earlier Option-click.
+        .accessibilityAction { toggle() }
         .accessibilityLabel(summary.accessibilityLabel)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
@@ -320,47 +584,59 @@ struct ActivityFailureLine<Detail: View>: View {
     let step: ActivityStep
     let isExpanded: Bool
     let metrics: PrettyMetrics
+    /// Whether the line has anything to open to. A line that does not open is text: no chevron,
+    /// no button and no Tab stop.
+    var opens = true
     let toggle: () -> Void
     @ViewBuilder let detail: () -> Detail
+
+    private var spoken: String { step.failureLabel }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.failure)
-                        if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
-                        ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize, ink: Palette.failure)
-                        Spacer(minLength: 0)
-                    }
-                    if let reason = step.failure?.reason {
-                        Text(verbatim: reason)
-                            .font(.system(size: metrics.bodySize - (metrics.density == .regular ? 0 : 0.5)))
-                            .foregroundStyle(.inkSecondary)
-                            // The reason wraps on every surface: it is never cut.
-                            .fixedSize(horizontal: false, vertical: true)
-                            .multilineTextAlignment(.leading)
-                    }
+            if opens {
+                Button(action: toggle) { label }
+                    .buttonStyle(ActivityRowButtonStyle())
+                    .textSelection(.disabled)
+                    .help(step.help ?? step.sentence.plain)
+                    // The failure line's button fills its bordered frame, so the ring takes that corner.
+                    .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.listRadius, toggle: toggle)
+                    .accessibilityLabel(spoken)
+                    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                if isExpanded {
+                    detail()
+                        .padding(.horizontal, metrics.lineInset.width).padding(.bottom, metrics.lineInset.height + 3)
                 }
-                .padding(.horizontal, metrics.lineInset.width).padding(.vertical, metrics.lineInset.height)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ActivityRowButtonStyle())
-            .textSelection(.disabled)
-            .help(step.help ?? step.sentence.plain)
-            .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-            .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
-            .accessibilityLabel(step.sentence.plain + ", " + (step.failure?.outcome == .blocked ? "blocked" : "failed")
-                                + (step.failure.map { ", " + $0.reason } ?? ""))
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            if isExpanded {
-                detail()
-                    .padding(.horizontal, metrics.lineInset.width).padding(.bottom, metrics.lineInset.height + 3)
+            } else {
+                label
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(spoken)
             }
         }
         .overlay { shape.strokeBorder(Palette.failure.opacity(0.35), lineWidth: 1) }
+    }
+
+    private var label: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.failure)
+                if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
+                if opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize, ink: Palette.failure) }
+                Spacer(minLength: 0)
+            }
+            if let reason = step.failure?.reason {
+                Text(verbatim: reason)
+                    .font(.system(size: metrics.bodySize - (metrics.density == .regular ? 0 : 0.5)))
+                    .foregroundStyle(.inkSecondary)
+                    // The reason wraps on every surface: it is never cut.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.horizontal, metrics.lineInset.width).padding(.vertical, metrics.lineInset.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -530,8 +806,7 @@ struct PrettyLiveLine: View {
                 Button(action: toggle) { row }
                     .buttonStyle(ActivityRowButtonStyle())
                     .textSelection(.disabled)
-                    .onKeyPress(.rightArrow) { if !isExpanded { toggle() }; return .handled }
-                    .onKeyPress(.leftArrow) { if isExpanded { toggle() }; return .handled }
+                    .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
                     .accessibilityLabel(spoken)
                     .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             } else {
@@ -547,35 +822,60 @@ struct PrettyLiveLine: View {
         .frame(maxWidth: metrics.readingWidth, alignment: .leading)
     }
 
+    /// The record says the turn runs, over a live connection: the one condition for the working
+    /// mark, the shimmer and the timer. Otherwise a hollow dot and "Last known".
+    private var isWorking: Bool { live.isActive && !live.isDisconnected }
+
     private var row: some View {
-        HStack(alignment: .center, spacing: metrics.density == .pip ? 7 : 10) {
-            PrettySpinner(isSpinning: live.isActive && !live.isDisconnected, size: metrics.density == .pip ? 10 : 12)
+        let spacing: CGFloat = metrics.density == .pip ? 7 : 10
+        let markSize: CGFloat = metrics.density == .pip ? 10 : 12
+        return HStack(alignment: .center, spacing: spacing) {
+            if isWorking {
+                PrettyWorkingMark(size: markSize)
+            } else {
+                PrettySpinner(isSpinning: false, size: markSize)
+            }
             switch subject {
             case .call(let step):
-                if live.isDisconnected || !live.isActive {
+                if isWorking {
+                    ActivitySentenceText(sentence: step.sentence, metrics: metrics)
+                        .prettyShimmer(isActive: true, band: shimmerBand)
+                    elapsed(since: callStarted)
+                } else {
                     (Text("Last known: ").foregroundColor(Palette.secondary)
                      + Text(verbatim: step.sentence.plain.prefix(1).lowercased() + step.sentence.plain.dropFirst())
                         .foregroundColor(Palette.secondary))
                         .font(metrics.body)
-                } else {
-                    ActivitySentenceText(sentence: step.sentence, metrics: metrics)
-                    elapsed(since: callStarted)
                 }
             case .thinking(_, let started):
-                if live.isDisconnected || !live.isActive {
-                    Text("Last known: thinking").font(metrics.body).foregroundStyle(.inkSecondary)
-                } else {
-                    Text("Thinking").font(metrics.body).foregroundStyle(.inkSecondary)
-                    elapsed(since: started)
-                }
-                if thought != nil { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
+                // The word and the chevron shimmer as one label; the time between them stays still.
+                thinkingLabel(started: started, spacing: spacing, shimmerMask: false)
+                    .prettyShimmer(isActive: isWorking, band: shimmerBand) {
+                        thinkingLabel(started: started, spacing: spacing, shimmerMask: true)
+                    }
             case .responding(let name):
                 Text("\(name) is responding").font(metrics.body).foregroundStyle(.inkSecondary)
+                    .prettyShimmer(isActive: isWorking, band: shimmerBand)
             }
             Spacer(minLength: 0)
         }
         .lineLimit(metrics.density == .regular ? 2 : 1).truncationMode(.middle)
         .contentShape(Rectangle())
+    }
+
+    private var shimmerBand: CGFloat { PrettyShimmer.band(bodySize: metrics.bodySize) }
+
+    /// Thinking's word, time and chevron, or their shimmer mask: the same layout with the time hidden.
+    private func thinkingLabel(started: Date?, spacing: CGFloat, shimmerMask: Bool) -> some View {
+        HStack(alignment: .center, spacing: spacing) {
+            if isWorking {
+                Text("Thinking").font(metrics.body).foregroundStyle(.inkSecondary)
+                elapsed(since: started).opacity(shimmerMask ? 0 : 1)
+            } else {
+                Text("Last known: thinking").font(metrics.body).foregroundStyle(.inkSecondary)
+            }
+            if thought != nil { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize) }
+        }
     }
 
     @ViewBuilder private func elapsed(since started: Date?) -> some View {
@@ -659,7 +959,7 @@ struct ActivityGroupView<Detail: View>: View {
     let metrics: PrettyMetrics
     let isExpanded: (String) -> Bool
     let toggle: (String) -> Void
-    /// Opens or closes the group and every line beneath it (Option-click).
+    /// Opens or closes the group and every step that opens, its failures among them (Option-click).
     let setAll: ([String], Bool) -> Void
     @ViewBuilder let detail: (ActivityStep) -> Detail
     @State private var showsEveryLine = false
@@ -670,13 +970,9 @@ struct ActivityGroupView<Detail: View>: View {
                 single(group.lines[0])
             } else if !group.lines.isEmpty {
                 let open = isExpanded(group.id)
-                ActivityGroupSummary(summary: group.summary, isExpanded: open, metrics: metrics) {
-                    if NSEvent.modifierFlags.contains(.option) {
-                        setAll([group.id] + group.lines.filter(\.opens).map(\.id), !open)
-                    } else {
-                        toggle(group.id)
-                    }
-                }
+                ActivityGroupSummary(summary: group.summary, isExpanded: open, metrics: metrics,
+                                     toggle: { toggle(group.id) },
+                                     toggleEveryStep: { setAll(group.everyStepIDs, !open) })
                 if open { list }
             }
             ForEach(group.failures) { failure in

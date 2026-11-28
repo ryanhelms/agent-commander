@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"syscall"
 	"time"
@@ -29,6 +30,8 @@ type Resource struct {
 	Repository   string                `json:"repository,omitempty"`
 	Base         string                `json:"base,omitempty"`
 	Run          string                `json:"run,omitempty"`
+	Workspace    string                `json:"workspace,omitempty"`
+	AutoStart    bool                  `json:"autoStart,omitempty"`
 	Coordinator  bool                  `json:"coordinator,omitempty"`
 	Capabilities *sharing.Capabilities `json:"capabilities,omitempty"`
 }
@@ -54,6 +57,7 @@ type Request struct {
 	Resource string          `json:"resource"`
 	Action   string          `json:"action"`
 	Payload  json.RawMessage `json:"payload"`
+	Deadline time.Time       `json:"-"`
 }
 type Config struct {
 	StateDir, CommanderSocket string
@@ -63,19 +67,24 @@ type Config struct {
 	ReceivedRequest func(peer, resource, request string) bool
 	// GitHubToken selects a credential for this specific resource ID and capability.
 	GitHubToken func(context.Context, string, string) (string, error)
-	testGitHub  string
-	testPushURL string
+	// ReadDesktopBuild adapts the local platform for application build evidence.
+	ReadDesktopBuild func(context.Context, string) (DesktopBuild, error)
+	testGitHub       string
+	testPushURL      string
 }
 
 var (
-	identifier         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
-	ErrDenied          = errors.New("action is outside the current local grant")
-	ErrBudgetExhausted = errors.New("grant token budget exhausted")
-	ErrInvalid         = errors.New("invalid action or target")
-	ErrUncertain       = errors.New("outcome uncertain; reconcile the original operation")
-	ErrConflict        = errors.New("operation identity or expected revision conflicts")
-	ErrStaleRevision   = fmt.Errorf("shared revision changed: %w", ErrConflict)
-	ErrUnavailable     = errors.New("owner-local resource or credential unavailable")
+	identifier                 = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$`)
+	ErrDenied                  = errors.New("action is outside the current local grant")
+	ErrBudgetExhausted         = errors.New("grant token budget exhausted")
+	ErrInvalid                 = errors.New("invalid action or target")
+	ErrUncertain               = errors.New("outcome uncertain; reconcile the original operation")
+	ErrConflict                = errors.New("operation identity or expected revision conflicts")
+	ErrStaleRevision           = fmt.Errorf("shared revision changed: %w", ErrConflict)
+	ErrBuildRequestExpired     = fmt.Errorf("app build proof request is outside its verification window: %w", ErrConflict)
+	ErrDesktopBuildUnavailable = fmt.Errorf("no matching running app can provide build evidence: %w", ErrUnavailable)
+	ErrCoordinatorInboxEnded   = errors.New("coordinator inbox has ended; discover an active coordinator before submitting a new operation")
+	ErrUnavailable             = errors.New("owner-local resource or credential unavailable")
 )
 
 var actionFailures = [...]struct {
@@ -83,10 +92,13 @@ var actionFailures = [...]struct {
 	code string
 }{
 	{ErrStaleRevision, "stale_revision"},
+	{ErrBuildRequestExpired, "build_request_expired"},
 	{ErrConflict, "conflict"},
 	{ErrDenied, "access_denied"},
+	{ErrCoordinatorInboxEnded, "coordinator_inbox_ended"},
 	{ErrBudgetExhausted, "budget_exhausted"},
 	{ErrInvalid, "invalid_request"},
+	{ErrDesktopBuildUnavailable, "app_build_unavailable"},
 	{ErrUnavailable, "resource_unavailable"},
 	{ErrUncertain, "outcome_uncertain"},
 }
@@ -109,6 +121,9 @@ func (r requestRefusal) Unwrap() error { return ErrInvalid }
 
 // FailureReason returns a requester-facing explanation when the handler supplied one.
 func FailureReason(err error) string {
+	if errors.Is(err, ErrCoordinatorInboxEnded) {
+		return ErrCoordinatorInboxEnded.Error()
+	}
 	var refusal requestRefusal
 	if errors.As(err, &refusal) {
 		return refusal.Error()
@@ -164,7 +179,15 @@ func registeredKind(r Resource) string {
 }
 
 // ResourceCapabilities advertises only actions for the enrolled local target.
-func ResourceCapabilities(r Resource) []string { return Capabilities(registeredKind(r)) }
+func ResourceCapabilities(r Resource) []string {
+	if r.Workspace != "" {
+		if r.Kind != "agent" || r.Coordinator || !identifier.MatchString(r.Workspace) {
+			return nil
+		}
+		return []string{"agent.handoff", "agent.result", "agent.status", "thread.comment", "thread.read"}
+	}
+	return Capabilities(registeredKind(r))
+}
 
 func Capabilities(kind string) []string {
 	var names []string
@@ -405,7 +428,7 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 		}
 	}
 	implementation, known := registry[req.Action]
-	if !known || resource.ID == "" || implementation.kind != registeredKind(resource) {
+	if !known || resource.ID == "" || implementation.kind != registeredKind(resource) || !slices.Contains(ResourceCapabilities(resource), req.Action) {
 		return nil, ErrDenied
 	}
 	grant, ok := activeGrant(cfg, req)
@@ -427,7 +450,11 @@ func Execute(ctx context.Context, cfg Config, req Request) (json.RawMessage, err
 	req.Payload, _ = json.Marshal(canonical)
 	// An owner may remove and later reuse a display ID. Old receipts belong
 	// only to the original target. Display names and refreshed grants may change.
-	raw, _ := json.Marshal([]any{req, resource.Kind, resource.Target, resource.Repository, resource.Branch, resource.Base, resource.Run, resource.Coordinator})
+	binding := []any{req, resource.Kind, resource.Target, resource.Repository, resource.Branch, resource.Base, resource.Run, resource.Coordinator}
+	if resource.Workspace != "" {
+		binding = append(binding, resource.Workspace)
+	}
+	raw, _ := json.Marshal(binding)
 	r, fresh, e := reserve(dir, path, hash(raw), grant)
 	if e != nil {
 		if errors.Is(e, ErrConflict) || errors.Is(e, ErrDenied) || errors.Is(e, ErrBudgetExhausted) {

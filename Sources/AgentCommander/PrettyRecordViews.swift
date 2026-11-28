@@ -4,6 +4,8 @@ import SwiftUI
 // Values come from `PrettyRecords.swift`; density and type come from the console.
 //
 //   Molecule   PrettyTurnEndLine       the end of a turn: how long it worked, or why it stopped
+//              PrettyFormOutcomeLine   the line after a form reply: answered, declined, cancelled
+//              PrettyCompactionDivider the boundary of a finished compaction, and its summary
 //              PrettyChoiceCard        a provider question's choices, read-only
 //              PrettyPlanDocument      a proposed plan as Markdown beside a rule
 //              PrettyDeliverableCard   a published artifact or a sent file: name, kind, Open
@@ -23,6 +25,131 @@ struct PrettyTurnEndLine: View {
             .frame(maxWidth: metrics.readingWidth, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(end.spoken)
+    }
+}
+
+/// The line after the owner's reply to a form request: "Answered a form", "Declined a form" or
+/// "Cancelled a form", in secondary ink like a turn's duration. It is text: it does not open,
+/// takes no Tab stop and shows nothing the owner entered. Never folded.
+struct PrettyFormOutcomeLine: View {
+    let outcome: PrettyFormOutcome
+    let metrics: PrettyMetrics
+
+    var body: some View {
+        ActivitySentenceText(sentence: outcome.sentence, metrics: metrics, ink: Palette.secondary)
+            .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(outcome.spoken)
+    }
+}
+
+/// The boundary of a finished provider compaction: a hairline rule on each side of "Conversation
+/// compacted" and, when the record holds the provider's summary, the transcript's link "Show the
+/// summary". It opens in place to that text beside a rule. Nothing above it is removed or dimmed.
+/// With no summary it is text: no link and no Tab stop. Never folded.
+///
+/// The row has two layouts and takes the first that fits the width it is given:
+///   wide     rule, heading, link, rule on one line, each rule at least `wideRule` long
+///   stacked  rule, heading, rule, with the link centred on its own line beneath
+/// A row with no summary has no link, so it is always the one line.
+struct PrettyCompactionDivider: View {
+    /// The provider's own summary, exactly as sent. Nil draws no link.
+    let summary: String?
+    let isExpanded: Bool
+    let metrics: PrettyMetrics
+    let toggle: () -> Void
+
+    private static let showTitle = "Show the summary"
+    private static let hideTitle = "Hide the summary"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.blockSpacing * 0.8) {
+            boundary
+            if isExpanded, let summary {
+                // A tile shows the first six lines and the PiP three; the focused worker and
+                // coordinator show it all.
+                let clamp: Int? = metrics.density == .regular ? nil : (metrics.density == .compact ? 6 : 3)
+                PrettyClamp(lines: clamp, lineHeight: metrics.bodySize * 1.45, metrics: metrics) {
+                    // The provider's text as sent: nothing is trimmed from either end.
+                    Text(verbatim: summary)
+                        .font(metrics.body)
+                        .lineSpacing(metrics.lineSpacing * 0.6)
+                        .foregroundStyle(.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.leading, metrics.density == .pip ? 9 : 15)
+                .overlay(alignment: .leading) { Rectangle().fill(Palette.border).frame(width: 2) }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Compaction summary")
+            }
+        }
+        .frame(maxWidth: metrics.readingWidth, alignment: .leading)
+    }
+
+    /// The boundary row. `ViewThatFits` measures each layout at its ideal width, where a rule is
+    /// its minimum, so the wide layout is chosen only when both rules keep that length.
+    @ViewBuilder
+    private var boundary: some View {
+        if summary == nil {
+            headingLine
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: gap) {
+                    rule(atLeast: wideRule)
+                    heading.fixedSize()
+                    link
+                    rule(atLeast: wideRule)
+                }
+                VStack(alignment: .center, spacing: metrics.lineSpacing) {
+                    headingLine
+                    link
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// A rule on each side of the heading. The heading keeps its width before the rules do; in a
+    /// width too small for it, it ends in an ellipsis inside the row and never draws past it.
+    private var headingLine: some View {
+        HStack(alignment: .center, spacing: gap) {
+            rule(atLeast: metrics.markerWidth)
+            heading.layoutPriority(1)
+            rule(atLeast: metrics.markerWidth)
+        }
+    }
+
+    private var heading: some View {
+        Text("Conversation compacted")
+            .font(.system(size: metrics.detailSize)).foregroundStyle(Palette.secondary)
+            .lineLimit(1)
+    }
+
+    /// The link, in a slot as wide as the longer of its two titles. The row's width, and so the
+    /// layout chosen, is the same open and closed: toggling never swaps the layout under the
+    /// keyboard focus.
+    private var link: some View {
+        ZStack {
+            Text(Self.showTitle).font(.system(size: metrics.detailSize)).lineLimit(1).fixedSize().hidden()
+            Text(Self.hideTitle).font(.system(size: metrics.detailSize)).lineLimit(1).fixedSize().hidden()
+            PrettyLinkButton(title: isExpanded ? Self.hideTitle : Self.showTitle,
+                             size: metrics.detailSize, action: toggle)
+                .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.chipRadius, toggle: toggle)
+                .accessibilityLabel("Summary of the compacted conversation")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint("Shows the summary the provider wrote")
+        }
+    }
+
+    private var gap: CGFloat { metrics.density == .pip ? 8 : 12 }
+    /// The shortest a rule may be beside the link on one line: twice the stacked row's.
+    private var wideRule: CGFloat { metrics.markerWidth * 2 }
+
+    private func rule(atLeast length: CGFloat) -> some View {
+        Rectangle().fill(Palette.hairline).frame(height: 1)
+            .frame(minWidth: length, idealWidth: length, maxWidth: .infinity)
+            .accessibilityHidden(true)
     }
 }
 

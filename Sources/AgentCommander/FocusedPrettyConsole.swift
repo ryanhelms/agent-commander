@@ -65,6 +65,10 @@ struct PrettyRunStatus: Equatable {
     let ranAndFailedTools: Int
     /// Every tool call in the transcript that has no result yet, oldest first.
     let openToolIDs: [String]
+    /// Who a waiting worker waits for when that is not the developer: the coordinator or parent
+    /// that answers a delegated worker's request while the developer does not control it. Nil
+    /// reads "Waiting for you".
+    var waitingOwner: WorkerInputOwner? = nil
 
     /// The call to show as awaiting approval, only when it is identified without doubt: the
     /// worker is waiting on a request that offers ACP choices, and exactly one call is open. The
@@ -75,12 +79,24 @@ struct PrettyRunStatus: Equatable {
         return openToolIDs.first
     }
 
+    /// The open call a provider permission names: the one transcript entry whose ID is
+    /// `<worker ID>:<provider tool ID>`, however many other calls are open. Nil when the worker
+    /// is not waiting, when no open call has that ID (a stale ID, or another worker's call with
+    /// the same provider ID), and when more than one does.
+    func approvalToolID(worker: String, providerToolCallID: String) -> String? {
+        let id = worker + ":" + providerToolCallID
+        guard phase == .waiting, openToolIDs.filter({ $0 == id }).count == 1 else { return nil }
+        return id
+    }
+
     /// `reportsProgress` is set for a worker whose service reports its phase (a tracked local
     /// Claude worker). Its active phase is then the service's state alone: no Responding or
     /// Running tool is inferred from the transcript, so the status never contradicts the reported
     /// phase or claims work without evidence, and an explicit Unknown state is kept, not read as
     /// Idle. A waiting worker and its approvals are unchanged.
-    init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false) {
+    init(state: TaskState, entries: [TranscriptEntry], reportsProgress: Bool = false,
+         waitingOwner: WorkerInputOwner? = nil) {
+        self.waitingOwner = waitingOwner
         var prompts = 0, tools = 0, failed = 0, blocked = 0, ranAndFailed = 0
         func count(_ result: ToolResult) {
             let status = ToolStatus(result: result)
@@ -139,7 +155,8 @@ struct PrettyRunStatus: Equatable {
         case .runningTool: "Running tool"
         case .responding: "Responding"
         case .active(let state): state.label
-        case .waiting: "Waiting for you"
+        // The current owner of the answer: the developer, or the worker's coordinator or parent.
+        case .waiting: waitingOwner?.waitingLabel ?? "Waiting for you"
         case .idle: "Idle"
         case .disconnected: "Disconnected"
         case .ended(let state): state.label
@@ -192,13 +209,14 @@ struct PrettyACPMetrics {
         case .compact:
             self.inset = inset ?? 11; barHeight = 26; barSize = 11.5; showsSession = false; showsCounts = true
         case .pip:
-            // The PiP's transcript is a recent window, so whole-run counts would mislead.
+            // The PiP holds one turn and shows part of it, so whole-run counts would mislead.
             self.inset = inset ?? 11; barHeight = 22; barSize = 10.5; showsSession = false; showsCounts = false
         }
     }
 }
 
 struct PrettyACPConsole: View {
+    @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     let consoleID: String
     let name: String
     let client: AgentClient
@@ -226,15 +244,22 @@ struct PrettyACPConsole: View {
     /// Where the call awaiting approval comes from. A surface holding the whole transcript
     /// derives it; the PiP, which holds a window, takes the one its request resolved.
     var awaitingApproval: AwaitingApproval = .derived
+    /// The call the request's permission names by exact ID (`RequestPresentation.exactApprovalToolID`).
+    /// Only this call shows its proposed plan before the decision.
+    var exactApprovalToolID: String? = nil
     /// The requests this surface can act on for activity story actions: its own form's request,
     /// or the requests it routes to where they are answered. Empty offers no request action.
     var stories = ActivityStoryContext()
     /// The PiP's request workflow linked over the whole transcript, so its Ask stays in the window.
     var anchor: CommanderWorkflow? = nil
+    /// The PiP: `entries` is the worker's current turn, shown as `ActivityConversation.recent`.
+    var showsRecent = false
     /// The jobs this console's calls started, for the background stack.
     var background: [BackgroundJob] = []
     /// The service says the turn is still running (`WorkerPresentation.turnIsRunning`).
     var turnIsRunning = false
+    /// Who the worker waits for when that is not the developer (`WorkerPresentation.waitsOnOwner`).
+    var waitingOwner: WorkerInputOwner? = nil
 
     enum AwaitingApproval {
         /// From `entries` and `choiceRequestPending`, through `PrettyRunStatus.awaitingToolID`.
@@ -245,7 +270,8 @@ struct PrettyACPConsole: View {
 
     var body: some View {
         let metrics = PrettyACPMetrics(density, inset: inset)
-        let status = PrettyRunStatus(state: state, entries: entries, reportsProgress: reportsProgress)
+        let status = PrettyRunStatus(state: state, entries: entries, reportsProgress: reportsProgress,
+                                     waitingOwner: waitingOwner)
         VStack(alignment: .leading, spacing: 0) {
             PrettyRunStatusBar(status: status, session: session, client: client, metrics: metrics)
             conversation(status: status, metrics: metrics)
@@ -268,16 +294,26 @@ struct PrettyACPConsole: View {
     private func conversation(status: PrettyRunStatus, metrics: PrettyACPMetrics) -> some View {
         // Structured ACP entries only. `rawOutput` is empty on purpose: PTY text is never
         // shown here as if it were the conversation.
-        if PrettyContent.isPresentable(entries: entries, rawOutput: "") {
+        // A form reply from before the worker's first event is a line of its own. The PiP's
+        // window is not the worker's whole transcript, so it draws none from an empty one.
+        let repliedBeforeFirstEvent = entries.isEmpty && !showsRecent
+            && PrettyFormOutcome.hasReplyBeforeFirstEvent(Array((details?.summaries(worker: consoleID) ?? [:]).values))
+        if repliedBeforeFirstEvent || PrettyContent.isPresentable(entries: entries, rawOutput: "") {
             PrettyConsoleView(consoleID: consoleID, entries: entries, rawOutput: "",
                               density: density, horizontalInset: metrics.inset,
-                              awaitingToolID: awaitingToolID(status), stories: stories, anchor: anchor,
+                              // The held call by its exact ID, and who approves it when that is
+                              // not the developer. The PiP also cuts its current turn to the recent view.
+                              awaitingToolID: awaitingToolID(status), approvalOwner: waitingOwner,
+                              exactApprovalToolID: exactApprovalToolID,
+                              stories: stories, anchor: anchor, showsRecent: showsRecent,
                               live: PrettyLive(state: state, workerName: name, reportsProgress: reportsProgress,
                                                reportedPhase: reportedPhase, turnIsRunning: turnIsRunning),
                               reportsAsCoordinator: isCoordinator, background: background)
         } else {
             PrettyEmptyConversation(status: status, workerName: name, hasEntries: !entries.isEmpty,
                                     density: density, inset: metrics.inset)
+                // The conversation view reads the stored details; with none drawn, read them here.
+                .task(id: consoleID) { await details?.refresh(worker: consoleID) }
         }
     }
 
@@ -298,27 +334,39 @@ extension PrettyACPConsole {
         self.init(consoleID: worker.id, name: worker.name, client: worker.client, state: worker.state,
                   entries: worker.transcript, session: session,
                   request: reply == nil ? nil : worker.request, reply: reply, density: density, inset: inset,
-                  choiceRequestPending: !(worker.request?.choices.isEmpty ?? true),
+                  // The open call's approval anchor holds whoever answers: the developer's request,
+                  // or the one the worker's owner answers. Only the form and the actions differ.
+                  choiceRequestPending: !(worker.anchoringRequest?.choices.isEmpty ?? true),
                   reportsProgress: worker.claudeProgress != nil,
                   reportedPhase: worker.claudeProgress?.evidence?.phase,
                   isCoordinator: worker.isCoordinator,
+                  // The request's own resolution over this same transcript: the call its
+                  // permission names, or for a request that names none, the one open call.
+                  // Read from the anchoring request, so a call the worker's owner approves is
+                  // held the same way as one the developer approves.
+                  awaitingApproval: .resolved(worker.anchoringRequest?.awaitingApprovalToolID),
+                  exactApprovalToolID: worker.anchoringRequest?.exactApprovalToolID,
                   stories: stories ?? .form(for: worker.request, reply: reply),
-                  background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning)
+                  background: worker.backgroundJobs, turnIsRunning: worker.turnIsRunning,
+                  waitingOwner: worker.waitsOnOwner)
     }
 
-    /// The asking worker's console in the PiP: its recent window and the request it answers. The
-    /// request's own story is anchored from the whole transcript, so the Ask is never cut off.
+    /// The asking worker's console in the PiP: its current turn, grouped as on the focused worker
+    /// and then cut to the latest group, the turn's failures, the report and the live line; and
+    /// the request it answers. The request's own story is anchored from the whole transcript, so
+    /// the Ask is never cut off.
     init(request: RequestPresentation, session: NativeSession, reply: ReplyContext,
          inset: CGFloat? = nil, conversationHeight: CGFloat? = nil) {
         self.init(consoleID: request.workerID, name: request.workerName, client: request.client,
-                  state: request.workerState, entries: request.contextEntries, session: session,
+                  state: request.workerState, entries: request.prettyEntries, session: session,
                   request: request, reply: reply, density: .pip, inset: inset,
                   conversationHeight: conversationHeight,
-                  // The PiP holds a recent window, which cannot rule out an older open call, so
-                  // it shows the call its request resolved from the whole transcript.
+                  // The PiP holds one turn, which cannot rule out an older open call, so it
+                  // shows the call its request resolved from the whole transcript.
                   awaitingApproval: .resolved(request.awaitingApprovalToolID),
+                  exactApprovalToolID: request.exactApprovalToolID,
                   stories: .form(for: request, reply: reply),
-                  anchor: request.requestWorkflow,
+                  anchor: request.requestWorkflow, showsRecent: true,
                   background: request.workerBackgroundJobs, turnIsRunning: request.workerTurnIsRunning)
     }
 }
@@ -333,17 +381,32 @@ struct PrettyRunStatusBar: View {
     let client: AgentClient
     var metrics = PrettyACPMetrics(.regular)
 
+    /// The one binding that resumes through Claude's own CLI (`--resume`), not over ACP.
+    static let claudeCLIHarness = "local-claude-cli"
+
+    /// The chip's accessibility label. Every other binding, and an unbound session, reads as ACP.
+    static func harnessLabel(client: AgentClient, harnessInstance: String) -> String {
+        harnessInstance == claudeCLIHarness ? "Harness Claude CLI" : "Harness \(client.displayName), over ACP"
+    }
+
+    /// The chip's help sentence, before the session detail.
+    static func harnessHelp(harnessInstance: String) -> String {
+        harnessInstance == claudeCLIHarness
+            ? "Structured transcript from the provider session through Claude CLI."
+            : "Structured transcript from the provider session over ACP."
+    }
+
     var body: some View {
         let harness = session.harnessInstance.isEmpty ? client.displayName : session.harnessInstance
         let sessionHelp = "Session \(session.sessionID) · \(harness)"
         HStack(spacing: metrics.showsSession ? 12 : 8) {
-            Text(verbatim: client.displayName.lowercased())
+            Text(verbatim: session.harnessInstance == Self.claudeCLIHarness ? "claude cli" : client.displayName.lowercased())
                 .font(Term.font(metrics.barSize - 1.5)).foregroundStyle(.inkSecondary)
                 .lineLimit(1).fixedSize()
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .help("Structured transcript from the provider session over ACP. " + sessionHelp)
-                .accessibilityLabel("Harness \(client.displayName), over ACP")
+                .help(Self.harnessHelp(harnessInstance: session.harnessInstance) + " " + sessionHelp)
+                .accessibilityLabel(Self.harnessLabel(client: client, harnessInstance: session.harnessInstance))
             HStack(spacing: 6) {
                 Circle().fill(status.ink).frame(width: 7, height: 7)
                 Text(status.word).font(.system(size: metrics.barSize)).foregroundStyle(.inkSecondary)

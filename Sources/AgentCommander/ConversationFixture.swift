@@ -26,7 +26,8 @@ enum ConversationFixture {
         guard display != nil else { return [] }
         if let hit = cache[workerID] { return hit }
         let json = template.replacingOccurrences(of: "WID", with: workerID)
-        let messages = (try? JSONDecoder().decode([AGUIMessage].self, from: Data(json.utf8))) ?? []
+        var messages = (try? JSONDecoder().decode([AGUIMessage].self, from: Data(json.utf8))) ?? []
+        if CompactionFixture.isRequested { messages += CompactionFixture.messages(workerID: workerID) }
         cache[workerID] = messages
         return messages
     }
@@ -83,6 +84,76 @@ enum ConversationFixture {
       {"id": "WID:8", "role": "user", "content": "Which case is ambiguous?"},
       {"id": "WID:9", "role": "assistant",
        "content": "Only the third: once body bytes have reached the caller, retrying can duplicate them. I've raised it as a request rather than choosing a default."}
+    ]
+    """#
+}
+
+/// Provider compactions for the sample conversation, so the Pretty compaction row can be reviewed
+/// on the wall, the focused worker and the PiP without a service. Off unless asked for, beside
+/// `AGENT_COMMANDER_PREVIEW_DISPLAY`:
+///
+///   AGENT_COMMANDER_PREVIEW_COMPACTION=1   append a warning notice and four compactions to every sample
+///                                          conversation: finished with a summary, finished with
+///                                          none, failed with an error, and still running
+///
+/// The messages have the shape the service sends for a negotiated ACP session: one `system`
+/// message per compaction, replaced in place, with its identity and source cursor. The summary
+/// and error are served as the SDK's `acp.compaction_state` snapshots through the production
+/// page decoder and `CompactionSummaryStore`.
+@MainActor
+enum CompactionFixture {
+    static let isRequested = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_COMPACTION"] == "1"
+
+    /// The store the preview's consoles read: each row's snapshot, by its exact cursor.
+    static let store = CompactionSummaryStore { _, mark, _ in
+        try SourcePage(envelope: Data(page(for: mark.cursor).utf8))
+    }
+
+    /// The source page for one row: the snapshot whose ID ends the cursor, or no record.
+    nonisolated static func page(for cursor: String) -> String {
+        let observations = snapshots.compactMap { id, body -> String? in
+            guard cursor.hasSuffix(id) else { return nil }
+            let data = Data(body.utf8).base64EncodedString()
+            return #"{"cursor":"\#(cursor)","extension":{"type":"acp.compaction_state","mediaType":"application/json","data":"\#(data)"}}"#
+        }
+        return #"{"observations":[\#(observations.joined(separator: ","))]}"#
+    }
+
+    private nonisolated static let snapshots: [String: String] = [
+        "cmp-1": #"{"compactionId":"cmp-1","status":"completed","firstOrdinal":12,"summary":[{"type":"text","text":"The developer asked for timeout coverage in three phases: before headers, after headers and after the first body chunk.\n\n"},{"type":"text","text":"Done so far: the timeout suite ran with 2 passed and 1 pending. Retry before headers is covered by timeout.test.ts.\n\nOpen: a retry after the first body chunk can duplicate bytes the caller already has. That case was raised as a request and waits for a decision."}]}"#,
+        "cmp-2": #"{"compactionId":"cmp-2","status":"completed","firstOrdinal":15,"summary":[]}"#,
+        "cmp-3": #"{"compactionId":"cmp-3","status":"failed","error":"The summary request exceeded the context window. Start a new session or clear earlier turns.","firstOrdinal":17,"summary":[]}"#
+    ]
+
+    static func messages(workerID: String) -> [AGUIMessage] {
+        var json = template.replacingOccurrences(of: "WID", with: workerID)
+        for id in ["cmp-1", "cmp-2", "cmp-3", "cmp-4"] {
+            json = json.replacingOccurrences(of: "ID(\(id))", with: CompactionRecord.identity(of: id))
+        }
+        return (try? JSONDecoder().decode([AGUIMessage].self, from: Data(json.utf8))) ?? []
+    }
+
+    private static let template = #"""
+    [
+      {"id": "WID:10", "role": "system", "content": "[ACP notice] Context is almost full",
+       "metadata": {"acp": {"source": "live", "cursor": "WID-notice-1", "turnId": "op-9", "kind": "notice",
+                            "noticeSeverity": "warning"}}},
+      {"id": "WID:11", "role": "system", "content": "Provider context compaction completed",
+       "metadata": {"acp": {"source": "live", "cursor": "WID-cmp-1", "turnId": "op-9", "kind": "compaction_update",
+                            "messageId": "ID(cmp-1)", "messageOp": "replace"}}},
+      {"id": "WID:14", "role": "assistant",
+       "content": "With the earlier turns compacted, I'll continue with the ambiguous case: the caller decides whether a partial body may be replayed."},
+      {"id": "WID:15", "role": "system", "content": "Provider context compaction completed",
+       "metadata": {"acp": {"source": "live", "cursor": "WID-cmp-2", "turnId": "op-9", "kind": "compaction_update",
+                            "messageId": "ID(cmp-2)", "messageOp": "replace"}}},
+      {"id": "WID:16", "role": "assistant", "content": "The provider sent no summary for that one."},
+      {"id": "WID:17", "role": "system", "content": "Provider context compaction failed",
+       "metadata": {"acp": {"source": "live", "cursor": "WID-cmp-3", "turnId": "op-9", "kind": "compaction_update",
+                            "messageId": "ID(cmp-3)", "messageOp": "replace"}}},
+      {"id": "WID:18", "role": "assistant", "content": "I'll keep working in the context that is left."},
+      {"id": "WID:19", "role": "system", "content": "Provider context compaction in progress",
+       "metadata": {"acp": {"source": "live", "cursor": "WID-cmp-4", "turnId": "op-9", "kind": "compaction_update",
+                            "messageId": "ID(cmp-4)", "messageOp": "replace"}}}
     ]
     """#
 }

@@ -79,11 +79,13 @@ enum ThemeID: String, CaseIterable, Identifiable, Sendable {
 // MARK: - Theme
 
 struct Theme: Equatable, Sendable {
-    /// DESIGN.md section 2 "Colour". The same thirteen roles in every theme.
+    /// DESIGN.md section 2 "Colour". The same fourteen roles in every theme.
     struct Colors: Equatable, Sendable {
         let window, panel, well, hair, border: ThemeColor
         let foreground, secondary, focus, working, attention, failure: ThemeColor
         let selection, onAccent: ThemeColor
+        /// The agent is working on its turn: the Pretty live line's mark.
+        let live: ThemeColor
     }
 
     /// The stronger roles that Increase Contrast swaps in.
@@ -229,7 +231,7 @@ extension Theme {
         let color = Colors(window: ink(0x090A0D), panel: ink(0x14151A), well: ink(0x0B0C10), hair: ink(0xFFFFFF, 0.11),
                            border: ink(0x383B44), foreground: ink(0xF5F5F9), secondary: ink(0xB7BAC6), focus: ink(0xB5D6FF),
                            working: ink(0xA8E0C0), attention: ink(0xF1C587), failure: ink(0xEC9B92),
-                           selection: ink(0x283344), onAccent: ink(0x101825))
+                           selection: ink(0x283344), onAccent: ink(0x101825), live: ink(0xD67B6A))
         return Theme(
             id: .blackGlass, name: "Black glass", color: color, contrast: .shared,
             material: Material(window: .glass, windowFill: ink(0x15161A),
@@ -281,7 +283,7 @@ extension Theme {
         let color = Colors(window: ink(0x090A0D), panel: ink(0x14151A), well: ink(0x0B0C10), hair: ink(0x26282F),
                            border: ink(0x383B44), foreground: ink(0xF5F5F9), secondary: ink(0xB7BAC6), focus: ink(0xB5D6FF),
                            working: ink(0xA8E0C0), attention: ink(0xF1C587), failure: ink(0xEC9B92),
-                           selection: ink(0x283344), onAccent: ink(0x101825))
+                           selection: ink(0x283344), onAccent: ink(0x101825), live: ink(0xD67B6A))
         let type = TypeScale(title: system(14, .semibold), name: system(13, .medium), body: system(13), sub: system(11),
                              heading: mono(11.5, .semibold), state: mono(10.5, .semibold), data: mono(11, .medium),
                              mono: mono(11), label: mono(9.5, .semibold), fingerprint: mono(10.5), figure: mono(14, .semibold))

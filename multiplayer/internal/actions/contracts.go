@@ -62,8 +62,8 @@ var registry = register(
 	},
 	descriptor{
 		kind: "agent", name: "agent.handoff", recoverable: true, run: handoffHandler,
-		description:   "Hand a task to the owner's agent. The owner's Commander starts a new run for it in the shared worker's project and returns the run ID at once. Track it with agent.status and agent.result.",
-		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},` + contextProperty + `}}`,
+		description:   "Hand a task to the owner's agent. An offered workspace durably queues the task and returns its handoff ID. A legacy shared worker starts a new run. Track either with agent.status and agent.result.",
+		payloadSchema: closedObject + `,"required":["title","task"],"properties":{"title":{"type":"string","minLength":1,"maxLength":200},"task":{"type":"string","minLength":1,"maxLength":15360},"expectedHead":{"type":"string","pattern":"^[0-9a-f]{40}$","description":"Optional commit to verify after a workspace handoff completes."},` + contextProperty + `}}`,
 	},
 	descriptor{
 		kind: "agent", name: "agent.watch", recoverable: true, run: watchHandler,
@@ -104,6 +104,11 @@ var registry = register(
 		kind: "agent", name: "agent.result", recoverable: true, run: handoffHandler,
 		description:   "Read the result and artifacts (report, branch) of a run you handed off.",
 		payloadSchema: closedObject + `,"required":["run"],"properties":{"run":{"type":"string","minLength":1,"maxLength":128}}}`,
+	},
+	descriptor{
+		kind: "coordinator", name: "app.build", run: desktopBuildAction,
+		description:   "Read the running macOS app build and launch identity. Use a new operation and nonce for each observation and compare the response nonce and observedAt. A receipt or service reconnect alone is not evidence.",
+		payloadSchema: closedObject + `,"required":["nonce","issuedAt"],"properties":{"nonce":{"type":"string","pattern":"^[0-9a-f]{32}$","description":"Fresh random 128-bit hex nonce. Never reuse it for another observation."},"issuedAt":{"type":"string","format":"date-time","description":"Current UTC time. A request expires after 90 seconds."}}}`,
 	},
 	descriptor{
 		kind: "coordinator", name: "agent.message", recoverable: true, run: coordinatorMessage,

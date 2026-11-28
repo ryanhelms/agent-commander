@@ -59,6 +59,7 @@ func (p *acpV2Inputs) observe(ctx context.Context, source *acpSourcePublisher, s
 	if err := p.api.requestContext(ctx, "POST", p.path+"/questions", map[string]any{
 		"question": request.Prompt, "choices": choices, "provider_turn": service.ACPSessionPermissionScope,
 		"provider_request": request.RequestId, "idempotency_key": request.RequestId,
+		"provider_tool_call_id": acpPermissionToolCallID(event, true),
 	}, &question); err != nil {
 		return err
 	}

@@ -48,6 +48,8 @@ type input struct {
 	Attribution   string                `json:"attribution"`
 	Peer          string                `json:"peer"`
 	Reason        string                `json:"reason"`
+	Note          string                `json:"note"`
+	Decision      string                `json:"decision"`
 	Payload       json.RawMessage       `json:"payload"`
 	Request       string                `json:"request"`
 	Handoff       string                `json:"handoff"`
@@ -62,6 +64,7 @@ type input struct {
 	Path          string                `json:"path"`
 	Body          json.RawMessage       `json:"body"`
 	Workspace     string                `json:"workspace"`
+	AutoStart     *bool                 `json:"autoStart,omitempty"`
 	Goal          string                `json:"goal"`
 	Repository    string                `json:"repository"`
 	Base          string                `json:"base"`
@@ -90,10 +93,10 @@ type trayGrant struct {
 func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	s := a.creds.Session
-	pending, why := a.loginPending, a.problem
+	pending, why, access := a.loginPending, a.problem, a.access
 	online := s.User != "" && time.Now().Before(a.lease.ExpiresAt)
 	a.mu.Unlock()
-	result := map[string]any{"signedIn": s.User != "", "online": online, "loginPending": pending, "handle": "", "friends": []any{}, "incoming": []any{}, "outgoing": []any{}, "grants": []any{}, "resources": []any{}, "shared": []any{}, "error": why}
+	result := map[string]any{"signedIn": s.User != "", "online": online, "loginPending": pending, "handle": "", "friends": []any{}, "incoming": []any{}, "outgoing": []any{}, "grants": []any{}, "resources": []any{}, "shared": []any{}, "error": why, "accessRequest": access}
 	if s.User == "" {
 		return result, nil
 	}
@@ -156,8 +159,16 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	local := slices.Clone(a.policy.Resources)
 	a.mu.Unlock()
+	buildProbe, stopBuildProbe := context.WithTimeout(ctx, ownerBuildProbeBudget)
+	defer stopBuildProbe()
 	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
+		if r.InboxEnded {
+			row["inboxEnded"] = true
+		}
+		if r.Workspace != "" {
+			row["workspace"] = r.Workspace
+		}
 		if r.Capabilities != nil {
 			row["capabilities"] = r.Capabilities
 		}
@@ -166,9 +177,19 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		}
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
+			row["actions"] = a.ownerBuildActions(buildProbe, s, r, local)
 			own = append(own, row)
-		} else if r.Owner != s.User {
+		} else if r.Owner != s.User && !r.InboxEnded {
 			shared = append(shared, row)
+		}
+	}
+	for _, row := range own {
+		for _, resource := range local {
+			if row["id"] == resource.ID && resource.Workspace != "" {
+				row["workspace"] = resource.Workspace
+				row["autoStart"] = resource.AutoStart
+				break
+			}
 		}
 	}
 	result["resources"], result["shared"] = own, shared
@@ -307,7 +328,9 @@ func (p localPolicy) mirrorGroupGrants(s identity.Session, rows []control.Grant)
 }
 
 func grantDefaults(g actions.Grant) actions.Grant {
-	if g.Approval == "" {
+	if g.Action == "agent.message" {
+		g.Approval = "auto"
+	} else if g.Approval == "" {
 		g.Approval = "ask"
 	}
 	if g.Attribution == "" {
@@ -368,7 +391,7 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	if action == "" {
 		return errors.New("provide a capability for the grant")
 	}
-	if !slices.Contains(actions.ResourceCapabilities(p.Resources[i]), action) {
+	if !revoke && !slices.Contains(a.advertisedResourceActions(s, p.Resources[i]), action) {
 		return fmt.Errorf("resource %s does not support %s", resource, action)
 	}
 	// The other user can end the friendship from a different device. Reconcile
@@ -464,6 +487,11 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		a.policy = updated
 		return nil
 	}
+	if !revoke && action == "app.build" {
+		if err := a.ensureDesktopBuildOffer(ctx, s, p.Resources[i]); err != nil {
+			return err
+		}
+	}
 	// The relay serializes this change against new execution claims. Persist
 	// the matching device policy only after the relay acknowledges the edit.
 	if len(limits) == 0 {
@@ -482,6 +510,83 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 	return err
 }
 
+func (a *Agent) advertisedResourceActions(s identity.Session, r actions.Resource) []string {
+	offered := actions.ResourceCapabilities(r)
+	if r.Coordinator && !actions.DesktopBuildSupported() && a.localConfig(s).ReadDesktopBuild == nil {
+		offered = slices.DeleteFunc(offered, func(action string) bool { return action == "app.build" })
+	}
+	return offered
+}
+
+// Status is polled repeatedly. Only older advertisements need a local probe;
+// all of those rows share this budget. A grant still verifies the live binding.
+const ownerBuildProbeBudget = 500 * time.Millisecond
+
+func (a *Agent) ownerBuildActions(probe context.Context, s identity.Session, r control.Resource, local []actions.Resource) []string {
+	if !slices.Contains(r.Actions, "agent.message") && !slices.Contains(r.Actions, "app.build") {
+		return r.Actions
+	}
+	i := slices.IndexFunc(local, func(enrolled actions.Resource) bool { return enrolled.ID == r.ID })
+	if i < 0 || !a.supportsDesktopBuildOffer(s, r, local[i]) {
+		return slices.DeleteFunc(slices.Clone(r.Actions), func(action string) bool { return action == "app.build" })
+	}
+	if slices.Contains(r.Actions, "app.build") || probe.Err() != nil {
+		return r.Actions
+	}
+	ended, err := actions.CoordinatorInboxEnded(probe, a.cfg.CommanderSocket, local[i])
+	if err != nil || ended {
+		return r.Actions
+	}
+	return append(slices.Clone(r.Actions), "app.build")
+}
+
+func (a *Agent) supportsDesktopBuildOffer(s identity.Session, r control.Resource, enrolled actions.Resource) bool {
+	return r.ID == enrolled.ID && r.Owner == s.User && r.Device == s.Device && r.Kind == "agent" &&
+		!r.InboxEnded && slices.Contains(r.Actions, "agent.message") &&
+		enrolled.Target != "" && enrolled.Run != "" && slices.Contains(a.advertisedResourceActions(s, enrolled), "app.build")
+}
+
+// Keep an explicit grant tied to the same live enrollment even if the relay
+// last saw that coordinator running or has stale capability metadata.
+func (a *Agent) checkDesktopBuildOffer(ctx context.Context, s identity.Session, r control.Resource, enrolled actions.Resource) error {
+	if !a.supportsDesktopBuildOffer(s, r, enrolled) {
+		return errors.New("build verification requires an active local coordinator enrollment")
+	}
+	check, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ended, err := actions.CoordinatorInboxEnded(check, a.cfg.CommanderSocket, enrolled)
+	if err != nil || ended {
+		return errors.New("the enrolled coordinator is unavailable; verify that its run is active and try again")
+	}
+	return nil
+}
+
+// Only an explicit owner grant may refresh the advertised action. Append to
+// the relay's existing metadata so the resource update cannot prune its grants.
+func (a *Agent) ensureDesktopBuildOffer(ctx context.Context, s identity.Session, enrolled actions.Resource) error {
+	resources, err := a.resources(ctx, s)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(resources, func(r control.Resource) bool { return r.ID == enrolled.ID })
+	if i < 0 {
+		return errors.New("the coordinator is no longer available on this relay; check its enrollment")
+	}
+	r := resources[i]
+	if err := a.checkDesktopBuildOffer(ctx, s, r, enrolled); err != nil {
+		return err
+	}
+	if slices.Contains(r.Actions, "app.build") {
+		return nil
+	}
+	path := "/v1/resources/" + url.PathEscape(r.ID)
+	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": append(slices.Clone(r.Actions), "app.build"), "capabilities": r.Capabilities}
+	if err := a.remote(ctx, s, "PUT", path, body, nil); err != nil {
+		return fmt.Errorf("refresh build verification for the enrolled coordinator: %w", err)
+	}
+	return nil
+}
+
 func (a *Agent) publishResource(ctx context.Context, s identity.Session, in input, update bool) (any, error) {
 	id := in.ID
 	if update && id == "" {
@@ -497,26 +602,36 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 	resources := slices.Clone(a.policy.Resources)
 	a.mu.Unlock()
 	i := slices.IndexFunc(resources, func(v actions.Resource) bool { return v.ID == id })
-	r := actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target, Capabilities: in.Capabilities}
+	r := actions.Resource{ID: id, Name: in.Name, Kind: in.Kind, Target: in.Target, Workspace: in.Workspace, Capabilities: in.Capabilities}
+	if !update && in.AutoStart != nil {
+		r.AutoStart = *in.AutoStart
+	}
 	if update {
 		if i < 0 {
 			return nil, errors.New("unknown local resource")
 		}
 		r = resources[i]
-		if in.Target != "" && in.Target != r.Target || in.Kind != "" && in.Kind != r.Kind {
+		if in.Target != "" && in.Target != r.Target || in.Kind != "" && in.Kind != r.Kind ||
+			in.Workspace != "" && in.Workspace != r.Workspace {
 			return nil, errors.New("resource id is already mapped to a different target")
 		}
 		if in.Name != "" {
 			r.Name = in.Name
 		}
 		r.Capabilities = in.Capabilities.WithDefaults(r.Capabilities)
+		if in.AutoStart != nil {
+			if r.Workspace == "" {
+				return nil, errors.New("auto-start requires a workspace handoff resource")
+			}
+			r.AutoStart = *in.AutoStart
+		}
 		if r.Kind == "host" {
 			var err error
 			if r, err = actions.PrepareResource(ctx, r); err != nil {
 				return nil, err
 			}
 		}
-		if r.Kind == "agent" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
+		if r.Kind == "agent" && r.Workspace == "" && (r.Capabilities == nil || r.Capabilities.Harness == "" || r.Capabilities.Model == "") {
 			// An enrolled target can be edited even while Commander is offline.
 			if info, err := actions.PrepareLocalResource(ctx, a.cfg.CommanderSocket, r); err == nil {
 				r.Capabilities = info.Capabilities
@@ -539,11 +654,17 @@ func (a *Agent) publishResource(ctx context.Context, s identity.Session, in inpu
 		}
 	}
 	if i < 0 {
+		if r.Workspace != "" && slices.ContainsFunc(resources, func(other actions.Resource) bool { return other.Workspace == r.Workspace }) {
+			return nil, errors.New("this device already offers an inbox for that workspace")
+		}
 		resources = append(resources, r)
 	} else {
 		resources[i] = r
 	}
-	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": actions.ResourceCapabilities(r)}
+	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": a.advertisedResourceActions(s, r)}
+	if r.Workspace != "" {
+		body["workspace"] = r.Workspace
+	}
 	if r.Capabilities != nil {
 		body["capabilities"] = r.Capabilities
 	}
@@ -581,6 +702,10 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return a.status(ctx)
 	case "login":
 		return a.startLogin(in.Handle, in.Invite)
+	case "membership-request":
+		return a.requestMembership(ctx, in.Note)
+	case "membership-request-status":
+		return a.membershipRequestStatus(ctx)
 	case "presence":
 		return a.setPresenceMode(ctx, in.Presence)
 	case "relay":
@@ -614,7 +739,7 @@ func (a *Agent) tray(ctx context.Context, verb string, in input) (any, error) {
 		return nil, a.remote(ctx, s, "PUT", "/v1/profile", body, nil)
 	case "relay", "knowledge-share", "knowledge-install", "queue", "queue-add", "queue-merge", "queue-remove", "workspace-prs":
 		return a.teamVerb(ctx, s, verb, in)
-	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members":
+	case "groups", "group-create", "group-add", "group-remove", "group-delete", "workspaces", "workspace-create", "workspace-edit", "workspace-leave", "claim", "release", "knowledge", "admin-members", "admin-requests", "admin-request-decide":
 		return a.namedTeamRelay(ctx, s, verb, in)
 	case "workspace-combined":
 		return a.combinedWorkspace(ctx, s, in)
@@ -782,9 +907,10 @@ func (a *Agent) Handler() http.Handler {
 		}
 		switch r.PathValue("verb") {
 		case "inbox":
-			var empty struct{}
-			if e = body(r, &empty); e == nil {
-				res, e = actions.CoordinatorInbox(a.localConfig(s), r.Header.Get("X-Commander-Worker"), r.Header.Get("X-Commander-Run"))
+			var in actions.InboxQuery
+			if e = body(r, &in); e == nil {
+				res, e = actions.CoordinatorInbox(r.Context(), func() actions.Config { return a.localConfig(s) },
+					r.Header.Get("X-Commander-Worker"), r.Header.Get("X-Commander-Run"), in)
 			}
 		case "discover":
 			var empty struct{}
@@ -793,6 +919,14 @@ func (a *Agent) Handler() http.Handler {
 				rs, e = a.resources(r.Context(), s)
 				if e == nil {
 					rs = slices.DeleteFunc(rs, func(r control.Resource) bool { return r.Owner == s.User })
+					ended := []control.Resource{}
+					rs = slices.DeleteFunc(rs, func(resource control.Resource) bool {
+						if !resource.InboxEnded {
+							return false
+						}
+						ended = append(ended, resource)
+						return true
+					})
 					contracts := make(map[string]actions.ActionContract)
 					for _, resource := range rs {
 						for _, action := range resource.Actions {
@@ -804,7 +938,7 @@ func (a *Agent) Handler() http.Handler {
 							}
 						}
 					}
-					res = map[string]any{"resources": rs, "actionContracts": contracts}
+					res = map[string]any{"resources": rs, "endedCoordinatorInboxes": ended, "actionContracts": contracts}
 				}
 			}
 		case "online":

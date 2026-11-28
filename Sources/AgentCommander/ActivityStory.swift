@@ -356,6 +356,7 @@ enum QuestionStoryRenderer: ActivityStoryRenderer {
         var milestones: [ActivityMilestone] = []
         var answer: String?
         var answerArrived = false
+        var withdrawn = false
 
         for call in calls where call.tool != .result {
             let id = call.entry.id
@@ -370,6 +371,13 @@ enum QuestionStoryRenderer: ActivityStoryRenderer {
                                                         status: .complete, entryIDs: [id]))
                 default: break // the shared failure rule states it
                 }
+            case .withdrawQuestion:
+                // Stated once, by the first withdrawal whose own record says so. A retry returns
+                // the same cancelled record and stays evidence only, as does an unproven call.
+                guard !withdrawn, call.toolStatus == .done, call.withdrawalConfirmed else { continue }
+                withdrawn = true
+                milestones.append(ActivityMilestone(id: id, kind: .closed, label: "Question withdrawn",
+                                                    status: .cancelled, entryIDs: [id]))
             case .wait, .reply, .reconcileReply:
                 guard call.toolStatus == .done else { continue }
                 if call.tool == .reconcileReply {
@@ -404,7 +412,8 @@ enum QuestionStoryRenderer: ActivityStoryRenderer {
             milestones.append(ActivityMilestone(id: flow.id + "#answer", kind: .answered, label: "Answered",
                                                 detail: liveAnswer.map(CommanderCall.quote), status: .answered))
         }
-        if let live, live != .waitingForReply, live != .answered {
+        // A withdrawal already said how the request closed; the run's cancelled record adds nothing.
+        if let live, live != .waitingForReply, live != .answered, !(withdrawn && live == .cancelled) {
             milestones.append(ActivityMilestone(id: flow.id + "#closed", kind: .closed,
                                                 label: "Request \(live.word.lowercased())", status: live))
         }
@@ -560,7 +569,7 @@ enum CommanderCallStoryRenderer: ActivityStoryRenderer {
             if let id = call.operationID {
                 content.relations.append(ActivityRelation(kind: .operation, value: id, label: CommanderCall.operation(id)))
             }
-        case .ask, .wait, .reply, .reconcileReply:
+        case .ask, .wait, .withdrawQuestion, .reply, .reconcileReply:
             // A request call whose request is not yet known.
             content.lead = call.question.map(CommanderCall.quote) ?? content.lead
         default:
@@ -723,7 +732,7 @@ extension CommanderCall {
     var recordedAnswer: String? {
         switch tool {
         case .reply: return replyConfirmsRequest ? argument("answer") : nil
-        case .wait, .ask, .reconcileReply: return responseIsThisRequest ? field("answer") : nil
+        case .wait, .ask, .reconcileReply: return returnedAnswer
         default: return nil
         }
     }

@@ -322,3 +322,37 @@ struct MultiplayerSummaryLine: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// One hand-off milestone in a summary: the summary line's label column, then a lamp and the
+/// time it was reached, or a lamp and the word for why there is no time.
+struct MultiplayerMilestoneLine: View {
+    let milestone: MultiplayerHandoffMilestone
+    let now: Date
+
+    @Environment(\.theme) private var theme
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+            Text(milestone.stage.title)
+                .font(MultiplayerTheme.sub)
+                .foregroundStyle(.inkSecondary)
+                .frame(width: 72, alignment: .leading)
+            HStack(alignment: .center, spacing: 5) {
+                MultiplayerLamp(kind: milestone.lamp)
+                if case .reached(let at) = milestone.outcome {
+                    Text(MultiplayerActivityRow.time(at, now: now))
+                        .font(MultiplayerTheme.fingerprint.monospacedDigit().font(in: theme))
+                        .foregroundStyle(MultiplayerTheme.foreground)
+                } else {
+                    Text(milestone.word)
+                        .font(MultiplayerTheme.state)
+                        .foregroundStyle(milestone.tone == .neutral ? AnyShapeStyle(.inkSecondary) : AnyShapeStyle(milestone.tone.color))
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isStaticText)
+        .accessibilityLabel(milestone.spoken(now: now))
+    }
+}

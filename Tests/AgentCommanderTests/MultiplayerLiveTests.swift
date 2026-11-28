@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import AgentCommander
 
@@ -55,6 +56,59 @@ enum MultiplayerLiveFixture {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return condition()
+    }
+}
+
+/// A gate a test opens by hand, once. Opening it before anything waits is kept, so no signal is
+/// lost; a waiter whose task is cancelled leaves at once.
+private final class MultiplayerOneShotGate: Sendable {
+    private let stream: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+
+    init() {
+        let made = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        stream = made.stream
+        continuation = made.continuation
+    }
+
+    /// Opens the gate. Opening it again does nothing.
+    func release() {
+        continuation.yield()
+        continuation.finish()
+    }
+
+    /// Returns once the gate is open, or throws when the waiting task is cancelled first.
+    func wait() async throws {
+        for await _ in stream { break }
+        try Task.checkCancellation()
+    }
+}
+
+/// The scripted helper, with the first reply to one verb held until the test opens the gate.
+/// The held call reaches the script, and its log, only after the gate opens. A request that names
+/// one of `others` is answered by that server's own script, and is never held.
+private final class MultiplayerGatedHelper: MultiplayerHelper {
+    let scripted: ScriptedMultiplayerHelper
+    let gate = MultiplayerOneShotGate()
+    private let held: MultiplayerVerb
+    private let others: [String: ScriptedMultiplayerHelper]
+    private let isUsed = Mutex(false)
+
+    init(_ scripted: ScriptedMultiplayerHelper, holding verb: MultiplayerVerb, others: [String: ScriptedMultiplayerHelper] = [:]) {
+        self.scripted = scripted
+        self.held = verb
+        self.others = others
+    }
+
+    func run(verb: MultiplayerVerb, input: Data) async throws -> MultiplayerHelperOutput {
+        let server = (try? JSONSerialization.jsonObject(with: input) as? [String: Any])?["server"] as? String
+        if let other = server.flatMap({ others[$0] }) { return try await other.run(verb: verb, input: input) }
+        let isFirst = verb == held && isUsed.withLock { used in
+            defer { used = true }
+            return !used
+        }
+        if isFirst { try await gate.wait() }
+        return try await scripted.run(verb: verb, input: input)
     }
 }
 
@@ -354,14 +408,97 @@ enum MultiplayerLiveFixture {
             .handovers: [MultiplayerLiveFixture.ok(#"{"handovers":[{"user":"u-cy","resource":"res-9","until":"2026-11-23T12:05:00Z"}]}"#)]])
         let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
                                      now: { clock.now })
+        defer { model.close() }
         model.open()
         await model.settle()
         let live = model.share.live
-        // Named from the friends list, by account.
-        #expect(live.holders(of: "res-9", on: Self.home).map(\.handle) == ["fixture-cy"])
+        // Both reads are in before the clock moves: this server's friends, and the hand-over.
+        let session = try #require(model.session(Self.home))
+        #expect(session.isOnline && session.status?.friends.contains { $0.handle == "fixture-cy" && $0.user == "u-cy" } == true)
+        let holder = try #require(live.holders(of: "res-9", on: Self.home).first)
+        #expect(holder.id == "u-cy|res-9" && holder.isLive(now: clock.now))
+        #expect(live.activeHandovers.map(\.id) == ["\(Self.home)/u-cy|res-9"])
+        // Named from the friends list, by account, whichever read answered first.
+        #expect(holder.handle == "fixture-cy")
+        // The row ends with its time, whatever it is called.
         clock.advance(301)
+        #expect(!holder.isLive(now: clock.now))
         #expect(live.holders(of: "res-9", on: Self.home).isEmpty && live.activeHandovers.isEmpty)
-        model.close()
+    }
+
+    /// The server list starts the status read and the hand-overs read separately, so either can
+    /// answer last. `late` is the one held back: `.status` is the order that lost the holder's name.
+    @Test(.timeLimit(.minutes(1)), arguments: [MultiplayerVerb.status, .handovers])
+    func aLiveHandoverIsNamedOnceFriendStatusArrives(late: MultiplayerVerb) async throws {
+        let clock = MultiplayerFixtureClock()
+        // On home, u-cy is fixture-cy and u-bo is fixture-bo in the friends list, and nobody has
+        // the account u-zed. The device names res-7's holder itself, with another handle.
+        let work = "s-work"
+        let scripted = ScriptedMultiplayerHelper([
+            .servers: [MultiplayerServerFixture.servers(MultiplayerServerFixture.home,
+                                                        MultiplayerServerFixture.server(work, name: "work", state: "online", signedIn: true))],
+            .status: [MultiplayerLiveFixture.status],
+            .handovers: [MultiplayerLiveFixture.ok(#"{"handovers":[{"user":"u-cy","resource":"res-9","until":"2026-11-23T12:05:00Z"},{"user":"u-zed","resource":"res-8","until":"2026-11-23T12:06:00Z"},{"user":"u-bo","handle":"fixture-bo-device","resource":"res-7","until":"2026-11-23T12:07:00Z"}]}"#)]])
+        // Another server knows u-zed by name. Its friends never name a row on home.
+        let elsewhere = ScriptedMultiplayerHelper([
+            .status: [MultiplayerFixture.output(#"{"ok":true,"data":{"online":true,"signedIn":true,"handle":"fixture-ada","friends":[{"handle":"fixture-zed","user":"u-zed"}]}}"#)],
+            .handovers: [MultiplayerLiveFixture.ok(#"{"handovers":[]}"#)]])
+        let helper = MultiplayerGatedHelper(scripted, holding: late, others: [work: elsewhere])
+        let model = MultiplayerModel(client: MultiplayerClient(helper: helper), steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                     now: { clock.now })
+        defer {
+            helper.gate.release()
+            model.close()
+        }
+        // The list read under test starts first; opening the panel in the same turn finds it in
+        // flight and starts no second one.
+        let initial = try #require(model.refresh())
+        model.open()
+        await initial.value
+        let live = model.share.live
+        let session = try #require(model.session(Self.home))
+        let until = try #require(MultiplayerTime.parse("2026-11-23T12:05:00Z"))
+
+        if late == .status {
+            // The hand-overs are in while the friends list is still on its way.
+            while let task = live.quietTask { await task.value }
+            #expect(session.status == nil && session.isRefreshing && scripted.count(.status) == 0)
+            let early = live.holders(of: "res-9", on: Self.home)
+            #expect(early.map(\.id) == ["u-cy|res-9"] && early.map(\.user) == ["u-cy"] && early.map(\.holderKey) == ["u-cy"])
+            // An account alone is never shown as a name.
+            #expect(early.map(\.handle) == [""] && early.map(\.who) == ["A friend"])
+        } else {
+            // The friends list is in while the hand-overs are still on their way.
+            await session.settle()
+            #expect(session.isOnline && session.status?.friends.contains { $0.handle == "fixture-cy" && $0.user == "u-cy" } == true)
+            #expect(live.holders(of: "res-9", on: Self.home).isEmpty && live.activeHandovers.isEmpty)
+            #expect(scripted.count(.handovers) == 0)
+        }
+
+        helper.gate.release()
+        await model.settle()
+
+        // Whichever answered last, the holder is named from the friends list of the same server,
+        // without another hand-overs read.
+        let holders = live.holders(of: "res-9", on: Self.home)
+        #expect(holders.map(\.handle) == ["fixture-cy"], "the holder is named once the friend status is in, whichever of \(late.rawValue) and the other read answered last")
+        #expect(holders.map(\.who) == ["fixture-cy"])
+        // The row is the one first listed: same account, same key for take back, same end.
+        #expect(holders.map(\.id) == ["u-cy|res-9"] && holders.map(\.user) == ["u-cy"] && holders.map(\.holderKey) == ["u-cy"])
+        #expect(holders.map(\.until) == [until])
+        // An account no friend has stays unnamed.
+        let unknown = live.holders(of: "res-8", on: Self.home)
+        #expect(unknown.map(\.id) == ["u-zed|res-8"] && unknown.map(\.handle) == [""] && unknown.map(\.who) == ["A friend"])
+        #expect(unknown.map(\.holderKey) == ["u-zed"])
+        // The other server's status is in too, and it has that account as a friend.
+        #expect(model.session(work)?.status?.friends.map(\.user) == ["u-zed"])
+        // A handle the device gave is kept, whatever the friends list calls that account.
+        let device = live.holders(of: "res-7", on: Self.home)
+        #expect(device.map(\.handle) == ["fixture-bo-device"] && device.map(\.holderKey) == ["u-bo"])
+        let active = live.activeHandovers
+        #expect(active.map(\.id) == ["\(Self.home)/u-cy|res-9", "\(Self.home)/u-zed|res-8", "\(Self.home)/u-bo|res-7"])
+        #expect(active.map(\.item.handle) == ["fixture-cy", "", "fixture-bo-device"])
+        #expect(scripted.count(.handovers) == 1 && scripted.count(.status) == 1)
     }
 
     @Test func aReviewIsPostedOnlyAfterAUrlAndAConfirmation() async throws {
@@ -448,7 +585,7 @@ enum MultiplayerLiveFixture {
         #expect(MultiplayerWinnerStore(file: winners.file).all == ["\(Self.home)/rq-3": "c-1"])
         #expect(live.remoteWork.first { $0.kind == .fanout }?.state == "Winner chosen")
         // Nothing about the choice is sent.
-        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me, .queue, .remoteDevices].contains($0) }.isEmpty)
+        #expect(helper.verbs.filter { ![.servers, .status, .fanout, .sent, .approvals, .relay, .handoffs, .handovers, .contacts, .activity, .me, .queue, .remoteDevices, .relayDiscover].contains($0) }.isEmpty)
         live.chooseWinner("c-1", of: "rq-3", on: Self.home)
         #expect(live.winner(of: "rq-3", on: Self.home) == nil)
         model.close()

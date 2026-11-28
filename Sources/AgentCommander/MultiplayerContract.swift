@@ -14,6 +14,8 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     /// Refuses a friend request sent to you. The relay drops the pending pair.
     case decline
     case resourceAdd = "resource-add"
+    /// Changes a resource this Mac already offers. The panel uses it for a workspace inbox's Auto-start.
+    case resourceUpdate = "resource-update"
     /// Stores a repository's GitHub token in the helper's Keychain. Never a `MultiplayerCommand`.
     case repoCredential = "repo-credential"
     /// The server list (increment 1). These act on the device agent's list, not on one relay.
@@ -27,6 +29,17 @@ enum MultiplayerVerb: String, Sendable, CaseIterable {
     case tailnetStatus = "tailnet-status"
     case tailnetJoin = "tailnet-join"
     case tailnetRelays = "tailnet-relays"
+    /// Relay discovery: the relays found on the tailnet and the local network, marking them seen,
+    /// and adding one to the server list (MultiplayerDiscovery.swift). These name no server.
+    case relayDiscover = "relay-discover"
+    case relayDiscoverSeen = "relay-discover-seen"
+    case relayJoin = "relay-join"
+    /// Membership requests (MultiplayerMembershipRequests.swift): asking a relay's admins to admit
+    /// this account after a refused sign-in, and an admin's list and answer. Each names a server.
+    case membershipRequest = "membership-request"
+    case membershipRequestStatus = "membership-request-status"
+    case adminRequests = "admin-requests"
+    case adminRequestDecide = "admin-request-decide"
     /// Social (increment 2). `contacts`, `activity`, `activity-seen` and `join` name no server.
     case presence, contacts, activity, avatar, membership, join, me
     case activitySeen = "activity-seen"
@@ -182,8 +195,13 @@ struct MultiplayerResource: Decodable, Equatable, Sendable, Identifiable {
     /// What this resource publishes about itself. For a host you lend, `commands` are the ones
     /// enrolled on this Mac. Nil when the device sends none.
     let capabilities: MultiplayerCapabilities?
+    /// The workspace this agent takes hand-offs for. Empty for a shared worker or coordinator.
+    let workspace: String
+    /// Whether Commander may start the workspace's coordinator for a waiting hand-off. Off unless
+    /// the device says otherwise.
+    let autoStart: Bool
 
-    private enum CodingKeys: String, CodingKey { case id, name, kind, actions, capabilities }
+    private enum CodingKeys: String, CodingKey { case id, name, kind, actions, capabilities, workspace, autoStart }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -193,7 +211,12 @@ struct MultiplayerResource: Decodable, Equatable, Sendable, Identifiable {
         actions = MultiplayerUnique.keep(try container.decodeIfPresent([String].self, forKey: .actions) ?? []) { $0 }
         capabilities = ((try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil)
             .flatMap { $0.isEmpty ? nil : $0 }
+        workspace = ((try? container.decodeIfPresent(String.self, forKey: .workspace)) ?? nil) ?? ""
+        autoStart = !workspace.isEmpty && (((try? container.decodeIfPresent(Bool.self, forKey: .autoStart)) ?? nil) ?? false)
     }
+
+    /// An agent that queues hand-offs for a workspace, not one shared worker.
+    var isWorkspaceInbox: Bool { !workspace.isEmpty }
 }
 
 struct MultiplayerShared: Decodable, Equatable, Sendable, Identifiable {
@@ -204,8 +227,10 @@ struct MultiplayerShared: Decodable, Equatable, Sendable, Identifiable {
     let actions: [String]
     /// What the owner says the resource can do, when they said (increment 3).
     let capabilities: MultiplayerCapabilities?
+    /// The workspace this agent takes hand-offs for. Empty for a shared worker or coordinator.
+    let workspace: String
 
-    private enum CodingKeys: String, CodingKey { case id, name, kind, owner, actions, capabilities }
+    private enum CodingKeys: String, CodingKey { case id, name, kind, owner, actions, capabilities, workspace }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -216,6 +241,7 @@ struct MultiplayerShared: Decodable, Equatable, Sendable, Identifiable {
         actions = MultiplayerUnique.keep(try container.decodeIfPresent([String].self, forKey: .actions) ?? []) { $0 }
         capabilities = ((try? container.decodeIfPresent(MultiplayerCapabilities.self, forKey: .capabilities)) ?? nil)
             .flatMap { $0.isEmpty ? nil : $0 }
+        workspace = ((try? container.decodeIfPresent(String.self, forKey: .workspace)) ?? nil) ?? ""
     }
 }
 
@@ -241,10 +267,17 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
     let hasAvatar: Bool
     /// Every friend's resource on this server with what it offers, when the relay lists them (increment 3).
     let directory: [MultiplayerDirectoryEntry]?
+    /// Where a request to join this relay stands, after a refused sign-in (`accessRequest`).
+    let membershipAsk: MultiplayerMembershipAsk
+    /// The phase the device agent names when it answers for a server that has no connection yet:
+    /// `keychainPending`, `connecting` or `error`. Nil from a connected server and from an older helper.
+    let activation: MultiplayerServerState?
 
     private enum CodingKeys: String, CodingKey {
         case online, signedIn, handle, loginPending, error, friends, outgoing, incoming, grants, resources, shared
         case displayName, statusMessage, hasAvatar, directory
+        case membershipAsk = "accessRequest"
+        case activation = "state"
     }
 
     init(from decoder: any Decoder) throws {
@@ -268,6 +301,8 @@ struct MultiplayerStatus: Decodable, Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         hasAvatar = (try? container.decodeIfPresent(Bool.self, forKey: .hasAvatar)) ?? false
         directory = ((try? container.decodeIfPresent(MultiplayerLenientList<MultiplayerDirectoryEntry>.self, forKey: .directory)) ?? nil)?.items
+        membershipAsk = MultiplayerMembershipAsk(word: ((try? container.decodeIfPresent(String.self, forKey: .membershipAsk)) ?? nil) ?? "")
+        activation = (try? container.decodeIfPresent(MultiplayerServerState.self, forKey: .activation)) ?? nil
     }
 
     /// Friends' resources: the relay's directory, or the older list of what was shared with you.
@@ -358,6 +393,7 @@ enum MultiplayerCapability {
         case "agent.result": "Read a hand-off’s result"
         case "thread.read": "Read request threads"
         case "thread.comment": "Comment on request threads"
+        case "app.build": "Check the running app build"
         default: capability
         }
     }
@@ -379,6 +415,7 @@ enum MultiplayerCapability {
         case "host.run": "play.rectangle"
         case "agent.status", "agent.result": "list.bullet.clipboard"
         case "thread.read", "thread.comment": "bubble.left.and.bubble.right"
+        case "app.build": "checkmark.seal"
         default: "key"
         }
     }
@@ -408,6 +445,8 @@ enum MultiplayerCapability {
             "Lets them run the commands you enrolled on \(name), and nothing else. Each run happens on this Mac and returns its exit code and the end of its output."
         case "agent.status", "agent.result": "Lets them follow the hand-offs they started on \(name) and read their results."
         case "thread.read", "thread.comment": "Lets them read and write the thread of each request they sent to \(name)."
+        case "app.build":
+            "Lets them check which revision of Agent Commander is running on this Mac behind \(name), and tell when the app restarts. They can’t run, change or restart anything with it."
         default: "Lets them use “\(capability)” on \(name), as the network service defines it."
         }
     }
@@ -578,6 +617,11 @@ enum MultiplayerCommand: Equatable, Sendable {
                limits: MultiplayerGrantLimits)
     case revoke(grantID: String, handle: String, resourceName: String, capability: String)
     case addResource(id: String, name: String, kind: String, target: String)
+    /// Offers a workspace's hand-off inbox: an agent resource bound to the workspace, anchored on
+    /// the run the owner chose. `autoStart` is off unless the owner turned it on.
+    case addWorkspaceInbox(id: String, name: String, workspace: String, anchor: String, autoStart: Bool)
+    /// Lets Commander start a workspace inbox's coordinator for a waiting hand-off, or stops it.
+    case setAutoStart(id: String, name: String, isOn: Bool)
 
     var verb: MultiplayerVerb {
         switch self {
@@ -589,7 +633,8 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .decline: .decline
         case .grant: .grant
         case .revoke: .revoke
-        case .addResource: .resourceAdd
+        case .addResource, .addWorkspaceInbox: .resourceAdd
+        case .setAutoStart: .resourceUpdate
         }
     }
 
@@ -608,6 +653,10 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .revoke(let id, _, _, _): ["id": .string(id)]
         case .addResource(let id, let name, let kind, let target):
             ["id": .string(id), "name": .string(name), "kind": .string(kind), "target": .string(target)]
+        case .addWorkspaceInbox(let id, let name, let workspace, let anchor, let autoStart):
+            ["id": .string(id), "name": .string(name), "kind": .string(MultiplayerResourceKind.agent.rawValue),
+             "workspace": .string(workspace), "target": .string(anchor), "autoStart": .bool(autoStart)]
+        case .setAutoStart(let id, _, let isOn): ["id": .string(id), "autoStart": .bool(isOn)]
         }
     }
 
@@ -622,7 +671,8 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .decline(let handle): "Declining \(handle.multiplayerDisplay)’s request…"
         case .grant(let handle, _, _, _, _, _): "Granting access to \(handle.multiplayerDisplay)…"
         case .revoke(_, let handle, _, _): "Revoking \(handle.multiplayerDisplay)’s access…"
-        case .addResource(_, let name, _, _): "Adding \(name.multiplayerDisplay)…"
+        case .addResource(_, let name, _, _), .addWorkspaceInbox(_, let name, _, _, _): "Adding \(name.multiplayerDisplay)…"
+        case .setAutoStart(_, let name, let isOn): "Turning Auto-start \(isOn ? "on" : "off") for \(name.multiplayerDisplay)…"
         }
     }
 
@@ -639,6 +689,11 @@ enum MultiplayerCommand: Equatable, Sendable {
             "\(handle.multiplayerDisplay) can now \(MultiplayerCapability.title(capability).lowercased()) on \(name.multiplayerDisplay), up to \(limits.usesTitle) until \(MultiplayerTime.display(limits.expiresAt))."
         case .revoke(_, let handle, let name, _): "Revoked \(handle.multiplayerDisplay)’s access to \(name.multiplayerDisplay)."
         case .addResource(_, let name, _, _): "Added \(name.multiplayerDisplay). Share it with a friend when you’re ready."
+        case .addWorkspaceInbox(_, let name, _, _, let autoStart):
+            "Added \(name.multiplayerDisplay). Auto-start is \(autoStart ? "on" : "off"). Share it with a friend when you’re ready."
+        case .setAutoStart(_, let name, let isOn):
+            isOn ? "Auto-start is on for \(name.multiplayerDisplay). Commander starts its coordinator for a waiting hand-off."
+                 : "Auto-start is off for \(name.multiplayerDisplay). A hand-off waits until its coordinator is running."
         }
     }
 
@@ -653,7 +708,8 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .decline: "Couldn’t decline the request."
         case .grant: "Couldn’t grant access."
         case .revoke: "Couldn’t revoke access."
-        case .addResource: "Couldn’t add the resource."
+        case .addResource, .addWorkspaceInbox: "Couldn’t add the resource."
+        case .setAutoStart: "Couldn’t change Auto-start."
         }
     }
 
@@ -668,7 +724,8 @@ enum MultiplayerCommand: Equatable, Sendable {
         case .decline: "decline"
         case .grant: "grant"
         case .revoke: "revocation"
-        case .addResource: "new resource"
+        case .addResource, .addWorkspaceInbox: "new resource"
+        case .setAutoStart: "Auto-start change"
         }
     }
 }
@@ -888,6 +945,19 @@ struct MultiplayerResourceDraft: Equatable {
     var kind: MultiplayerResourceKind = .repo
     var name = ""
     var target = ""
+    /// The workspace an agent takes hand-offs for. Empty shares one worker or coordinator, as before.
+    var workspace = ""
+    /// Off until the owner turns it on. Sent only with a workspace.
+    var autoStart = false
+
+    /// Only an agent can be a workspace's inbox.
+    var isWorkspaceInbox: Bool { kind == .agent && !workspace.isEmpty }
+    var targetLabel: String { isWorkspaceInbox ? "Anchor run ID" : kind.targetLabel }
+    var targetPlaceholder: String { isWorkspaceInbox ? "Run ID" : kind.targetPlaceholder }
+    var targetHint: String {
+        isWorkspaceInbox ? "The exact ID of a run on this Mac. Hand-offs go to its coordinator, and a new coordinator starts in its project."
+                         : kind.targetHint
+    }
 
     var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
     var trimmedTarget: String { target.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -906,6 +976,12 @@ struct MultiplayerResourceDraft: Equatable {
             if !target.hasPrefix("/") { return "Use an absolute path that starts with /." }
             if target.split(separator: "/").contains("..") { return "Use a path without .. segments." }
             if !directoryExists(target) { return "There’s no folder at that path on this Mac." }
+        case .agent where isWorkspaceInbox:
+            if target.isEmpty { return "Enter the run ID." }
+            // The service's own rule for a run ID.
+            if target.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}/) == nil {
+                return "Run IDs use letters, digits and . _ : @ - only."
+            }
         case .agent:
             if target.isEmpty { return "Enter the worker or coordinator ID." }
             if target.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) }) {
@@ -922,6 +998,9 @@ struct MultiplayerResourceDraft: Equatable {
 
     func command(directoryExists: (String) -> Bool) -> MultiplayerCommand? {
         guard nameProblem() == nil, targetProblem(directoryExists: directoryExists) == nil else { return nil }
+        if isWorkspaceInbox {
+            return .addWorkspaceInbox(id: id, name: trimmedName, workspace: workspace, anchor: trimmedTarget, autoStart: autoStart)
+        }
         return .addResource(id: id, name: trimmedName, kind: kind.rawValue, target: trimmedTarget)
     }
 }

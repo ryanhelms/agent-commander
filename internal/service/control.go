@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 )
 
 // WorkerControl is the durable lease and addressed inbox for a managed Claude
@@ -35,12 +36,13 @@ type SessionCapabilities struct {
 }
 
 type WorkerFollowUp struct {
-	ID         string        `json:"id"`
-	Status     string        `json:"status"`
-	Text       string        `json:"text"`
-	Generation int           `json:"generation"`
-	End        *operationEnd `json:"end,omitempty"`
-	StopReason string        `json:"stop_reason,omitempty"`
+	ID                 string        `json:"id"`
+	Status             string        `json:"status"`
+	Text               string        `json:"text"`
+	Generation         int           `json:"generation"`
+	End                *operationEnd `json:"end,omitempty"`
+	StopReason         string        `json:"stop_reason,omitempty"`
+	WorkspaceHandoffID string        `json:"workspace_handoff_id,omitempty"`
 }
 
 type operationEnd struct {
@@ -103,7 +105,9 @@ func (s *service) controlTarget(req *http.Request, actor string) (*Run, *Worker,
 	if w == nil {
 		return nil, nil, missing("worker")
 	}
-	if w.Role != "worker" || (actor != "" && actor != w.ParentID && actor != r.CoordinatorID) {
+	localCoordinator := actor == "" && localSessionOwner(req) && w.Role == "coordinator" &&
+		w.ID == r.CoordinatorID && w.Control != nil
+	if !localCoordinator && (w.Role != "worker" || (actor != "" && actor != w.ParentID && actor != r.CoordinatorID)) {
 		return nil, nil, denied()
 	}
 	return r, w, nil
@@ -145,6 +149,9 @@ func (s *service) setWorkerControl(req *http.Request, actor string) (outcome, er
 	}
 	for i := range c.Messages {
 		if c.Messages[i].Status == "queued" {
+			if c.Messages[i].WorkspaceHandoffID != "" {
+				s.failWorkspaceHandoff(c.Messages[i].WorkspaceHandoffID, w, "developer_control_changed")
+			}
 			c.Messages[i].Status = "cancelled"
 			s.markOperationEnd(r, w, &c.Messages[i])
 		}
@@ -255,6 +262,7 @@ func (s *service) cancelWorkerMessage(req *http.Request, actor string) (outcome,
 		return outcome{}, conflict("this follow-up is no longer queued")
 	}
 	m.Status = "cancelled"
+	s.failWorkspaceHandoff(m.WorkspaceHandoffID, w, "coordinator_turn_cancelled")
 	s.markOperationEnd(r, w, m)
 	r.refreshOutcome()
 	return changed(*m), nil
@@ -277,7 +285,7 @@ func (s *service) workerControlSnapshot(workerID, actor, turn string) (workerCon
 	if w == nil {
 		return workerControlFeed{}, missing("worker")
 	}
-	if actor != w.ID || (w.Role != "worker" && turn == "") {
+	if actor != w.ID || (w.Role != "worker" && w.Control == nil && turn == "") {
 		return workerControlFeed{}, denied()
 	}
 	feed := workerControlFeed{State: w.State, ProviderAvailability: w.ProviderAvailability, Live: r.Status == "running" && w.Control != nil &&
@@ -313,7 +321,7 @@ func (s *service) workerControlReady(req *http.Request, actor string) (outcome, 
 	if err != nil {
 		return outcome{}, err
 	}
-	if r.Status != "running" || w.Role != "worker" {
+	if r.Status != "running" || (w.Role != "worker" && (w.ID != r.CoordinatorID || (w.Control == nil && r.WorkspaceHandoffDestination == ""))) {
 		return outcome{}, conflict("worker control cannot be registered")
 	}
 	var input struct {
@@ -384,7 +392,13 @@ func (s *service) claimWorkerMessage(req *http.Request, actor string) (outcome, 
 	if m == nil || m.ID != req.PathValue("message") {
 		return outcome{}, conflict("follow-up is no longer eligible for delivery")
 	}
+	if h := s.state.WorkspaceHandoffs[m.WorkspaceHandoffID]; h != nil && h.expiredBeforeClaim(time.Now()) {
+		return s.expireWorkspaceHandoff(r, w, m), nil
+	}
 	m.Status = "processing"
+	if m.WorkspaceHandoffID != "" {
+		s.acceptWorkspaceHandoff(m.WorkspaceHandoffID, w)
+	}
 	if w.NativeSession != nil {
 		w.Control.ActiveTurnID = m.ID
 	}
@@ -459,6 +473,10 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 		}
 	} else if w.State == in.State {
 		return read(w), nil
+	} else if h := s.state.WorkspaceHandoffs[r.InitialWorkspaceHandoffID]; h != nil && h.Worker == w.ID &&
+		h.State != "accepted" && h.State != "queued" && w.State == "idle" && in.State == "completed" {
+		// A successful workspace turn stays idle so it can accept the next handoff.
+		return read(w), nil
 	}
 	if !turnActive(w.State) && w.State != "unknown" {
 		return outcome{}, conflict("there is no active managed turn")
@@ -491,6 +509,14 @@ func (s *service) finishWorkerTurn(req *http.Request, actor string) (outcome, er
 	w.Control.InterruptRequested = false
 	w.Control.InterruptClaimed = false
 	w.State, w.Error = in.State, in.Error
+	if w.ID == r.CoordinatorID && r.WorkspaceHandoffDestination != "" && in.State == "completed" {
+		w.State = "idle"
+	}
+	if message != nil && message.WorkspaceHandoffID != "" {
+		s.finishWorkspaceHandoff(req.Context(), message.WorkspaceHandoffID, w, finalStatus, in.StopReason)
+	} else if message == nil && w.ID == r.CoordinatorID && r.InitialWorkspaceHandoffID != "" {
+		s.finishWorkspaceHandoff(req.Context(), r.InitialWorkspaceHandoffID, w, finalStatus, in.StopReason)
+	}
 	s.finishTurnPermissions(r, w, in.State == "failed")
 	if message != nil {
 		s.markOperationEnd(r, w, message)
@@ -620,6 +646,9 @@ func (s *service) claimWorkerInterrupt(req *http.Request, actor string) (outcome
 func (s *service) stopWorkerInbox(run *Run, w *Worker) {
 	s.retireProviderPermissions(run, w.ID)
 	s.retireElicitations(w.ID)
+	if w.ID == run.CoordinatorID {
+		s.failWorkspaceHandoff(run.InitialWorkspaceHandoffID, w, "coordinator_stopped")
+	}
 	if w.Control == nil {
 		return
 	}
@@ -628,8 +657,10 @@ func (s *service) stopWorkerInbox(run *Run, w *Worker) {
 		switch m.Status {
 		case "queued":
 			m.Status = "cancelled"
+			s.failWorkspaceHandoff(m.WorkspaceHandoffID, w, "coordinator_stopped")
 		case "processing":
 			m.Status = "delivery_unknown"
+			s.failWorkspaceHandoff(m.WorkspaceHandoffID, w, "coordinator_turn_delivery_unknown")
 		default:
 			continue
 		}

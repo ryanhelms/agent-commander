@@ -7,7 +7,8 @@ import Synchronization
 //
 //   ~/Library/Application Support/<bundle id>/Launch/     owner-only (0700)
 //     admission.lock   never removed; flock'd only while a launch registers or hands off
-//     <pid>.lease      one per running Commander, flock'd for the life of that process
+//     <pid>.lease      one per running Commander, flock'd for the life of that process; empty, or
+//                      the production app's startup evidence (LaunchEvidence.swift)
 //     <pid>.focus      "bring the cockpit forward"; at most one per lease, so requests coalesce
 //
 // The kernel drops a lease's lock when its process exits or crashes. A lease anyone else can lock
@@ -274,6 +275,31 @@ final class SingleInstanceMembership: Sendable {
         source.setCancelHandler { close(descriptor) }
         source.resume()
         return source
+    }
+
+    static let evidenceLimit = 4096
+
+    /// Writes this process's startup evidence to the held lease, once. The lease keeps its lock
+    /// and its name. A short or failed write leaves the lease empty again and throws.
+    func recordEvidence(_ record: Data) throws {
+        try lease.withLock { descriptor in
+            guard descriptor >= 0 else { throw SingleInstanceError.system("record launch evidence", EBADF) }
+            guard !record.isEmpty, record.count <= Self.evidenceLimit else {
+                throw SingleInstanceError.system("record launch evidence", EINVAL)
+            }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else { throw SingleInstanceError.system("inspect the lease", errno) }
+            guard info.st_size == 0 else { throw SingleInstanceError.system("record launch evidence", EEXIST) }
+            var written: Int
+            repeat {
+                written = record.withUnsafeBytes { pwrite(descriptor, $0.baseAddress, $0.count, 0) }
+            } while written < 0 && errno == EINTR
+            guard written == record.count else {
+                let code = written < 0 ? errno : EIO
+                ftruncate(descriptor, 0)
+                throw SingleInstanceError.system("record launch evidence", code)
+            }
+        }
     }
 
     /// Drops the lease exactly as process exit would. The next admission removes the records.

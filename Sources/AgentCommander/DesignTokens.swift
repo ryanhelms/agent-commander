@@ -27,6 +27,7 @@ enum Palette {
     static let working = Color(hex: 0xA8E0C0)
     static let attention = Color(hex: 0xF1C587)
     static let failure = Color(hex: 0xEC9B92)
+    static let live = Color(hex: 0xD67B6A)              // the agent is working on its turn
     static let selection = Color(hex: 0x283344)
     static let onAccent = Color(hex: 0x101825)
     static let opaqueChrome = Color(hex: 0x15161A)

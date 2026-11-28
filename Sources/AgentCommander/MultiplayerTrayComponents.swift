@@ -80,7 +80,7 @@ enum MultiplayerTheme {
     private static func ink(_ role: KeyPath<Theme, ThemeColor> & Sendable) -> Color { Color(MultiplayerInk(role: role)) }
     private static func type(_ role: KeyPath<Theme, ThemeFont> & Sendable) -> MultiplayerType { MultiplayerType(role: role) }
 
-    // DESIGN.md section 2 "Colour": the thirteen roles every theme has.
+    // DESIGN.md section 2 "Colour": the fourteen roles every theme has.
     static let panel = ink(\.color.panel)
     static let well = ink(\.color.well)
     static let border = ink(\.color.border)
@@ -244,7 +244,7 @@ extension MultiplayerServerState {
     var lamp: MultiplayerLamp.Kind {
         switch self {
         case .online: .on
-        case .connecting: .waiting
+        case .connecting, .keychainPending: .waiting
         case .certChanged, .error: .error
         case .signedOut, .offline: .off
         case .unknown: .unknown
@@ -565,6 +565,9 @@ struct MultiplayerServerRow: View {
     let isBusy: Bool
     /// This Mac hosts the relay.
     var hostedHere = false
+    /// The person's request to join, once the relay turned their sign-in away. While it waits the
+    /// row says so; once approved, Sign in is the row's primary action.
+    var request: MultiplayerMembershipRequestStatus? = nil
     let onOpen: () -> Void
     let onFavorite: () -> Void
     let onSignIn: () -> Void
@@ -611,9 +614,13 @@ struct MultiplayerServerRow: View {
             .accessibilityLabel("\(server.displayName), \(server.host)\(hostedHere ? ", hosted on this Mac" : "")\(server.unseen > 0 ? ", \(server.unseen) new in activity" : "")")
             .accessibilityHint("Opens this server’s settings, friends and sharing")
 
-            if server.state == .signedOut {
+            if server.state == .signedOut, let request, !request.offersSignIn {
+                // A request that waits on the admins: signing in again would only be refused again.
+                MultiplayerStateLabel(lamp: request.lamp, text: request.phase == .sending ? "Sending…" : "Requested",
+                                      tone: request.tone)
+            } else if server.state == .signedOut {
                 Button("Sign in", action: onSignIn)
-                    .buttonStyle(MultiplayerTrayButtonStyle())
+                    .buttonStyle(MultiplayerTrayButtonStyle(role: request?.phase == .approved ? .primary : .standard))
                     .disabled(isBusy)
                     .accessibilityLabel("Sign in to \(server.displayName)")
             } else {

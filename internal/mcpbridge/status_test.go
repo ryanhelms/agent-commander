@@ -30,3 +30,24 @@ func TestStatusOmitsTerminalChurnAndKeepsCoordination(t *testing.T) {
 		t.Fatal("new worker findings should wake status wait")
 	}
 }
+
+func TestStatusKeepsRequestChoicesAndWakesOnHandback(t *testing.T) {
+	run := []byte(`{"id":"run","workers":[{"id":"child","control":{"held":true,"generation":2,"messages":[{"text":"private input"}]}}],"requests":[{"id":"q","worker_id":"child","question":"Can I proceed?","status":"pending","choices":[{"id":"allow-once","label":"Run once"}]}]}`)
+	before, err := projectStatus(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"held":true`, `"id":"allow-once"`, `"label":"Run once"`} {
+		if !bytes.Contains(before, []byte(field)) {
+			t.Fatalf("missing %s in %s", field, before)
+		}
+	}
+	if bytes.Contains(before, []byte("private input")) || bytes.Contains(before, []byte("generation")) {
+		t.Fatal("status disclosed unrelated worker control detail")
+	}
+	handback := bytes.ReplaceAll(run, []byte(`"held":true`), []byte(`"held":false`))
+	after, err := projectStatus(handback)
+	if err != nil || bytes.Equal(before, after) || !bytes.Contains(after, []byte(`"held":false`)) {
+		t.Fatalf("status must wake on handback: %s, %v", after, err)
+	}
+}

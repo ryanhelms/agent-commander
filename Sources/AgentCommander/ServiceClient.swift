@@ -395,9 +395,13 @@ struct Question: Decodable, Identifiable, Equatable, Sendable {
     /// The explicit choices the service offered with the question. When present, the service
     /// accepts only the exact ID of one of them as the answer. Absent on free-form requests.
     var choices: [QuestionChoice]? = nil
+    /// The tool call a provider permission names, as the provider's own tool ID without the
+    /// worker prefix. The worker's transcript names that call `<worker ID>:<this ID>`. Nil on a
+    /// request that names no call, and on records that predate the field.
+    var providerToolCallID: String? = nil
 
     init(id: String, workerID: String, question: String, status: String, answer: String,
-         delivery: String? = nil, choices: [QuestionChoice]? = nil) {
+         delivery: String? = nil, choices: [QuestionChoice]? = nil, providerToolCallID: String? = nil) {
         self.id = id
         self.workerID = workerID
         self.question = question
@@ -405,6 +409,7 @@ struct Question: Decodable, Identifiable, Equatable, Sendable {
         self.answer = answer
         self.delivery = delivery
         self.choices = choices
+        self.providerToolCallID = providerToolCallID
     }
 
     /// One reader for the request API and the AG-UI projection, so both treat `choices` alike.
@@ -436,7 +441,9 @@ extension Question {
         self.init(id: try fields.string("id"), workerID: try fields.string("worker_id"),
                   question: try fields.string("question"), status: try fields.string("status"),
                   answer: try fields.string("answer"), delivery: try fields.optionalString("delivery"),
-                  choices: Self.choices(fields["choices"]))
+                  choices: Self.choices(fields["choices"]),
+                  // Never throws: an empty or unreadable ID reads as none, so the request stays.
+                  providerToolCallID: fields["provider_tool_call_id"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 })
     }
 
     /// The offered choices, all or none. A list with any element that is not an `{id, label}`
@@ -782,8 +789,18 @@ actor ServiceClient {
         return try JSONDecoder().decode(Project.self, from: data)
     }
 
-    func reply(to requestID: String, answer: String, operationID: String) throws {
-        _ = try request("/v1/requests/\(requestID)/reply", fields: ["answer": answer], operationID: operationID)
+    /// `generation` is the worker-control generation the developer answers a delegated worker's
+    /// request under; the service refuses the reply once control has changed. Nil sends the
+    /// request exactly as before: a coordinator's own request, and the legacy owner reply.
+    func reply(to requestID: String, answer: String, operationID: String, generation: Int? = nil) throws {
+        _ = try Self.send(socket: socket, path: "/v1/requests/\(requestID)/reply",
+                          body: Self.replyBody(answer: answer, generation: generation), operationID: operationID)
+    }
+
+    /// The reply request's JSON. `generation` is left out when nil, never sent as null.
+    static func replyBody(answer: String, generation: Int?) throws -> Data {
+        struct Reply: Encodable { let answer: String; let generation: Int? }
+        return try JSONEncoder().encode(Reply(answer: answer, generation: generation))
     }
 
     func stop(runID: String) throws {

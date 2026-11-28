@@ -290,7 +290,7 @@ func (s *service) durableState() database {
 		run.Workers = make([]*Worker, len(r.Workers))
 		for j, w := range r.Workers {
 			run.Workers[j] = w
-			if w.NativeSession == nil {
+			if w.NativeSession == nil || w.NativeSession.HarnessInstance == LegacyClaudeHarness {
 				if receipt, ok := s.state.OutputBatches[w.ID]; ok {
 					db.OutputBatches[w.ID] = receipt
 				}

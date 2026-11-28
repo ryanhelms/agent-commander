@@ -40,8 +40,23 @@ type Submission struct {
 
 const childFields = `id,device,resource,action,envelope,expires_at,parent,sender,sender_device,owner_id,CASE WHEN status='pending' AND expires_at<=now() THEN 'expired' ELSE status END,result`
 
-const activeChildGrant = `EXISTS(SELECT FROM mp_available_actions g
-	WHERE g.resource=c.resource AND g.grantee=c.sender AND g.action=c.action)`
+const activeChildGrant = `(EXISTS(SELECT FROM mp_available_actions g
+	WHERE g.resource=c.resource AND g.grantee=c.sender AND g.action=c.action)
+	AND EXISTS (SELECT FROM mp_resources r WHERE r.id=c.resource AND mp_workspace_handoff_allowed(r.workspace_id,r.owner_id,c.sender)))`
+
+// workspaceGrantActive checks the original source charged by the claim.
+// Its use has already been debited, so an exhausted allowance does not
+// invalidate the handoff it authorized.
+const workspaceGrantActive = `r.workspace_id<>'' AND c.action=ANY(r.actions)
+	AND mp_workspace_handoff_allowed(r.workspace_id,r.owner_id,c.sender)
+	AND EXISTS(SELECT FROM mp_grants g
+		LEFT JOIN mp_grant_limits l ON (l.resource,l.grantee,l.source,l.action)=(g.resource,g.grantee,g.source,c.action)
+		WHERE g.resource=c.resource AND g.grantee=c.sender AND g.source=c.grant_source AND c.action=ANY(g.actions)
+		AND CASE WHEN g.per_action THEN l.expires_at ELSE g.expires_at END>clock_timestamp()
+		AND (g.source='' OR EXISTS(SELECT FROM mp_group_grants t
+			JOIN mp_group_members a ON a.group_id=t.group_id AND a.user_id=r.owner_id
+			JOIN mp_group_members b ON b.group_id=t.group_id AND b.user_id=c.sender
+			WHERE t.group_id=g.source AND t.resource=c.resource)))`
 
 const denyUnavailableChildren = `UPDATE mp_children c SET status='denied'
 	WHERE c.status='pending' AND c.expires_at>statement_timestamp() AND NOT ` + activeChildGrant
@@ -143,7 +158,7 @@ func (s *Service) submit(ctx context.Context, p Principal, r *http.Request) (any
 				return bad("child expiry must be within seven days")
 			}
 			err = tx.QueryRow(ctx, `SELECT r.owner_id FROM mp_resources r JOIN mp_available_actions g ON g.resource=r.id AND g.grantee=$1
-			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) FOR SHARE OF r`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
+			WHERE r.id=$2 AND r.device=$3 AND $4=g.action AND $4=ANY(r.actions) AND mp_workspace_handoff_allowed(r.workspace_id,r.owner_id,$1) FOR SHARE OF r`, p.User, c.Resource, c.Device, c.Action).Scan(&owner)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return forbidden()
 			}
@@ -207,6 +222,22 @@ func (s *Service) claim(ctx context.Context, p Principal, r *http.Request) (any,
 		var err error
 		child, err = scanChild(tx.QueryRow(ctx, "SELECT "+childFields+" FROM mp_children WHERE id=$1 AND device=$2 AND owner_id=$3 FOR UPDATE", r.PathValue("id"), p.Device, p.User))
 		if err != nil {
+			return err
+		}
+		if child.Status == "uncertain" && child.Action == "agent.handoff" {
+			// Only durable workspace receipt recovery can repeat this claim.
+			// Its original allowance was charged before the previous lease ended.
+			err := tx.QueryRow(ctx, `SELECT c.grant_source FROM mp_children c JOIN mp_resources r ON r.id=c.resource
+				WHERE c.id=$1 AND c.expires_at>clock_timestamp() AND `+workspaceGrantActive,
+				child.ID).Scan(&child.GrantGroup)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, "UPDATE mp_children SET status='processing' WHERE id=$1", child.ID)
+			claimed, child.Status = true, "processing"
 			return err
 		}
 		if child.Status != "pending" {
@@ -282,4 +313,24 @@ func (s *Service) receipt(ctx context.Context, p Principal, r *http.Request) (an
 		return err
 	})
 	return child, err
+}
+
+func (s *Service) workspaceHandoffAdmission(ctx context.Context, p Principal, r *http.Request) (any, error) {
+	var proof leaseProof
+	if err := body(r, &proof); err != nil {
+		return nil, err
+	}
+	var ready, allowed bool
+	err := s.write(ctx, func(tx pgx.Tx) error {
+		if err := s.guardLease(ctx, tx, p, proof); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT FROM mp_children c WHERE c.id=$1 AND c.owner_id=$2 AND c.device=$3
+			AND (c.status IN ('completed','declined','denied','revoked','expired') OR c.expires_at<=clock_timestamp())),
+			EXISTS(SELECT FROM mp_children c JOIN mp_resources r ON r.id=c.resource
+			WHERE c.id=$1 AND c.owner_id=$2 AND c.device=$3 AND c.action='agent.handoff' AND c.status='completed'
+			AND c.expires_at>clock_timestamp() AND `+workspaceGrantActive+`)`, r.PathValue("id"), p.User, p.Device).Scan(&ready, &allowed)
+	})
+	return map[string]bool{"ready": ready, "allowed": allowed}, err
 }

@@ -12,6 +12,7 @@ import Observation
 // - A changed certificate is trusted only from a fresh check of that server and a second confirmation.
 // - A read or an action that names its target never reads or moves `route`. The tray's own pages
 //   call the same functions with the target their route names.
+// - The relays nearby are read after each list read, open or closed (MultiplayerDiscovery.swift).
 // - Sessions poll only while a panel is open. With notifications available, the list and the feed
 //   are also read every other poll interval while it is closed (MultiplayerSocialModel.swift).
 
@@ -112,6 +113,7 @@ struct MultiplayerFriendGroup: Equatable, Identifiable {
             case .certChanged: return "blocked, friends hidden"
             case .signedOut: return "signed out"
             case .connecting: return "connecting"
+            case .keychainPending: return "waiting for Keychain"
             default: return "offline, friends not shown"
             }
         }
@@ -265,6 +267,11 @@ final class MultiplayerModel {
     let host: MultiplayerHostModel
     /// The tailnet this Mac is on and its relays, for the Add server form.
     let tailnet: MultiplayerTailnetModel
+    /// The relays nearby and the join checklist (MultiplayerDiscovery.swift).
+    let discovery: MultiplayerDiscoveryModel
+    /// Requests to join a relay: the person's own, and the ones waiting on them as an admin
+    /// (MultiplayerMembershipRequests.swift).
+    let requests: MultiplayerMembershipRequestModel
     let steadyPoll: Duration
     private let fastPoll: Duration
     private let clock: () -> Date
@@ -289,9 +296,11 @@ final class MultiplayerModel {
          now: @escaping () -> Date = { Date() },
          holdTimer: MultiplayerHoldTimer = .clock,
          relay: (any MultiplayerRelayControl)? = nil,
-         tailnetPoll: Duration = .seconds(2)) {
+         tailnetPoll: Duration = .seconds(2),
+         discoveryStore: MultiplayerDiscoveryStore = .scratch,
+         listingPoll: Duration = .seconds(5)) {
         self.client = client
-        self.host = MultiplayerHostModel(control: relay)
+        self.host = MultiplayerHostModel(control: relay, listingInterval: listingPoll)
         self.notifier = notifier
         self.setupFailure = setupFailure
         self.usesFixtureHelper = usesFixtureHelper
@@ -302,8 +311,12 @@ final class MultiplayerModel {
                                            answeredHold: answeredHold, wallPoll: steadyPoll, holdTimer: holdTimer)
         self.remote = MultiplayerRemoteModel(client: client, now: now)
         self.tailnet = MultiplayerTailnetModel(client: client, pollInterval: tailnetPoll)
+        self.discovery = MultiplayerDiscoveryModel(client: client, store: discoveryStore)
+        self.requests = MultiplayerMembershipRequestModel(client: client)
         self.share.tray = self
         self.remote.tray = self
+        self.discovery.tray = self
+        self.requests.tray = self
     }
 
     /// The one live model: the menu bar panel, the review window and invite links all use it.
@@ -319,7 +332,8 @@ final class MultiplayerModel {
             return MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: location.url)),
                              usesFixtureHelper: location.isFixture, notifier: MultiplayerUserNotifier.forThisProcess(),
                              winners: MultiplayerWinnerStore(file: MultiplayerWinnerStore.location(isFixture: location.isFixture)),
-                             answeredHold: MultiplayerShareModel.answeredHold, relay: relay)
+                             answeredHold: MultiplayerShareModel.answeredHold, relay: relay,
+                             discoveryStore: MultiplayerDiscoveryStore(defaults: location.isFixture ? nil : .standard))
         case .failure(let failure):
             return MultiplayerModel(client: nil, setupFailure: failure, relay: relay)
         }
@@ -350,7 +364,7 @@ final class MultiplayerModel {
     var friendGroups: [MultiplayerFriendGroup] {
         servers.map { server in
             let session = sessions[server.id]
-            let status = server.state == .certChanged || session?.isOnline != true ? nil : session?.status
+            let status = !server.showsSession || session?.isOnline != true ? nil : session?.status
             return MultiplayerFriendGroup(server: server,
                                           friends: MultiplayerFriendGroup.sorted(status?.friends ?? []),
                                           incoming: status?.incoming ?? [],
@@ -366,6 +380,27 @@ final class MultiplayerModel {
     /// A server's own problem text, made safe to draw.
     nonisolated static func problemText(_ raw: String) -> String {
         MultiplayerSessionModel.serviceText(raw) ?? "This server reported a problem. Refresh to check again."
+    }
+
+    /// What to do while a server waits for Keychain: the device agent's sentence when it is safe to show.
+    nonisolated static func keychainText(_ raw: String) -> String {
+        MultiplayerSessionModel.serviceText(raw) ?? MultiplayerServerSummary.keychainWaitingText
+    }
+
+    /// What a server's session reads while the list says the device agent holds none for it: the
+    /// wait for Keychain, or the problem that stopped its start. Nil for every other server.
+    nonisolated static func listedHold(_ server: MultiplayerServerSummary) -> MultiplayerPresence? {
+        guard server.hasNoSession else { return nil }
+        if server.state == .keychainPending { return .keychainPending(detail: keychainText(server.error)) }
+        return .serviceError(MultiplayerSessionModel.serviceErrorText(server.error))
+    }
+
+    /// The line under a server's row: what to do while it waits for Keychain, why it is still
+    /// reconnecting, or its problem. Nil when the row needs none.
+    nonisolated static func problemLine(_ server: MultiplayerServerSummary) -> String? {
+        guard let problem = server.shownProblem else { return nil }
+        if server.state == .keychainPending { return keychainText(problem) }
+        return server.isReconnecting ? reconnectText(problem) : problemText(problem)
     }
 
     /// Why a reconnecting server has no session yet. A timeout or refused connection reads as the
@@ -471,6 +506,8 @@ final class MultiplayerModel {
         cancelSocial()
         share.cancel()
         remote.cancel()
+        discovery.cancel()
+        requests.cancel()
         confirmingRemoval = nil
         confirmingTrust = nil
         sessions.values.forEach { $0.close() }
@@ -478,7 +515,9 @@ final class MultiplayerModel {
 
     private func tick() -> Duration {
         if !isBusy { refresh() }
-        let settling = servers.contains { $0.state == .connecting } || sessions.values.contains { $0.awaitingBrowser }
+        // A wait for Keychain ends when the person answers macOS, so the list is read as often as while connecting.
+        let settling = servers.contains { $0.state == .connecting || $0.state == .keychainPending }
+            || sessions.values.contains { $0.awaitingBrowser }
         return settling ? fastPoll : steadyPoll
     }
 
@@ -503,6 +542,8 @@ final class MultiplayerModel {
     func refreshAll() {
         refresh()
         sessions.values.forEach { $0.refresh() }
+        // The person asked: the device agent looks again instead of answering with its last pass.
+        discovery.refresh(force: true)
     }
 
     private func finishRefresh(_ result: Result<[MultiplayerServerSummary], MultiplayerFailure>, token: Int) {
@@ -517,6 +558,8 @@ final class MultiplayerModel {
             refreshSocial()
             share.refresh()
             remote.refresh()
+            discovery.refresh()
+            requests.refresh()
         case .failure(.cancelled):
             break
         case .failure(let failure):
@@ -545,8 +588,15 @@ final class MultiplayerModel {
         for id in ids where sessions[id] == nil {
             let session = MultiplayerSessionModel(client: client.scoped(to: id), usesFixtureHelper: usesFixtureHelper,
                                                   steadyPoll: steadyPoll, fastPoll: fastPoll, now: clock)
+            // The status read and the hand-overs read are started separately and load on their own.
+            // When this server's status lands, the hand-overs already listed for it take their
+            // holders' names from it. Nothing is read again, and no other server's rows are touched.
+            session.statusCommitted = { [weak self] in self?.share.live.nameHolders(on: id) }
             sessions[id] = session
             if viewers > 0 { session.open() }
+        }
+        for server in servers {
+            sessions[server.id]?.hold(Self.listedHold(server))
         }
         if let id = route.serverID, !ids.contains(id) { go(.home) }
         me = me.filter { ids.contains($0.key) }
@@ -867,7 +917,11 @@ final class MultiplayerModel {
 
     // MARK: Per-server session intents, from the home list
 
-    func signIn(_ id: String) { sessions[id]?.signIn() }
+    /// A server waiting for Keychain has no sign-in to start: the device agent continues on its own.
+    func signIn(_ id: String) {
+        guard server(id)?.state != .keychainPending else { return }
+        sessions[id]?.signIn()
+    }
     func signOut(_ id: String) { sessions[id]?.signOut() }
 
     func accept(_ request: MultiplayerIncoming, on id: String) { sessions[id]?.accept(request) }
@@ -888,7 +942,7 @@ final class MultiplayerModel {
 
     /// Servers a friend can be added on now.
     var friendServers: [MultiplayerServerSummary] {
-        servers.filter { $0.state != .certChanged && sessions[$0.id]?.isOnline == true }
+        servers.filter { $0.showsSession && sessions[$0.id]?.isOnline == true }
     }
 
     // MARK: - Testing support
@@ -896,8 +950,11 @@ final class MultiplayerModel {
     /// Waits until no helper call started by this model or its sessions is in flight.
     func settle() async {
         while true {
-            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask ?? sideTasks.values.first
-                ?? share.quietTask ?? share.pageTask ?? remote.quietTask {
+            if let task = actionTask ?? refreshTask ?? probeTask ?? socialTask ?? membershipTask {
+                await task.value
+                continue
+            }
+            if let task = sideTasks.values.first ?? share.quietTask ?? share.pageTask ?? remote.quietTask {
                 await task.value
                 continue
             }
@@ -910,12 +967,24 @@ final class MultiplayerModel {
                 await task.value
                 continue
             }
+            if let task = discovery.readTask ?? discovery.seenTask {
+                await task.value
+                continue
+            }
+            if let task = requests.quietTask {
+                await task.value
+                continue
+            }
             for session in sessions.values { await session.settle() }
-            if actionTask == nil, refreshTask == nil, probeTask == nil, socialTask == nil, membershipTask == nil,
-               sideTasks.isEmpty, share.quietTask == nil, share.pageTask == nil, remote.quietTask == nil, tailnet.joinTask == nil, tailnet.readTask == nil,
-               share.live.quietTask == nil,
-               share.live.pageTask == nil, share.teams.quietTask == nil, share.teams.pageTask == nil,
-               share.teams.pullRequestTask == nil { return }
+            // Split so the compiler checks each list in turn.
+            let own = actionTask == nil && refreshTask == nil && probeTask == nil && socialTask == nil
+                && membershipTask == nil && sideTasks.isEmpty
+            let shared = share.quietTask == nil && share.pageTask == nil && remote.quietTask == nil
+                && share.live.quietTask == nil && share.live.pageTask == nil && share.teams.quietTask == nil
+                && share.teams.pageTask == nil && share.teams.pullRequestTask == nil
+            let found = tailnet.joinTask == nil && tailnet.readTask == nil && discovery.readTask == nil
+                && discovery.seenTask == nil && requests.quietTask == nil
+            if own, shared, found { return }
         }
     }
 }

@@ -26,6 +26,9 @@ var acpHistoryReaders = map[string]func(directory, cwd string) historyReader{
 func (l *Local) openNativeHistory(native service.NativeSession, cwd string) (*runtime.Runtime, *model.ReadHistoryRequest, error) {
 	config := runtime.Config{HarnessInstance: native.HarnessInstance, WorkingDirectory: cwd}
 	name, local := strings.CutPrefix(native.HarnessInstance, "local-")
+	if native.HarnessInstance == service.LegacyClaudeHarness {
+		name = "claude"
+	}
 	reader := nativehistory.ForHarness(name, cwd)
 	if strings.HasPrefix(native.HarnessInstance, "local-builtin:") {
 		adapter, err := boundBuiltin(native.HarnessInstance)
@@ -251,7 +254,7 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 					update, _ := acpprocessor.ExtensionUpdate(obs.GetExtension())
 					if typedRow && len(events) > 0 {
 						last := &events[len(events)-1]
-						replacement := previewConsoleEvent(acpActivityEvent(&update, "provider", obs.Cursor))
+						replacement := previewConsoleEvent(acpObservationActivity(&update, obs, "provider"))
 						replacement.Sequence = last.Sequence
 						bytes += len(replacement.Text) - len(last.Text)
 						*last = replacement
@@ -263,7 +266,7 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 					if len(events) > 0 && linkReplaySource(&events[len(events)-1], &update, obs.Cursor) {
 						continue
 					}
-					event = acpActivityEvent(&update, "provider", obs.Cursor)
+					event = acpObservationActivity(&update, obs, "provider")
 				} else {
 					if len(events) > 0 {
 						linkPiToolResult(&events[len(events)-1], obs)
@@ -274,7 +277,7 @@ func projectConsoleHistory(read func(cursor string) (*model.ReadHistoryResponse,
 				continue
 			}
 			if cursor := obs.GetSourceCursor(); cursor != "" {
-				if event.ACP != nil && event.ACP.MessageOp != "" {
+				if event.ACP != nil && (event.ACP.MessageOp != "" || event.ACP.PlanIdentity != "") {
 					event.ACP.Cursor = cursor
 				} else if ext := paramsSource(obs); ext.GetType() == runtime.ACPUpdateParamsSource {
 					inner, err := acpprocessor.ScopedUpdate(ext.Data, obs.GetSession().GetSessionId())

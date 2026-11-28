@@ -216,11 +216,8 @@ struct NetworkPagesContent {
 
     /// A hand-off's state in words: the run's, once asked; otherwise the request's own.
     func state(of row: MultiplayerSentRequest) -> (title: String, tone: Tone) {
-        if let state = reports[row.request]?.state, !state.isEmpty {
-            return (MultiplayerRequestState.title(state), MultiplayerRequestState.tone(state))
-        }
-        if row.succeeded { return ("Started", .working) }
-        return (MultiplayerRequestState.title(row.status), MultiplayerRequestState.tone(row.status))
+        let progress = MultiplayerHandoffProgress(row: row, report: reports[row.request])
+        return (progress.title, progress.tone)
     }
 
     func winner(of request: String, on server: String) -> String? {
@@ -437,7 +434,7 @@ struct NetworkPagesContent {
             let sent = sent
             return [cell("handoffs", "hand-offs", sent.handoffs),
                     cell("reviews", "reviews", sent.reviews),
-                    cell("working", "working", rows.filter { $0.tone == .working && $0.state != "Done" }.count, tone: .working),
+                    cell("working", "working", rows.filter { $0.tone == .working && $0.state != "Done" && $0.state != "Verified" }.count, tone: .working),
                     cell("waiting", "waiting", rows.filter { $0.tone == .attention }.count, tone: .attention),
                     cell("failed", "failed", rows.filter { $0.tone == .failure }.count, tone: .failure)]
         case NetworkPlace.threads:

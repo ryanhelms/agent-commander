@@ -171,3 +171,67 @@ func TestHostJSONReportsStateAndFailure(t *testing.T) {
 		t.Fatalf("failed install: %s", out.String())
 	}
 }
+
+func TestHostConfigureClientSecret(t *testing.T) {
+	dir := t.TempDir()
+	if err := hostmode.InitConfig(dir, hostmode.Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: hostmode.GoogleIssuer, ClientID: "desktop", Admins: []string{"admin@example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "client.json")
+	if err := os.WriteFile(file, []byte(`{"installed":{"client_id":"desktop","client_secret":"GOCSPX-x"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--client-secret-file", file}); err != nil {
+		t.Fatal(err)
+	}
+	if got := hostmode.ClientSecret(dir); got != "GOCSPX-x" {
+		t.Fatalf("secret %q", got)
+	}
+	cfg, err := hostmode.ReadConfig(dir)
+	if err != nil || cfg.Listen != ":8443" {
+		t.Fatalf("setting the secret changed the configuration: %+v %v", cfg, err)
+	}
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--client-secret-file", file, "--clear-client-secret"}); err == nil {
+		t.Fatal("accepted both flags")
+	}
+	if err := hostCommand(ctx, []string{"--dir", dir, "configure", "--clear-client-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if hostmode.ClientSecret(dir) != "" {
+		t.Fatal("secret not cleared")
+	}
+}
+
+func TestHostJSONListing(t *testing.T) {
+	dir := t.TempDir()
+	if err := hostmode.InitConfig(dir, hostmode.Config{
+		Name: "Relay", Listen: ":8443", Hostnames: []string{"relay.example.test"},
+		Issuer: hostmode.GoogleIssuer, ClientID: "desktop", Admins: []string{"admin@example.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(input string) hostResult {
+		t.Helper()
+		var out bytes.Buffer
+		_ = hostJSON(&out, dir, "listing", []byte(input))
+		var result hostResult
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatalf("%v: %s", err, out.String())
+		}
+		return result
+	}
+	result := run(`{"url":"Relay.Example.org"}`)
+	if !result.OK || result.Host == nil || result.Host.Listing == nil || result.Host.Listing.URL != "https://relay.example.org" {
+		t.Fatalf("turning on: %+v", result)
+	}
+	if result = run(`{"url":"http://insecure.example.org"}`); result.OK || !strings.Contains(result.Error, "https") {
+		t.Fatalf("http URL: %+v", result)
+	}
+	if result = run(`{"url":""}`); !result.OK || result.Host.Listing.URL != "" {
+		t.Fatalf("turning off: %+v", result)
+	}
+}

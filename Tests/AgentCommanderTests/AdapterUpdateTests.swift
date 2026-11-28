@@ -44,20 +44,63 @@ private func connection(_ snapshots: [[AdapterUpdate]], end: Error) -> AsyncThro
 
 private struct Dropped: Error {}
 
-/// Waits until `condition` holds, woken by each change to the observable state it reads.
-@MainActor private func until(_ condition: @MainActor () -> Bool) async {
+/// Waits until `condition` holds, woken by each change to the observable state it reads. True
+/// when it holds; false when the calling task is cancelled first, as at a test's time limit.
+@MainActor private func until(_ condition: @MainActor () -> Bool) async -> Bool {
     while !condition() {
-        await withCheckedContinuation { (changed: CheckedContinuation<Void, Never>) in
-            withObservationTracking { _ = condition() } onChange: { changed.resume() }
+        // One buffered change, so a change made before the wait starts is not lost. A cancelled
+        // task ends the stream, and the wait returns nil as it does at the end of a stream.
+        let (changes, change) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        withObservationTracking { _ = condition() } onChange: {
+            change.yield()
+            change.finish()
         }
+        var waiting = changes.makeAsyncIterator()
+        guard await waiting.next(isolation: MainActor.shared) != nil else { return condition() }
+    }
+    return true
+}
+
+/// What a failed wait had seen: the feed's state, every event recorded so far, and the
+/// connections still open.
+@MainActor private func progress(_ exchange: Exchange, _ feed: AdapterUpdateFeed) -> String {
+    "feed link \(feed.link) with \(feed.updates.count) update(s); \(exchange.progress)"
+}
+
+/// Waits only for a phase boundary. The complete order is asserted from the exchange's
+/// ledger, so the test does not have to resume an iterator for every recorded event.
+private func requireMilestone(_ event: Exchange.Event, in exchange: Exchange, feed: AdapterUpdateFeed,
+                              isolation: isolated (any Actor)? = #isolation,
+                              sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    let reached = await exchange.reached(event, isolation: isolation)
+    if !reached {
+        let seen = await progress(exchange, feed)
+        try #require(reached, "the exchange never reached \(event); \(seen)", sourceLocation: sourceLocation)
     }
 }
 
-/// Expects the next recorded event to be `expected`.
-@MainActor private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ expected: Exchange.Event,
-                                   sourceLocation: SourceLocation = #_sourceLocation) async {
-    let event = await events.next(isolation: MainActor.shared)
-    #expect(event == expected, sourceLocation: sourceLocation)
+/// A feed whose connections stay open in `exchange` until the feed lets go of them.
+@MainActor private func heldFeed(on exchange: Exchange) -> AdapterUpdateFeed {
+    AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
+}
+
+/// Calls `feed.follow()` in a task that starts at once and runs on the main actor until the call
+/// first waits. Calls started in one main-actor turn therefore reach the feed in the order they
+/// were started, with nothing else in between. The exchange records `name` when the call returns.
+@MainActor private func follow(_ feed: AdapterUpdateFeed, as name: String, in exchange: Exchange) -> Task<Void, Never> {
+    Task.immediate { @MainActor in
+        await feed.follow()
+        exchange.returned(name)
+    }
+}
+
+/// Expects the feed to reach the state `isRead` describes, which only a snapshot read from its
+/// open connection can produce. The wait and the feed's state stay on the main actor.
+@MainActor private func requireRead(in exchange: Exchange, feed: AdapterUpdateFeed,
+                                   sourceLocation: SourceLocation = #_sourceLocation,
+                                   _ isRead: @MainActor () -> Bool) async throws {
+    let read = await until(isRead)
+    try #require(read, "the feed never read the snapshot; \(progress(exchange, feed))", sourceLocation: sourceLocation)
 }
 
 @Suite struct AdapterUpdateSnapshotTests {
@@ -187,82 +230,127 @@ private struct Dropped: Error {}
 
     /// The root model outlives the window; the view task that follows it does not. SwiftUI cancels
     /// the old task on close and starts a new one on reopen, and the new call can arrive before the
-    /// cancelled one has unwound. Each task starts immediately on the main actor, so the order below
-    /// is the order of the calls, as in `old.cancel(); await feed.follow()`.
-    @Test(.timeLimit(.minutes(1))) func aReopenedWindowTakesOverFromTheCancelledTask() async {
+    /// cancelled one has unwound, as in `old.cancel(); await feed.follow()`.
+    ///
+    /// The body runs off the main actor, so reading an event, checking the count and cancelling a
+    /// call do not each wait for a main-actor turn behind the calls under test. The feed is still
+    /// created, followed and observed on the main actor.
+    @Test(.timeLimit(.minutes(1))) @concurrent
+    func aReopenedWindowTakesOverFromTheCancelledTask() async throws {
         let exchange = Exchange()
-        var events = exchange.events.makeAsyncIterator()
-        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
-
-        let old = Task.immediate { @MainActor in
-            await feed.follow()
-            exchange.returned("old")
+        let (feed, old) = await MainActor.run {
+            let held = heldFeed(on: exchange)
+            return (held, follow(held, as: "old", in: exchange))
         }
-        await expectNext(&events, .opened(1))
+        defer { old.cancel() }
+        try #require(exchange.recorded == [.opened(1)])
 
-        old.cancel()
-        let replacement = Task.immediate { @MainActor in
-            await feed.follow()
-            exchange.returned("replacement")
+        // One main-actor turn cancels the old call and starts the replacement, with no wait in
+        // between. The old call needs a later turn to unwind, so the replacement reaches the feed
+        // while the old call still holds it.
+        let replacement = await MainActor.run {
+            old.cancel()
+            return follow(feed, as: "replacement", in: exchange)
         }
+        defer { replacement.cancel() }
         // The replacement waits for the cancelled call to let go, then connects once.
-        await expectNext(&events, .closed(1))
-        await expectNext(&events, .returned("old"))
-        await expectNext(&events, .opened(2))
+        try await requireMilestone(.opened(2), in: exchange, feed: feed)
         #expect(exchange.live == 1)
 
         exchange.send([fixture])
-        await until { feed.updates == [fixture] && feed.link == .live }
+        try await requireRead(in: exchange, feed: feed) { feed.updates == [fixture] && feed.link == .live }
 
         replacement.cancel()
-        await expectNext(&events, .closed(2))
-        await expectNext(&events, .returned("replacement"))
+        try await requireMilestone(.returned("replacement"), in: exchange, feed: feed)
+        #expect(exchange.recorded == [.opened(1), .closed(1), .returned("old"), .opened(2),
+                                      .closed(2), .returned("replacement")])
         #expect(exchange.live == 0)
     }
 
-    @Test(.timeLimit(.minutes(1))) func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async {
+    /// Like the test above, the body runs off the main actor; the feed is created, followed and
+    /// observed on it.
+    @Test(.timeLimit(.minutes(1))) @concurrent
+    func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async throws {
         let exchange = Exchange()
-        var events = exchange.events.makeAsyncIterator()
-        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
-        func follow(_ name: String) -> Task<Void, Never> {
-            Task.immediate { @MainActor in
-                await feed.follow()
-                exchange.returned(name)
-            }
+        // One main-actor turn creates the feed and starts all three calls, so they reach the feed
+        // in this order with nothing else in between.
+        let (feed, first, second, third) = await MainActor.run {
+            let held = heldFeed(on: exchange)
+            return (held, follow(held, as: "first", in: exchange), follow(held, as: "second", in: exchange),
+                    follow(held, as: "third", in: exchange))
         }
-
-        let first = follow("first")
-        let second = follow("second")
-        let third = follow("third")
-        await expectNext(&events, .opened(1))
+        // A failed wait below must not leave a call following the feed after the test.
+        defer { for call in [first, second, third] { call.cancel() } }
+        try #require(exchange.recorded == [.opened(1)])
         #expect(exchange.live == 1)
 
         // A waiting call that is cancelled returns without ever connecting.
         second.cancel()
-        await expectNext(&events, .returned("second"))
+        try await requireMilestone(.returned("second"), in: exchange, feed: feed)
         #expect(exchange.live == 1)
 
         // The next waiting call connects once the owner has let go.
         first.cancel()
-        await expectNext(&events, .closed(1))
-        await expectNext(&events, .returned("first"))
-        await expectNext(&events, .opened(2))
+        try await requireMilestone(.opened(2), in: exchange, feed: feed)
         #expect(exchange.live == 1)
         exchange.send([fixture, other])
-        await until { feed.updates == [fixture, other] }
+        try await requireRead(in: exchange, feed: feed) { feed.updates == [fixture, other] }
 
         third.cancel()
-        await expectNext(&events, .closed(2))
-        await expectNext(&events, .returned("third"))
+        try await requireMilestone(.returned("third"), in: exchange, feed: feed)
         #expect(exchange.live == 0)
 
-        // Nothing still holds the feed: a later call connects at once.
-        let again = follow("again")
-        await expectNext(&events, .opened(3))
+        // Nothing still holds the feed: a later call connects at once. It is cancelled as soon as
+        // its connection opens, before it has read anything.
+        let again = await MainActor.run { follow(feed, as: "again", in: exchange) }
+        defer { again.cancel() }
+        #expect(exchange.recorded.last == .opened(3))
         again.cancel()
-        await expectNext(&events, .closed(3))
-        await expectNext(&events, .returned("again"))
-        #expect(exchange.live == 0)
+        try await requireMilestone(.returned("again"), in: exchange, feed: feed)
+        #expect(exchange.recorded == [.opened(1), .returned("second"), .closed(1), .returned("first"),
+                                      .opened(2), .closed(2), .returned("third"), .opened(3),
+                                      .closed(3), .returned("again")])
+        let live = exchange.live
+        if live != 0 {
+            let seen = await progress(exchange, feed)
+            #expect(live == 0, "\(seen)")
+        }
+    }
+
+    /// The comparison for the cancel straight after `opened` above: here the call has provably
+    /// read from its connection before it is cancelled. If only the immediate cancel stalls, the
+    /// stall lies between a connection opening and its first read.
+    @Test(.timeLimit(.minutes(1))) func aCallCancelledAfterItsFirstSnapshotLetsGo() async throws {
+        let exchange = Exchange()
+        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
+        let call = Task.immediate { @MainActor in
+            await feed.follow()
+            exchange.returned("ready")
+        }
+        defer { call.cancel() }
+        try #require(exchange.recorded == [.opened(1)])
+
+        // The feed starts empty, so this set can only come from the open connection.
+        exchange.send([other])
+        try await requireRead(in: exchange, feed: feed) { feed.updates == [other] && feed.link == .live }
+
+        call.cancel()
+        try await requireMilestone(.returned("ready"), in: exchange, feed: feed)
+        #expect(exchange.recorded == [.opened(1), .closed(1), .returned("ready")])
+        #expect(exchange.live == 0, "\(progress(exchange, feed))")
+    }
+
+    @Test func aRecordedMilestoneSurvivesCancellationOfItsObserver() async {
+        let exchange = Exchange()
+        let observation = Task.immediate { @MainActor in
+            await exchange.reached(.returned("ready"))
+        }
+
+        // The observer is suspended in its stream iterator. Cancellation ends that wait;
+        // keep this main-actor turn through the record, before the observer can resume.
+        observation.cancel()
+        exchange.returned("ready")
+        #expect(await observation.value)
     }
 
     @Test func noticeLabelsNameTheCountAndBothVersions() {
@@ -289,26 +377,56 @@ private final class Attempts: @unchecked Sendable {
 /// Connections that stay open until the feed lets go of them, with an ordered record of each one
 /// opening and closing and of each test call returning.
 private final class Exchange: @unchecked Sendable {
-    enum Event: Equatable, Sendable {
+    enum Event: Hashable, Sendable {
         case opened(Int)
         case closed(Int)
         case returned(String)
     }
 
-    let events: AsyncStream<Event>
-    private let emit: AsyncStream<Event>.Continuation
     private let lock = NSLock()
     private var lines: [Int: AsyncThrowingStream<[AdapterUpdate], Error>.Continuation] = [:]
     private var opened = 0
+    private var history: [Event] = []
+    private var milestones: [Event: AsyncStream<Void>.Continuation] = [:]
 
-    init() {
-        let stream = AsyncStream.makeStream(of: Event.self)
-        events = stream.stream
-        emit = stream.continuation
+    var recorded: [Event] { lock.withLock { history } }
+
+    /// Registration and replay use the same lock as recording. A cancelled wait cannot
+    /// discard a recorded milestone, or cancel the signal for any later phase.
+    func reached(_ event: Event, isolation: isolated (any Actor)? = #isolation) async -> Bool {
+        let (signal, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let alreadyRecorded = lock.withLock {
+            if history.contains(event) { return true }
+            milestones[event] = wake
+            return false
+        }
+        if alreadyRecorded { return true }
+        defer { lock.withLock { milestones[event] = nil } }
+        var iterator = signal.makeAsyncIterator()
+        if await iterator.next(isolation: isolation) != nil { return true }
+        return lock.withLock { history.contains(event) }
     }
 
     /// Connections the feed holds open now.
     var live: Int { lock.withLock { lines.count } }
+
+    /// For a failure message: the events recorded so far and the connections still open.
+    var progress: String {
+        lock.withLock {
+            let open = lines.keys.sorted()
+            return "events recorded so far \(history); "
+                + (open.isEmpty ? "no connection open" : "connection(s) still open \(open)")
+        }
+    }
+
+    private func record(_ event: Event) {
+        let wake = lock.withLock {
+            history.append(event)
+            return milestones.removeValue(forKey: event)
+        }
+        wake?.yield()
+        wake?.finish()
+    }
 
     func connect() -> AsyncThrowingStream<[AdapterUpdate], Error> {
         AsyncThrowingStream { line in
@@ -319,9 +437,9 @@ private final class Exchange: @unchecked Sendable {
             }
             line.onTermination = { [self] _ in
                 lock.withLock { lines[id] = nil }
-                emit.yield(.closed(id))
+                record(.closed(id))
             }
-            emit.yield(.opened(id))
+            record(.opened(id))
         }
     }
 
@@ -329,5 +447,5 @@ private final class Exchange: @unchecked Sendable {
         for line in lock.withLock({ Array(lines.values) }) { line.yield(updates) }
     }
 
-    func returned(_ call: String) { emit.yield(.returned(call)) }
+    func returned(_ call: String) { record(.returned(call)) }
 }

@@ -4,13 +4,28 @@ This file records user-facing changes in each Agent Commander release. Entries u
 
 ## [Unreleased]
 
+### Added
+
+- See the relays near you at the top of the network tray and in Add server: each relay found on your tailnet or local network, how it admits people, and a checklist that walks you through joining it. A new relay marks the menu bar icon and posts one notification, which you can turn off on the Network tab.
+- Ask to join a relay that turned your sign-in away, with an optional note, and follow the request to its answer in the network tray. Relay admins approve or deny requests on the Admin page, and Hosting on this Mac can list your relay in the public directory under an https address.
+
+- Send a handoff to a paired workspace and see when the recipient stores it, when a coordinator accepts it, and when its result is verified. A workspace inbox keeps pending handoffs across restarts and can opt into starting a coordinator.
+
+### Changed
+
+- In the Pretty transcript, the last line shows three circling coral dots while an agent works on its turn, and a soft band of light sweeps across its label. A running background job's label shimmers the same way. Both stand still with Reduce Motion.
+- GitHub publishes pilot releases for public download. Source builds can fetch the pinned Go build inputs without a GitHub login.
+
 ### Fixed
 
+- Reattach a stopped coordinator to its original local provider session. Commander keeps the same run and inbox and uses ACP session load or Claude Code’s native resume.
+- Coordinator discovery identifies ended inboxes separately. An authorized message to an ended run gets a specific receipt, and reopening that run restores discovery under its existing grant.
+- Switching a relay to Invite membership no longer locks out the people who joined while it was Open. Invite now decides only who may join; Allowlist and suspension still remove access.
 - Coordinators can now see who is online, read request threads and work the shared task board. Commander registered these network tools but denied them to every managed coordinator.
 
 ### Removed
 
-- Releases no longer request build attestations for the headless archives. GitHub refuses them for this private repository; `SHA256SUMS` still protects the downloads.
+- Releases no longer request build attestations for the headless archives. Use `SHA256SUMS` to verify the downloads.
 
 ## [0.1.0-pilot.5] - 2026-11-26
 

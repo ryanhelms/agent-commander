@@ -254,4 +254,185 @@ let multiplayerRenderDirectory = ProcessInfo.processInfo.environment["MULTIPLAYE
         }
         model.close()
     }
+    /// Relays nearby (DESIGN.md, "Relays nearby"): the band on the Network tab with each checklist
+    /// state, the same band on Add server, and the checklist for a Mac that is on no tailnet.
+    @Test(.enabled(if: multiplayerRenderDirectory != nil)) func drawsRelaysNearby() async throws {
+        let root = URL(fileURLWithPath: try #require(multiplayerRenderDirectory), isDirectory: true)
+        _ = NSApplication.shared
+        defer {
+            unsetenv("COMMANDER_NETWORK_FIXTURE_NOW")
+            unsetenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY")
+        }
+        for (theme, subfolder) in Self.themes {
+            let folder = subfolder.map { root.appendingPathComponent($0, isDirectory: true) } ?? root
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            setenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "nearby", 1)
+            let model = Self.fixtureModel(state: folder.appendingPathComponent("fixture-discovery-state.json"))
+            model.open()
+            await model.settle()
+            let discovery = model.discovery
+            model.tab = .network
+            try await Self.write(model, "relays-nearby", to: folder, theme: theme)
+            for name in ["build-relay", "den-mini", "attic-relay"] {
+                discovery.select(discovery.relays.first { $0.name == name }?.id)
+                try await Self.write(model, "relays-nearby-\(name)", to: folder, theme: theme)
+            }
+            // Confirmed: the relay is in the list and its checklist stands at Sign in.
+            if let den = discovery.relays.first(where: { $0.name == "den-mini" }) {
+                discovery.select(nil)
+                discovery.select(den.id)
+                await discovery.confirmFingerprint(den)?.value
+                await model.settle()
+                try await Self.write(model, "relays-nearby-added", to: folder, theme: theme)
+            }
+            discovery.select(nil)
+            discovery.select(discovery.relays.first { $0.name == "build-relay" }?.id)
+            model.startAddServer()
+            try await Self.write(model, "relays-nearby-add-server", to: folder, theme: theme)
+            model.close()
+
+            setenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "offnet", 1)
+            let off = Self.fixtureModel(state: folder.appendingPathComponent("fixture-discovery-state.json"))
+            off.open()
+            await off.settle()
+            off.tab = .network
+            off.discovery.select(off.discovery.nearby.first?.id)
+            try await Self.write(off, "relays-nearby-off-tailnet", to: folder, theme: theme)
+            off.close()
+        }
+    }
+
+    /// Request access, the admin's membership requests and List publicly (DESIGN.md, "Relay
+    /// discovery" and "Hosting"): the join checklist and the server's row in each request state,
+    /// the server page's Admin row with its count, the Admin page's list, and the Hosting page in
+    /// each listing state.
+    @Test(.enabled(if: multiplayerRenderDirectory != nil)) func drawsRequestAccessAndListPublicly() async throws {
+        let root = URL(fileURLWithPath: try #require(multiplayerRenderDirectory), isDirectory: true)
+        _ = NSApplication.shared
+        let variables = ["COMMANDER_NETWORK_FIXTURE_NOW", "COMMANDER_NETWORK_FIXTURE_DISCOVERY", "COMMANDER_NETWORK_FIXTURE_ACCESS",
+                         "COMMANDER_RELAY_FIXTURE_STATE", "COMMANDER_RELAY_FIXTURE_LISTING", "COMMANDER_RELAY_FIXTURE_HOST"]
+        defer { variables.forEach { unsetenv($0) } }
+        let relayFixture = Self.fixture.deletingLastPathComponent().appendingPathComponent("commander-relay-fixture.py")
+        for (theme, subfolder) in Self.themes {
+            let folder = subfolder.map { root.appendingPathComponent($0, isDirectory: true) } ?? root
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let state = folder.appendingPathComponent("fixture-request-state.json")
+            setenv("COMMANDER_NETWORK_FIXTURE_DISCOVERY", "nearby", 1)
+
+            // The requester: den-mini is confirmed, its sign-in is refused, and the request follows.
+            for mode in ["requestable", "pending", "approved", "denied", "full"] {
+                setenv("COMMANDER_NETWORK_FIXTURE_ACCESS", mode, 1)
+                let model = Self.fixtureModel(state: state)
+                model.open()
+                await model.settle()
+                model.tab = .network
+                let discovery = model.discovery, requests = model.requests
+                let den = try #require(discovery.relays.first { $0.name == "den-mini" })
+                discovery.select(den.id)
+                await discovery.confirmFingerprint(den)?.value
+                await model.settle()
+                let server = try #require(discovery.server(for: den)?.id)
+                model.signIn(server)
+                await model.settle()
+                func read() async {
+                    await model.refresh()?.value
+                    await model.settle()
+                    await model.session(server)?.refresh()?.value
+                    await model.settle()
+                }
+                await read()
+                await read()
+                model.dismissNotice()
+                if mode == "requestable" {
+                    requests.notes[server] = "I work with Sam on the relay team."
+                } else if mode == "full" {
+                    await requests.request(on: server)?.value
+                    await read()
+                }
+                try await Self.write(model, "request-access-\(mode)", to: folder, theme: theme)
+                if mode == "requestable" {
+                    // Asked: Requested, with the note that went along.
+                    await requests.request(on: server)?.value
+                    await read()
+                    try await Self.write(model, "request-access-requested", to: folder, theme: theme)
+                    // The same states on the server's row alone, with the checklist closed.
+                    discovery.select(nil)
+                    try await Self.write(model, "request-access-row-requested", to: folder, theme: theme)
+                }
+                if mode == "approved" || mode == "denied" {
+                    discovery.select(nil)
+                    try await Self.write(model, "request-access-row-\(mode)", to: folder, theme: theme)
+                }
+                model.close()
+            }
+            unsetenv("COMMANDER_NETWORK_FIXTURE_ACCESS")
+
+            // The admin: ryan-mac's page counts the two people waiting on its Admin row.
+            let admin = Self.fixtureModel(state: state)
+            admin.open()
+            await admin.settle()
+            await admin.refresh()?.value
+            await admin.settle()
+            await admin.refresh()?.value
+            await admin.settle()
+            #expect(admin.requests.waitingCount(on: "s-fixture-home") == 2)
+            admin.openServer("s-fixture-home")
+            try await Self.write(admin, "request-access-admin-row", to: folder, theme: theme)
+            admin.close()
+            // The Admin page lists them, each with Deny and Approve.
+            try await ShellRenderTests.write(TeamsRenderTests.shell(.teamsAdmin), "request-access-admin-page", theme: theme, to: folder)
+
+            // Hosting: List publicly in each state, from the relay fixture.
+            let relayState = folder.appendingPathComponent("fixture-relay-state.json")
+            setenv("COMMANDER_RELAY_FIXTURE_STATE", relayState.path, 1)
+            func hosting(_ outcome: String, host: String = "running") async -> MultiplayerModel {
+                try? FileManager.default.removeItem(at: relayState)
+                setenv("COMMANDER_RELAY_FIXTURE_LISTING", outcome, 1)
+                setenv("COMMANDER_RELAY_FIXTURE_HOST", host, 1)
+                let model = MultiplayerModel(client: MultiplayerClient(helper: MultiplayerProcessHelper(executable: Self.fixture)),
+                                             usesFixtureHelper: true, steadyPoll: .seconds(3600), fastPoll: .seconds(3600),
+                                             now: { Self.fixedNow }, relay: MultiplayerRelayProcess(executable: relayFixture),
+                                             listingPoll: .milliseconds(20))
+                model.open()
+                await model.settle()
+                await Self.settle(model.host)
+                model.go(.hosting)
+                return model
+            }
+            func list(_ model: MultiplayerModel) async {
+                model.host.setListsPublicly(true)
+                model.host.listingDraft.address = "relay.example.org"
+                model.host.list()
+                await Self.settle(model.host)
+            }
+            let off = await hosting("listed")
+            try await Self.write(off, "list-publicly-off", to: folder, theme: theme)
+            off.host.setListsPublicly(true)
+            off.host.listingDraft.address = "relay.example.org"
+            try await Self.write(off, "list-publicly-address", to: folder, theme: theme)
+            off.host.listingDraft.address = "http://relay.example.org"
+            try await Self.write(off, "list-publicly-address-problem", to: folder, theme: theme)
+            off.close()
+            for (outcome, name) in [("listed", "listed"), ("private", "not-listed"), ("unreachable", "not-listed-unreachable"),
+                                    ("checking", "checking")] {
+                let model = await hosting(outcome)
+                await list(model)
+                try await Self.write(model, "list-publicly-\(name)", to: folder, theme: theme)
+                if outcome == "listed" {
+                    model.host.editListingAddress()
+                    try await Self.write(model, "list-publicly-change-address", to: folder, theme: theme)
+                }
+                model.close()
+            }
+            let stopped = await hosting("listed", host: "stopped")
+            await list(stopped)
+            try await Self.write(stopped, "list-publicly-stopped", to: folder, theme: theme)
+            stopped.close()
+        }
+    }
+
+    /// Waits until the hosting model has no read, start, stop or listing change in flight.
+    static func settle(_ host: MultiplayerHostModel) async {
+        for _ in 0..<600 where host.isWorking { try? await Task.sleep(for: .milliseconds(10)) }
+    }
 }

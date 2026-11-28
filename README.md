@@ -6,7 +6,7 @@ The multiplayer pilot adds a menu bar panel for sign-in, friend requests, and sh
 
 ## Download the pilot
 
-Open [GitHub Releases](https://github.com/nscaledev/agent-commander/releases) with your Nscale GitHub account. Choose an Agent Commander pilot release and download the universal macOS ZIP and `SHA256SUMS`. Compare the ZIP's hash with its entry in the manifest before extracting it.
+Open [GitHub Releases](https://github.com/ryanhelms/agent-commander/releases). Choose an Agent Commander pilot release and download the universal macOS ZIP and `SHA256SUMS`. Compare the ZIP's hash with its entry in the manifest before extracting it.
 
 ```sh
 shasum -a 256 Agent-Commander-Multiplayer-Pilot-macOS-universal.zip
@@ -44,12 +44,25 @@ Two commands rebuild the app and reopen it, like hot reload for a web app.
 
 You can also restart the running app yourself: **Agent Commander → Restart Agent Commander**, just above Quit.
 
-To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Local app builds omit Git revision and checkout path metadata from the bundled network helper. When the helper’s build inputs and signing configuration stay the same, an app-only change preserves its code hash and the relay credential’s existing Keychain approval.
 
-With `gh` authenticated to the private repository, fetch the exact Go modules required by `go.mod` and build a release configuration without sibling checkouts.
+The login Keychain can use the code hash to identify ad hoc and self-signed helpers. For approval to carry across changes to the helper itself, use an Apple Development or Developer ID Application signing identity with a Team ID. [Apple’s Keychain signing identity rules](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/clientid.cpp#L1454-L1481)
+
+Put the following settings in `agent-commander-signing.mk` inside the directory printed by `git rev-parse --path-format=absolute --git-common-dir`. The file stays in Git's local metadata and applies to this checkout and its linked worktrees.
+
+```makefile
+NETWORK_CODE_SIGN_IDENTITY := identity-fingerprint
+NETWORK_CODE_SIGN_KEYCHAIN := /absolute/path/to/signing.keychain-db
+```
+
+Use the identity's fingerprint from `security find-identity -p codesigning`. If the identity is in a separate Keychain, pass its path to that command and set `NETWORK_CODE_SIGN_KEYCHAIN` to the same path. Command-line Make settings override the file. The helper uses `CODE_SIGN_IDENTITY` if you leave `NETWORK_CODE_SIGN_IDENTITY` unset.
+
+Run `make reload`. macOS may ask for permission the first time `codesign` uses the signing key. The helper may also need to reauthorize the existing relay credential when its identity changes. Choose **Always Allow** at the relay credential prompt to save that approval. With an Apple-issued signing identity, keep the same Team ID, certificate type, and helper identifier on subsequent builds.
+
+Fetch the public Go build inputs pinned by `go.mod` to build a release configuration without sibling checkouts.
 
 ```sh
-python3 packaging/sdk-inputs.py fetch nscaledev/agent-commander
+python3 packaging/sdk-inputs.py fetch
 make app CONFIG=release
 make run
 ```

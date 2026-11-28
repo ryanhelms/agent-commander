@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import AgentCommander
@@ -30,6 +31,7 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         (.delegate, "Starting a worker", "Delegated to a new worker", "Couldn't start a worker", "delegated to a new worker"),
         (.ask, "Asking", "Asked a question", "Couldn't send the question", "asked a question"),
         (.wait, "Waiting for a reply", "Waited for a reply", "Couldn't wait for the reply", "waited for a reply"),
+        (.withdrawQuestion, "Withdrawing the question", "Withdrew a question", "Couldn't withdraw the question", "withdrew a question"),
         (.reply, "Replying", "Replied to a question", "Couldn't send the reply", "replied to a question"),
         (.reconcileReply, "Checking whether the reply arrived", "Checked a reply's delivery", "Couldn't check the reply", "checked a reply"),
         (.result, "Reporting", "Reported a result", "Couldn't report the result", "reported a result"),
@@ -463,6 +465,32 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(made[0].summary.text == "Ran a command, asked a question and got an answer")
     }
 
+    @Test func aWithdrawnQuestionSaysSoOnlyOnItsOwnRecord() {
+        let id = "q-83202cb42d449a0f52b7981d56ac896a"
+        let record = #"{"id":"\#(id)","worker_id":"w","question":"Which database?","status":"cancelled","answer":""}"#
+        let request = #"{"request_id":"\#(id)"}"#
+        // Alone: the question from the record; without one, the short request ID.
+        #expect(ActivityWords.commander(call("commander_withdraw_question", detail: request, result: record)).done.plain
+                == "Withdrew the question: “Which database?”")
+        let bare = ActivityWords.commander(call("commander_withdraw_question", detail: request,
+                                                result: #"{"id":"\#(id)","status":"cancelled"}"#))
+        #expect(bare.done.plain == "Withdrew a question (request \(Identifier.short(id)))" && bare.tag == nil)
+        // A result that is not this request's cancelled record says only what was asked.
+        let unproven = ActivityWords.commander(call("commander_withdraw_question", detail: request, result: "{}"))
+        #expect(unproven.done.plain == "Asked to withdraw a question" && unproven.tag?.word == "uncertain")
+
+        // With its ask: one line, the record's state as the tag, and its own summary phrase.
+        var wire = Wire()
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.call("commander_ask", detail: #"{"question":"Which database?"}"#,
+                  result: record.replacingOccurrences(of: "cancelled", with: "pending"))
+        wire.call("commander_withdraw_question", detail: request, result: record)
+        let made = groups(prettyItems(wire))
+        #expect(made.count == 1 && made[0].lines.count == 2)
+        #expect(made[0].lines[1].sentence.plain == "Asked: “Which database?”" && made[0].lines[1].tag?.word == "cancelled")
+        #expect(made[0].summary.text == "Ran a command, asked a question and withdrew it")
+    }
+
     @Test func quietRowsFoldAndAttentionEventsDoNot() throws {
         var wire = Wire()
         wire.call("Bash", detail: "ls", result: "a")
@@ -518,6 +546,83 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         #expect(fallback.items == nil && fallback.fallback == "Updated the plan")
     }
 
+    // ACP plan events, as the service projects them: the message ID is `<worker>:<sequence>` and
+    // the plan record carries the sequence of the same console event.
+
+    private static func message(_ sequence: Int, role: String, _ text: String, acp: String? = nil) throws -> AGUIMessage {
+        let metadata = acp.map { #","metadata":{"acp":\#($0)}"# } ?? ""
+        return try JSONDecoder().decode(AGUIMessage.self, from: Data(
+            #"{"id":"w:\#(sequence)","role":"\#(role)","content":"\#(text)"\#(metadata)}"#.utf8))
+    }
+
+    private static func planEvent(_ sequence: Int, count: Int) throws -> AGUIMessage {
+        try message(sequence, role: "system", "[ACP plan] \(count) items",
+                    acp: #"{"source":"live","cursor":"c-\#(sequence)","kind":"plan","itemCount":\#(count)}"#)
+    }
+
+    private static func planRecord(_ sequence: Int, _ items: [(String, String)]) -> ToolDetailSummary {
+        ToolDetailSummary(key: "event-\(sequence)", kind: "plan", sequence: sequence,
+                          plan: items.map { PlanItem(content: $0.0, status: $0.1) })
+    }
+
+    private static func plans(_ messages: [AGUIMessage], _ records: [ToolDetailSummary], worker: String? = "w") -> [ActivityPlan] {
+        var wire = Wire()
+        wire.messages = messages
+        let facts = ActivityFacts(summaries: Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) }), worker: worker)
+        return prettyItems(wire, facts: facts).compactMap { if case .plan(let plan) = $0 { plan } else { nil } }
+    }
+
+    @Test func anACPPlanReadsOnlyTheRecordOfItsOwnEvent() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1), try Self.planEvent(5, count: 2)]
+        // As many records as events, kept from other events: none is shown.
+        let unrelated = [Self.planRecord(3, [("Other", "pending")]), Self.planRecord(9, [("Unrelated", "completed")])]
+        let wrong = Self.plans(events, unrelated)
+        #expect(wrong.count == 1 && wrong[0].items == nil && wrong[0].fallback == "Updated the plan: 2 items")
+        // The exact records, listed out of order, each go to their own event; the card shows the latest.
+        let exact = Self.plans(events, [Self.planRecord(5, [("Map", "completed"), ("Run", "pending")]), Self.planRecord(2, [("Map", "in_progress")])])
+        #expect(exact.count == 1 && exact[0].id == "w:2#plan" && exact[0].entries.map(\.id) == ["w:2", "w:5"])
+        #expect(exact[0].items?.map(\.content) == ["Map", "Run"] && exact[0].items?.map(\.state) == [.done, .pending])
+        // Another console's sequence numbers match nothing, and neither does an unknown console.
+        #expect(Self.plans(events, [Self.planRecord(2, [("Map", "pending")]), Self.planRecord(5, [("Map", "pending")])], worker: "other")[0].items == nil)
+        #expect(Self.plans(events, [Self.planRecord(5, [("Map", "pending")])], worker: nil)[0].items == nil)
+        // Two records claiming one event name neither.
+        let twin = ToolDetailSummary(key: "event-5b", kind: "plan", sequence: 5, plan: [PlanItem(content: "Twin", status: "pending")])
+        #expect(Self.plans(events, [Self.planRecord(5, [("Map", "pending")]), twin])[0].items == nil)
+        // A record of another kind at the event's sequence is not a plan.
+        #expect(Self.plans(events, [ToolDetailSummary(key: "t", kind: "tool", sequence: 5, plan: [PlanItem(content: "x", status: "pending")])])[0].items == nil)
+    }
+
+    @Test func anACPPlanWithARetainedOrMissingRecordShowsOnlyWhatItsLatestEventHolds() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1),
+                      try Self.message(3, role: "assistant", "Working."), try Self.planEvent(4, count: 3)]
+        // The first record was dropped, the latest kept: the card sits at the first event with the latest items.
+        let kept = Self.plans(events, [Self.planRecord(4, [("Map", "completed"), ("Run", "in_progress"), ("Report", "pending")])])
+        #expect(kept.count == 1 && kept[0].id == "w:2#plan" && kept[0].items?.count == 3)
+        // The latest record is missing: the count line, never the earlier list.
+        let missing = Self.plans(events, [Self.planRecord(2, [("Map", "in_progress")])])
+        #expect(missing.count == 1 && missing[0].items == nil && missing[0].fallback == "Updated the plan: 3 items")
+        // No records at all, and one item.
+        #expect(Self.plans(Array(events.prefix(2)), [])[0].fallback == "Updated the plan: 1 item")
+        // A plan known to be empty is a card with no items, not the fallback.
+        let empty = Self.plans([try Self.planEvent(2, count: 0)], [Self.planRecord(2, [])])
+        #expect(empty[0].items == [])
+        #expect(Self.plans([try Self.planEvent(2, count: 0)], [])[0].items == nil)
+    }
+
+    @Test func aPlanEventInALaterTurnIsItsOwnCard() throws {
+        let events = [try Self.message(1, role: "user", "Plan it"), try Self.planEvent(2, count: 1),
+                      try Self.message(3, role: "user", "Now the next part"), try Self.planEvent(4, count: 2),
+                      try Self.planEvent(6, count: 2)]
+        let records = [Self.planRecord(2, [("First", "completed")]), Self.planRecord(4, [("Second", "in_progress"), ("Third", "pending")])]
+        let plans = Self.plans(events, records)
+        #expect(plans.map(\.id) == ["w:2#plan", "w:4#plan"])
+        #expect(plans[0].entries.map(\.id) == ["w:2"] && plans[0].items?.map(\.content) == ["First"])
+        // The second turn's latest event has no record: its own count line; the first turn is untouched.
+        #expect(plans[1].entries.map(\.id) == ["w:4", "w:6"] && plans[1].items == nil && plans[1].fallback == "Updated the plan: 2 items")
+        let both = Self.plans(events, records + [Self.planRecord(6, [("Second", "completed"), ("Third", "in_progress")])])
+        #expect(both[1].items?.map(\.state) == [.done, .inProgress] && both[0].items?.map(\.content) == ["First"])
+    }
+
     @Test func aBoundedSurfaceShowsTheFirstAndLatestThreeLinesOfAnOpenGroup() {
         var wire = Wire()
         for index in 0..<7 { wire.call("Read", detail: "/a/f\(index).txt", result: "x") }
@@ -525,6 +630,184 @@ private let denial = "Permission to use mcp__commander__commander_network_online
         let shown = group.shownLines(limit: 4)
         #expect(shown.hidden == 3 && shown.lines.map(\.sentence.plain) == ["Read f0.txt", "Read f4.txt", "Read f5.txt", "Read f6.txt"])
         #expect(group.shownLines(limit: nil).hidden == 0)
+    }
+
+    private static func step(_ id: String, kind: ActivityStep.Kind = .call, text: String = "",
+                             failure: ActivityFailure.Outcome? = nil) -> ActivityStep {
+        ActivityStep(id: id, kind: kind, entries: [], state: failure == nil ? .done : .failed,
+                     sentence: ActivitySentence(id),
+                     failure: failure.map { ActivityFailure(outcome: $0, reason: "No.", exact: "No.") }, text: text)
+    }
+
+    @Test func anOptionClickTakesTheGroupEveryLineThatOpensAndEveryFailure() {
+        let group = ActivityGroup(
+            id: "ran#group",
+            lines: [Self.step("ran"), Self.step("mode", kind: .quiet, text: "gearshape"),
+                    Self.step("silent", kind: .thought), Self.step("thought", kind: .thought, text: "Check the lock."),
+                    Self.step("read")],
+            failures: [Self.step("failed", failure: .failed), Self.step("blocked", failure: .blocked)])
+        // The failures are drawn outside the list and are still taken. A line that does not
+        // open (a session row, a thought with no text) is not.
+        #expect(group.everyStepIDs == ["ran#group", "ran", "thought", "read", "failed", "blocked"])
+    }
+
+    @Test func anOptionClickTakesTheLinesABoundedSurfaceHolds() {
+        let group = ActivityGroup(id: "s0#group", lines: (0..<7).map { Self.step("s\($0)") },
+                                  failures: [Self.step("failed", failure: .failed)])
+        // The PiP still shows four lines; the three behind "Show all" are open when revealed.
+        let shown = group.shownLines(limit: 4)
+        #expect(shown.hidden == 3 && shown.lines.map(\.id) == ["s0", "s4", "s5", "s6"])
+        #expect(group.everyStepIDs == ["s0#group", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "failed"])
+    }
+}
+
+/// A pointer press of a group's summary (DESIGN.md, "Keyboard"): only a primary click's own
+/// mouse-up that carries Option opens every step.
+@Suite struct PrettySummaryPressTests {
+    private func press(_ type: NSEvent.EventType?, _ modifiers: NSEvent.ModifierFlags = []) -> PrettySummaryPress {
+        PrettySummaryPress.of(type: type, modifiers: modifiers)
+    }
+
+    @Test func anOptionClickOpensEveryStep() {
+        #expect(press(.leftMouseUp, .option) == .everyStep)
+        #expect(press(.leftMouseUp, [.option, .shift]) == .everyStep)
+    }
+
+    @Test func anOrdinaryClickTogglesTheGroupAlone() {
+        #expect(press(.leftMouseUp) == .toggle)
+        #expect(press(.leftMouseUp, .command) == .toggle)
+        // The button acts on the mouse-up of a primary click, never on another pointer event.
+        #expect(press(.leftMouseDown, .option) == .toggle)
+        #expect(press(.rightMouseUp, .option) == .toggle)
+    }
+
+    @Test func anEventThatIsNotAClickTogglesTheGroupAlone() {
+        #expect(press(.keyDown) == .toggle)
+        #expect(press(.keyDown, .option) == .toggle)
+        #expect(press(.flagsChanged, .option) == .toggle)
+        #expect(press(nil) == .toggle)
+    }
+}
+
+/// The PiP's part of a Pretty conversation (section B, "PiP"): chosen from the grouped items of
+/// the current turn, never from a count of raw entries.
+@Suite struct PrettyRecentItemsTests {
+    private static func usage(_ id: String) throws -> AGUIMessage {
+        let row = #"{"id":"\#(id)","role":"system","content":"[ACP usage_update]","metadata":{"acp":{"kind":"usage_update","source":"live","usage":{"used":45200,"size":200000}}}}"#
+        return try JSONDecoder().decode(AGUIMessage.self, from: Data(row.utf8))
+    }
+
+    /// Two failed reads, eight reads, two usage rows and an open call: the reported conversation.
+    private static func failuresThenReads() throws -> Wire {
+        var wire = Wire()
+        wire.user("Read the files")
+        wire.call("Read", detail: "/a/missing-first.txt", error: "File does not exist.")
+        wire.call("Read", detail: "/a/missing-second.txt", error: "File does not exist.")
+        for index in 0..<8 { wire.call("Read", detail: "/a/f\(index).txt", result: "x") }
+        wire.messages.append(try usage("u1"))
+        wire.messages.append(try usage("u2"))
+        wire.call("Bash", detail: "sleep 60")
+        return wire
+    }
+
+    @Test func failuresOutsideTheFourEntryTailStayWithTheLatestGroup() throws {
+        let wire = try Self.failuresThenReads()
+        // The raw tail the PiP used to group: two usage rows, one read and the open call.
+        let tail = TranscriptEntry.recent(wire.entries)
+        #expect(tail.count == 4)
+        let tailGroups = groups(ActivityConversation.items(
+            ConversationActivity.items(TranscriptEntry.displayed(tail, mode: .pretty))))
+        #expect(tailGroups.allSatisfy { $0.failures.isEmpty })
+
+        let full = prettyItems(wire)
+        let shown = ActivityConversation.recent(full)
+        #expect(shown.count == 3)
+        // The earlier group's failures, by name, without finished calls and under the same ID.
+        guard case .group(let failed) = shown[0], case .group(let original) = full[1] else {
+            Issue.record("the failures were dropped"); return
+        }
+        #expect(failed.id == original.id && failed.lines.isEmpty)
+        #expect(failed.failures == original.failures && failed.failures.count == 2)
+        #expect(failed.failures[0].sentence.plain.contains("missing-first.txt"))
+        #expect(failed.failures[1].sentence.plain.contains("missing-second.txt"))
+        // The latest group exactly as the focused worker draws it, then the live line.
+        #expect(shown[1] == full[2])
+        guard case .group(let latest) = shown[1], case .live(let live) = shown[2] else {
+            Issue.record("the latest group or the live line was dropped"); return
+        }
+        #expect(latest.lines.filter { $0.kind == .call }.count == 8)
+        #expect(latest.summary.text == "Read 8 files")
+        #expect(live.state == .running)
+        // The prompt is not part of the PiP's contract once the turn has a group.
+        #expect(!shown.contains { if case .entry(let entry) = $0 { entry.isFromUser } else { false } })
+    }
+
+    @Test func theLatestGroupOpensToItsFirstAndLatestThreeLines() throws {
+        let full = prettyItems(try Self.failuresThenReads())
+        guard case .group(let latest) = ActivityConversation.recent(full)[1] else { Issue.record("no group"); return }
+        // Ten lines: eight reads and two session rows. The PiP shows four, then "Show all 10".
+        #expect(latest.lines.count == 10)
+        let bounded = latest.shownLines(limit: 4)
+        #expect(bounded.hidden == 6 && bounded.lines.count == 4)
+        #expect(bounded.lines[0].sentence.plain == "Read f0.txt")
+        #expect(bounded.lines.dropFirst().map(\.id) == latest.lines.suffix(3).map(\.id))
+        // "Show all" and every other surface keep every line.
+        #expect(latest.shownLines(limit: nil).lines == latest.lines)
+    }
+
+    @Test func anEarlierTurnNeverCrowdsTheLatest() {
+        var wire = Wire()
+        wire.user("First")
+        wire.call("Read", detail: "/a/gone.txt", error: "File does not exist.")
+        wire.call("Read", detail: "/a/old.txt", result: "x")
+        wire.say("Done.")
+        wire.user("Second")
+        wire.call("Read", detail: "/a/new.txt", result: "x")
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.say("Checking.")
+        let full = prettyItems(wire)
+        let shown = ActivityConversation.recent(full)
+        // The second turn's group and the reply after it; the first turn's failure is closed.
+        #expect(shown == Array(full.suffix(2)))
+        #expect(groups(shown).count == 1 && groups(shown)[0].failures.isEmpty)
+        #expect(groups(shown)[0].summary.text == "Read a file, ran a command")
+    }
+
+    @Test func theRequestsOwnItemsAreKeptWhole() {
+        var wire = Wire()
+        wire.user("Go")
+        wire.call("Bash", detail: "ls", result: "a")
+        wire.call("Bash", detail: "pwd", result: "b")
+        wire.say("Now the files.")
+        wire.call("Read", detail: "/a/one.txt", result: "x")
+        wire.call("Read", detail: "/a/two.txt", result: "x")
+        let full = prettyItems(wire)
+        #expect(ActivityConversation.recent(full) == [full[3]])
+        let anchored = groups(full)[0].lines[0].entries[0].id
+        #expect(ActivityConversation.recent(full, keeping: [anchored]) == [full[1], full[3]])
+    }
+
+    @Test func aTurnWithNoGroupShowsItsLatestItems() {
+        var wire = Wire()
+        wire.user("Old")
+        wire.say("Old answer.")
+        wire.user("Go")
+        wire.say("On it.")
+        let full = prettyItems(wire)
+        #expect(ActivityConversation.recent(full) == Array(full.suffix(2)))
+        #expect(ActivityConversation.recent([]).isEmpty)
+    }
+
+    @Test func theCurrentTurnStartsAtTheLatestPrompt() {
+        var wire = Wire()
+        wire.user("First")
+        wire.say("Done.")
+        wire.user("Second")
+        wire.call("Read", detail: "/a/new.txt", result: "x")
+        let entries = wire.entries
+        #expect(TranscriptEntry.currentTurn(entries) == Array(entries.suffix(2)))
+        #expect(TranscriptEntry.currentTurn(Array(entries.dropFirst(3))) == Array(entries.dropFirst(3)))
+        #expect(TranscriptEntry.currentTurn([]).isEmpty)
     }
 }
 

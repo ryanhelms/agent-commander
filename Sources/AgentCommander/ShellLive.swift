@@ -42,6 +42,8 @@ struct ShellNetwork: Equatable {
     var presenceChoice: MultiplayerPresenceChoice?
     /// The person is an admin on at least one server, so Teams lists Admin.
     var isAdmin = false
+    /// Membership requests waiting on the person, across the servers they administer.
+    var membershipRequests = 0
     /// Why the last network action didn't go through.
     var failure: String?
     /// The network helper is missing or the server list can't be read.
@@ -74,6 +76,7 @@ struct ShellNetwork: Equatable {
         }
         workspaces = model.share.teams.allWorkspaces
         isAdmin = model.servers.contains { model.isAdmin($0.id) }
+        membershipRequests = model.requests.waitingCount
         for pending in approvals {
             resourceNames["\(pending.server)/\(pending.item.resource)"] = model.share.resourceName(pending.item.resource, on: pending.server)
         }
@@ -252,7 +255,7 @@ enum LiveShell {
         ] : []) + (showsHosts ? [CommanderPlace(id: hosts, title: "Hosts", mark: .symbol("desktopcomputer"),
                                                 figure: serviceHost)] : []) + projects + networkPlaces + [
             row(people, "People", "person.2", count: network.friendsOnline, noun: "friends online")
-        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin)
+        ] + (teams.isEmpty ? [row(workspaces, "Workspaces", "rectangle.3.group")] : teams) + teamTools(isAdmin: network.isAdmin, requests: network.membershipRequests)
             + HarnessPlace.places(harnesses) + [
             CommanderPlace(id: settings, title: "Settings", mark: .symbol("gearshape"))
         ]
@@ -309,10 +312,13 @@ enum LiveShell {
     /// A place of the Teams mode: a workspace, the row shown while there is none, or a team tool.
     static func isTeamsPlace(_ id: String) -> Bool { TeamsPlace.hasPage(id) }
 
-    /// The team tools as places. Admin is listed only for an admin.
-    static func teamTools(isAdmin: Bool) -> [CommanderPlace] {
+    /// The team tools as places. Admin is listed only for an admin, and counts the membership
+    /// requests waiting on them.
+    static func teamTools(isAdmin: Bool, requests: Int = 0) -> [CommanderPlace] {
         TeamsPlace.tools.filter { isAdmin || $0 != TeamsPlace.admin }.map {
-            CommanderPlace(id: $0, title: TeamsPlace.title($0), mark: .symbol(TeamsPlace.symbol($0)), isDetail: true)
+            let waiting = $0 == TeamsPlace.admin ? requests : 0
+            return CommanderPlace(id: $0, title: TeamsPlace.title($0), mark: .symbol(TeamsPlace.symbol($0)), count: waiting,
+                                  isHot: waiting > 0, isDetail: true, countNoun: waiting == 1 ? "request waiting" : "requests waiting")
         }
     }
 

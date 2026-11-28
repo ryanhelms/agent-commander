@@ -84,9 +84,28 @@ The live checklist requires a Fabric GKE origin, a Cloudflare DNS-only record po
 5. For a shared repository, start with `issue.read` and `git.head`. Submit a `git.commit` with the expected head, changed file contents and commit message. Use the returned commit SHA for `git.push`. The owner adapter pushes to `commander-share/<resource-id>`. Use `issue.comment` and `issue.close` when those separate permissions are granted. Requests for one or more recipients each need a stable submission ID. Poll `commander_network_receipt` for each child's status before advancing dependent work.
 6. Revoke one grant and use a fresh submission ID to verify that the action is refused. A `denied` receipt means the accepted action lost its allowance before claim. The original submission stays denied even if the owner renews access. Close the tray session to go offline. An abrupt network loss ages out presence within 65 seconds.
 
+Read a coordinator's current inbox with `commander_network_inbox({})`. To wait for subsequent notes, pass the last processed ID as `afterMessageId` and `waitSeconds` up to 10. An empty result means the wait timed out. If a cursor falls outside the retained window, the response returns the available messages with `truncated: true`. Deduplicate replayed messages by ID. The wait holds the active coordinator's tool call open. An authorized `agent.message` goes straight to that inbox without asking the operator to approve the note. The coordinator still owns delegation and any approvals for work it initiates. A stored note does not start a provider or confirm that a person read it. If a fresh run replaces the coordinator, register its new resource and grant the reply action again.
+
+### Check the running app build
+
+Upgrade the owner’s native app and bundled network helper. On the active local coordinator, grant **Check the running app build** separately from the note. For a coordinator enrolled before the upgrade, the owner’s grant sheet offers the action and the explicit grant refreshes that coordinator’s relay registration when needed. A prior note grant does not permit build queries. The capability uses the existing device envelope and works with older relays. Older apps provide no launch evidence.
+
+Discover the granted `app.build` capability and submit a fresh operation with a random 32-character lower-case hex `nonce` and the current UTC RFC 3339 `issuedAt`. Read the signed outcome through `commander_network_receipt`. A result is current only with `buildEvidence: "verified"`. The receipt binds the peer and resource, and its evidence binds the exact nonce. A request or observation older than its 90-second window does not verify the current build. If the grant asks for approval, the owner has to answer within that window.
+
+Compare `revision`, `tree` and `launchId` across fresh observations. The same launch ID identifies the same app instance, even if the service reconnected. A different launch ID and its kernel start time distinguish a relaunch. A dirty build may carry the expected Git revision. Treat its stamp as the reported source revision while preserving the reported dirty state. The request runs no command and never relaunches the app.
+
+
 The agent resource shares the ability to request a bounded number of operations. The provider credentials stay on the owner's Mac, and one use is one operation. A model call's actual token count can vary. Each Mac's OS user is the local trust boundary for the owner socket and Keychain. Peers see the resource names, granted actions and replies the owner shares. Relays see routing metadata and encrypted envelopes. A first-time device key is trusted through the authenticated directory, and its signing and encryption keys are pinned locally for subsequent deliveries.
 
 The pilot supports explicit one-to-many target lists. Named persistent groups, pooled token budgets measured in provider tokens, and multi-host database or ingress failover belong to later increments in the [relay architecture](MULTIPLAYER-RELAY.md).
+
+## Hand off to an enrolled workspace
+
+Upgrade the relay and both Macs. On the recipient's Mac, share an Agent resource for the existing workspace and choose a local coordinator run as its anchor. The anchor supplies the owner-selected checkout and provider. The workspace inbox remains available after that run ends. Leave **Auto-start** off to retain queued work until an eligible coordinator is available. Enable it to let the device start a managed workspace coordinator when none is running.
+
+Give the paired workspace member the handoff, status, and result grants. Keep handoff approval set to **Ask** if the owner should approve each operation. The device persists the handoff while that approval is pending. Grant automatic admission for bounded work that may wake an idle coordinator without a separate owner decision.
+
+Send a handoff from the existing shared resource. **Delivered** means the handoff was persisted on the recipient device. **Accepted** identifies a claimed coordinator turn. **Verified** requires a completed turn and matching evidence. For the first evidence type, provide the full expected Git commit in the handoff and refresh status or result to retrieve the matching observed revision. A completed turn with missing or different checkout evidence remains unverified.
 
 ## Read a failed repository receipt
 

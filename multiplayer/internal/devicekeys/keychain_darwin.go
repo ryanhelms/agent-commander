@@ -5,6 +5,7 @@ package devicekeys
 /*
 #cgo LDFLAGS: -framework Security -framework CoreFoundation
 #include <Security/Security.h>
+#include <Security/Authorization.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,18 @@ import (
 
 type keychain string
 
+func (keychain) KeychainBacked() bool { return true }
+
+func keychainError(operation string, status C.OSStatus) error {
+	switch status {
+	case C.errSecUserCanceled, C.errSecAuthFailed, C.errSecInteractionNotAllowed, C.errSecInteractionRequired, C.errSecNotAvailable,
+		C.errSecInDarkWake, C.errAuthorizationInternal:
+		return fmt.Errorf("%s Keychain item (OSStatus %d): %w", operation, status, ErrKeychainAccess)
+	default:
+		return fmt.Errorf("%s Keychain item (OSStatus %d)", operation, status)
+	}
+}
+
 func Keychain(account string) (Store, error) {
 	if account == "" || len(account) > 512 || strings.ContainsRune(account, 0) || !utf8.ValidString(account) {
 		return nil, errors.New("invalid Keychain account")
@@ -73,7 +86,7 @@ func (s keychain) Load() ([]byte, error) {
 		return nil, os.ErrNotExist
 	}
 	if status != 0 {
-		return nil, fmt.Errorf("read Keychain item (OSStatus %d)", status)
+		return nil, keychainError("read", status)
 	}
 	defer C.free(ptr)
 	return C.GoBytes(ptr, C.int(size)), nil
@@ -86,7 +99,7 @@ func (s keychain) Save(data []byte) error {
 	defer C.free(unsafe.Pointer(n))
 	status := C.save_key(n, unsafe.Pointer(&data[0]), C.long(len(data)))
 	if status != 0 {
-		return fmt.Errorf("write Keychain item (OSStatus %d)", status)
+		return keychainError("write", status)
 	}
 	return nil
 }

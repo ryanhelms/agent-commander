@@ -110,20 +110,36 @@ func (s *Service) inbox(ctx context.Context, p Principal, r *http.Request) (any,
 	}
 	wake, finish := s.watch(p.Device)
 	defer finish()
+	session := q.Get("session")
+	const currentLease = ` WHERE device=$1 AND owner_id=$2 AND generation=$3 AND session=$4 AND expires_at>clock_timestamp()`
 	fetch := func() ([]Child, error) {
 		var out []Child
 		err := s.write(ctx, func(tx pgx.Tx) error {
-			// Acknowledging the issued generation by polling also announces readiness.
-			tag, err := tx.Exec(ctx, `UPDATE mp_leases SET ready=true WHERE device=$1 AND owner_id=$2 AND generation=$3 AND session=$4 AND expires_at>clock_timestamp()`, p.Device, p.User, generation, q.Get("session"))
+			// Keep the lease locked through the child read so takeover cannot race it.
+			var ready bool
+			err := tx.QueryRow(ctx, `SELECT ready FROM mp_leases`+currentLease+` FOR UPDATE`, p.Device, p.User, generation, session).Scan(&ready)
+			if err == pgx.ErrNoRows {
+				return conflict("lease is no longer current")
+			}
 			if err != nil {
 				return err
 			}
-			if tag.RowsAffected() == 0 {
-				return conflict("lease is no longer current")
+			// The first poll can acknowledge readiness if the locked lease still has time left.
+			if !ready {
+				tag, err := tx.Exec(ctx, `UPDATE mp_leases SET ready=true`+currentLease, p.Device, p.User, generation, session)
+				if err != nil {
+					return err
+				}
+				if tag.RowsAffected() == 0 {
+					return conflict("lease is no longer current")
+				}
 			}
 			rows, err := tx.Query(ctx, `SELECT `+childFields+` FROM mp_children c
-			WHERE device=$1 AND owner_id=$2 AND status='pending' AND expires_at>statement_timestamp()
-			AND `+activeChildGrant+` ORDER BY expires_at,id LIMIT 32`, p.Device, p.User)
+			WHERE device=$1 AND owner_id=$2 AND expires_at>statement_timestamp()
+			AND ((status='pending' AND `+activeChildGrant+`) OR
+				(status='uncertain' AND action='agent.handoff' AND EXISTS (
+				    SELECT FROM mp_resources r WHERE r.id=c.resource AND `+workspaceGrantActive+`)))
+			ORDER BY expires_at,id LIMIT 32`, p.Device, p.User)
 			if err != nil {
 				return err
 			}
@@ -139,7 +155,11 @@ func (s *Service) inbox(ctx context.Context, p Principal, r *http.Request) (any,
 	if len(out) == 0 && wait > 0 {
 		// Ingress may send this request to a different edge than the session’s
 		// wake subscriber. Poll authoritative storage on a short bounded interval.
-		timer := time.NewTimer(min(time.Duration(wait)*time.Second, 2*time.Second))
+		fallback := 2 * time.Second
+		if q.Get("workspace") == "1" {
+			fallback = time.Second
+		}
+		timer := time.NewTimer(min(time.Duration(wait)*time.Second, fallback))
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():

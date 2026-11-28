@@ -243,7 +243,7 @@ func (t Tools) Browse(ctx context.Context, window time.Duration) ([]Instance, er
 	return list, nil
 }
 
-var browseLine = regexp.MustCompile(`^\S+\s+(Add|Rmv)\s+\d+\s+\d+\s+\S+\s+\S+\s+(.+)$`)
+var browseLine = regexp.MustCompile(`^\s*\S+\s+(Add|Rmv)\s+\d+\s+\d+\s+\S+\s+\S+\s+(.+)$`)
 
 // parseBrowse reads `dns-sd -B` output until it ends and returns the instance
 // names still present. One service shows up once per interface.

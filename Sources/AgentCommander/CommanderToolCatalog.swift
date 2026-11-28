@@ -17,6 +17,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
     case delegate = "commander_delegate"
     case ask = "commander_ask"
     case wait = "commander_wait"
+    case withdrawQuestion = "commander_withdraw_question"
     case reply = "commander_reply"
     case reconcileReply = "commander_reconcile_reply"
     case result = "commander_result"
@@ -47,7 +48,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
 
     /// How calls of this tool may be grouped. Only an exact shared ID ever links two calls.
     enum Family: Sendable {
-        /// Correlated by the exact request ID: ask, wait, reply, reconcile.
+        /// Correlated by the exact request ID: ask, wait, withdraw, reply, reconcile.
         case request
         /// Correlated by the exact operation ID: network submit and receipt.
         case operation
@@ -59,13 +60,16 @@ enum CommanderTool: String, CaseIterable, Sendable {
 
     /// The tool a provider's name stands for. Providers prefix MCP tools with their server:
     /// `mcp__commander__commander_ask`, `mcp.commander.commander_ask`, `commander/commander_ask`.
-    /// The name must end with a registered tool name, after a separator, and anything before it
-    /// must name the Commander server. Every other name is nil.
+    /// Claude over ACP sends the call's title, `commander: commander_ask`: the server, a colon
+    /// and one space. The name must end with a registered tool name, after a separator, and
+    /// anything before it must name the Commander server. Every other name is nil.
     init?(name: String) {
         if let exact = CommanderTool(rawValue: name) { self = exact; return }
         let separators = CharacterSet(charactersIn: ".:/_")
         for tool in Self.allCases where name.hasSuffix(tool.rawValue) {
-            let prefix = name.dropLast(tool.rawValue.count)
+            var prefix = name.dropLast(tool.rawValue.count)
+            // The ACP title form: exactly one space, and only after a colon.
+            if prefix.hasSuffix(": ") { prefix = prefix.dropLast() }
             guard let separator = prefix.unicodeScalars.last, separators.contains(separator) else { continue }
             // The last component before the tool is the server's name, exactly.
             let server = prefix.lowercased().components(separatedBy: separators).last { !$0.isEmpty }
@@ -82,6 +86,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
         case .delegate: "Delegate worker"
         case .ask: "Ask"
         case .wait: "Wait for reply"
+        case .withdrawQuestion: "Withdraw question"
         case .reply: "Reply"
         case .reconcileReply: "Reconcile reply"
         case .result: "Report result"
@@ -110,6 +115,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
         switch self {
         case .ask: "Ask"
         case .wait: "Wait"
+        case .withdrawQuestion: "Withdraw"
         case .reply: "Reply"
         case .reconcileReply: "Reconcile"
         case .result: "Result"
@@ -125,6 +131,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
         case .delegate: "person.badge.plus"
         case .ask: "questionmark.bubble"
         case .wait: "hourglass"
+        case .withdrawQuestion: "arrow.uturn.backward.circle"
         case .reply: "arrowshape.turn.up.left"
         case .reconcileReply: "arrow.triangle.2.circlepath"
         case .result: "checkmark.seal"
@@ -150,7 +157,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
 
     var domain: Domain {
         switch self {
-        case .ask, .wait, .reply, .reconcileReply: .question
+        case .ask, .wait, .withdrawQuestion, .reply, .reconcileReply: .question
         case .delegate, .send, .interrupt, .stopWorker: .workers
         case .result, .commit, .integrate: .code
         case .status: .status
@@ -162,7 +169,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
 
     var family: Family {
         switch self {
-        case .ask, .wait, .reply, .reconcileReply: .request
+        case .ask, .wait, .withdrawQuestion, .reply, .reconcileReply: .request
         case .networkSubmit, .networkReceipt: .operation
         case .result: .report
         default: .standalone
@@ -170,7 +177,7 @@ enum CommanderTool: String, CaseIterable, Sendable {
     }
 
     // What Pretty says while a call is open, when it is done and when it fails is in
-    // `ActivityWords.commander` (ActivitySentence.swift), for all 23 tools.
+    // `ActivityWords.commander` (ActivitySentence.swift), for all 24 tools.
 }
 
 // MARK: - Payload
