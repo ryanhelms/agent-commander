@@ -192,6 +192,10 @@ final class MultiplayerSessionModel {
     @ObservationIgnored private var lookupTask: Task<Void, Never>?
     @ObservationIgnored private var refreshToken = 0
     @ObservationIgnored private var lookupToken = 0
+    /// Called each time a status read succeeds, after `status` holds the new reply and the last
+    /// read's failure is cleared. The tray's model sets it: rows it reads on their own, such as who
+    /// holds control, are named from this session's friends, and either read can answer first.
+    @ObservationIgnored var statusCommitted: (@MainActor () -> Void)?
 
     init(client: MultiplayerClient?,
          setupFailure: MultiplayerFailure? = nil,
@@ -449,6 +453,7 @@ final class MultiplayerSessionModel {
             status = next
             statusFailure = nil
             reconcileRoute()
+            statusCommitted?()
         case .failure(.cancelled):
             break
         case .failure(let failure):

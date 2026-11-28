@@ -588,6 +588,10 @@ final class MultiplayerModel {
         for id in ids where sessions[id] == nil {
             let session = MultiplayerSessionModel(client: client.scoped(to: id), usesFixtureHelper: usesFixtureHelper,
                                                   steadyPoll: steadyPoll, fastPoll: fastPoll, now: clock)
+            // The status read and the hand-overs read are started separately and load on their own.
+            // When this server's status lands, the hand-overs already listed for it take their
+            // holders' names from it. Nothing is read again, and no other server's rows are touched.
+            session.statusCommitted = { [weak self] in self?.share.live.nameHolders(on: id) }
             sessions[id] = session
             if viewers > 0 { session.open() }
         }
