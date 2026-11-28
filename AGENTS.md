@@ -16,9 +16,15 @@ Use Claude Opus for every new Commander-managed Claude session and project Claud
 
 ## Shared rules
 
-Before any design or interface task, read and follow the [shared design rules](.codex/rules/DESIGN.md). This covers new views, restyles, components, tokens, motion, mockups, and UI defect fixes. When adding a shared rules file under `.codex/rules/`, add its task-specific reading instruction and Claude file import here. Claude loads these imports through `CLAUDE.md`.
+Before any design or interface task, read and follow the [shared design rules](.codex/rules/DESIGN.md). This covers new views, restyles, components, tokens, motion, mockups, and UI defect fixes.
+
+Before every code change, read and follow the [shared design pattern rules](.codex/rules/DESIGN-PATTERNS.md).
+
+Before adding, moving, renaming, or deleting a project rule, follow the [shared rule authoring requirements](.codex/rules/SHARED-RULES.md).
 
 @.codex/rules/DESIGN.md
+@.codex/rules/DESIGN-PATTERNS.md
+@.codex/rules/SHARED-RULES.md
 
 ## Using this Mac
 
@@ -44,9 +50,7 @@ When new or changed functionality is ready for the user to test, rebuild and res
 
 ## Backend
 
-Before implementing a flow, consult the [existing GoF and Enterprise Integration Patterns decisions](design/PATTERN-DECISIONS.md). Make a short note for a new boundary or changed approach. Deliver working increments as described in the [MVP plan](MVP-PLAN.md).
-
-Start relay design work at the [design pattern index](.context/design-patterns/index.md) and follow the applicable [project decision](design/PATTERN-DECISIONS.md). Use the index to find a pattern by problem or category. Follow its “Commonly Used With” links when designing related behavior. Treat the examples as design references and the decision record as the source for project adoption.
+Deliver working increments as described in the [MVP plan](MVP-PLAN.md).
 
 Build the new multiplayer relay in Go. Follow the [relay architecture](design/MULTIPLAYER-RELAY.md) for connection ownership, one-to-many delivery and extension contracts.
 
