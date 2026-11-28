@@ -79,6 +79,14 @@ struct PluginGrantRow: View {
     @State private var isConfirming = false
     @Environment(\.theme) private var theme
 
+    /// What revoking changes. A loaded grant stays until the service restarts. A grant that waits
+    /// for a restart (new, or edited since the service started) never reaches agents as written.
+    static func revokeNote(for grant: PluginGrant) -> String {
+        grant.active
+            ? "Agents in \(grant.projectName) keep this tool until the service restarts, then lose it."
+            : "Agents in \(grant.projectName) won’t have this tool after the next restart."
+    }
+
     private var verbs: [MultiplayerRowVerb] {
         if isConfirming {
             return [MultiplayerRowVerb(id: "keep", title: "Keep", hint: "Keep the grant for \(grant.projectName)") { isConfirming = false },
@@ -115,7 +123,7 @@ struct PluginGrantRow: View {
                 MultiplayerVerbStrip(verbs: verbs)
             }
             if isConfirming {
-                Text("Agents in \(grant.projectName) lose this tool at the next restart.")
+                Text(Self.revokeNote(for: grant))
                     .themeType(theme.type.sub).foregroundStyle(.theme(\.color.attention))
                     .fixedSize(horizontal: false, vertical: true)
             } else if let settings = grant.settings {

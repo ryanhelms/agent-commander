@@ -106,6 +106,13 @@ let pluginRenderDirectory = ProcessInfo.processInfo.environment["PLUGIN_RENDER_D
         #expect(choices.map(\.name) == ["Relay", "beacon"])
     }
 
+    @Test func revokeSaysWhatTheRunningServiceStillHas() {
+        let loaded = PluginGrantRow.revokeNote(for: PluginGrant(project: "/Users/me/Developer/relay", active: true))
+        let waiting = PluginGrantRow.revokeNote(for: PluginGrant(project: "/Users/me/Developer/beacon", active: false))
+        #expect(loaded == "Agents in relay keep this tool until the service restarts, then lose it.")
+        #expect(waiting == "Agents in beacon won’t have this tool after the next restart.")
+    }
+
     // MARK: Settings schema
 
     @Test func theCommonShapesBecomeFormFields() {
