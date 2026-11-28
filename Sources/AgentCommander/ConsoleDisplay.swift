@@ -342,6 +342,7 @@ struct PrettyConsoleView: View {
     @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     @Environment(CompactionSummaryStore.self) private var compactions: CompactionSummaryStore?
     @Environment(ReplyAttachmentStore.self) private var replyAttachments: ReplyAttachmentStore?
+    @Environment(SessionMessageStore.self) private var sessionMessages: SessionMessageStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
     /// The reader is at the end of the conversation, so new content keeps the end in view.
@@ -399,6 +400,8 @@ struct PrettyConsoleView: View {
         facts.approvalOwner = approvalOwner
         let attachments = replyAttachments
         facts.replyAttachment = { mark in attachments?.attachment(worker: worker, mark: mark) }
+        let messages = sessionMessages
+        facts.sessionMessage = { mark in messages?.detail(worker: worker, mark: mark) }
         facts.hidesSecrets = store?.hidesSecrets ?? false
         // The older runner sends no console event for a thought: its record is placed by sequence.
         let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
@@ -526,8 +529,20 @@ struct PrettyConsoleView: View {
             // Latest first, a few at a time: a long transcript does not start every read at once.
             await store.load(worker: consoleID, marks: marks)
         }
+        // A message from another session is read from the records of its own updates. One read
+        // serves every update of a turn, and a later one starts where the last one stopped.
+        .task(id: sessionMessageRevision) {
+            let marks = entries.flatMap(\.sessionMessages)
+            guard let store = sessionMessages, !marks.isEmpty else { return }
+            await store.load(worker: consoleID, marks: marks)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
+    }
+
+    /// Changes when the console gains or loses a session message update. Nothing is read on a timer.
+    private var sessionMessageRevision: String {
+        ([consoleID] + entries.flatMap { $0.sessionMessages.map(\.cursor) }).joined(separator: "\u{1F}")
     }
 
     /// Changes when the console gains or loses a marked reply chunk. Nothing is read on a timer.
@@ -585,6 +600,13 @@ struct PrettyConsoleView: View {
             PrettyFormOutcomeLine(outcome: outcome, metrics: metrics)
         case .compaction(let compaction):
             self.compaction(compaction, itemID: item.id, metrics: metrics)
+        case .message(let message):
+            // Drawn, selected and said as the transcript setting allows. The fields are those of
+            // the message's first update.
+            if let first = message.entries.first {
+                PrettySessionMessage(message: message, metrics: metrics, hidesSecrets: details?.hidesSecrets ?? false)
+                    .recordDetail(consoleID: consoleID, entry: first, face: .pretty(below: false), density: density)
+            }
         case .card(let card):
             let key = card.entry?.detailKey ?? card.step.id
             PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
