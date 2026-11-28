@@ -19,12 +19,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"syscall"
 	"time"
 
 	"agentcommander.network/pilot/internal/device"
 	"agentcommander.network/pilot/internal/devicekeys"
 	"agentcommander.network/pilot/internal/directory"
+	"agentcommander.network/pilot/internal/netlog"
 )
 
 const daemonBusyExit = 75
@@ -151,6 +154,19 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 		return e
 	}
 	defer listener.Close()
+	logPath := netlog.DefaultPath(dir)
+	log, e := netlog.Open(logPath)
+	if e != nil {
+		return e
+	}
+	defer log.Close()
+	exe, _ := os.Executable()
+	version := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		version = info.Main.Version
+	}
+	log.Info("daemon_start", "version", version, "go", runtime.Version(), "pid", os.Getpid(), "exe", exe)
+	defer func() { log.Info("daemon_stop", "pid", os.Getpid()) }()
 	if e = os.Chmod(socket, 0600); e != nil {
 		return e
 	}
@@ -172,6 +188,7 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 		Discover:  true,
 		// COMMANDER_DIRECTORY overrides the public directory; "off" leaves it out.
 		DirectoryURL: directoryURL(),
+		Log:          log.Logger, LogPath: logPath,
 		Secrets: func(relay string) (devicekeys.Store, error) {
 			sum := sha256.Sum256([]byte(relay))
 			return devicekeys.Keychain("device-" + hex.EncodeToString(sum[:]))
@@ -179,6 +196,7 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 		OpenBrowser: func(u string) error { return exec.Command("/usr/bin/open", u).Run() },
 	})
 	if e != nil {
+		log.Error("daemon_start_failed", "err", e.Error())
 		return e
 	}
 	defer a.Close()
@@ -193,7 +211,31 @@ func daemon(ctx context.Context, dir, socket, commander string) error {
 
 var verbPattern = regexp.MustCompile("^[a-z][a-z-]{0,32}$")
 
-func tray(ctx context.Context, socket, verb string, raw []byte) ([]byte, error) {
+// serveOutput opens the append-only file that captures the serve process's
+// stdout and stderr, so a Go panic leaves a trace. It restarts the file once
+// it passes the network log's rotation size.
+func serveOutput(dir string) (*os.File, error) {
+	logs := netlog.Dir(dir)
+	if e := netlog.PrivateDir(logs); e != nil {
+		return nil, e
+	}
+	name := filepath.Join(logs, netlog.StderrFileName)
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NOFOLLOW
+	if st, e := os.Lstat(name); e == nil && st.Size() > netlog.DefaultMaxBytes {
+		flags |= os.O_TRUNC
+	}
+	f, e := os.OpenFile(name, flags, 0600)
+	if e != nil {
+		return nil, e
+	}
+	if e = f.Chmod(0600); e != nil {
+		f.Close()
+		return nil, e
+	}
+	return f, nil
+}
+
+func tray(ctx context.Context, dir, socket, verb string, raw []byte) ([]byte, error) {
 	if !verbPattern.MatchString(verb) || !json.Valid(raw) {
 		return nil, errors.New("expected a tray operation and JSON object on stdin")
 	}
@@ -211,6 +253,11 @@ func tray(ctx context.Context, socket, verb string, raw []byte) ([]byte, error) 
 		}
 		cmd := exec.Command(self, "serve")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		// Without a file the child's output goes to /dev/null.
+		if out, err := serveOutput(dir); err == nil {
+			cmd.Stdout, cmd.Stderr = out, out
+			defer out.Close()
+		}
 		if e = cmd.Start(); e != nil {
 			return nil, e
 		}
@@ -286,7 +333,7 @@ func run() error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = []byte("{}")
 	}
-	b, e := tray(context.Background(), socket, os.Args[2], raw)
+	b, e := tray(context.Background(), dir, socket, os.Args[2], raw)
 	if e != nil {
 		return e
 	}

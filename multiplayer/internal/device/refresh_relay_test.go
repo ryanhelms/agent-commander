@@ -228,3 +228,37 @@ func TestRelayDroppedRefreshResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestDiagnosticsVerbReturnsLogTail(t *testing.T) {
+	dir := t.TempDir()
+	path := netlog.DefaultPath(dir)
+	log, err := netlog.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 250 {
+		log.Info("event", "i", i)
+	}
+	log.Close()
+	m := &Manager{cfg: ManagerConfig{LogPath: path}}
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/tray/diagnostics", strings.NewReader("{}")))
+	var out struct {
+		OK   bool
+		Data struct {
+			LogPath string   `json:"logPath"`
+			Tail    []string `json:"tail"`
+		}
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || !out.OK {
+		t.Fatalf("reply %s", rec.Body)
+	}
+	if out.Data.LogPath != path || len(out.Data.Tail) != 200 || !strings.Contains(out.Data.Tail[199], `"i":249`) {
+		t.Fatalf("diagnostics %s %d", out.Data.LogPath, len(out.Data.Tail))
+	}
+	rec = httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/tray/diagnostics", strings.NewReader(`{"x":1}`)))
+	if !strings.Contains(rec.Body.String(), "invalid request") {
+		t.Fatalf("accepted unknown fields: %s", rec.Body)
+	}
+}

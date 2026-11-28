@@ -716,6 +716,16 @@ func (m *Manager) Handler() http.Handler {
 			res, e := m.remoteVerb(r.Context(), verb, in)
 			reply(w, res, e)
 			return
+		case "diagnostics":
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.DisallowUnknownFields()
+			if e = d.Decode(&struct{}{}); e != nil {
+				reply(w, nil, errors.New("invalid request"))
+				return
+			}
+			res, e := m.diagnostics()
+			reply(w, res, e)
+			return
 		case "contacts", "activity", "activity-seen", "join":
 			var in struct {
 				Cursor string `json:"cursor"`

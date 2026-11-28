@@ -22,6 +22,27 @@ func relayHost(origin string) string {
 	return u.Host
 }
 
+const diagnosticsLines = 200
+
+// diagnostics returns the network log's path and its last lines.
+func (m *Manager) diagnostics() (any, error) {
+	out := map[string]any{"logPath": m.cfg.LogPath, "tail": []string{}}
+	if m.cfg.LogPath == "" {
+		return out, nil
+	}
+	tail, err := netlog.Tail(m.cfg.LogPath, diagnosticsLines)
+	if err != nil {
+		return nil, err
+	}
+	out["tail"] = tail
+	// The serve process's captured stderr holds any Go panic.
+	stderr := filepath.Join(filepath.Dir(m.cfg.LogPath), netlog.StderrFileName)
+	if lines, err := netlog.Tail(stderr, 50); err == nil && len(lines) > 0 {
+		out["stderrPath"], out["stderrTail"] = stderr, lines
+	}
+	return out, nil
+}
+
 const (
 	keychainWaitingText = "Respond to the macOS Keychain prompt if one appears. Agent Commander will continue when access is ready."
 	keychainRetryText   = "Keychain access was declined or unavailable. Turn Connect automatically off and on to retry, then respond to any macOS prompt."
