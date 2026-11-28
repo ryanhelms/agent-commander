@@ -173,6 +173,14 @@ func TestAdminModeration(t *testing.T) {
 		_, err := d.Refresh(ctx, d.RefreshToken)
 		check("refresh", err, 401)
 	}
+	// Leave a previous refresh token whose successor is unused: suspension
+	// must retire it too, or lifting the suspension would revive the session.
+	previousRefresh := member.RefreshToken
+	next, err := member.Refresh(ctx, previousRefresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Session = next
 	request(admin, "POST", suspend, nil, nil, 200)
 	request(admin, "POST", suspend, nil, nil, 200)
 	deniedCredentials(member)
@@ -189,6 +197,8 @@ func TestAdminModeration(t *testing.T) {
 	}
 	request(admin, "POST", unsuspend, nil, nil, 200)
 	deniedCredentials(member)
+	_, err = member.Refresh(ctx, previousRefresh)
+	check("previous refresh after unsuspend", err, 401)
 	deniedCredentials(sibling)
 	enroll(member, "dev", "member@example.test", true, 200)
 	enroll(sibling, "dev", "member@example.test", true, 200)

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,6 +40,9 @@ type Config struct {
 	// operator can set it without a restart. Only an installed-app secret,
 	// which the provider documents as non-confidential, belongs here.
 	ClientSecret func() string
+	// Logger receives credential lifecycle events. Nil uses slog.Default().
+	// Entries carry outcome codes and device-ID prefixes, never token material.
+	Logger *slog.Logger
 }
 
 // ProvidedClientSecret reports the installed-app secret this relay hands out, if any.
@@ -191,6 +195,7 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config) (*Server, error) {
  CREATE INDEX IF NOT EXISTS mp_auth_challenges_expiry ON mp_auth_challenges(expires_at);
  CREATE TABLE IF NOT EXISTS mp_auth_devices(device text PRIMARY KEY, user_id text NOT NULL, encryption_key text NOT NULL, descriptor jsonb NOT NULL, access_hash bytea, access_expires timestamptz, refresh_hash bytea, refresh_expires timestamptz, revoked boolean NOT NULL DEFAULT false);
  ALTER TABLE mp_auth_devices ADD COLUMN IF NOT EXISTS email_hash text;
+ ALTER TABLE mp_auth_devices ADD COLUMN IF NOT EXISTS prev_refresh_hash bytea;
  CREATE INDEX IF NOT EXISTS mp_auth_device_owner ON mp_auth_devices(user_id);
  `+membershipRequestSchema)
 	if err != nil {
@@ -517,7 +522,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 	descriptor, _ := json.Marshal(pub)
 	tag, err := tx.Exec(ctx, `INSERT INTO mp_auth_devices(device,user_id,encryption_key,descriptor,access_hash,access_expires,refresh_hash,refresh_expires,email_hash)
  VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval '30 days',$8) ON CONFLICT(device) DO UPDATE
- SET descriptor=excluded.descriptor,access_hash=excluded.access_hash,access_expires=excluded.access_expires,refresh_hash=excluded.refresh_hash,refresh_expires=excluded.refresh_expires,email_hash=excluded.email_hash
+ SET descriptor=excluded.descriptor,access_hash=excluded.access_hash,access_expires=excluded.access_expires,refresh_hash=excluded.refresh_hash,prev_refresh_hash=NULL,refresh_expires=excluded.refresh_expires,email_hash=excluded.email_hash
  WHERE mp_auth_devices.user_id=excluded.user_id AND mp_auth_devices.encryption_key=excluded.encryption_key AND NOT mp_auth_devices.revoked`,
 		id, user, pub.EncryptionKey, string(descriptor), digest(sess.AccessToken), sess.ExpiresAt, digest(sess.RefreshToken), enrollmentEmail)
 	if err != nil {
@@ -559,16 +564,67 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		failure(w, 500)
 		return
 	}
-	err = s.pool.QueryRow(r.Context(), `UPDATE mp_auth_devices SET access_hash=$3,access_expires=$4,refresh_hash=$5 WHERE device=$1 AND refresh_hash=$2 AND refresh_expires>now() AND NOT revoked AND `+memberAccess+` RETURNING user_id`, id, digest(in.Refresh), digest(sess.AccessToken), sess.ExpiresAt, digest(sess.RefreshToken)).Scan(&sess.User)
+	// Rotation keeps the previous refresh token valid until its successor is
+	// first used. A device whose refresh response was lost (sleep, network
+	// drop, client timeout) still holds the previous token and can recover
+	// without signing in again. Refresh is bound to the device's TLS key, so
+	// presenting the previous token still requires that key.
+	var reused bool
+	err = s.pool.QueryRow(r.Context(), `UPDATE mp_auth_devices d
+ SET access_hash=$3,access_expires=$4,refresh_hash=$5,
+  prev_refresh_hash=CASE WHEN d.refresh_hash=$2 THEN d.refresh_hash ELSE d.prev_refresh_hash END
+ FROM (SELECT device, COALESCE(refresh_hash=$2,false) AS current FROM mp_auth_devices WHERE device=$1 FOR UPDATE) old
+ WHERE d.device=old.device AND (d.refresh_hash=$2 OR d.prev_refresh_hash=$2) AND d.refresh_expires>now() AND NOT d.revoked AND `+strings.ReplaceAll(memberAccess, "mp_auth_devices.", "d.")+`
+ RETURNING d.user_id, NOT old.current`, id, digest(in.Refresh), digest(sess.AccessToken), sess.ExpiresAt, digest(sess.RefreshToken)).Scan(&sess.User, &reused)
 	if errors.Is(err, pgx.ErrNoRows) {
+		s.logRefresh(id, s.refreshRefusal(r.Context(), id, digest(in.Refresh)))
 		failure(w, 401)
 		return
 	}
 	if err != nil {
+		s.logRefresh(id, "unavailable")
 		failure(w, 503)
 		return
 	}
+	if reused {
+		s.logRefresh(id, "grace_reuse")
+	}
 	reply(w, 200, sess)
+}
+
+// refreshRefusal classifies a refused refresh for the relay log. It reads the
+// device row only; it never logs or returns token material.
+func (s *Server) refreshRefusal(ctx context.Context, device string, presented []byte) string {
+	var known, revoked, current, previous, live, member bool
+	err := s.pool.QueryRow(ctx, `SELECT true, revoked, COALESCE(refresh_hash=$2,false), COALESCE(prev_refresh_hash=$2,false),
+ COALESCE(refresh_expires>now(),false), `+memberAccess+` FROM mp_auth_devices WHERE device=$1`, device, presented).Scan(&known, &revoked, &current, &previous, &live, &member)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "unknown_device"
+	case err != nil:
+		return "unavailable"
+	case revoked:
+		return "revoked"
+	case !current && !previous:
+		return "unknown_token"
+	case !live:
+		return "expired"
+	case !member:
+		return "not_member"
+	}
+	return "refused"
+}
+
+func (s *Server) logRefresh(device, outcome string) {
+	l := s.config.Logger
+	if l == nil {
+		l = slog.Default()
+	}
+	prefix := device
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	l.Info("identity refresh", "outcome", outcome, "device", prefix)
 }
 func (s *Server) signout(w http.ResponseWriter, r *http.Request) {
 	id, err := DeviceID(r.TLS)
@@ -579,7 +635,7 @@ func (s *Server) signout(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked`, id, digest(t))
+		tag, err := tx.Exec(ctx, `UPDATE mp_auth_devices SET access_hash=NULL,refresh_hash=NULL,prev_refresh_hash=NULL WHERE device=$1 AND access_hash=$2 AND access_expires>now() AND NOT revoked`, id, digest(t))
 		if err != nil {
 			return err
 		}
