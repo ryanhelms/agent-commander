@@ -80,7 +80,7 @@ enum MultiplayerTheme {
     private static func ink(_ role: KeyPath<Theme, ThemeColor> & Sendable) -> Color { Color(MultiplayerInk(role: role)) }
     private static func type(_ role: KeyPath<Theme, ThemeFont> & Sendable) -> MultiplayerType { MultiplayerType(role: role) }
 
-    // DESIGN.md section 2 "Colour": the thirteen roles every theme has.
+    // DESIGN.md section 2 "Colour": the fourteen roles every theme has.
     static let panel = ink(\.color.panel)
     static let well = ink(\.color.well)
     static let border = ink(\.color.border)
