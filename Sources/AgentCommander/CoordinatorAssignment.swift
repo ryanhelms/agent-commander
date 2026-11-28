@@ -39,6 +39,7 @@ struct CoordinatorAssignmentButton: View {
         .help(Self.label)
         .accessibilityLabel(Self.label)
         .accessibilityIdentifier("coordinator-assignment-show")
+        .background(FocusReturnProbe(focus: focus).allowsHitTesting(false))
         .sheet(isPresented: $isPresented, onDismiss: { focus.restore() }) {
             CoordinatorAssignmentSheet(assignment: assignment, startedAt: startedAt) { isPresented = false }
         }
@@ -49,33 +50,156 @@ struct CoordinatorAssignmentButton: View {
         assignment.contains { !$0.isWhitespace }
     }
 
-    /// The window's first responder at the press. A window sheet leaves it in place; this puts it
-    /// back only when something moved it while the sheet was open.
+    /// Where keyboard focus was when the button was pressed, and the way back to it.
+    ///
+    /// A click moves the window's first responder to the SwiftUI hosting view on mouse-down, before
+    /// the button's action runs on mouse-up. `FocusReturnProbe` therefore notes the first responder
+    /// as the mouse goes down on the button, ahead of AppKit's dispatch. A key press or an
+    /// accessibility press moves nothing, so the action reads the first responder as it is.
     @MainActor
-    private final class FocusReturn {
-        private weak var window: NSWindow?
-        private weak var responder: NSResponder?
-
-        func capture() {
-            window = NSApp.keyWindow
-            responder = window?.firstResponder
+    final class FocusReturn {
+        struct Snapshot {
+            weak var window: NSWindow?
+            weak var responder: NSResponder?
+            /// The caret or selection of a text field that was being edited.
+            var selection: NSRange?
         }
 
-        func restore() {
-            let window = window, responder = responder
-            self.window = nil
-            self.responder = nil
-            // After the sheet has ended and the window is key again.
-            DispatchQueue.main.async {
-                guard let window, var target = responder, window.firstResponder !== target else { return }
-                // A field's editor is shared by the window: return to the field that owned it.
-                if let editor = target as? NSText, editor.isFieldEditor {
-                    guard let owner = editor.delegate as? NSView else { return }
-                    target = owner
-                }
-                if let view = target as? NSView, view.window !== window { return }
-                window.makeFirstResponder(target)
+        /// The button's own window, set by the probe while it is in one.
+        weak var window: NSWindow?
+        /// Focus as the mouse went down on the button; used by the click that follows.
+        private var pressed: Snapshot?
+        private var held: Snapshot?
+
+        /// Mouse-down on the button, before AppKit moves the first responder.
+        func notePress(in window: NSWindow) {
+            pressed = Self.snapshot(of: window)
+        }
+
+        /// The press ended away from the button, so no action follows it.
+        func abandonPress() {
+            pressed = nil
+        }
+
+        /// The button's action. A click uses the focus noted at its mouse-down.
+        func capture(trigger: NSEvent.EventType? = NSApp.currentEvent?.type) {
+            let press = pressed
+            pressed = nil
+            if trigger == .leftMouseUp, let press, press.window != nil {
+                held = press
+            } else {
+                held = (window ?? NSApp.keyWindow).map(Self.snapshot(of:))
             }
+        }
+
+        /// The sheet was dismissed. Puts focus back once the sheet has left the window.
+        func restore() {
+            guard let snapshot = held else { return }
+            held = nil
+            settle(snapshot, sheetWaits: 20, checks: 3)
+        }
+
+        /// A field's editor is shared by the window and loses its field when editing ends, so a
+        /// field being edited is recorded as the field itself.
+        static func snapshot(of window: NSWindow) -> Snapshot {
+            let responder = window.firstResponder
+            if let editor = responder as? NSText, editor.isFieldEditor {
+                return Snapshot(window: window, responder: editor.delegate as? NSView,
+                                selection: editor.selectedRange)
+            }
+            return Snapshot(window: window, responder: responder, selection: nil)
+        }
+
+        static func holdsFocus(_ target: NSResponder, in window: NSWindow) -> Bool {
+            if window.firstResponder === target { return true }
+            guard let editor = (target as? NSControl)?.currentEditor() else { return false }
+            return window.firstResponder === editor
+        }
+
+        /// Waits for the sheet to leave, restores, then checks again on the next turns: SwiftUI can
+        /// hand focus back to its hosting view just after the sheet ends.
+        private func settle(_ snapshot: Snapshot, sheetWaits: Int, checks: Int) {
+            DispatchQueue.main.async {
+                guard checks > 0, let window = snapshot.window, let target = snapshot.responder else { return }
+                if window.attachedSheet != nil {
+                    guard sheetWaits > 0 else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        self.settle(snapshot, sheetWaits: sheetWaits - 1, checks: checks)
+                    }
+                    return
+                }
+                // The view left this window while the sheet was open.
+                if let view = target as? NSView, view.window !== window { return }
+                if !Self.holdsFocus(target, in: window) {
+                    guard window.makeFirstResponder(target) else { return }
+                    if let selection = snapshot.selection, let editor = (target as? NSControl)?.currentEditor() {
+                        let length = (editor.string as NSString).length
+                        if NSMaxRange(selection) <= length { editor.selectedRange = selection }
+                    }
+                }
+                self.settle(snapshot, sheetWaits: 0, checks: checks - 1)
+            }
+        }
+    }
+}
+
+/// Tells `FocusReturn` which window the button is in, and notes the first responder as the mouse
+/// goes down on the button. It draws nothing and takes no clicks.
+private struct FocusReturnProbe: NSViewRepresentable {
+    let focus: CoordinatorAssignmentButton.FocusReturn
+
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView(frame: .zero)
+        view.focus = focus
+        return view
+    }
+
+    func updateNSView(_ view: ProbeView, context: Context) {
+        view.focus = focus
+        focus.window = view.window
+    }
+
+    static func dismantleNSView(_ view: ProbeView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class ProbeView: NSView {
+        weak var focus: CoordinatorAssignmentButton.FocusReturn?
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            focus?.window = window
+            if window == nil {
+                removeMonitor()
+            } else if monitor == nil {
+                // A local monitor sees the event before the window dispatches it.
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+                    guard let self else { return event }
+                    // Local monitors run on the main thread.
+                    nonisolated(unsafe) let mouse = event
+                    MainActor.assumeIsolated { self.observe(mouse) }
+                    return event
+                }
+            }
+        }
+
+        private func observe(_ event: NSEvent) {
+            guard let window, let focus else { return }
+            let onButton = event.window === window
+                && bounds.contains(convert(event.locationInWindow, from: nil))
+            if event.type == .leftMouseDown {
+                if onButton { focus.notePress(in: window) } else { focus.abandonPress() }
+            } else if !onButton {
+                focus.abandonPress()
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
         }
     }
 }
