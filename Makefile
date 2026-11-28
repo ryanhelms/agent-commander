@@ -4,15 +4,25 @@ RESOURCES = $(APP)/Contents/Resources
 SWIFT_RESOURCES = AgentCommander_AgentCommander.bundle
 CONFIG ?= debug
 CODE_SIGN_IDENTITY ?= -
+
+# A local signing choice follows this repository's linked worktrees.
+empty :=
+space := $(empty) $(empty)
+GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir)
+ifneq ($(strip $(GIT_COMMON_DIR)),)
+-include $(subst $(space),\ ,$(GIT_COMMON_DIR)/agent-commander-signing.mk)
+endif
+NETWORK_CODE_SIGN_IDENTITY ?= $(CODE_SIGN_IDENTITY)
+NETWORK_CODE_SIGN_KEYCHAIN ?=
 NATIVE_TEST_JOBS ?= 3
 
 PG_FORMULA ?= postgresql@17
 # Resolves the agent-acp SDK checkouts from any checkout or worktree.
 SDK_GOWORK := $(shell sh packaging/sdk-workspace.sh)
 
-.PHONY: app cli network relay postgres sdk-paths pilot-macos test test-native test-native-ci test-multiplayer-docker smoke run reload dev
+.PHONY: app cli network network-package relay postgres sdk-paths pilot-macos test test-native test-native-ci test-multiplayer-docker smoke run reload dev
 
-app: cli network relay postgres
+app: cli network-package relay postgres
 	swift build -c $(CONFIG) --product AgentCommander
 	mkdir -p "$(MACOS)" "$(RESOURCES)"
 	bin_path="$$(swift build -c $(CONFIG) --show-bin-path)" && \
@@ -26,7 +36,6 @@ app: cli network relay postgres
 	cp packaging/Info.plist "$(APP)/Contents/Info.plist"
 	sh packaging/stamp-version.sh "$(APP)/Contents/Info.plist"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/agentctl"
-	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-network"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(MACOS)/commander-relay"
 	codesign --force --sign "$(CODE_SIGN_IDENTITY)" "$(APP)"
 
@@ -36,6 +45,10 @@ pilot-macos:
 network:
 	mkdir -p dist
 	cd multiplayer && go build -o ../dist/commander-network ./cmd/commander-network
+
+network-package: network
+	codesign --force --identifier local.agentcommander.network --sign "$(NETWORK_CODE_SIGN_IDENTITY)" \
+		$(if $(strip $(NETWORK_CODE_SIGN_KEYCHAIN)),--keychain "$(NETWORK_CODE_SIGN_KEYCHAIN)") dist/commander-network
 
 relay:
 	mkdir -p dist

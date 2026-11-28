@@ -44,7 +44,18 @@ Two commands rebuild the app and reopen it, like hot reload for a web app.
 
 You can also restart the running app yourself: **Agent Commander → Restart Agent Commander**, just above Quit.
 
-To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. To give macOS a consistent signing identity across rebuilds, supply the same existing Apple signing identity on each build, for example `make app CODE_SIGN_IDENTITY="Developer ID Application: Example Company (TEAMID)"`. An ad hoc signature identifies one build, so changing its code can prompt macOS to request permission again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+To install source changes by hand, quit Agent Commander, run `make app`, then run `make run`. Builds use an ad hoc signature by default. An ad hoc signature identifies one build, so changes to the network helper can cause macOS to ask for Keychain access again. [Apple code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
+
+For development relay access across rebuilds, use an existing certificate-backed signing identity for the network helper. Put the following settings in `agent-commander-signing.mk` inside the directory printed by `git rev-parse --path-format=absolute --git-common-dir`. The file stays in Git's local metadata and applies to this checkout and its linked worktrees.
+
+```makefile
+NETWORK_CODE_SIGN_IDENTITY := identity-fingerprint
+NETWORK_CODE_SIGN_KEYCHAIN := /absolute/path/to/signing.keychain-db
+```
+
+Use the identity's fingerprint from `security find-identity -p codesigning`. If the identity is in a separate Keychain, pass its path to that command and set `NETWORK_CODE_SIGN_KEYCHAIN` to the same path. Command-line Make settings override the file. The helper uses `CODE_SIGN_IDENTITY` if you leave `NETWORK_CODE_SIGN_IDENTITY` unset.
+
+Run `make reload` and approve access once for the newly signed helper if macOS asks. Use **Always Allow** for the existing relay credential if you want that approval to apply to future builds from this identity. Keep the same signing identity for subsequent builds. The credential remains in its original Keychain, and macOS can still require authorization when you change the identity or Keychain policy.
 
 Fetch the public Go build inputs pinned by `go.mod` to build a release configuration without sibling checkouts.
 
