@@ -580,13 +580,18 @@ struct PrettyConsoleView: View {
             PrettyReportBlock(report: report, isExpanded: isExpanded(report.id), metrics: metrics,
                               toggle: { toggle(report.id) }) { reportDetail(report, metrics: metrics) }
         case .plan(let plan):
-            if let items = plan.items {
+            // An identified ACP plan's items are the provider's words: masked as the setting asks.
+            if let items = plan.shown(hidesSecrets: details?.hidesSecrets ?? false) {
                 PrettyPlanCard(items: items, metrics: metrics, isLive: live?.isActive == true)
             } else {
-                Text(verbatim: plan.fallback).font(metrics.body).foregroundStyle(.inkSecondary)
-                    // The older runner keeps the items in the call's stored arguments.
+                // The removal line or the fallback: quiet text, read as it is written.
+                Text(verbatim: plan.line).font(metrics.body).foregroundStyle(.inkSecondary)
+                    // The older runner keeps the items in the call's stored arguments. An
+                    // identified ACP plan reads only the record of its own event.
                     .task(id: plan.entries.last?.id) {
-                        if let key = plan.entries.last?.id { await details?.open(worker: consoleID, key: key) }
+                        if plan.identity == nil, let key = plan.entries.last?.id {
+                            await details?.open(worker: consoleID, key: key)
+                        }
                     }
             }
         case .live(let step):

@@ -71,30 +71,6 @@ restart_relay() {
     fi
 }
 
-service_pids() {
-    pgrep -f '/agentctl serve$' 2>/dev/null || true
-}
-
-# The local service keeps running when the app quits, so a reload alone keeps the old service
-# code. Stopping it lets the new app start its own bundled copy when it finds the service offline.
-# Workers in tmux keep running; work the service hosts itself (an ACP session) can be interrupted.
-stop_service() {
-    local pids
-    pids="$(service_pids)"
-    if [ -z "$pids" ]; then
-        say "No local service running; the new app will start one"
-        return 0
-    fi
-    say "Stopping the local service (agentctl serve, pid $(echo $pids))"
-    kill -TERM $pids 2>/dev/null || true
-    for _ in $(seq 1 50); do
-        [ -n "$(service_pids)" ] || return 0
-        sleep 0.2
-    done
-    say "The local service did not stop within 10 s"
-    return 1
-}
-
 # Builds everything the bundle needs without touching the bundle, so the app can keep running.
 prebuild() {
     "$MAKE" cli network relay postgres CONFIG="$CONFIG" || return
@@ -104,6 +80,8 @@ prebuild() {
 
 reload() {
     local relay="${1:-0}" service="${2:-0}"
+    local service_failed=0
+    local -a launch_app=(open)
     local started
     started="$(date +%s)"
     {
@@ -133,16 +111,30 @@ reload() {
     fi
 
     if [ "$service" = 1 ]; then
-        if ! stop_service 2>&1 | tee -a "$LOG"; then
-            say "The new app may connect to the old service. Details: $LOG"
-            notify "Service still running" "The old local service did not stop. See dist/dev-reload.log."
+        # Launch Services does not pass through the shell's service overrides.
+        # Give the replacement app and agentctl the same local endpoint.
+        local service_home="${AGENT_COMMANDER_HOME:-}" service_socket="${AGENT_COMMANDER_SOCKET:-${AC_SOCKET:-}}"
+        if [ -n "$service_home" ]; then
+            [[ "$service_home" = /* ]] || service_home="$ROOT/$service_home"
+            export AGENT_COMMANDER_HOME="$service_home"
+            launch_app+=(--env "AGENT_COMMANDER_HOME=$service_home")
+        fi
+        if [ -n "$service_socket" ]; then
+            [[ "$service_socket" = /* ]] || service_socket="$ROOT/$service_socket"
+            export AGENT_COMMANDER_SOCKET="$service_socket"
+            launch_app+=(--env "AGENT_COMMANDER_SOCKET=$service_socket")
+        fi
+        if ! "$NETWORK_RELOAD" service-stop 2>&1 | tee -a "$LOG"; then
+            say "The old Commander service could not be stopped safely. Details: $LOG"
+            notify "Service stop failed" "The app will reopen. Inspect the service socket before retrying."
+            service_failed=1
         fi
     fi
 
     if [ "$relay" = 1 ]; then restart_relay 2>&1 | tee -a "$LOG" || say "The relay restart failed. Details: $LOG"; fi
 
     say "Opening $APP"
-    if ! open "$APP" 2>&1 | tee -a "$LOG"; then
+    if ! "${launch_app[@]}" "$APP" 2>&1 | tee -a "$LOG"; then
         say "Launch Services could not open the app. Details: $LOG"
         notify "Launch failed" "The new build did not start. See dist/dev-reload.log."
         return 1
@@ -153,6 +145,17 @@ reload() {
                 say "The app opened but network helper replacement could not be verified. Details: $LOG"
                 notify "Network helper launch failed" "The app opened. Inspect the network helper in dist/dev-reload.log."
                 return 1
+            fi
+            if [ "$service" = 1 ]; then
+                if [ "$service_failed" = 1 ]; then
+                    say "The app opened without a verified service replacement. Details: $LOG"
+                    return 1
+                fi
+                if ! "$NETWORK_RELOAD" service-ready "$APP/Contents/MacOS/agentctl" 2>&1 | tee -a "$LOG"; then
+                    say "The app opened but Commander service replacement could not be verified. Details: $LOG"
+                    notify "Service launch failed" "The app opened. Inspect the Commander service in dist/dev-reload.log."
+                    return 1
+                fi
             fi
             local took=$(( $(date +%s) - started ))
             say "Reloaded in ${took}s"

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,12 +11,63 @@ import (
 	"strings"
 	"testing"
 
+	"agentcommander/internal/acpprocessor"
 	"agentcommander/internal/hosted"
 )
 
 type detailList struct {
 	Revision uint64                  `json:"revision"`
 	Records  []toolDetailSummaryView `json:"records"`
+}
+
+func TestIdentifiedPlanDetailsBindToTheLiveBatchEvent(t *testing.T) {
+	identity := strings.Repeat("a1", 32)
+	events := []ConsoleEvent{
+		{Sequence: 7, Kind: "output", Text: "Earlier output unavailable"},
+		{Sequence: 8, Kind: "output", ACP: &acpprocessor.Activity{
+			Source: "live", Kind: "plan_update", Cursor: "current", TurnID: "turn-2", PlanIdentity: identity,
+		}},
+		{Sequence: 9, Kind: "output", ACP: &acpprocessor.Activity{
+			Source: "provider", Kind: "plan_update", Cursor: "historical", TurnID: "turn-1", PlanIdentity: identity,
+		}},
+		{Sequence: 10, Kind: "output", ACP: &acpprocessor.Activity{
+			Source: "live", Kind: "plan", Cursor: "legacy", TurnID: "turn-2",
+		}},
+	}
+	store := toolDetailStore{}
+	live, history, legacy, invalid := 0, 1, 2, math.MaxInt
+	entries := json.RawMessage(`[{"content":"Current work","status":"pending"}]`)
+	supplied := &PlanEvent{Cursor: "untrusted", PlanIdentity: identity, TurnID: "old-turn"}
+	records := store.prepare([]ToolDetail{
+		{Kind: "plan", Event: &live, Plan: entries, PlanEvent: supplied},
+		{Kind: "plan", Event: &history, Plan: entries, PlanEvent: supplied},
+		{Kind: "plan", Event: &legacy, Plan: entries, PlanEvent: supplied},
+		{Kind: "plan", Event: &invalid, Plan: entries, PlanEvent: supplied},
+		{Kind: "plan", Plan: entries, PlanEvent: supplied},
+	}, events, 1, 10)
+	want := &PlanEvent{Cursor: "current", PlanIdentity: identity, TurnID: "turn-2"}
+	if len(records) != 5 || !reflect.DeepEqual(records[0].PlanEvent, want) ||
+		records[0].Key != "event-8" || records[0].Sequence != 8 || !reflect.DeepEqual(records[0].Plan, entries) {
+		t.Fatalf("real live batch event did not bind its snapshot: %+v", records)
+	}
+	for _, record := range records[1:] {
+		if record.PlanEvent != nil {
+			t.Fatalf("unbound summary gained a claim: %+v", record)
+		}
+	}
+	// A sequence reused after restart must never transfer the old items into
+	// a new claim, or the old claim into a later legacy record.
+	current := records[0]
+	older := ToolDetail{Kind: "plan", Key: current.Key, Sequence: current.Sequence, Plan: entries, PlanEvent: supplied}
+	current.Plan = nil
+	if replaced := mergeToolDetail(older, current); replaced.Plan != nil || !reflect.DeepEqual(replaced.PlanEvent, want) {
+		t.Fatalf("older items survived into a new claim: %+v", replaced)
+	}
+	current.Plan = entries
+	older.Plan, older.PlanEvent = nil, nil
+	if replaced := mergeToolDetail(current, older); replaced.Plan != nil || replaced.PlanEvent != nil {
+		t.Fatalf("an identified snapshot survived into an unrelated record: %+v", replaced)
+	}
 }
 
 func claudePrivateDetails(marker string) []ToolDetail {

@@ -65,6 +65,20 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on a provider notice: the level its reference states, when it states one. Pretty keeps
     /// a warning, an error and a notice with no level in the open; see `NoticeMark`.
     var notice: NoticeMark? = nil
+    /// Set on an ACP `plan_update` or `plan_removed` event the service could tie to one provider
+    /// plan: its fingerprint of the provider session and that plan's own ID. Two events are about
+    /// the same plan only when these are equal. It is opaque, and is never drawn, spoken or copied.
+    var planIdentity: String? = nil
+    /// The reference's source is exactly `live`: the event was observed by this console, so its
+    /// sequence is the one a stored plan record was kept under. A reopened worker's console is
+    /// provider history numbered afresh, while the records kept from its earlier live events
+    /// remain under their old sequences; such an event's sequence names no record.
+    var planIsLive = false
+    /// The cursor and the turn of an identified plan event's own reference, when each is a
+    /// non-empty string. A stored plan record is this event's only when it names both, and the
+    /// identity, exactly (`PlanEventBinding`). Never drawn, spoken or copied.
+    var planCursor: String? = nil
+    var planTurnID: String? = nil
 }
 
 enum ConversationChunks {
@@ -168,6 +182,26 @@ extension TranscriptOrigin {
         replyAttachment = ReplyAttachmentMark(message: message, acp: acp)
         sessionMessages = SessionMessageMark.marks(message: message, acp: acp)
         notice = NoticeMark(message: message, acp: acp)
+        planIdentity = Self.planIdentity(kind: kind, acp: acp)
+        planIsLive = planIdentity != nil && acp["source"]?.stringValue == ConversationChunks.liveSource
+        if planIdentity != nil {
+            planCursor = acp["cursor"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+            planTurnID = acp["turnId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
+    /// The ACP session update that states a plan as it now is, and the one that removes a plan.
+    static let planUpdateKind = "plan_update"
+    static let planRemovedKind = "plan_removed"
+
+    /// The plan an event is about: `planIdentity` on a `plan_update` or `plan_removed` reference,
+    /// when it is exactly 64 lower-case hexadecimal digits. Nil for any other kind or value; the
+    /// event is then the folded session update it has always been.
+    static func planIdentity(kind: String, acp: [String: AGUIValue]) -> String? {
+        guard kind == planUpdateKind || kind == planRemovedKind,
+              let text = acp["planIdentity"]?.stringValue, text.utf8.count == 64 else { return nil }
+        let digits = UInt8(ascii: "0")...UInt8(ascii: "9"), letters = UInt8(ascii: "a")...UInt8(ascii: "f")
+        return text.utf8.allSatisfy { digits.contains($0) || letters.contains($0) } ? text : nil
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.

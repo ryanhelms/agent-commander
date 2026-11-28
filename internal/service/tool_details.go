@@ -31,6 +31,8 @@ const (
 	// MaxToolDetailField bounds one argument, result or content value. A longer
 	// value is shortened and listed in Truncated, whatever the settings say.
 	MaxToolDetailField = 512 << 10
+	// MaxPlanDetailBytes bounds one complete checklist snapshot.
+	MaxPlanDetailBytes = 64 << 10
 	// MaxToolDetailRecords bounds retained records per worker.
 	MaxToolDetailRecords = 256
 	toolDetailBytes      = 16 << 20
@@ -59,6 +61,7 @@ type ToolDetail struct {
 	Result    string          `json:"result,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	Plan      json.RawMessage `json:"plan,omitempty"`
+	PlanEvent *PlanEvent      `json:"plan_event,omitempty"`
 	StartedAt string          `json:"started_at,omitempty"`
 	EndedAt   string          `json:"ended_at,omitempty"`
 	Truncated []string        `json:"truncated,omitempty"`
@@ -75,6 +78,14 @@ type ToolDetail struct {
 	Revision uint64        `json:"revision,omitempty"`
 	*JobDetail
 	*TurnEndDetail
+}
+
+// PlanEvent binds an identified ACP snapshot to the exact live source event.
+// The console can be renumbered after restart while these details persist.
+type PlanEvent struct {
+	Cursor       string `json:"cursor"`
+	PlanIdentity string `json:"planIdentity"`
+	TurnID       string `json:"turnId,omitempty"`
 }
 
 // ToolLocation is the single file and line an ACP tool reported for its call.
@@ -115,6 +126,9 @@ func (d *ToolDetail) Size() int {
 	}
 	if t := d.TurnEndDetail; t != nil {
 		size += len(t.StopReason) + len(t.TerminalReason) + 16
+	}
+	if p := d.PlanEvent; p != nil {
+		size += len(p.Cursor) + len(p.PlanIdentity) + len(p.TurnID)
 	}
 	for name, paths := range d.Shortened {
 		size += len(name)
@@ -225,6 +239,7 @@ func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 	merged := old
 	merged.Key, merged.Kind = next.Key, next.Kind
 	merged.JobDetail, merged.TurnEndDetail = next.JobDetail, next.TurnEndDetail
+	merged.PlanEvent = next.PlanEvent
 	// The stored record shares old's map, so changes go to a copy.
 	merged.Shortened = maps.Clone(old.Shortened)
 	if merged.Sequence == 0 || next.Kind == "plan" {
@@ -262,7 +277,8 @@ func mergeToolDetail(old ToolDetail, next ToolDetail) ToolDetail {
 	if len(merged.Shortened) == 0 {
 		merged.Shortened = nil
 	}
-	if len(next.Plan) != 0 {
+	// An identified plan owns a complete snapshot, including its absence.
+	if len(next.Plan) != 0 || next.PlanEvent != nil || old.PlanEvent != nil {
 		merged.Plan = next.Plan
 	}
 	if next.Kind != "tool" || next.Location != nil {
@@ -349,9 +365,15 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 			continue // Only the service writes in this namespace.
 		}
 		d.Sequence, d.Revision = last, 0
+		d.PlanEvent = nil
 		// A negative index means before the batch's first event.
-		if d.Event != nil && *d.Event >= 0 && *d.Event+offset < len(events) {
-			d.Sequence = events[*d.Event+offset].Sequence
+		if d.Event != nil && *d.Event >= 0 && *d.Event < len(events)-offset {
+			event := &events[*d.Event+offset]
+			d.Sequence = event.Sequence
+			if a := event.ACP; d.Kind == "plan" && a != nil && a.Source == "live" &&
+				a.Kind == "plan_update" && a.PlanIdentity != "" && a.Cursor != "" && a.Valid() {
+				d.PlanEvent = &PlanEvent{Cursor: a.Cursor, PlanIdentity: a.PlanIdentity, TurnID: a.TurnID}
+			}
 		} else if d.Event != nil && *d.Event < 0 && offset < len(events) {
 			d.Sequence = events[offset].Sequence - 1
 		}
@@ -425,7 +447,7 @@ func (s *toolDetailStore) prepare(details []ToolDetail, events []ConsoleEvent, o
 				d.Shortened[field.name] = paths
 			}
 		}
-		if len(d.Plan) > 64<<10 || (len(d.Plan) != 0 && !json.Valid(d.Plan)) {
+		if len(d.Plan) > MaxPlanDetailBytes || (len(d.Plan) != 0 && !json.Valid(d.Plan)) {
 			d.Plan = nil
 		}
 		prepared = append(prepared, d)
