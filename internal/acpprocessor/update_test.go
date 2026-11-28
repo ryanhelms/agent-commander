@@ -120,3 +120,50 @@ func TestExplicitDiscriminatorAndPatchPresence(t *testing.T) {
 		t.Fatal(a)
 	}
 }
+
+func TestNoticeSeverityProjection(t *testing.T) {
+	for _, tc := range []struct {
+		name, member string
+		want         acp.NoticeSeverity
+	}{
+		{name: "info", member: `,"severity":"info"`, want: acp.NoticeSeverityInfo},
+		{name: "warning", member: `,"severity":"warning"`, want: acp.NoticeSeverityWarning},
+		{name: "error", member: `,"severity":"error"`, want: acp.NoticeSeverityError},
+		{name: "older notice"},
+		{name: "unknown", member: `,"severity":"future-severity"`},
+		{name: "malformed", member: `,"severity":{"level":"warning"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"sessionUpdate":"notice","title":"Warning in the title alone", "description":"private notice detail"` + tc.member + `}`)
+			update := Decode(raw)
+			activity := update.Activity("live", "exact-notice-cursor")
+			if !activity.Valid() || activity.Kind != "notice" || activity.Cursor != "exact-notice-cursor" || activity.NoticeSeverity != tc.want {
+				t.Fatalf("unexpected notice projection: %+v", activity)
+			}
+			if !bytes.Equal(update.Raw, raw) {
+				t.Fatal("notice original changed")
+			}
+			encoded, err := json.Marshal(activity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata map[string]any
+			if err := json.Unmarshal(encoded, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			severity, hasSeverity := metadata["noticeSeverity"]
+			if tc.want == "" && hasSeverity || tc.want != "" && severity != string(tc.want) || bytes.Contains(encoded, []byte("private notice detail")) {
+				t.Fatalf("unexpected shared notice metadata: %s", encoded)
+			}
+		})
+	}
+
+	other := Decode([]byte(`{"sessionUpdate":"session_info_update","title":"Warning","severity":"warning"}`))
+	if activity := other.Activity("live", "other"); activity.NoticeSeverity != "" {
+		t.Fatalf("a non-notice acquired severity: %+v", activity)
+	}
+	if (&Activity{Source: "live", Kind: "notice", NoticeSeverity: "future-severity"}).Valid() ||
+		(&Activity{Source: "live", Kind: "session_info_update", NoticeSeverity: acp.NoticeSeverityWarning}).Valid() {
+		t.Fatal("validation accepted invalid notice severity metadata")
+	}
+}

@@ -399,6 +399,7 @@ struct PrettyConsoleView: View {
         facts.approvalOwner = approvalOwner
         let attachments = replyAttachments
         facts.replyAttachment = { mark in attachments?.attachment(worker: worker, mark: mark) }
+        facts.hidesSecrets = store?.hidesSecrets ?? false
         // The older runner sends no console event for a thought: its record is placed by sequence.
         let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
         let records = Array(summaries.values)
@@ -798,9 +799,10 @@ struct PrettyConsoleView: View {
                     }
                 }
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-            } else if let event = ActivityEvent(entry: entry) {
+            } else if let event = ActivityEvent(entry: entry, hidesSecrets: details?.hidesSecrets ?? false) {
                 // A warning, harness stderr or a permission notice: one visible line in the
                 // attention ink. It never carries a reply; a request is answered only in its form.
+                // A provider notice's title is drawn and spoken as the transcript setting allows.
                 PrettyActivityRow(event: event, metrics: metrics)
                     .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             } else {

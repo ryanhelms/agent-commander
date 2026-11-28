@@ -58,6 +58,9 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on a live reply chunk that is a resource link or a resource: the record behind it.
     /// Pretty draws what that record holds in the reply; see `ReplyAttachment`.
     var replyAttachment: ReplyAttachmentMark? = nil
+    /// Set on a provider notice: the level its reference states, when it states one. Pretty keeps
+    /// a warning, an error and a notice with no level in the open; see `NoticeMark`.
+    var notice: NoticeMark? = nil
 }
 
 enum ConversationChunks {
@@ -159,6 +162,7 @@ extension TranscriptOrigin {
         itemCount = acp["itemCount"]?.intValue
         compaction = CompactionMark(message: message, acp: acp)
         replyAttachment = ReplyAttachmentMark(message: message, acp: acp)
+        notice = NoticeMark(message: message, acp: acp)
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.
@@ -384,12 +388,15 @@ extension ConsoleRecordDetail {
 /// Recognised: `usage_update` Context, `current_mode_update` Mode, `available_commands_update`
 /// Commands, `session_info_update` Session, `config_option_update` Config, `plan` Plan, and the
 /// service's relayed `[Provider stderr]`, `[Provider stdout]`, `[Provider event: …]` and
-/// `[Service …]` text. Any other record with an ACP kind is named by that kind and shows its own
-/// text. A record with no text has an empty detail: its content is only in its fields.
+/// `[Service …]` text. A provider `notice` is read by its reference's level alone (`NoticeMark`):
+/// Warning, Error or Notice, with its title as sent. Any other record with an ACP kind is named
+/// by that kind and shows its own text. A record with no text has an empty detail: its content is
+/// only in its fields.
 struct ActivityEvent: Equatable, Sendable {
     enum Tone: Equatable, Sendable {
         case quiet
-        /// May need the developer: harness stderr, or a provider event about a permission.
+        /// May need the developer: harness stderr, a provider event about a permission, or a
+        /// notice the provider sent as a warning or an error.
         case attention
     }
 
@@ -397,6 +404,9 @@ struct ActivityEvent: Equatable, Sendable {
     let label: String
     let detail: String
     let tone: Tone
+    /// The event joins the group of finished lines beside it. False for an event that stays in
+    /// the open at its own position: every attention event, and a notice with no stated level.
+    let folds: Bool
 
     var accessibilityLabel: String {
         label + ": " + (detail.isEmpty ? "no text, content in its fields" : detail)
@@ -404,13 +414,18 @@ struct ActivityEvent: Equatable, Sendable {
 
     /// Nil for an entry that is not activity: a prompt, reply, tool, result or thought, and a
     /// note with neither an ACP kind nor a relayed marker, which keeps its role note.
-    init?(entry: TranscriptEntry) {
+    /// - Parameter hidesSecrets: the transcript setting (`ToolDetailStore.hidesSecrets`). It
+    ///   masks a provider notice's title; every other event is unchanged by it.
+    init?(entry: TranscriptEntry, hidesSecrets: Bool = false) {
         guard case .other(let role, let text) = entry.kind, !entry.isThought,
               role != "user", role != "assistant" else { return nil }
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let kind = entry.origin?.kind ?? ""
 
-        if let rest = Self.after("[Provider stderr]", in: body) {
+        if let notice = entry.origin?.notice {
+            // Judged by its reference alone, before any text is read.
+            self.init(notice: notice, body: body, hidesSecrets: hidesSecrets)
+        } else if let rest = Self.after("[Provider stderr]", in: body) {
             self.init(symbol: "exclamationmark.bubble", label: "stderr", detail: rest, tone: .attention)
         } else if let rest = Self.after("[Provider stdout]", in: body) {
             self.init(symbol: "text.alignleft", label: "stdout", detail: rest, tone: .quiet)
@@ -454,11 +469,13 @@ struct ActivityEvent: Equatable, Sendable {
         }
     }
 
-    init(symbol: String, label: String, detail: String, tone: Tone) {
+    /// - Parameter folds: nil folds a quiet event and keeps an attention event in the open.
+    init(symbol: String, label: String, detail: String, tone: Tone, folds: Bool? = nil) {
         self.symbol = symbol
         self.label = label
         self.detail = detail
         self.tone = tone
+        self.folds = folds ?? (tone == .quiet)
     }
 
     /// The provider event name the ACP runner gives a live input request.

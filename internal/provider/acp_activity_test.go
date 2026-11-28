@@ -207,3 +207,17 @@ func TestCommanderInputIsLinkedFromTheNativeACPWire(t *testing.T) {
 		t.Fatal("wire reference was consumed twice")
 	}
 }
+
+func TestACPNoticePreviewKeepsItsTitleAndSeverity(t *testing.T) {
+	raw := []byte(`{"sessionUpdate":"notice","title":"Check the worktree","severity":"warning","description":"Scoped detail"}`)
+	obs := &model.Observation{Cursor: "notice-cursor", Event: &model.Observation_Extension{Extension: &model.Extension{
+		Type: "acp.session_update", MediaType: "application/json", Data: raw,
+	}}}
+	for _, source := range []string{"live", "provider"} {
+		got := acpExtensionEvent(obs, source)
+		if got.Kind != "output" || got.Text != "[ACP notice] Check the worktree" || got.ACP == nil ||
+			got.ACP.NoticeSeverity != "warning" || got.ACP.Source != source || got.ACP.Cursor != obs.Cursor || !got.ACP.Valid() {
+			t.Fatalf("unexpected %s notice preview: %+v", source, got)
+		}
+	}
+}
