@@ -54,6 +54,19 @@ The redesigned main-window shell (increment 2, design previews only) follows the
 
 The three sidebars take one `CommanderNavigation` and emit `CommanderNavigationAction`s, so a page never depends on which sidebar is showing.
 
+The Needs you review opens one request where it is listed, beside the list or as a full view. Compared with the [Attention queue](../concepts/index.html#attention-queue) and [Attention side panel](../concepts/index.html#attention-panel) concepts it keeps their order (request, worker, question, context, then the reply at the foot) and draws it in the console language of the Needs you page. It adds Scope and Identity as labelled lines, the choice of Beside or Full per request, and Copy link.
+
+| Level | Review components | File |
+| --- | --- | --- |
+| Values | `NeedsYouReviewMode`, `NeedsYouFact`, `NeedsYouDetail`, `NeedsYouReviewPhase`, `NeedsYouReviewSubject`, `NeedsYouReviewState`, `CommanderExternalLink`; the link codec `NeedsYouRequestLink` | `NeedsYouReviewModel.swift`, `NeedsYouRequestLink.swift` |
+| Foundations | `NeedsYouReviewLayout`: the list's column, the review's least width and the reading measure | `NeedsYouReviewModel.swift` |
+| Atoms | `NeedsYouReviewCue`; `NeedsYouRowOpening`, the modifier that makes a row's one button its focus target, its VoiceOver element and its link menu; `NeedsYouRowFocus`, the list's keyboard and VoiceOver focus by request | `NeedsYouReview.swift` |
+| Molecules | New: `NeedsYouFactList`, `NeedsYouCopyLink`, `NeedsYouReviewBar`, `NeedsYouReviewAnswer`, `NeedsYouOpenRow`, `NeedsYouCompactRow`. Reused as they are: `NeedsYouOutcomeWell`, `ShellRowButtonStyle`, `NeedsYouKindTag`, `NeedsYouOriginCell`, `NeedsYouClockLabel`, `NeedsYouVerbStrip`, `ShellSegments`, `ShellSelectable`, `ShellNote`, `ThemeStatus`, `ThemeHeading`, `ThemeButtonStyle`, `themeField`, `MultiplayerOutputWell`, `MultiplayerSpinner`, `SymbolButton` | `NeedsYouReview.swift` |
+| Organisms | `NeedsYouReview`; `NeedsYouList` with `opensReview` draws open rows, or compact rows with the open one marked while a review is beside it, owns both kinds of row focus and returns them to a row when the review closes. Without `opensReview` it draws `NeedsYouRow` with its verb strip, for a fixture that passes no review context | `NeedsYouReview.swift`, `NeedsYouPage.swift` |
+| Pages | `NeedsYouPage` with a `NeedsYouReviewContext`; the fixture is `--design-preview needs-you-review` | `NeedsYouPage.swift`, `ShellPreview.swift` |
+
+Ownership follows the boundaries below. `NeedsYouReview` receives a `NeedsYouReviewSubject` and emits a `NeedsYouReviewAction` about that one request: close, set the mode, copy, answer, choose a verb or open the source. `NeedsYouPage` binds the request's ID and passes each action to the intent in its `NeedsYouReviewContext`. The feature layer (`CockpitScreen`) owns the state and every intent: a worker's answer is `CockpitActions.reply` with the text or the choice's exact ID, and every other answer is the page's existing `decide` or `reply`. `LiveShell.detail(for:…)` builds the full request from the same values the inbox is built from. No review component reads a model, and none holds authority to answer. A row emits one intent, open. `NeedsYouReviewContext.isSending` is the open request's own progress, from the worker replies in flight and the network answers still running, and the review turns its controls off while it is set.
+
 The atoms in `Atoms.swift` stay on the black-glass tokens because the console surfaces use them. `ThemeTests` fails if a console, terminal or pretty-view file reads the theme layer.
 
 ### Headless hosts

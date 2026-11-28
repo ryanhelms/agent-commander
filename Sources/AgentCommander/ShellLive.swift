@@ -410,6 +410,83 @@ enum LiveShell {
         return NeedsYouInbox(items: shown + decided.filter { !live.contains($0.id) })
     }
 
+    /// One inbox request in full, for its review: the whole prompt and its choices, who asks, what
+    /// it reaches and what the app already holds about it. Read from the same lists as `inbox`.
+    /// Nil when nothing lists the request now.
+    static func detail(for id: String, pending: [RequestPresentation], network: ShellNetwork,
+                       harnessAlerts: [HarnessAlert] = []) -> NeedsYouDetail? {
+        if let request = pending.first(where: { $0.id == id }) {
+            var scope = [NeedsYouFact(label: "Project", value: request.project),
+                         NeedsYouFact(label: "Run", value: request.runTitle)]
+            if !request.inputHolder.isEmpty { scope.append(NeedsYouFact(label: "Input held by", value: request.inputHolder)) }
+            if let tool = request.awaitingApprovalToolID {
+                scope.append(NeedsYouFact(label: "Tool call", value: tool, isData: true))
+            }
+            var identity = [NeedsYouFact(label: "Worker", value: request.workerIsCoordinator ? "\(request.workerName), the coordinator" : request.workerName),
+                            NeedsYouFact(label: "Agent", value: request.client.displayName),
+                            NeedsYouFact(label: "Host", value: request.host),
+                            NeedsYouFact(label: "Request ID", value: request.id, isData: true)]
+            if let session = request.workerSession?.sessionID, !session.isEmpty {
+                identity.append(NeedsYouFact(label: "Session", value: session, isData: true))
+            }
+            return NeedsYouDetail(reference: request.shortID, prompt: request.promptWithoutChoiceList,
+                                  choices: request.choices.map { NeedsYouDetail.Choice(id: $0.id, label: $0.label) },
+                                  identity: identity, scope: scope, evidence: request.contextTail,
+                                  evidenceTitle: "Recent output from \(request.workerName)", answersHere: true,
+                                  unavailable: request.replyUnavailableStatement, held: request.replyHeldStatement,
+                                  sourceTitle: "Open worker")
+        }
+        if let harness = HarnessAlert.harnessID(inboxID: id), let alert = harnessAlerts.first(where: { $0.harnessID == harness }) {
+            return NeedsYouDetail(reference: alert.harnessID,
+                                  prompt: alert.expired ? "\(alert.name)’s sign-in ran out. Sign in again to keep using it."
+                                                        : "\(alert.name) was signed in and no longer is. Sign in again to keep using it.",
+                                  identity: [NeedsYouFact(label: "Harness", value: alert.name),
+                                             NeedsYouFact(label: "Host", value: "This Mac")],
+                                  scope: [NeedsYouFact(label: "Affects", value: "New runs and workers that use \(alert.name)")],
+                                  sourceTitle: "Open in Harnesses",
+                                  leavesNote: "Sign in opens \(alert.name)’s own sign-in in a sheet. This request stays selected until the harness is signed in.")
+        }
+        if let pending = network.approvals.first(where: { self.id($0) == id }) {
+            let approval = pending.item, server = network.serverName(pending.server)
+            let resource = network.resourceName(approval.resource, on: pending.server)
+            return NeedsYouDetail(reference: approval.id,
+                                  prompt: approval.request.isEmpty ? "\(approval.headline) on \(resource)." : approval.request,
+                                  identity: [NeedsYouFact(label: "From", value: handle(approval.peer)),
+                                             NeedsYouFact(label: "Server", value: server),
+                                             NeedsYouFact(label: "Request ID", value: approval.id, isData: true)],
+                                  scope: [NeedsYouFact(label: "Resource", value: "\(resource) on \(server)"),
+                                          NeedsYouFact(label: "Action", value: MultiplayerCapability.title(approval.action)),
+                                          NeedsYouFact(label: "Grant", value: approval.isSuggestion ? "A suggestion always waits for you"
+                                                                                                    : "Ask each time")],
+                                  sourceTitle: "Open in Approvals")
+        }
+        if let pending = network.access.first(where: { self.id($0) == id }) {
+            let request = pending.item, server = network.serverName(pending.server)
+            let resource = network.resourceName(request.resource, on: pending.server)
+            let note = MultiplayerText.clean(request.note, limit: 2_000, redact: true)
+            return NeedsYouDetail(reference: request.id,
+                                  prompt: note.isEmpty ? "\(handle(request.requester)) asks for access to \(resource) and left no note." : note,
+                                  identity: [NeedsYouFact(label: "From", value: handle(request.requester)),
+                                             NeedsYouFact(label: "Server", value: server),
+                                             NeedsYouFact(label: "Request ID", value: request.id, isData: true)],
+                                  scope: [NeedsYouFact(label: "Resource", value: "\(resource) on \(server)"),
+                                          NeedsYouFact(label: "Asks for", value: request.actionsTitle)],
+                                  sourceTitle: "Open in Approvals",
+                                  leavesNote: "Review opens the grant sheet in Network › Approvals, where you choose what to share. Decline answers here. This request stays selected.")
+        }
+        if let friend = network.friendRequests.first(where: { self.id($0) == id }) {
+            let server = network.serverName(friend.server), who = handle(friend.request.handle)
+            return NeedsYouDetail(reference: friend.request.id,
+                                  prompt: "\(who) wants to be friends on \(server).",
+                                  identity: [NeedsYouFact(label: "From", value: who),
+                                             NeedsYouFact(label: "Server", value: server),
+                                             NeedsYouFact(label: "Request ID", value: friend.request.id, isData: true)],
+                                  scope: [NeedsYouFact(label: "Accepting gives", value: "Each other’s presence, and the right to ask for access. No access is given by itself.")],
+                                  sourceTitle: "Open in People")
+        }
+        return nil
+    }
+
     /// The network's word on an answered request, as the inbox's outcome.
     private static func decision(_ answer: MultiplayerAnswer) -> NeedsYouDecision {
         switch answer {
@@ -439,6 +516,8 @@ struct LiveNeedsYouPage: View {
     let decide: (NeedsYouInbox, String, NeedsYouDecision) -> Void
     let open: (String) -> Void
     let reply: (String) -> Void
+    /// Opens a request in place. Its time is set to the page's own each second.
+    var review: NeedsYouReviewContext? = nil
 
     var body: some View {
         if let now {
@@ -451,7 +530,9 @@ struct LiveNeedsYouPage: View {
     private func page(at date: Date) -> some View {
         let inbox = LiveShell.inbox(pending: pending, network: network, now: date, decided: decided, failures: failures,
                                     harnessAlerts: harnessAlerts)
+        var review = review
+        review?.now = date
         return NeedsYouPage(inbox: inbox, decide: { id, decision in decide(inbox, id, decision) }, open: open,
-                            reply: reply, notice: nil)
+                            reply: reply, notice: nil, review: review)
     }
 }

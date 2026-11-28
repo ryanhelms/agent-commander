@@ -36,6 +36,9 @@ struct CommanderOpenRequest: Equatable, Sendable {
         case remoteWorker(resource: String)
         /// A review you sent, opened the way the wall's own review row opens it.
         case review(request: String)
+        /// A request of the Needs you inbox, by its inbox ID, opened in its review. It needs no
+        /// server and is never checked against a catalog: the page reads it from the live lists.
+        case needsYou(request: String)
     }
 
     var place: String
@@ -76,6 +79,9 @@ extension CommanderOpenRequest {
     /// one opens Teams where the workspaces are listed. A review opens on the page the wall's
     /// review row goes to, so an unknown one opens the wall, and so does an unknown remote worker.
     @MainActor func destination(in catalog: CommanderOpenCatalog) -> CommanderOpenDestination {
+        // A Needs you request keeps its item whatever the catalog lists. A link can arrive on a
+        // cold start, before any list is read, and the page itself says when nothing lists it.
+        if case .needsYou = item { return CommanderOpenDestination(place: LiveShell.needsYou, item: item) }
         guard let item, let server, catalog.has(item, server) else { return CommanderOpenDestination(place: place) }
         return destination(of: item, on: server, places: catalog.places)
     }
@@ -118,6 +124,16 @@ extension CommanderOpenRequest {
         let places = Set(navigation(at: LiveShell.wall).places.map(\.id))
         let landing = item.flatMap { item in server.map { destination(of: item, on: $0, places: places).place } } ?? place
         return navigation(at: landing).crumbs
+    }
+}
+
+// MARK: - A linked Needs you request
+
+extension CommanderOpenRequest {
+    /// The request an `agentcommander://needs-you?request=<ID>` link opens: Needs you, with that
+    /// request in its review.
+    init(needsYou link: NeedsYouRequestLink) {
+        self.init(place: LiveShell.needsYou, item: .needsYou(request: link.id))
     }
 }
 
@@ -238,7 +254,7 @@ extension CommanderOpenCatalog {
             case .remoteWorker(let resource):
                 return CommanderOpenDestination.remoteWorker(resource, on: server, among: share.remoteWorkers) != nil
             case .review(let request): return share.live.review(request, on: server) != nil
-            case .thread, .audit, .reputation, .server: return true
+            case .thread, .audit, .reputation, .server, .needsYou: return true
             }
         }
     }
@@ -266,6 +282,10 @@ extension CommanderOpenDestination {
         ui.composingRun = false
         ui.showingRunChooser = false
         ui.shellPlace = place
+        if case .needsYou(let request) = item {
+            ui.openNeedsYou(linked: request)
+            return
+        }
         guard let item, let server else { return }
         let network = LiveNetworkIntents(model: model, state: ui.networkPages, go: { ui.shellPlace = $0 })
         let teams = ui.teamsPages.pages
@@ -289,6 +309,8 @@ extension CommanderOpenDestination {
         case .remoteWorker(let resource): Self.zoom(ui, toRemoteWorker: resource, on: server, among: model.share.remoteWorkers)
         // The wall has no review view of its own: its review row opens the review on Hand-offs.
         case .review(let request): network.openWork(.review, request: request, on: server)
+        // Shown above: it has no server.
+        case .needsYou: break
         }
     }
 }

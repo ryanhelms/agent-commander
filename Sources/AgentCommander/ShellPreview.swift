@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // ATOMIC LEVEL: Pages (design previews of the main-window shell).
@@ -9,6 +10,7 @@ import SwiftUI
 //   open "dist/Agent Commander.app" --args --design-preview shell-b    mode rail with context list
 //   open "dist/Agent Commander.app" --args --design-preview shell-c    Needs you first
 //   open "dist/Agent Commander.app" --args --design-preview needs-you  the inbox, in sidebar C
+//   open "dist/Agent Commander.app" --args --design-preview needs-you-review  the inbox with Q-018 open in its review
 //
 // The A, B, C control in the toolbar (⌥⌘1, ⌥⌘2, ⌥⌘3) changes the sidebar and keeps the selected
 // place. ⌥⌘T changes the theme. Decisions change the sample inbox only.
@@ -39,7 +41,7 @@ enum ShellConcept: String, CaseIterable, Identifiable, Sendable {
         switch scenario {
         case .shellA: self = .grouped
         case .shellB: self = .modeRail
-        case .shellC, .needsYou: self = .needsYouFirst
+        case .shellC, .needsYou, .needsYouReview: self = .needsYouFirst
         default:
             // A network or Teams page opens in the chosen sidebar, B.
             guard scenario.networkPlace != nil || scenario.teamsPlace != nil || scenario.harnessPlace != nil else { return nil }
@@ -95,6 +97,54 @@ enum ShellSample {
                      detail: "jonah's consult asks to read one file. The answer is signed by this Mac.",
                      waiting: 130, expiresIn: 700)
     ])
+
+    /// A sample request in full, for its review. The worker requests carry the Attention queue's
+    /// sample output; A-007 offers the provider's exact choices.
+    static func detail(for id: String) -> NeedsYouDetail? {
+        guard let item = inbox.items.first(where: { $0.id == id }) else { return nil }
+        switch id {
+        case "Q-018":
+            return NeedsYouDetail(
+                reference: "Q-018",
+                prompt: "Should the client retry after response body bytes have already been delivered?\n\nThe reviewer found two plausible readings of the retry budget. Retrying after the first body chunk can duplicate data the caller has already consumed. Not retrying turns a late timeout into a hard failure for calls that are safe to repeat.",
+                identity: [NeedsYouFact(label: "Worker", value: "Timeout cases"),
+                           NeedsYouFact(label: "Agent", value: "Codex"),
+                           NeedsYouFact(label: "Host", value: "build-01"),
+                           NeedsYouFact(label: "Request ID", value: "req_01JD8Q018TIMEOUTCASES", isData: true)],
+                scope: [NeedsYouFact(label: "Project", value: "Relay"),
+                        NeedsYouFact(label: "Run", value: "Retry policy"),
+                        NeedsYouFact(label: "Input held by", value: "Failure paths")],
+                evidence: ["$ pnpm test timeout --reporter=spec",
+                           "✓ retries before headers are received",
+                           "✓ exhausts budget on repeated connect timeouts",
+                           "? partial response body requires policy decision"],
+                evidenceTitle: "Recent output from Timeout cases", answersHere: true, sourceTitle: "Open worker")
+        case "A-007":
+            return NeedsYouDetail(
+                reference: "A-007", prompt: "\(item.title).\n\n\(item.detail)",
+                choices: [.init(id: "allow_once", label: "Allow this edit"),
+                          .init(id: "allow_always", label: "Always allow edits in retry/"),
+                          .init(id: "reject_once", label: "Reject")],
+                identity: [NeedsYouFact(label: "Worker", value: "Backoff strategy"),
+                           NeedsYouFact(label: "Agent", value: "Codex"),
+                           NeedsYouFact(label: "Host", value: "Mac Studio")],
+                scope: [NeedsYouFact(label: "Project", value: "Relay"),
+                        NeedsYouFact(label: "Run", value: "Retry policy"),
+                        NeedsYouFact(label: "Tool call", value: "toolu_01EditRetryPolicy", isData: true)],
+                evidence: ["retry/policy.go", "- const maxBackoff = 30 * time.Second", "+ const maxBackoff = 60 * time.Second"],
+                evidenceTitle: "The proposed change", answersHere: true, sourceTitle: "Open worker")
+        default:
+            var detail = NeedsYouDetail(reference: id, prompt: "\(item.title).\n\n\(item.detail)",
+                                        identity: [NeedsYouFact(label: "From", value: item.origin.name),
+                                                   NeedsYouFact(label: item.kind.isLocal ? "Host" : "Server", value: item.origin.place)])
+            detail.answersHere = item.kind.isLocal
+            detail.sourceTitle = item.kind.isLocal ? "Open worker" : item.kind == .friendRequest ? "Open in People" : "Open in Approvals"
+            if item.kind == .accessRequest {
+                detail.leavesNote = "Review opens the grant sheet in Network › Approvals, where you choose what to share. Decline answers here. This request stays selected."
+            }
+            return detail
+        }
+    }
 
     /// The whole navigation for the given counts.
     static func navigation(inbox: NeedsYouInbox, attention: Int, selection: String,
@@ -195,6 +245,9 @@ final class ShellPreviewState {
     var collapsed: Set<String> = []
     var profile = ShellSample.profile
     var inbox = ShellSample.inbox
+    /// The request open in the sample inbox's review, and each sample question's draft.
+    var review = NeedsYouReviewState()
+    var drafts: [String: String] = [:]
     /// The sample network behind the network pages.
     let network: NetworkPreviewState
     /// The sample teams behind the Teams pages.
@@ -216,8 +269,37 @@ final class ShellPreviewState {
 
     /// The state a scenario opens with.
     convenience init(scenario: DesignPreviewScenario) {
-        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? scenario.harnessPlace ?? (scenario == .needsYou ? "needs-you" : "all-agents"),
+        let inNeedsYou = scenario == .needsYou || scenario == .needsYouReview
+        self.init(selection: scenario.networkPlace ?? scenario.teamsPlace ?? scenario.harnessPlace ?? (inNeedsYou ? "needs-you" : "all-agents"),
                   teams: scenario.teamsPlace == nil ? nil : TeamsPreviewState(scenario: scenario))
+        // The review fixture opens on the Attention queue's sample question.
+        if scenario == .needsYouReview { review.open("Q-018") }
+    }
+
+    /// What the sample inbox needs to open a request in place. Answers change the sample only.
+    func reviewContext(answered: Set<String>, resolve: @escaping (String, String) -> Void,
+                       openSource: @escaping (String) -> Void) -> NeedsYouReviewContext {
+        let id = review.selectedID
+        return NeedsYouReviewContext(
+            state: review,
+            detail: id.flatMap { id in inbox(answered: answered).items.contains { $0.id == id } ? ShellSample.detail(for: id) : nil },
+            now: Date(),
+            draft: Binding(get: { id.flatMap { self.drafts[$0] } ?? "" }, set: { if let id { self.drafts[id] = $0 } }),
+            open: { self.review.open($0) },
+            close: { self.review.close(rows: $0) },
+            setMode: { self.review.setMode($0) },
+            copy: { text in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            },
+            answer: { id, text in
+                self.drafts[id] = nil
+                self.review.recordAnswer(id, .replied(text))
+                self.decide(id, .replied(text))
+                resolve(id, text)
+            },
+            openSource: openSource,
+            remember: { self.review = $0 })
     }
 
     /// The inbox without the questions already answered in the Attention queue.
@@ -368,7 +450,16 @@ struct ShellPreviewCanvas: View {
                          },
                          open: { id in
                              if state.inbox.items.first(where: { $0.id == id })?.kind.isLocal == true { act(.select("attention")) }
-                         })
+                         },
+                         review: state.reviewContext(
+                             answered: Set(store.answers.keys),
+                             resolve: { id, text in
+                                 if DesignFixture.requests.contains(where: { $0.id == id }) { store.resolve(id, answer: text) }
+                             },
+                             openSource: { id in
+                                 let kind = state.inbox.items.first { $0.id == id }?.kind
+                                 act(.select(kind?.isLocal == true ? "attention" : kind == .friendRequest ? "people.requests" : "network.approvals"))
+                             }))
         case "runs", "project.relay":
             ShellWallPage(run: DesignFixture.content(for: store).selected, live: state.wall,
                           takeBack: { control in state.wall.controls.removeAll { $0.id == control.id } },
