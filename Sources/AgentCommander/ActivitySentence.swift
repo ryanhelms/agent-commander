@@ -423,10 +423,30 @@ struct ActivityPlan: Identifiable, Equatable {
     var items: [PlanItem]?
     /// The item count the latest event carried, when it carried one.
     var count: Int?
+    /// The provider plan this card stands for, on an identified ACP plan (`TranscriptOrigin
+    /// .planIdentity`). Nil for a `TodoWrite` list and an ACP plan event that names no plan.
+    /// Opaque: it matches events to the card and is never drawn, spoken or copied.
+    var identity: String? = nil
+    /// The provider removed this plan: the card is the line "The plan was removed".
+    var isRemoved = false
+
+    static let removedLine = "The plan was removed"
 
     var fallback: String {
         guard let count else { return "Updated the plan" }
         return count == 1 ? "Updated the plan: 1 item" : "Updated the plan: \(count) items"
+    }
+
+    /// The one line drawn in place of the checklist: that the plan was removed, or the fallback.
+    var line: String { isRemoved ? Self.removedLine : fallback }
+
+    /// The items the card draws. Nil draws `line`: a removed plan, or one whose latest event has
+    /// no record. An identified ACP plan's items are the provider's own words, so with
+    /// `hidesSecrets` (the transcript setting, `ToolDetailStore.hidesSecrets`) each is masked
+    /// whole, for the eye and for VoiceOver alike. The stored record is unchanged.
+    func shown(hidesSecrets: Bool) -> [PlanItem]? {
+        guard !isRemoved, let items else { return nil }
+        return hidesSecrets && identity != nil ? items.map(\.masked) : items
     }
 }
 
@@ -1207,6 +1227,8 @@ enum ActivityConversation {
         var out: [PrettyItem] = []
         var open: ActivityGroup?
         var planIndex: Int?
+        /// The identified ACP plans of the current turn: where each one's card or removal line is.
+        var identified: [String: Int] = [:]
 
         func flush() {
             if let group = open { out.append(.group(group)); open = nil }
@@ -1272,11 +1294,44 @@ enum ActivityConversation {
                 planIndex = out.count - 1
             }
         }
+        /// An ACP plan event that names its provider plan. Each plan has one card, where its
+        /// first update arrived, and a later update of the same plan changes that card alone.
+        /// A removal turns that plan's card into the removal line, in place.
+        ///
+        /// - An update states the whole plan: without its own record the card is the count
+        ///   line, never the list an earlier update held, nor another plan's.
+        /// - Only a live event reads a record. An event from provider history, or with any other
+        ///   source, is still matched to its plan's card by identity and shows the count line.
+        /// - A removal of a plan with no card in this turn is its own line, where it arrived.
+        ///   It is never applied to another plan. A repeated removal adds nothing.
+        /// - An update after the plan's removal is a new plan: a new card, where it arrived.
+        func identifiedPlan(_ entry: TranscriptEntry, identity: String) {
+            flush()
+            let removes = entry.origin?.kind == TranscriptOrigin.planRemovedKind
+            // The record kept from this very event, by its console sequence. A removal has none,
+            // and neither has an event this console did not observe live: provider history is
+            // numbered afresh, so its sequence may be that of an unrelated older record.
+            let items = removes || entry.origin?.planIsLive != true ? nil : facts.plan(for: entry)?.plan
+            let count = removes ? nil : entry.origin?.itemCount
+            if let index = identified[identity], case .plan(var card) = out[index], !card.isRemoved || removes {
+                card.entries.append(entry)
+                if !card.isRemoved {
+                    card.items = items
+                    card.count = count
+                    card.isRemoved = removes
+                }
+                out[index] = .plan(card)
+            } else {
+                out.append(.plan(ActivityPlan(id: entry.id + "#plan", entries: [entry], items: items, count: count,
+                                              identity: identity, isRemoved: removes)))
+                identified[identity] = out.count - 1
+            }
+        }
         func classify(_ entry: TranscriptEntry) {
             switch entry.kind {
             case .prose(_, let fromUser):
                 flush()
-                if fromUser { planIndex = nil }
+                if fromUser { planIndex = nil; identified = [:] }
                 out.append(.entry(entry))
             case .tool(let name, let detail, let result):
                 if ActivityWords.providerKind(name) == .plan, ToolStatus(result: result) != .failed {
@@ -1307,6 +1362,8 @@ enum ActivityConversation {
                     out.append(.entry(entry))
                 } else if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)
+                } else if let identity = entry.origin?.planIdentity {
+                    identifiedPlan(entry, identity: identity)
                 } else if isPlanEvent(entry) {
                     // The record kept from this very event, by its console sequence.
                     plan(entry, items: facts.plan(for: entry)?.plan, count: entry.origin?.itemCount, replaces: true)

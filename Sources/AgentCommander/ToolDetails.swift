@@ -44,6 +44,13 @@ struct PlanItem: Decodable, Equatable, Sendable, Identifiable {
         self.activeForm = activeForm
     }
 
+    /// The item as drawn when the transcript setting hides secrets: its words with every
+    /// secret-looking value replaced. The whole text is masked, before any view shortens it.
+    var masked: PlanItem {
+        PlanItem(content: SecretValues.masked(prose: content).text, status: status,
+                 activeForm: activeForm.map { SecretValues.masked(prose: $0).text })
+    }
+
     /// The items of a `TodoWrite` call's arguments, or of a plan record. Nil when `value` holds
     /// no list of items with `content` and `status`.
     static func items(_ value: OrderedJSON?) -> [PlanItem]? {
