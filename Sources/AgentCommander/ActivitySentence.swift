@@ -921,11 +921,13 @@ enum ActivityWords {
                                    fallback: ActivitySentence("Updated the plan"),
                                    failed: ActivitySentence("Couldn't update the plan"), phrase: nil, help: name)
         case .other:
+            // A tool Commander does not know takes its verb from the provider's own kind.
+            if let stated = self.kind(summary: summary, hidesSecrets: hidesSecrets) { return stated }
             let bare = bareName(name)
             return ActivityWording(
                 running: ActivitySentence(.text("Using "), .mono(bare)), done: ActivitySentence(.text("Used "), .mono(bare)),
                 fallback: ActivitySentence(.text("Used "), .mono(bare)), failed: ActivitySentence(.mono(bare), .text(" failed")),
-                phrase: ActivityPhrase(key: "other", one: "used another tool", many: "used %d other tools"), help: name)
+                phrase: otherToolPhrase, help: name)
         }
     }
 

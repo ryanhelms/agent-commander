@@ -11,7 +11,7 @@ What the design did not cover on 2026-11-26, and where each case was seen. Count
 | Tool content `diff` | Not on the console event; the full update is kept in the worker's scoped history | Inline diff with added and removed counts |
 | Tool content `terminal`, `terminal/*` | Not kept | Terminal output renderer, exit state |
 | Tool `locations` (path, line) | Not kept | "Open at line" on file sentences |
-| Tool `kind`: read, edit, delete, move, search, execute, think, fetch, switch_mode, other | Not kept | Pick the verb for tools Commander does not know |
+| Tool `kind`: read, edit, delete, move, search, execute, think, fetch, switch_mode, other | Kept on the call's stored details (`tool_kind`), with its title | Picks the verb for tools Commander does not know (built) |
 | Content blocks: image, audio, resource, resource link | Prompt media only is designed | Thumbnails, audio control and links in results and replies |
 | Stop reasons: `max_tokens`, `max_turn_requests`, `refusal`, `cancelled` | Exposed as `control.last_stop_reason`; no Swift type reads it | End-of-turn line saying why it stopped |
 | Permission option kinds: `allow_once`, `allow_always`, `reject_once`, `reject_always` | Choices keep ID and label only | Order and style by kind; "always" worded distinctly |

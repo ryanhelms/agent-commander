@@ -542,13 +542,14 @@ This section is the rule for the Pretty view's transcript. Its main view is buil
 | Background work: ACP `subagent_update`, network submit | Not yet built | spec section G |
 | Edge cases of the older Claude runner: end-of-turn line, placed thoughts, provider tool sentences, question card, plan document, deliverable card, known failures | Built | `PrettyRecords.swift`, `PrettyRecordViews.swift` |
 | ACP tool content `diff`: the change well in an opened line, and counts beside the sentence | Built | `ResultChanges.swift` |
-| Edge cases of ACP: terminal and kind content, content blocks, permission option kinds, elicitation restyle (its after-reply line is built), session message, suggestion chips, gap row | Not yet built | spec section H |
+| Edge cases of ACP: terminal content, content blocks, permission option kinds, elicitation restyle (its after-reply line is built), session message, suggestion chips, gap row | Not yet built | spec section H |
 | ACP notice: a warning or an error in the open in attention ink, an informational notice folded, a notice with no level in the open in secondary ink | Built | `PrettyNotice.swift` (`NoticeMark`), `ConversationChunks.swift` (`ActivityEvent`) |
 | ACP `plan_update` and `plan_removed` that name their plan: one checklist card per plan, updated in place, and the removal line | Built | `ActivitySentence.swift` (`ActivityConversation.items`), `ConsoleDisplay.swift` |
 | ACP compaction: the divider with the provider's summary, the live line and the failure line | Built | `PrettyCompaction.swift`, `PrettyRecordViews.swift` (`PrettyCompactionDivider`) |
 | ACP content blocks in a reply: a resource link and an embedded text resource | Built | `ReplyAttachments.swift` |
 | ACP session message: an incoming text message from another session | Built | `SessionMessages.swift` |
 | ACP tool location: "Open at line N" on an opened line | Built | `ToolLocation.swift` |
+| ACP tool kind: the verb of a tool Commander does not know, with the provider's title as its object | Built | `ProviderToolKind.swift` |
 | ACP form reply: the line "Answered a form", "Declined a form" or "Cancelled a form" | Built | `PrettyRecords.swift` (`PrettyFormOutcome`), `PrettyRecordViews.swift` |
 
 **Metrics.** `PrettyMetrics` holds every Pretty size: `body` 13 pt on the focused worker and coordinator, 12.5 pt on a wall tile, 11.5 pt in the PiP; the 9 pt list and field corner, the 5 pt tag and well corner, and the 13 pt corner of the prompt bubble, request form and message box. A Pretty view takes its sizes from there and its inks from `Palette` and `Term`.
@@ -655,6 +656,24 @@ As built, where the spec leaves a case open:
   - **Everywhere the same.** The coordinator, wall tile, focused worker and PiP draw the same row from the same value. Its fields action opens the notice's own record. Console and Terminal keep the service's text, `[ACP notice] title`.
   - **The PiP.** A warning, an error and a notice with no level of the current turn are always shown, in the order they arrived, also when they came before the turn's latest group that holds a call (`ActivityConversation.recent`). An informational notice stays in its group, and a notice of an earlier turn is left out, as that turn is. Harness stderr and every other row are chosen as before.
 - **Provider tool sentences**: "Loaded tools", "Sent **tracer** a message", "Started a child agent: …", "Started watching: …" and "Scheduled "…"" with an `accepted` tag, "Waited", "Ran `command`" for `exec`, "Ran a script" for `js`. A tool is matched on its whole name, so an extension's `wait` keeps "Used `wait`".
+- **Tool kind** (`ProviderToolKind`, no new component or token), for a tool Commander does not know by name: the provider's own ACP kind picks the verb and the provider's title is the object, in the sentence's named-thing weight. A tool Commander knows by name keeps its own sentence whatever kind is sent.
+
+  | Kind, as sent | Running | Finished | Failed | Summary phrase, with a location |
+  |---|---|---|---|---|
+  | `read` | Reading *title* | Read *title* | Couldn't read *title* | read a file / read N files |
+  | `edit` | Editing *title* | Edited *title* | Couldn't edit *title* | edited a file / edited N files |
+  | `delete` | Deleting *title* | Deleted *title* | Couldn't delete *title* | deleted a file / deleted N files |
+  | `move` | Moving *title* | Moved *title* | Couldn't move *title* | moved a file / moved N files |
+  | `search` | Searching *title* | Searched *title* | Couldn't search *title* | ran a search / ran N searches |
+  | `execute` | Running *title* | Ran *title* | Couldn't run *title* | ran a command / ran N commands |
+  | `think` | Thinking through *title* | Thought through *title* | Couldn't think through *title* | thought / thought N times |
+  | `fetch` | Fetching *title* | Fetched *title* | Couldn't fetch *title* | fetched a file / fetched N files, counted apart from a named web fetch's pages |
+  | `switch_mode` | Switching mode: *title* | Switched mode: *title* | Couldn't switch mode: *title* | switched mode / switched mode N times |
+
+  - **Read from the call's own record.** The kind and the title come only from the stored details of that same call, which the service keeps from the provider's typed update and serves on the owner socket. The kind is matched on its whole wire value. The call's display name and text never choose a kind, and no other call's record is read.
+  - **The title as sent.** Its first line, whole. With "Hide values that look like secrets" on, a secret-looking value in it is hidden before the sentence is built, so the line, its help and what VoiceOver reads hold the hidden form.
+  - **Fallback.** `other`, any other kind, no kind, no title, or no stored record keeps "Using `tool`", "Used `tool`" and "`tool` failed".
+  - **Closed group.** The call counts under its kind's phrase only when its own record holds one exact file location, the one "Open at line" uses. Without it the call counts as "used N other tools". A title is never read as a path. Grouping is unchanged: a failed call stays in the open under its group, and a cancelled, declined or interrupted call keeps its tag.
 - **Question card** (`PrettyChoiceCard`): a provider's own question while it waits, with each option and its description, a square mark when several may be chosen. Commander does not answer this tool, so the card is read-only and ends "Answer this in the terminal." Answered, it is the line "Asked: "…"".
 - **Plan document** (`PrettyPlanDocument`): "Proposed a plan" with an `approved` tag once the call returns, then the plan as Markdown beside the report block's rule. Clamped on a tile and the PiP. While a permission request holds the call, the approval line stays ("Needs your approval to use `ExitPlanMode`") and the same document sits under it, above the request form's choices, so the plan is read before the decision. The permission and the call must agree: the document shows only when the selected pending permission names a tool call by ID and exactly one open call of this worker has that ID (`RequestPresentation.exactApprovalToolID`), however many other calls are open. The text is the record this worker keeps under that call's own ID (`PrettyToolInput.pendingPlan`): never another worker's call with the same ID, another call, or the latest plan. A permission whose ID matches no open call, or more than one, marks no call. A request that names no call keeps the approval line on the one open call, with no document. With no usable plan stored, the approval line and the form stand alone.
 - **Identified ACP plan** (`PrettyPlanCard`, no new component or token): an ACP `plan_update` or `plan_removed` event whose reference carries `planIdentity`, the service's fingerprint of the provider session and that plan's own ID. Only a value of exactly 64 lower-case hexadecimal digits on one of those two kinds counts (`TranscriptOrigin.planIdentity`). Any other event stays what it was: a folded session update, or the one-per-turn card of an older `plan` event or a `TodoWrite` list.
@@ -678,7 +697,7 @@ As built, where the spec leaves a case open:
   - **Secrets.** With "Hide values that look like secrets" on, a secret-looking value in a drawn line is hidden, with "N values hidden" and Reveal under the well. Until the service in use has said what is saved, the lines are hidden too (`ToolDetailStore.hidesSecrets`). Counts are unchanged.
   - An edit whose record holds no diff keeps its result as before, or "The provider sent no diff for this edit."
 
-Not built, all ACP: the Terminal output renderer for tool content, the tool `kind` verbs, the other content blocks (audio, a blob resource, an image of another type or in a reply), permission option kinds, the elicitation restyle, the session message line, suggestion chips and the gap row. Also not built: "You chose: …" under an answered question, the API error line, hook message lines, and Approve and Reject on the plan document. A case with no data shows its fallback, never a guess.
+Not built, all ACP: the Terminal output renderer for tool content, the other content blocks (audio, a blob resource, an image of another type or in a reply), permission option kinds, the elicitation restyle, the session message line, suggestion chips and the gap row. Also not built: "You chose: …" under an answered question, the API error line, hook message lines, and Approve and Reject on the plan document. A case with no data shows its fallback, never a guess.
 
 **Type and colour.** `body` for prose and sentences; secondary ink for summaries and finished sentences; `failure` ink for a failed or blocked sentence; the terminal face for values. No new colours.
 
