@@ -667,8 +667,9 @@ struct NestedWorkerGroup<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(name), \(nestedCount) nested" + (hasDisconnected ? ", a worker is disconnected" : "")
-                                + (reconnectingHost.map { ", host \($0) reconnecting" } ?? ""))
+            .accessibilityLabel(NestedWorkerGroupLabel.spoken(name: name, nestedCount: nestedCount, collapsed: collapsed,
+                                                              hasRequest: hasRequest, hasDisconnected: hasDisconnected,
+                                                              reconnectingHost: reconnectingHost))
             .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
             .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
@@ -677,107 +678,149 @@ struct NestedWorkerGroup<Content: View>: View {
     }
 }
 
+/// What VoiceOver reads for a worker group's heading. A folded group hides its tiles, so the
+/// "Needs input" cue its heading shows is spoken with it; an open group's tiles say it themselves.
+enum NestedWorkerGroupLabel {
+    static func spoken(name: String, nestedCount: Int, collapsed: Bool, hasRequest: Bool,
+                       hasDisconnected: Bool, reconnectingHost: String?) -> String {
+        "\(name), \(nestedCount) nested" + (collapsed && hasRequest ? ", needs input" : "")
+            + (hasDisconnected ? ", a worker is disconnected" : "")
+            + (reconnectingHost.map { ", host \($0) reconnecting" } ?? "")
+    }
+}
+
 // MARK: - WorkerWall
 
-/// Multirow wall. Root workers without children fill rows of up to three; each parent with nested
-/// workers gets a collapsible group. The last row can give way to the attention stack.
-struct WorkerWall<Tile: View>: View {
+/// Multirow wall, laid out from a `WallPlan`. Standalone workers fill rows of up to three columns;
+/// each parent with nested workers gets a collapsible group. The last row can give way to the
+/// attention stack. Whatever follows the local workers (the remote band) is the `footer`, in the
+/// same scroll, so it never takes height the tiles need. Every tile is one child keyed by its
+/// worker's ID, so a new column count, or a worker moving into a group, moves tiles without
+/// rebuilding them.
+struct WorkerWall<Tile: View, Footer: View>: View {
     let layout: WallLayout
     let collapsed: Set<String>
     /// Width kept clear at the trailing edge of the last row for the PiP. Zero when no PiP is showing.
     var reservedTrailing: CGFloat = 0
+    /// Where the wall is scrolled to, kept by its owner so it survives a zoom and the way back.
+    /// The wall starts from it and reports every change. Nil keeps the offset to the wall itself.
+    var scrollOffset: Binding<CGFloat>? = nil
+    /// The worker whose tile is brought into view when this changes.
+    var reveal: WallReveal? = nil
     let toggleGroup: (String) -> Void
     @ViewBuilder let tile: (WorkerPresentation) -> Tile
+    @ViewBuilder let footer: Footer
 
-    private struct Row: Identifiable {
-        let id: String
-        var leaves: [WorkerPresentation] = []
-        var group: WorkerGroup? = nil
-    }
+    /// The footer's laid-out height, so the local rows are planned in the height it leaves.
+    @State private var footerHeight: CGFloat = 0
+    @State private var position = ScrollPosition(edge: .top)
+    /// The offset as last reported. A reference, so scrolling never invalidates the wall.
+    @State private var tracker = WallScrollTracker()
 
     var body: some View {
         if layout.workers.isEmpty {
-            ContentUnavailableView("Waiting for workers", systemImage: "terminal",
-                                   description: Text("Delegated workers will appear here."))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                ContentUnavailableView("Waiting for workers", systemImage: "terminal",
+                                       description: Text("Delegated workers will appear here."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                footer
+            }
         } else {
             GeometryReader { geo in
-                let columns = max(1, min(3, Int((geo.size.width + Metric.tileGap) / (Metric.minimumTileWidth + Metric.tileGap))))
-                let rows = makeRows(columns: columns)
-                let heights = rowHeights(rows, columns: columns, available: geo.size.height)
+                let plan = WallPlan(WallPlan.Input(width: geo.size.width, height: geo.size.height, layout: layout,
+                                                   collapsed: collapsed, reservedTrailing: reservedTrailing,
+                                                   footerHeight: footerHeight))
                 ScrollView(.vertical) {
-                    VStack(spacing: Metric.wallRowGap) {
-                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                            rowView(row, columns: columns, height: heights[index])
-                                .padding(.trailing, reserve(for: row, isLast: index == rows.count - 1, count: rows.count))
+                    VStack(spacing: 0) {
+                        // Every tile on the wall is a child of this one layout, standalone or inside
+                        // a group, and each group's heading and frame is drawn under its tiles. So
+                        // a worker that gains its first nested worker moves into the new group as
+                        // the same view, with its keyboard focus and terminal.
+                        let shown = plan.shownWorkers
+                        let byID = Dictionary(layout.workers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                        WallFrames(frames: plan.groups.map(\.frame) + shown.map { plan.frame(of: $0) ?? .zero },
+                                   height: plan.tilesHeight) {
+                            ForEach(layout.groups) { group in groupFrame(group) }
+                            ForEach(shown.compactMap { byID[$0] }) { worker in tile(worker) }
                         }
+                        VStack(spacing: 0) { footer }
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
                     }
+                }
+                .scrollPosition($position)
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
+                    tracker.report(offset, to: scrollOffset)
                 }
                 // The clipped region tiles measure themselves against to report whether they are in view.
                 .coordinateSpace(.named(ConsoleVisibility.viewport))
-            }
-        }
-    }
-
-    private func makeRows(columns: Int) -> [Row] {
-        let leafRows = layout.leaves.chunked(into: columns).enumerated().map { index, chunk in
-            Row(id: "leaves-\(index)", leaves: chunk)
-        }
-        return leafRows + layout.groups.map { Row(id: "group-\($0.id)", group: $0) }
-    }
-
-    private func isCollapsed(_ row: Row) -> Bool {
-        row.group.map { collapsed.contains($0.id) } ?? false
-    }
-
-    private func reserve(for row: Row, isLast: Bool, count: Int) -> CGFloat {
-        isLast && count > 1 && !isCollapsed(row) ? reservedTrailing : 0
-    }
-
-    /// Leaf rows weigh 1.1 against 1 for a group's tile row, as in the concept (flex 1.1 : 1).
-    private func rowHeights(_ rows: [Row], columns: Int, available: CGFloat) -> [CGFloat] {
-        let collapsedHeight = Metric.groupHeaderHeight + 2
-        let weights: [CGFloat] = rows.map { row in
-            guard let group = row.group else { return 1.1 }
-            if collapsed.contains(group.id) { return 0 }
-            return CGFloat(max(1, group.all.chunked(into: columns).count))
-        }
-        let fixed = CGFloat(rows.filter(isCollapsed).count) * collapsedHeight
-        let gaps = CGFloat(max(0, rows.count - 1)) * Metric.wallRowGap
-        let total = max(1, weights.reduce(0, +))
-        let unit = max(0, available - fixed - gaps) / total
-        return weights.map { weight in
-            weight == 0 ? collapsedHeight : max(Metric.minimumWallRowHeight * max(1, weight.rounded(.down)), unit * weight)
-        }
-    }
-
-    @ViewBuilder private func rowView(_ row: Row, columns: Int, height: CGFloat) -> some View {
-        if let group = row.group {
-            let isClosed = collapsed.contains(group.id)
-            let reconnecting = Set(group.all.filter(\.hostIsReconnecting).map(\.host)).sorted()
-            NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
-                              hasRequest: group.all.contains { $0.request != nil },
-                              hasDisconnected: group.all.contains(where: \.isDisconnected),
-                              reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
-                              toggle: { toggleGroup(group.id) }) {
-                VStack(spacing: 9) {
-                    ForEach(Array(group.all.chunked(into: columns).enumerated()), id: \.offset) { _, chunk in
-                        tileRow(chunk)
-                    }
+                .onAppear { restore() }
+                // The same worker stays at the top when the wall is laid out again.
+                .onChange(of: plan) { old, new in
+                    let anchored = WallPlan.anchoredOffset(tracker.offset, from: old, to: new)
+                    if abs(anchored - tracker.offset) > 0.5 { scroll(to: anchored) }
+                }
+                .onChange(of: reveal) { _, reveal in
+                    guard let reveal, let offset = plan.offset(revealing: reveal.workerID, from: tracker.offset) else { return }
+                    scroll(to: offset)
                 }
             }
-            .frame(height: isClosed ? nil : height)
-        } else {
-            tileRow(row.leaves).frame(height: height)
         }
     }
 
-    private func tileRow(_ workers: [WorkerPresentation]) -> some View {
-        HStack(spacing: Metric.tileGap) {
-            ForEach(workers) { worker in
-                tile(worker).frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+    private func scroll(to offset: CGFloat) {
+        tracker.offset = offset
+        position.scrollTo(y: offset)
+    }
+
+    /// Returns to the offset the owner kept. Reports are held back until then, so the wall's
+    /// first layout at the top does not replace the kept offset.
+    private func restore() {
+        let kept = scrollOffset?.wrappedValue ?? 0
+        guard kept > 0.5 else { tracker.isRestored = true; return }
+        scroll(to: kept)
+        Task {
+            // Once more after the first layout, in case the content was not yet measured.
+            try? await Task.sleep(for: .milliseconds(60))
+            if !tracker.isRestored, abs(tracker.offset - kept) < 0.5 { position.scrollTo(y: kept) }
+            tracker.isRestored = true
         }
+    }
+
+    /// A group's heading and frame. Its tiles are the wall's own children, placed over it.
+    @ViewBuilder private func groupFrame(_ group: WorkerGroup) -> some View {
+        let isClosed = collapsed.contains(group.id)
+        let reconnecting = Set(group.all.filter(\.hostIsReconnecting).map(\.host)).sorted()
+        NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
+                          hasRequest: group.all.contains { $0.request != nil },
+                          hasDisconnected: group.all.contains(where: \.isDisconnected),
+                          reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
+                          toggle: { toggleGroup(group.id) }) {
+            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
+        }
+    }
+}
+
+extension WorkerWall where Footer == EmptyView {
+    /// A wall with nothing after its local workers.
+    init(layout: WallLayout, collapsed: Set<String>, reservedTrailing: CGFloat = 0,
+         scrollOffset: Binding<CGFloat>? = nil, reveal: WallReveal? = nil,
+         toggleGroup: @escaping (String) -> Void, @ViewBuilder tile: @escaping (WorkerPresentation) -> Tile) {
+        self.init(layout: layout, collapsed: collapsed, reservedTrailing: reservedTrailing, scrollOffset: scrollOffset,
+                  reveal: reveal, toggleGroup: toggleGroup, tile: tile, footer: { EmptyView() })
+    }
+}
+
+/// The wall's scroll offset as last reported, held outside view state.
+@MainActor final class WallScrollTracker {
+    var offset: CGFloat = 0
+    /// The kept offset has been applied, so reports may replace it.
+    var isRestored = false
+
+    func report(_ offset: CGFloat, to binding: Binding<CGFloat>?) {
+        guard isRestored || offset > 0.5 else { return }
+        isRestored = true
+        self.offset = offset
+        if let binding, abs(binding.wrappedValue - offset) > 0.5 { binding.wrappedValue = offset }
     }
 }
 

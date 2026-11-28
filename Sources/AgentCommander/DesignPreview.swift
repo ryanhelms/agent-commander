@@ -314,6 +314,64 @@ enum DesignPreviewScenario: String, CaseIterable, Identifiable {
     static let hidesGallery = ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_GALLERY"] == "hidden"
 }
 
+/// Preview only: how many workers the sample run "Retry policy" has. Stepping through the stages
+/// changes the wall inside the one cockpit that is already on screen, the way the service would
+/// report workers arriving, finishing, dropping and being cleared, so the coordinator, its focus
+/// and its draft can be watched across each change. It exists only in a design-preview launch:
+/// the gallery menu's "Worker wall" choices, ⌥⌘↓ and ⌥⌘↑, or `AGENT_COMMANDER_PREVIEW_WALL` for
+/// the stage to start in. The live app has no route to it.
+enum PreviewWallStage: String, CaseIterable, Identifiable {
+    /// The concept's wall: three standalone workers and the nested group.
+    case concept
+    case none
+    case one
+    case two
+    case three
+    /// The same three, after Retry telemetry delegated its first nested worker: it moves from
+    /// the standalone row into a new group.
+    case regrouped
+    /// Seven standalone workers and the nested group: an incomplete row and a wall that scrolls.
+    case many
+    /// One worker left, and its turn has completed.
+    case finished
+    /// One worker left, and its host has dropped.
+    case disconnected
+    /// The last worker is no longer listed.
+    case cleared
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .concept: "Concept wall, 5 workers"
+        case .none: "No workers"
+        case .one: "1 worker"
+        case .two: "2 workers"
+        case .three: "3 workers"
+        case .regrouped: "3 workers, one gains a nested worker"
+        case .many: "9 workers"
+        case .finished: "Last worker finished"
+        case .disconnected: "Last worker disconnected"
+        case .cleared: "Cleared"
+        }
+    }
+
+    /// The nested group, with Timeout cases and its request, is on the wall.
+    var hasGroup: Bool { self == .concept || self == .many }
+
+    /// The stage `offset` steps on, staying at either end.
+    func stepped(_ offset: Int) -> PreviewWallStage {
+        let all = Self.allCases
+        let index = (all.firstIndex(of: self) ?? 0) + offset
+        return all[min(max(index, 0), all.count - 1)]
+    }
+
+    /// The stage named in the environment, otherwise the concept's wall.
+    static let requested: PreviewWallStage = {
+        ProcessInfo.processInfo.environment["AGENT_COMMANDER_PREVIEW_WALL"].flatMap(PreviewWallStage.init(rawValue:)) ?? .concept
+    }()
+}
+
 // MARK: - Preview state
 
 /// In-memory state of the preview: which view is showing and what the developer has changed in
@@ -343,6 +401,10 @@ final class PreviewStore {
 
     var liveTick: Int { liveActivity ? tick : 0 }
 
+    /// The sample run's worker wall. Changing it keeps the page that is on screen: nothing else
+    /// in the sample workspace is reset and the cockpit is not rebuilt.
+    var wallStage = PreviewWallStage.requested
+
     /// Sample source records, read through the production model and the production envelope reader.
     let source = ConsoleSourceModel { workerID, kind, cursor in
         try await SourceFixture.page(workerID: workerID, source: kind, cursor: cursor)
@@ -365,6 +427,7 @@ final class PreviewStore {
         interrupted = []
         stopped = []
         tick = 0
+        wallStage = .concept
         source.inspect(nil)
         agentProject = project ?? "All projects"
         self.scenario = scenario
@@ -481,6 +544,7 @@ struct DesignPreviewPage: View {
             .environment(\.reduceTransparencyOverride, store.scenario.usesAccessibleAppearance)
             .environment(\.increaseContrastOverride, store.scenario.usesAccessibleAppearance)
             .background(PreviewWindowFrame())
+            .background { if store.scenario.isCockpit { PreviewWallKeys(store: store) } }
             .task { await store.runActivity() }
             .task(id: store.visit) { await store.settle(visit: store.visit) }
             .onAppear {
@@ -506,6 +570,26 @@ struct DesignPreviewPage: View {
                 PreviewCanvas(store: store)
             }
         }
+    }
+}
+
+/// Preview only: ⌥⌘↓ and ⌥⌘↑ step the sample run's worker wall through its stages, in the cockpit
+/// that is on screen. The keys work with the gallery control hidden.
+struct PreviewWallKeys: View {
+    let store: PreviewStore
+
+    var body: some View {
+        Group {
+            Button("Next worker wall stage") { store.wallStage = store.wallStage.stepped(1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .accessibilityIdentifier("preview-wall-next")
+            Button("Previous worker wall stage") { store.wallStage = store.wallStage.stepped(-1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .accessibilityIdentifier("preview-wall-previous")
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }
 }
 
@@ -548,6 +632,14 @@ struct PreviewGalleryControl: View {
                     ForEach(ThemeID.allCases) { id in Text(Theme.named(id).name).tag(id) }
                 }
                 .pickerStyle(.inline)
+                if store.scenario.isCockpit {
+                    Divider()
+                    // Changes the sample run's workers in the cockpit that is on screen (⌥⌘↓, ⌥⌘↑).
+                    Picker("Worker wall", selection: $store.wallStage) {
+                        ForEach(PreviewWallStage.allCases) { stage in Text(stage.title).tag(stage) }
+                    }
+                    .pickerStyle(.inline)
+                }
                 Divider()
                 Toggle("Live sample activity", isOn: $store.liveActivity)
                 Button("Reset sample data") { store.go(to: store.scenario) }
@@ -897,7 +989,11 @@ enum DesignFixture {
     /// stack. A request whose worker the developer does not control stays with that worker's
     /// owner: it is on the worker's tile as status and is not listed here.
     static func pending(for store: PreviewStore) -> [RequestPresentation] {
-        requests.filter { store.answers[$0.id] == nil && holds($0.workerID, store: store) }
+        requests.filter { request in
+            // Timeout cases asks only while the wall stage has its group.
+            store.answers[request.id] == nil && holds(request.workerID, store: store)
+                && (request.workerID != "W-047" || store.wallStage.hasGroup)
+        }
     }
 
     static func runs(for store: PreviewStore) -> [RunContent] {
@@ -1018,10 +1114,13 @@ enum DesignFixture {
         // shows the expanded turn.
         let timeoutOutput = store.ui.zoomedWorkerID == "W-047" ? timeoutTranscript : timeoutTail
         let run = "Retry policy"
-        let wall = WallLayout(
+        let stage = store.wallStage
+        let concept = WallLayout(
             leaves: [
+                // The worker every stage keeps: the last one left finishes or drops.
                 worker(store, id: "W-043", name: "Backoff strategy", client: .codex, host: .macStudio,
-                       branch: "feat/backoff", state: .working, started: "14:16:34", run: run,
+                       branch: "feat/backoff", state: stage == .finished ? .completed : .working,
+                       started: "14:16:34", run: run, disconnected: stage == .disconnected,
                        task: "Implement capped exponential backoff with jitter. Keep the retry budget per request.",
                        output: backoffOutput),
                 worker(store, id: "W-044", name: "Retry telemetry", client: .codex, host: .build01,
@@ -1047,6 +1146,7 @@ enum DesignFixture {
                                output: timeoutOutput)
                     ])
             ])
+        let wall = staged(concept, stage: stage, store: store, run: run)
         let lead = coordinator(store, runID: "R-042", id: "W-042", name: "Claude Code", client: .claude,
                                run: run, task: assignment, started: "14:08:02", output: coordinatorOutput)
         return RunContent(
@@ -1054,6 +1154,46 @@ enum DesignFixture {
             title: run, task: assignment, client: .claude, branch: "main", startedAt: "14:08",
             status: .running, canStop: true, coordinator: lead, wall: wall,
             awaiting: wall.workers.compactMap(\.request))
+    }
+
+    /// The concept's wall cut down or filled out for a preview wall stage. Workers keep their IDs
+    /// and their order from stage to stage, as a run's workers do.
+    private static func staged(_ concept: WallLayout, stage: PreviewWallStage, store: PreviewStore, run: String) -> WallLayout {
+        switch stage {
+        case .concept: return concept
+        case .none, .cleared: return WallLayout()
+        case .one, .finished, .disconnected: return WallLayout(leaves: Array(concept.leaves.prefix(1)))
+        case .two: return WallLayout(leaves: Array(concept.leaves.prefix(2)))
+        case .three: return WallLayout(leaves: concept.leaves)
+        case .regrouped:
+            let nested = worker(store, id: "W-065", name: "Counter names", client: .codex, host: .build01,
+                                branch: "feat/telemetry", state: .working, started: "14:17:44", run: run,
+                                parents: ["Retry telemetry"],
+                                task: "Check the new counter names against the metrics naming guide.",
+                                output: telemetryOutput)
+            return WallLayout(leaves: [concept.leaves[0], concept.leaves[2]],
+                              groups: [WorkerGroup(parent: concept.leaves[1], members: [nested])])
+        case .many:
+            let more = [
+                worker(store, id: "W-061", name: "Budget accounting", client: .codex, host: .macStudio,
+                       branch: "feat/budget", state: .working, started: "14:17:02", run: run,
+                       task: "Track the retry budget per request and release it when the request ends.",
+                       output: backoffOutput),
+                worker(store, id: "W-062", name: "Idempotency keys", client: .claude, host: .build01,
+                       branch: "feat/idempotency", state: .idle, started: "14:17:09", run: run,
+                       task: "List the calls that carry an idempotency key and confirm each is safe to retry.",
+                       output: compatibilityOutput),
+                worker(store, id: "W-063", name: "Circuit breaker", client: .codex, host: .lab02,
+                       branch: "feat/breaker", state: .working, started: "14:17:21", run: run,
+                       task: "Open the circuit after repeated upstream failures and close it on the first success.",
+                       output: telemetryOutput),
+                worker(store, id: "W-064", name: "Changelog", client: .mcp, host: .macStudio,
+                       branch: "main", state: .completed, started: "14:17:30", run: run,
+                       task: "Describe the new retry defaults for the release notes.",
+                       output: compatibilityOutput)
+            ]
+            return WallLayout(leaves: concept.leaves + more, groups: concept.groups)
+        }
     }
 
     private static func eventSchemaRun(_ store: PreviewStore) -> RunContent {
@@ -1100,6 +1240,7 @@ enum DesignFixture {
     private static func worker(_ store: PreviewStore, id: String, name: String, client: AgentClient, host: SampleHost,
                                branch: String, state: TaskState, started: String, run: String,
                                parents: [String] = [], request: RequestPresentation? = nil,
+                               disconnected: Bool = false,
                                task: String, output: String) -> WorkerPresentation {
         let holder = parents.last ?? run
         var output = output
@@ -1120,7 +1261,7 @@ enum DesignFixture {
         } else if store.interrupted.contains(id) {
             state = .idle
             output += "\n\n^C Turn interrupted from Commander."
-        } else if id == disconnectedWorkerID {
+        } else if id == disconnectedWorkerID || disconnected {
             // The worker keeps its last output and its pending request; only the connection changed.
             state = .disconnected
             error = disconnectReason(host: host.name)

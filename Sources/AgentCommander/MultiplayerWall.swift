@@ -139,6 +139,9 @@ struct RemoteWorkerGroup: View {
     let now: Date
     var onOpen: ((MultiplayerRemoteWorker) -> Void)? = nil
     var onOpenAll: (() -> Void)? = nil
+    /// The owner's keyboard focus among the tiles, by remote worker ID, so a zoom can return to
+    /// the tile it came from. Each tile stays the native button it is.
+    var focus: FocusState<String?>.Binding? = nil
 
     @Environment(\.theme) private var theme
     var body: some View {
@@ -165,17 +168,14 @@ struct RemoteWorkerGroup: View {
             .foregroundStyle(.inkSecondary)
             .frame(minHeight: Metric.groupHeaderHeight)
             .accessibilityElement(children: .contain)
-            HStack(spacing: Metric.tileGap) {
+            // As many equal columns as fit, so a card stays readable in a narrow wall. A lone tile
+            // keeps a column's width instead of stretching across the wall.
+            RemoteWorkerGrid {
                 ForEach(shown) { worker in
                     RemoteWorkerTile(worker: worker, now: now, onOpen: onOpen.map { open in { open(worker) } })
-                        .frame(maxWidth: .infinity)
-                }
-                // Keeps a lone tile at a column's width instead of stretching across the wall.
-                ForEach(0..<max(0, min(2, Self.limit - shown.count)), id: \.self) { _ in
-                    Color.clear.frame(maxWidth: .infinity).accessibilityHidden(true)
+                        .modifier(RemoteTileFocus(id: worker.id, focus: focus))
                 }
             }
-            .frame(height: Self.tileHeight)
         }
         .padding(.horizontal, 9)
         .padding(.bottom, 9)
@@ -183,6 +183,52 @@ struct RemoteWorkerGroup: View {
         .overlay { shape.strokeBorder(MultiplayerTheme.groupEdge) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Remote workers")
+    }
+}
+
+/// Binds a remote tile's keyboard focus to its owner's, when the owner keeps one.
+private struct RemoteTileFocus: ViewModifier {
+    let id: String
+    let focus: FocusState<String?>.Binding?
+
+    func body(content: Content) -> some View {
+        if let focus { content.focused(focus, equals: id) } else { content }
+    }
+}
+
+/// Lays remote worker tiles out in equal columns: three where the wall is wide enough, fewer where
+/// a card would go under its least readable width, with further tiles on the next row. Every tile
+/// has the group's fixed height, and a row that is not full stays at the column width.
+struct RemoteWorkerGrid: Layout {
+    /// The least width a compact card keeps its task, owner and server lines readable at.
+    static let minimumTileWidth: CGFloat = 200
+
+    static func columns(fitting width: CGFloat) -> Int {
+        max(1, min(RemoteWorkerGroup.limit, Int((width + Metric.tileGap) / (minimumTileWidth + Metric.tileGap))))
+    }
+
+    /// The tiles' frames across a width, in order.
+    static func frames(count: Int, width: CGFloat) -> [CGRect] {
+        let columns = columns(fitting: width)
+        let tile = max(0, (width - CGFloat(columns - 1) * Metric.tileGap) / CGFloat(columns))
+        return (0..<count).map { index in
+            CGRect(x: CGFloat(index % columns) * (tile + Metric.tileGap),
+                   y: CGFloat(index / columns) * (RemoteWorkerGroup.tileHeight + Metric.tileGap),
+                   width: tile, height: RemoteWorkerGroup.tileHeight)
+        }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? CGFloat(RemoteWorkerGroup.limit) * Self.minimumTileWidth
+        return CGSize(width: width, height: Self.frames(count: subviews.count, width: width).map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = Self.frames(count: subviews.count, width: bounds.width)
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
     }
 }
 
@@ -297,6 +343,8 @@ struct MultiplayerRemoteWorkerBand: View {
     var model: MultiplayerModel
     /// Zooms a remote worker in the cockpit. Without it, a tile opens its hand-off's window page.
     var onZoom: ((MultiplayerRemoteWorker) -> Void)? = nil
+    /// The cockpit's keyboard focus among the remote tiles.
+    var focus: FocusState<String?>.Binding? = nil
 
     var body: some View {
         let workers = model.share.remoteWorkers
@@ -308,7 +356,8 @@ struct MultiplayerRemoteWorkerBand: View {
                                   },
                                   onOpenAll: workers.first.map { first in
                                       { MultiplayerRemoteWorkerLauncher.openList(on: first.server) }
-                                  })
+                                  },
+                                  focus: focus)
                     .padding(.top, Metric.wallRowGap)
                     .transition(.opacity)
             }
