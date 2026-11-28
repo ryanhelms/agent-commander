@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"agentcommander.network/pilot/internal/devicekeys"
+	"agentcommander.network/pilot/internal/identity"
 )
 
 const heldRelay = "https://held.example.test"
@@ -64,7 +66,7 @@ type startupTestReply struct {
 	Error string
 }
 
-func startupTestManager(t *testing.T, holdSave bool) (*Manager, *gatedCredentials, func(string, any) startupTestReply, *atomic.Int32) {
+func startupTestManager(t *testing.T, holdSave bool, socket string) (*Manager, *gatedCredentials, func(string, any) startupTestReply, *atomic.Int32) {
 	t.Helper()
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
@@ -83,7 +85,7 @@ func startupTestManager(t *testing.T, holdSave bool) (*Manager, *gatedCredential
 	}
 	browsers := &atomic.Int32{}
 	c := ManagerConfig{
-		Dir: state, NoPresence: true,
+		Dir: state, NoPresence: true, CommanderSocket: socket,
 		OpenBrowser: func(string) error { browsers.Add(1); return nil },
 		Secrets: func(url string) (devicekeys.Store, error) {
 			if url == heldRelay {
@@ -171,7 +173,7 @@ func waitCredentialLoad(t *testing.T, s *gatedCredentials) {
 }
 
 func TestStartupKeychainPendingKeepsLocalAPIAndOtherRelaysResponsive(t *testing.T) {
-	m, store, request, browsers := startupTestManager(t, false)
+	m, store, request, browsers := startupTestManager(t, false, "")
 	waitCredentialLoad(t, store)
 	waitManagerAgent(t, m, "ready")
 	reply := request("servers", map[string]string{})
@@ -264,7 +266,7 @@ func TestStartupKeychainPendingKeepsLocalAPIAndOtherRelaysResponsive(t *testing.
 }
 
 func TestStartupKeychainAllowedReadContinuesTheSameActivation(t *testing.T) {
-	m, store, request, _ := startupTestManager(t, false)
+	m, store, request, _ := startupTestManager(t, false, "")
 	waitCredentialLoad(t, store)
 	m.mu.Lock()
 	first := m.activations["held"]
@@ -286,7 +288,7 @@ func TestStartupKeychainAllowedReadContinuesTheSameActivation(t *testing.T) {
 }
 
 func TestStartupKeychainPendingWhileCreatingCredentials(t *testing.T) {
-	m, store, request, _ := startupTestManager(t, true)
+	m, store, request, _ := startupTestManager(t, true, "")
 	waitCredentialLoad(t, store)
 	store.results <- os.ErrNotExist
 	select {
@@ -304,7 +306,7 @@ func TestStartupKeychainPendingWhileCreatingCredentials(t *testing.T) {
 
 func TestStartupKeychainFencesRetiredAccess(t *testing.T) {
 	t.Run("disable and reenable", func(t *testing.T) {
-		m, store, request, _ := startupTestManager(t, false)
+		m, store, request, _ := startupTestManager(t, false, "")
 		waitCredentialLoad(t, store)
 		m.mu.Lock()
 		first := m.activations["held"]
@@ -334,7 +336,7 @@ func TestStartupKeychainFencesRetiredAccess(t *testing.T) {
 		}
 	})
 	t.Run("shutdown", func(t *testing.T) {
-		m, store, _, _ := startupTestManager(t, false)
+		m, store, _, _ := startupTestManager(t, false, "")
 		waitCredentialLoad(t, store)
 		m.mu.Lock()
 		attempt := m.activations["held"]
@@ -361,4 +363,96 @@ func TestStartupKeychainFencesRetiredAccess(t *testing.T) {
 			t.Fatal("the start context was not canceled")
 		}
 	})
+}
+
+func TestDefaultCoordinatorReportsKeychainActivationAfterProof(t *testing.T) {
+	who, socket := startPilotCommander(t, "activation")
+	m, store, request, _ := startupTestManager(t, false, socket)
+	waitCredentialLoad(t, store)
+	waitManagerAgent(t, m, "ready")
+	who.api = m.Handler()
+
+	for _, verb := range []string{"inbox", "discover", "submit"} {
+		if _, got := who.call(t, t.Context(), "/coordinator/"+verb, struct{}{}); got != keychainWaitingText {
+			t.Errorf("%s pending reply = %q, want the owner's Keychain guidance", verb, got)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/coordinator/inbox", strings.NewReader("{}"))
+	denied := httptest.NewRecorder()
+	who.api.ServeHTTP(denied, req)
+	if got := denied.Body.String(); strings.Contains(got, "Keychain") || !strings.Contains(got, "coordinator credential") {
+		t.Fatalf("unauthenticated default request saw the pending state: %s", got)
+	}
+	unverified := &pilotPeer{api: who.api, handle: who.handle, run: who.run, actor: who.actor, bearer: "rejected-fixture-credential"}
+	_, got := unverified.call(t, t.Context(), "/coordinator/discover", struct{}{})
+	if got != "coordinator identity denied" {
+		t.Fatalf("unverified default request = %q, want coordinator proof failure", got)
+	}
+
+	store.results <- fmt.Errorf("internal fixture diagnostics: %w", devicekeys.ErrKeychainAccess)
+	end := time.Now().Add(2 * time.Second)
+	for {
+		status := request("status", map[string]string{"server": "held"})
+		if strings.Contains(string(status.Data), keychainRetryText) {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("fake Keychain denial did not settle: %s", status.Data)
+		}
+		testSleep()
+	}
+	if _, got := who.call(t, t.Context(), "/coordinator/inbox", struct{}{}); got != keychainRetryText {
+		t.Fatalf("default denial reply = %q, want the sanitized retry guidance", got)
+	}
+}
+
+func TestDefaultCoordinatorActivationOrder(t *testing.T) {
+	m := &Manager{
+		cfg: ManagerConfig{Dir: t.TempDir()},
+		servers: []Server{
+			{ID: "ready", AutoConnect: true},
+			{ID: "favorite", AutoConnect: true, Favorite: true},
+			{ID: "held", AutoConnect: true},
+			{ID: "starting", AutoConnect: true},
+			{ID: "denied", AutoConnect: true},
+			{ID: "unknown", AutoConnect: true},
+		},
+		agents: map[string]*Agent{"ready": {}, "favorite": {}},
+		activations: map[string]*serverActivation{
+			"held":     {starting: true, waitingForKeychain: true},
+			"starting": {starting: true},
+		},
+		problems: map[string]error{
+			"denied":  fmt.Errorf("private Keychain diagnostics: %w", devicekeys.ErrKeychainAccess),
+			"unknown": fmt.Errorf("private connection diagnostics"),
+		},
+	}
+	expect := func(want string) {
+		t.Helper()
+		agent, err := m.coordinatorAgent("")
+		if agent != nil || err == nil || err.Error() != want {
+			t.Errorf("default coordinator = %p, %v, want %q", agent, err, want)
+		}
+	}
+
+	m.agents["ready"].creds.Session = identity.Session{User: "fixture-user"}
+	if got, err := m.coordinatorAgent(""); err != nil || got != m.agents["ready"] {
+		t.Fatalf("default chose activation guidance over signed-in relay: %p, %v", got, err)
+	}
+	m.agents["favorite"].creds.Session = identity.Session{User: "other-fixture-user"}
+	if got, err := m.coordinatorAgent(""); err != nil || got != m.agents["favorite"] {
+		t.Fatalf("default changed the first signed-in relay selection: %p, %v", got, err)
+	}
+	if _, err := m.coordinatorAgent("held"); err == nil || err.Error() != keychainWaitingText {
+		t.Fatalf("named coordinator route changed: %v", err)
+	}
+	m.agents["ready"].creds.Session = identity.Session{}
+	m.agents["favorite"].creds.Session = identity.Session{}
+	expect(keychainWaitingText)
+	delete(m.activations, "held")
+	expect("The server is starting. Try again shortly.")
+	delete(m.activations, "starting")
+	expect(keychainRetryText)
+	delete(m.problems, "denied")
+	expect("sign in to a server first")
 }
