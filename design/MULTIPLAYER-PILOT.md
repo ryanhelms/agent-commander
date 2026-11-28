@@ -88,7 +88,7 @@ Read a coordinator's current inbox with `commander_network_inbox({})`. To wait f
 
 ### Check the running app build
 
-Upgrade the owner’s native app and bundled network helper. Refresh the enrolled coordinator resource or enroll a new coordinator. Grant **Check the running app build** separately from the note. A prior note grant does not permit build queries. The capability uses the existing device envelope and works with older relays. Older apps provide no launch evidence.
+Upgrade the owner’s native app and bundled network helper. On the active local coordinator, grant **Check the running app build** separately from the note. For a coordinator enrolled before the upgrade, the owner’s grant sheet offers the action and the explicit grant refreshes that coordinator’s relay registration when needed. A prior note grant does not permit build queries. The capability uses the existing device envelope and works with older relays. Older apps provide no launch evidence.
 
 Discover the granted `app.build` capability and submit a fresh operation with a random 32-character lower-case hex `nonce` and the current UTC RFC 3339 `issuedAt`. Read the signed outcome through `commander_network_receipt`. A result is current only with `buildEvidence: "verified"`. The receipt binds the peer and resource, and its evidence binds the exact nonce. A request or observation older than its 90-second window does not verify the current build. If the grant asks for approval, the owner has to answer within that window.
 

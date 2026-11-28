@@ -19,11 +19,12 @@ import (
 const maxApprovalWait = 24 * time.Hour
 
 type claimedRequest struct {
-	child   control.Child
-	payload []byte
-	peer    devicekeys.Public
-	arrived time.Time
-	timer   *time.Timer
+	child        control.Child
+	payload      []byte
+	peer         devicekeys.Public
+	arrived      time.Time
+	buildExpires time.Time // Authenticated challenge deadline for app.build, independent of the signed envelope.
+	timer        *time.Timer
 }
 
 // Approval is a request waiting for the owner, as the tray shows it.
@@ -84,7 +85,7 @@ func (a *Agent) queueApproval(p claimedRequest) {
 		a.pending = map[string]claimedRequest{}
 	}
 	id := p.child.ID
-	p.timer = time.AfterFunc(time.Until(approvalDeadline(p.child, p.arrived)), func() {
+	p.timer = time.AfterFunc(time.Until(p.approvalDeadline()), func() {
 		ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 		defer cancel()
 		_ = a.resolve(ctx, id, "expired", "")
@@ -93,12 +94,14 @@ func (a *Agent) queueApproval(p claimedRequest) {
 	a.social.Events = append(a.social.Events, Event{At: p.arrived, Kind: "approval.pending", Actor: p.child.Sender, Resource: p.child.Resource, Detail: p.child.Action})
 }
 
-func approvalDeadline(c control.Child, arrived time.Time) time.Time {
-	d := arrived.Add(maxApprovalWait)
-	if !c.ExpiresAt.IsZero() && c.ExpiresAt.Before(d) {
-		d = c.ExpiresAt
+func (p claimedRequest) approvalDeadline() time.Time {
+	deadline := p.arrived.Add(maxApprovalWait)
+	for _, bound := range []time.Time{p.child.ExpiresAt, p.buildExpires} {
+		if !bound.IsZero() && bound.Before(deadline) {
+			deadline = bound
+		}
 	}
-	return d
+	return deadline
 }
 
 func (a *Agent) friendHandles(ctx context.Context, s identity.Session) map[string]string {
@@ -117,7 +120,7 @@ func (a *Agent) approvals(ctx context.Context, s identity.Session) map[string]an
 	list := []Approval{}
 	for id, p := range a.pending {
 		if p.child.Owner == s.User {
-			list = append(list, Approval{ID: id, Server: a.cfg.ServerID, Peer: p.child.Sender, Resource: p.child.Resource, Action: p.child.Action, Summary: summarize(p.payload), Arrived: p.arrived, Expires: approvalDeadline(p.child, p.arrived)})
+			list = append(list, Approval{ID: id, Server: a.cfg.ServerID, Peer: p.child.Sender, Resource: p.child.Resource, Action: p.child.Action, Summary: summarize(p.payload), Arrived: p.arrived, Expires: p.approvalDeadline()})
 		}
 	}
 	a.mu.Unlock()
@@ -150,7 +153,7 @@ func (a *Agent) resolve(ctx context.Context, id, denial, reason string) error {
 	l := a.lease
 	a.mu.Unlock()
 
-	if !time.Now().Before(approvalDeadline(p.child, p.arrived)) {
+	if !time.Now().Before(p.approvalDeadline()) {
 		denial, reason = "expired", ""
 	}
 	return a.finish(ctx, s, l, p, nil, denial, reason)

@@ -39,6 +39,12 @@ final class CockpitModel {
     /// What Pretty shows beyond the console preview: stored tool arguments, results, plan items
     /// and times, and the transcript setting. Read beside the client's other requests.
     let toolDetails: ToolDetailStore
+    /// The provider's summary and error of each compaction row, read from its source record.
+    let compactions: CompactionSummaryStore
+    /// The link or text of each reply chunk that is a resource, read from its source record.
+    let replyAttachments: ReplyAttachmentStore
+    /// The sender and text of each message from another session, read from its source records.
+    let sessionMessages: SessionMessageStore
 
     init(endpoint: ServiceEndpoint = .live) {
         api = ServiceClient(endpoint: endpoint)
@@ -47,6 +53,9 @@ final class CockpitModel {
         attachments = .live(reader: reader)
         providerSessions = .live(reader: reader)
         elicitations = .live(reader: reader)
+        compactions = CompactionFixture.isRequested ? CompactionFixture.store : .live(reader: reader)
+        replyAttachments = .live(reader: reader)
+        sessionMessages = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         toolDetails = ToolDetailStore(source: ToolDetailSource(
             page: { try await reader.toolDetails($0, after: $1) },
@@ -117,6 +126,9 @@ final class CockpitModel {
         usingLegacyService = false
         // The new service's transcript setting is not known yet: values stay hidden until it is.
         toolDetails.serviceChanged()
+        compactions.serviceChanged()
+        replyAttachments.serviceChanged()
+        sessionMessages.serviceChanged()
         sending = []
         replyAttempts = [:]
         followUpAttempts = [:]

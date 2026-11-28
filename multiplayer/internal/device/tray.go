@@ -158,6 +158,8 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 	a.mu.Lock()
 	local := slices.Clone(a.policy.Resources)
 	a.mu.Unlock()
+	buildProbe, stopBuildProbe := context.WithTimeout(ctx, ownerBuildProbeBudget)
+	defer stopBuildProbe()
 	for _, r := range catalog.Resources {
 		row := map[string]any{"id": r.ID, "kind": r.Kind, "name": r.Name, "actions": r.Actions, "owner": r.Handle, "device": r.Device, "endorsements": r.Endorsements}
 		if r.InboxEnded {
@@ -171,6 +173,7 @@ func (a *Agent) status(ctx context.Context) (any, error) {
 		}
 		kind[r.ID] = r.Kind
 		if r.Device == s.Device && r.Owner == s.User {
+			row["actions"] = a.ownerBuildActions(buildProbe, s, r, local)
 			own = append(own, row)
 		} else if r.Owner != s.User && !r.InboxEnded {
 			shared = append(shared, row)
@@ -471,6 +474,11 @@ func (a *Agent) grant(ctx context.Context, s identity.Session, in input, revoke 
 		a.policy = updated
 		return nil
 	}
+	if !revoke && action == "app.build" {
+		if err := a.ensureDesktopBuildOffer(ctx, s, p.Resources[i]); err != nil {
+			return err
+		}
+	}
 	// The relay serializes this change against new execution claims. Persist
 	// the matching device policy only after the relay acknowledges the edit.
 	if len(limits) == 0 {
@@ -495,6 +503,75 @@ func (a *Agent) advertisedResourceActions(s identity.Session, r actions.Resource
 		offered = slices.DeleteFunc(offered, func(action string) bool { return action == "app.build" })
 	}
 	return offered
+}
+
+// Status is polled repeatedly. Only older advertisements need a local probe;
+// all of those rows share this budget. A grant still verifies the live binding.
+const ownerBuildProbeBudget = 500 * time.Millisecond
+
+func (a *Agent) ownerBuildActions(probe context.Context, s identity.Session, r control.Resource, local []actions.Resource) []string {
+	if !slices.Contains(r.Actions, "agent.message") && !slices.Contains(r.Actions, "app.build") {
+		return r.Actions
+	}
+	i := slices.IndexFunc(local, func(enrolled actions.Resource) bool { return enrolled.ID == r.ID })
+	if i < 0 || !a.supportsDesktopBuildOffer(s, r, local[i]) {
+		return slices.DeleteFunc(slices.Clone(r.Actions), func(action string) bool { return action == "app.build" })
+	}
+	if slices.Contains(r.Actions, "app.build") || probe.Err() != nil {
+		return r.Actions
+	}
+	ended, err := actions.CoordinatorInboxEnded(probe, a.cfg.CommanderSocket, local[i])
+	if err != nil || ended {
+		return r.Actions
+	}
+	return append(slices.Clone(r.Actions), "app.build")
+}
+
+func (a *Agent) supportsDesktopBuildOffer(s identity.Session, r control.Resource, enrolled actions.Resource) bool {
+	return r.ID == enrolled.ID && r.Owner == s.User && r.Device == s.Device && r.Kind == "agent" &&
+		!r.InboxEnded && slices.Contains(r.Actions, "agent.message") &&
+		enrolled.Target != "" && enrolled.Run != "" && slices.Contains(a.advertisedResourceActions(s, enrolled), "app.build")
+}
+
+// Keep an explicit grant tied to the same live enrollment even if the relay
+// last saw that coordinator running or has stale capability metadata.
+func (a *Agent) checkDesktopBuildOffer(ctx context.Context, s identity.Session, r control.Resource, enrolled actions.Resource) error {
+	if !a.supportsDesktopBuildOffer(s, r, enrolled) {
+		return errors.New("build verification requires an active local coordinator enrollment")
+	}
+	check, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ended, err := actions.CoordinatorInboxEnded(check, a.cfg.CommanderSocket, enrolled)
+	if err != nil || ended {
+		return errors.New("the enrolled coordinator is unavailable; verify that its run is active and try again")
+	}
+	return nil
+}
+
+// Only an explicit owner grant may refresh the advertised action. Append to
+// the relay's existing metadata so the resource update cannot prune its grants.
+func (a *Agent) ensureDesktopBuildOffer(ctx context.Context, s identity.Session, enrolled actions.Resource) error {
+	resources, err := a.resources(ctx, s)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(resources, func(r control.Resource) bool { return r.ID == enrolled.ID })
+	if i < 0 {
+		return errors.New("the coordinator is no longer available on this relay; check its enrollment")
+	}
+	r := resources[i]
+	if err := a.checkDesktopBuildOffer(ctx, s, r, enrolled); err != nil {
+		return err
+	}
+	if slices.Contains(r.Actions, "app.build") {
+		return nil
+	}
+	path := "/v1/resources/" + url.PathEscape(r.ID)
+	body := map[string]any{"kind": r.Kind, "name": r.Name, "actions": append(slices.Clone(r.Actions), "app.build"), "capabilities": r.Capabilities}
+	if err := a.remote(ctx, s, "PUT", path, body, nil); err != nil {
+		return fmt.Errorf("refresh build verification for the enrolled coordinator: %w", err)
+	}
+	return nil
 }
 
 func (a *Agent) publishResource(ctx context.Context, s identity.Session, in input, update bool) (any, error) {

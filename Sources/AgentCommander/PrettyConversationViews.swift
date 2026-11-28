@@ -400,47 +400,59 @@ struct ActivityFailureLine<Detail: View>: View {
     let step: ActivityStep
     let isExpanded: Bool
     let metrics: PrettyMetrics
+    /// Whether the line has anything to open to. A line that does not open is text: no chevron,
+    /// no button and no Tab stop.
+    var opens = true
     let toggle: () -> Void
     @ViewBuilder let detail: () -> Detail
+
+    private var spoken: String { step.failureLabel }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.failure)
-                        if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
-                        ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize, ink: Palette.failure)
-                        Spacer(minLength: 0)
-                    }
-                    if let reason = step.failure?.reason {
-                        Text(verbatim: reason)
-                            .font(.system(size: metrics.bodySize - (metrics.density == .regular ? 0 : 0.5)))
-                            .foregroundStyle(.inkSecondary)
-                            // The reason wraps on every surface: it is never cut.
-                            .fixedSize(horizontal: false, vertical: true)
-                            .multilineTextAlignment(.leading)
-                    }
+            if opens {
+                Button(action: toggle) { label }
+                    .buttonStyle(ActivityRowButtonStyle())
+                    .textSelection(.disabled)
+                    .help(step.help ?? step.sentence.plain)
+                    // The failure line's button fills its bordered frame, so the ring takes that corner.
+                    .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.listRadius, toggle: toggle)
+                    .accessibilityLabel(spoken)
+                    .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                if isExpanded {
+                    detail()
+                        .padding(.horizontal, metrics.lineInset.width).padding(.bottom, metrics.lineInset.height + 3)
                 }
-                .padding(.horizontal, metrics.lineInset.width).padding(.vertical, metrics.lineInset.height)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ActivityRowButtonStyle())
-            .textSelection(.disabled)
-            .help(step.help ?? step.sentence.plain)
-            // The failure line's button fills its bordered frame, so the ring takes that corner.
-            .prettyDisclosureKeys(isExpanded: isExpanded, radius: metrics.listRadius, toggle: toggle)
-            .accessibilityLabel(step.sentence.plain + ", " + (step.failure?.outcome == .blocked ? "blocked" : "failed")
-                                + (step.failure.map { ", " + $0.reason } ?? ""))
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            if isExpanded {
-                detail()
-                    .padding(.horizontal, metrics.lineInset.width).padding(.bottom, metrics.lineInset.height + 3)
+            } else {
+                label
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(spoken)
             }
         }
         .overlay { shape.strokeBorder(Palette.failure.opacity(0.35), lineWidth: 1) }
+    }
+
+    private var label: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                ActivitySentenceText(sentence: step.sentence, metrics: metrics, ink: Palette.failure)
+                if let tag = step.tag { ActivityTagView(tag: tag, metrics: metrics) }
+                if opens { ActivityChevron(isExpanded: isExpanded, size: metrics.bodySize, ink: Palette.failure) }
+                Spacer(minLength: 0)
+            }
+            if let reason = step.failure?.reason {
+                Text(verbatim: reason)
+                    .font(.system(size: metrics.bodySize - (metrics.density == .regular ? 0 : 0.5)))
+                    .foregroundStyle(.inkSecondary)
+                    // The reason wraps on every surface: it is never cut.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.horizontal, metrics.lineInset.width).padding(.vertical, metrics.lineInset.height)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 

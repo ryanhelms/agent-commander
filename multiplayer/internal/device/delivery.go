@@ -88,8 +88,8 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 		}
 		record = sendRecord{Digest: digest, Wire: outbound{ID: in.ID}}
 		started := time.Now().UTC()
-		expiry := started.Add(maxApprovalWait).Truncate(time.Microsecond)
 		for _, t := range in.Targets {
+			expiry := started.Add(maxApprovalWait).Truncate(time.Microsecond)
 			i := slices.IndexFunc(resources, func(r control.Resource) bool {
 				return r.ID == t.Resource && r.Owner != s.User && slices.Contains(r.Actions, t.Action)
 			})
@@ -106,6 +106,11 @@ func (a *Agent) submit(ctx context.Context, s identity.Session, in Submit) (any,
 				challenge, err := actions.ParseDesktopBuildChallenge(t.Payload)
 				if err != nil {
 					return nil, err
+				}
+				now := time.Now().UTC()
+				expiry = challenge.ExpiresAt().Truncate(time.Microsecond)
+				if !challenge.FreshAt(now) || !expiry.After(now) {
+					return nil, actions.ErrBuildRequestExpired
 				}
 				if record.BuildChallenges == nil {
 					record.BuildChallenges = make(map[string]actions.DesktopBuildChallenge)
@@ -192,6 +197,14 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 			return nil, errors.New("receipt sender differs from the pinned device")
 		}
 		row := map[string]any{"id": c.ID, "peer": c.Owner, "resource": c.Resource, "action": c.Action, "status": c.Status}
+		challenge, hasChallenge := record.BuildChallenges[c.ID]
+		now := time.Now().UTC()
+		if c.Action == "app.build" && hasChallenge && !now.Before(challenge.ExpiresAt()) && len(c.Result) == 0 &&
+			(c.Status == "pending" || c.Status == "processing" || c.Status == "expired") {
+			// A claimed request can remain at the relay during a disconnect.
+			// This is local timeout evidence, not a signed peer outcome.
+			row["status"], row["buildEvidence"] = "expired", "expired"
+		}
 		if c.Action == "app.build" && c.Status == "completed" {
 			row["buildEvidence"] = "invalid"
 		}
@@ -210,7 +223,7 @@ func (a *Agent) projectSubmission(s identity.Session, path string, record *sendR
 			}
 			value = signed.Value
 			if c.Action == "app.build" && c.Status == "completed" {
-				proof := record.BuildChallenges[c.ID].ProofState(value, time.Now().UTC())
+				proof := challenge.ProofState(value, now)
 				row["buildEvidence"] = proof
 				switch proof {
 				case "verified":
@@ -442,6 +455,16 @@ func (a *Agent) deliver(ctx context.Context, s identity.Session, l control.Lease
 	}
 	c.GrantGroup = claim.Child.GrantGroup
 	p := claimedRequest{child: c, payload: payload, peer: peer, arrived: time.Now().UTC()}
+	if verify == nil && c.Action == "app.build" {
+		challenge, err := actions.ParseDesktopBuildChallenge(payload)
+		if err != nil {
+			return a.finish(ctx, s, l, p, nil, actions.FailureCode(err), "")
+		}
+		if !challenge.FreshAt(p.arrived) || !p.arrived.Before(challenge.ExpiresAt()) {
+			return a.finish(ctx, s, l, p, nil, actions.FailureCode(actions.ErrBuildRequestExpired), "")
+		}
+		p.buildExpires = challenge.ExpiresAt()
+	}
 	if verify == nil && a.needsApproval(c) {
 		req := actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: payload}
 		if errors.Is(actions.CheckBudget(a.localConfig(s), req), actions.ErrBudgetExhausted) {
@@ -461,7 +484,11 @@ func (a *Agent) finish(ctx context.Context, s identity.Session, l control.Lease,
 	var result json.RawMessage
 	var e error
 	if verify == nil && denial == "" {
-		task, cancel := context.WithDeadline(ctx, c.ExpiresAt)
+		deadline := c.ExpiresAt
+		if !p.buildExpires.IsZero() && p.buildExpires.Before(deadline) {
+			deadline = p.buildExpires
+		}
+		task, cancel := context.WithDeadline(ctx, deadline)
 		result, actionErr = actions.Execute(task, a.localConfig(s), actions.Request{ID: c.ID, Peer: c.Sender, Group: c.GrantGroup, Resource: c.Resource, Action: c.Action, Payload: p.payload})
 		cancel()
 	}

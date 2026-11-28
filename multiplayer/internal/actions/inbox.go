@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -32,7 +33,52 @@ type InboxQuery struct {
 	WaitSeconds    int    `json:"waitSeconds,omitempty"`
 }
 
-const inboxWaitMaxSeconds = 10
+const (
+	inboxWaitMaxSeconds = 10
+	inboxFallbackCheck  = time.Second
+)
+
+// Wakes are an in-process hint. The durable file and the current coordinator
+// binding are checked independently of this registry.
+var coordinatorInboxWakes = inboxWakeRegistry{waiting: make(map[string]*inboxWake)}
+
+type inboxWakeRegistry struct {
+	mu      sync.Mutex
+	waiting map[string]*inboxWake
+}
+
+type inboxWake struct {
+	changed chan struct{}
+	readers int
+}
+
+func (r *inboxWakeRegistry) subscribe(path string) (<-chan struct{}, func()) {
+	r.mu.Lock()
+	wake := r.waiting[path]
+	if wake == nil {
+		wake = &inboxWake{changed: make(chan struct{})}
+		r.waiting[path] = wake
+	}
+	wake.readers++
+	r.mu.Unlock()
+	return wake.changed, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		wake.readers--
+		if wake.readers == 0 && r.waiting[path] == wake {
+			delete(r.waiting, path)
+		}
+	}
+}
+
+func (r *inboxWakeRegistry) publish(path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if wake := r.waiting[path]; wake != nil {
+		delete(r.waiting, path)
+		close(wake.changed)
+	}
+}
 
 var errInboxNotConfigured = errors.New("This coordinator has no inbox. Ask the owner to share this running coordinator as an Agent resource and grant the peer Send the coordinator a note")
 
@@ -105,6 +151,9 @@ func coordinatorInboxSnapshot(ctx context.Context, cfg Config, worker, run strin
 		if r.Kind != "agent" || !r.Coordinator || r.Target != worker || r.Run != run {
 			continue
 		}
+		// Read the durable snapshot first so the live binding is confirmed
+		// after any note in this snapshot was committed.
+		box, readErr := readMailbox(mailboxPath(cfg, r))
 		ended, err := CoordinatorInboxEnded(ctx, cfg.CommanderSocket, r)
 		if err != nil {
 			return coordinatorMailbox{}, err
@@ -112,7 +161,10 @@ func coordinatorInboxSnapshot(ctx context.Context, cfg Config, worker, run strin
 		if ended {
 			return coordinatorMailbox{}, ErrDenied
 		}
-		return readMailbox(mailboxPath(cfg, r))
+		if readErr != nil {
+			return coordinatorMailbox{}, readErr
+		}
+		return box, nil
 	}
 	ended, err := coordinatorInboxEnded(ctx, cfg.CommanderSocket, worker, run)
 	if err != nil || ended {
@@ -148,32 +200,47 @@ func CoordinatorInbox(ctx context.Context, config func() Config, worker, run str
 		box, e := coordinatorInboxSnapshot(ctx, config(), worker, run)
 		return box.after(query.AfterMessageID), e
 	}
+	return waitCoordinatorInbox(ctx, config, worker, run, query, inboxFallbackCheck)
+}
+
+func waitCoordinatorInbox(ctx context.Context, config func() Config, worker, run string, query InboxQuery, fallback time.Duration) (coordinatorMailbox, error) {
 	deadline := time.NewTimer(time.Duration(query.WaitSeconds) * time.Second)
 	defer deadline.Stop()
-	check := time.NewTicker(250 * time.Millisecond)
+	check := time.NewTicker(fallback)
 	defer check.Stop()
 	for {
 		if e := ctx.Err(); e != nil {
 			return coordinatorMailbox{}, e
 		}
-		box, e := coordinatorInboxSnapshot(ctx, config(), worker, run)
+		cfg := config()
+		// Subscribe before reading. A commit that races the snapshot either
+		// appears in the snapshot or closes this subscription's channel.
+		path := mailboxPath(cfg, Resource{Target: worker, Run: run})
+		wake, release := coordinatorInboxWakes.subscribe(path)
+		box, e := coordinatorInboxSnapshot(ctx, cfg, worker, run)
 		if cancelled := ctx.Err(); cancelled != nil {
-			return coordinatorMailbox{}, cancelled
+			e = cancelled
 		}
 		if e != nil {
+			release()
 			return coordinatorMailbox{}, e
 		}
 		box = box.after(query.AfterMessageID)
 		if len(box.Messages) > 0 {
+			release()
 			return box, nil
 		}
 		select {
 		case <-ctx.Done():
+			release()
 			return coordinatorMailbox{}, ctx.Err()
 		case <-deadline.C:
+			release()
 			return box, nil
+		case <-wake:
 		case <-check.C:
 		}
+		release()
 	}
 }
 
@@ -234,5 +301,6 @@ func coordinatorMessage(ctx context.Context, cfg Config, r Resource, req Request
 	if e = save(path, box); e != nil {
 		return nil, ErrUncertain
 	}
+	coordinatorInboxWakes.publish(path)
 	return answer(map[string]string{"status": "completed", "messageId": id})
 }

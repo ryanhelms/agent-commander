@@ -94,8 +94,14 @@ func ParseDesktopBuildChallenge(payload json.RawMessage) (DesktopBuildChallenge,
 	return challenge, nil
 }
 
-func (r DesktopBuildChallenge) fresh(now time.Time) bool {
-	return !r.IssuedAt.Before(now.Add(-buildProofWindow)) && !r.IssuedAt.After(now.Add(buildClockSkew))
+// ExpiresAt is the latest time the challenge can produce fresh build evidence.
+func (r DesktopBuildChallenge) ExpiresAt() time.Time {
+	return r.IssuedAt.Add(buildProofWindow)
+}
+
+// FreshAt checks the proof window and the accepted clock skew.
+func (r DesktopBuildChallenge) FreshAt(now time.Time) bool {
+	return !now.After(r.ExpiresAt()) && !r.IssuedAt.After(now.Add(buildClockSkew))
 }
 
 type desktopBuildProof struct {
@@ -109,11 +115,11 @@ type desktopBuildProof struct {
 func (r DesktopBuildChallenge) ProofState(response json.RawMessage, now time.Time) string {
 	var proof desktopBuildProof
 	if r.Nonce == "" || r.IssuedAt.IsZero() || strict(response, &proof) != nil ||
-		proof.Nonce != r.Nonce || !r.fresh(proof.ObservedAt) || proof.ObservedAt.After(now.Add(buildClockSkew)) ||
+		proof.Nonce != r.Nonce || !r.FreshAt(proof.ObservedAt) || proof.ObservedAt.After(now.Add(buildClockSkew)) ||
 		!validDesktopBuild(proof.DesktopBuild, proof.ObservedAt) {
 		return "invalid"
 	}
-	if !r.fresh(now) {
+	if !r.FreshAt(now) {
 		return "expired"
 	}
 	return "verified"
@@ -128,7 +134,7 @@ func desktopBuildAction(ctx context.Context, cfg Config, r Resource, req Request
 	if err != nil {
 		return nil, err
 	}
-	if !in.fresh(time.Now().UTC()) {
+	if !in.FreshAt(time.Now().UTC()) {
 		return nil, ErrBuildRequestExpired
 	}
 	read := cfg.ReadDesktopBuild
@@ -143,7 +149,7 @@ func desktopBuildAction(ctx context.Context, cfg Config, r Resource, req Request
 		return nil, ErrDesktopBuildUnavailable
 	}
 	now := time.Now().UTC()
-	if !in.fresh(now) {
+	if !in.FreshAt(now) {
 		return nil, ErrBuildRequestExpired
 	}
 	if !validDesktopBuild(build, now) {
