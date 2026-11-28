@@ -46,7 +46,10 @@ network:
 	mkdir -p dist
 	cd multiplayer && go build -o ../dist/commander-network ./cmd/commander-network
 
-network-package: network
+# Keychain can pin this helper to its code hash. Omit checkout-specific build data.
+network-package:
+	mkdir -p dist
+	cd multiplayer && go build -trimpath -buildvcs=false -o ../dist/commander-network ./cmd/commander-network
 	codesign --force --identifier local.agentcommander.network --sign "$(NETWORK_CODE_SIGN_IDENTITY)" \
 		$(if $(strip $(NETWORK_CODE_SIGN_KEYCHAIN)),--keychain "$(NETWORK_CODE_SIGN_KEYCHAIN)") dist/commander-network
 
