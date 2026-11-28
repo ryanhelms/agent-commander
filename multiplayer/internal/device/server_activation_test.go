@@ -429,21 +429,21 @@ func TestDefaultCoordinatorActivationOrder(t *testing.T) {
 	}
 	expect := func(want string) {
 		t.Helper()
-		agent, err := m.coordinatorAgent("")
+		agent, err := m.coordinatorAgent("", true)
 		if agent != nil || err == nil || err.Error() != want {
 			t.Errorf("default coordinator = %p, %v, want %q", agent, err, want)
 		}
 	}
 
 	m.agents["ready"].creds.Session = identity.Session{User: "fixture-user"}
-	if got, err := m.coordinatorAgent(""); err != nil || got != m.agents["ready"] {
+	if got, err := m.coordinatorAgent("", true); err != nil || got != m.agents["ready"] {
 		t.Fatalf("default chose activation guidance over signed-in relay: %p, %v", got, err)
 	}
 	m.agents["favorite"].creds.Session = identity.Session{User: "other-fixture-user"}
-	if got, err := m.coordinatorAgent(""); err != nil || got != m.agents["favorite"] {
+	if got, err := m.coordinatorAgent("", true); err != nil || got != m.agents["favorite"] {
 		t.Fatalf("default changed the first signed-in relay selection: %p, %v", got, err)
 	}
-	if _, err := m.coordinatorAgent("held"); err == nil || err.Error() != keychainWaitingText {
+	if _, err := m.coordinatorAgent("held", true); err == nil || err.Error() != keychainWaitingText {
 		t.Fatalf("named coordinator route changed: %v", err)
 	}
 	m.agents["ready"].creds.Session = identity.Session{}
