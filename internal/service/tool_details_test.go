@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,8 +17,105 @@ import (
 )
 
 type detailList struct {
-	Revision uint64                  `json:"revision"`
-	Records  []toolDetailSummaryView `json:"records"`
+	Revision     uint64                  `json:"revision"`
+	Records      []toolDetailSummaryView `json:"records"`
+	RetainedKeys []string                `json:"retained_keys"`
+}
+
+func TestToolDetailRetentionPage(t *testing.T) {
+	f := newFixture(t)
+	worker := f.delegate(f.run(), "retention")
+	path := "/v1/workers/" + worker.ID
+	var batch int
+	post := func(details []ToolDetail) {
+		t.Helper()
+		batch++
+		f.call("POST", path+"/output", worker.Token, map[string]any{
+			"stream_id": "retention", "batch": batch, "details": details,
+		}, 200, "")
+	}
+	page := func(after uint64) detailList {
+		t.Helper()
+		body := f.call("GET", path+"/tool-details?after="+strconv.FormatUint(after, 10), "", nil, 200, "")
+		var got detailList
+		if err := json.Unmarshal(body, &got); err != nil || got.RetainedKeys == nil {
+			t.Fatalf("page must carry an authoritative key array: %s (%v)", body, err)
+		}
+		return got
+	}
+
+	if empty := page(0); empty.Revision != 0 || len(empty.Records) != 0 || len(empty.RetainedKeys) != 0 {
+		t.Fatalf("empty page: %+v", empty)
+	}
+	keys := make([]string, MaxToolDetailRecords+1)
+	details := make([]ToolDetail, len(keys))
+	for i := range keys {
+		keys[i] = "detail-" + strconv.Itoa(i)
+		details[i] = ToolDetail{Kind: "tool", Key: keys[i]}
+	}
+	for part := range slices.Chunk(details[:MaxToolDetailRecords], toolDetailBatch) {
+		post(part)
+	}
+	full := page(0)
+	if len(full.Records) != MaxToolDetailRecords || !slices.Equal(full.RetainedKeys, keys[:MaxToolDetailRecords]) {
+		t.Fatal("full page did not describe the bounded retained window")
+	}
+
+	// Updating the oldest retained key doesn't move its insertion position.
+	// It is included in the delta now and evicted by the next insertion.
+	post([]ToolDetail{{Kind: "tool", Key: keys[0], Result: "updated"}})
+	changed := page(full.Revision)
+	if len(changed.Records) != 1 || changed.Records[0].Key != keys[0] ||
+		!slices.Equal(changed.RetainedKeys, full.RetainedKeys) {
+		t.Fatal("update changed the window or the incremental response")
+	}
+	post(details[MaxToolDetailRecords:])
+	delta := page(changed.Revision)
+	if len(delta.Records) != 1 || delta.Records[0].Key != keys[MaxToolDetailRecords] ||
+		!slices.Equal(delta.RetainedKeys, keys[1:]) {
+		t.Fatal("delta did not report the eviction alongside the new record")
+	}
+	f.call("GET", path+"/tool-details?key="+keys[0], "", nil, 404, "")
+
+	// A rollback changes the cursor and returns the whole retained window
+	// so a reader can replace its older snapshot without another request.
+	rollback := page(delta.Revision + 1)
+	if rollback.Revision != delta.Revision || len(rollback.Records) != MaxToolDetailRecords ||
+		!slices.Equal(rollback.RetainedKeys, keys[1:]) {
+		t.Fatal("cursor rollback did not return a full retained page")
+	}
+}
+
+func TestToolDetailRetentionPageAtByteLimit(t *testing.T) {
+	f := newFixture(t)
+	worker := f.delegate(f.run(), "byte retention")
+	path := "/v1/workers/" + worker.ID
+	value := strings.Repeat("x", MaxToolDetailField)
+	count := toolDetailBytes/MaxToolDetailField + 1
+	details := make([]ToolDetail, count)
+	for i := range details {
+		details[i] = ToolDetail{Kind: "tool", Key: "big-" + strconv.Itoa(i), Result: value}
+	}
+	batch := 0
+	for group := range slices.Chunk(details, 4) {
+		batch++
+		f.call("POST", path+"/output", worker.Token, map[string]any{
+			"stream_id": "bytes", "batch": batch, "details": group,
+		}, 200, "")
+	}
+	var got detailList
+	if err := json.Unmarshal(f.call("GET", path+"/tool-details", "", nil, 200, ""), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.RetainedKeys) == 0 || len(got.RetainedKeys) >= count || len(got.Records) != len(got.RetainedKeys) {
+		t.Fatalf("byte cap retained %d/%d keys and %d records", len(got.RetainedKeys), count, len(got.Records))
+	}
+	for i, detail := range details[count-len(got.RetainedKeys):] {
+		if got.RetainedKeys[i] != detail.Key || got.Records[i].Key != detail.Key {
+			t.Fatal("byte cap did not retain the newest keys in order")
+		}
+	}
+	f.call("GET", path+"/tool-details?key="+details[0].Key, "", nil, 404, "")
 }
 
 func TestIdentifiedPlanDetailsBindToTheLiveBatchEvent(t *testing.T) {
