@@ -82,6 +82,30 @@ private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ 
     #expect(event == expected, "waiting for \(expected): \(arrival); \(seen)", sourceLocation: sourceLocation)
 }
 
+/// A feed whose connections stay open in `exchange` until the feed lets go of them.
+@MainActor private func heldFeed(on exchange: Exchange) -> AdapterUpdateFeed {
+    AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
+}
+
+/// Calls `feed.follow()` in a task that starts at once and runs on the main actor until the call
+/// first waits. Calls started in one main-actor turn therefore reach the feed in the order they
+/// were started, with nothing else in between. The exchange records `name` when the call returns.
+@MainActor private func follow(_ feed: AdapterUpdateFeed, as name: String, in exchange: Exchange) -> Task<Void, Never> {
+    Task.immediate { @MainActor in
+        await feed.follow()
+        exchange.returned(name)
+    }
+}
+
+/// Expects the feed to reach the state `isRead` describes, which only a snapshot read from its
+/// open connection can produce. The wait and the feed's state stay on the main actor.
+@MainActor private func expectRead(in exchange: Exchange, feed: AdapterUpdateFeed,
+                                   sourceLocation: SourceLocation = #_sourceLocation,
+                                   _ isRead: @MainActor () -> Bool) async {
+    let read = await until(isRead)
+    #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))", sourceLocation: sourceLocation)
+}
+
 @Suite struct AdapterUpdateSnapshotTests {
     @Test func readsTheDocumentedFrame() throws {
         let updates = try AdapterUpdateSnapshot.decode(Array(
@@ -209,24 +233,28 @@ private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ 
 
     /// The root model outlives the window; the view task that follows it does not. SwiftUI cancels
     /// the old task on close and starts a new one on reopen, and the new call can arrive before the
-    /// cancelled one has unwound. Each task starts immediately on the main actor, so the order below
-    /// is the order of the calls, as in `old.cancel(); await feed.follow()`.
-    @Test(.timeLimit(.minutes(1))) func aReopenedWindowTakesOverFromTheCancelledTask() async {
+    /// cancelled one has unwound, as in `old.cancel(); await feed.follow()`.
+    ///
+    /// The body runs off the main actor, so reading an event, checking the count and cancelling a
+    /// call do not each wait for a main-actor turn behind the calls under test. The feed is still
+    /// created, followed and observed on the main actor.
+    @Test(.timeLimit(.minutes(1))) @concurrent
+    func aReopenedWindowTakesOverFromTheCancelledTask() async {
         let exchange = Exchange()
         var events = exchange.events.makeAsyncIterator()
-        let feed = AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
-
-        let old = Task.immediate { @MainActor in
-            await feed.follow()
-            exchange.returned("old")
+        let (feed, old) = await MainActor.run {
+            let held = heldFeed(on: exchange)
+            return (held, follow(held, as: "old", in: exchange))
         }
         defer { old.cancel() }
         await expectNext(&events, .opened(1), in: exchange, feed: feed)
 
-        old.cancel()
-        let replacement = Task.immediate { @MainActor in
-            await feed.follow()
-            exchange.returned("replacement")
+        // One main-actor turn cancels the old call and starts the replacement, with no wait in
+        // between. The old call needs a later turn to unwind, so the replacement reaches the feed
+        // while the old call still holds it.
+        let replacement = await MainActor.run {
+            old.cancel()
+            return follow(feed, as: "replacement", in: exchange)
         }
         defer { replacement.cancel() }
         // The replacement waits for the cancelled call to let go, then connects once.
@@ -236,8 +264,7 @@ private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ 
         #expect(exchange.live == 1)
 
         exchange.send([fixture])
-        let read = await until { feed.updates == [fixture] && feed.link == .live }
-        #expect(read, "the feed never read the snapshot; \(progress(exchange, feed))")
+        await expectRead(in: exchange, feed: feed) { feed.updates == [fixture] && feed.link == .live }
 
         replacement.cancel()
         await expectNext(&events, .closed(2), in: exchange, feed: feed)
@@ -245,97 +272,51 @@ private func expectNext(_ events: inout AsyncStream<Exchange.Event>.Iterator, _ 
         #expect(exchange.live == 0)
     }
 
-    /// Issue #150 candidate: this body runs off the main actor, so reading an event, checking the
-    /// count and cancelling a call do not each wait for a turn on the main actor behind the calls
-    /// under test. The feed is still created, followed and observed on the main actor.
+    /// Like the test above, the body runs off the main actor; the feed is created, followed and
+    /// observed on it.
     @Test(.timeLimit(.minutes(1))) @concurrent
     func overlappingCallsKeepOneSubscriptionAndLeaveNoneBehind() async {
-        // Issue #150: this test alone prints a timed trace, so a run that only hits the time limit
-        // still shows its last lifecycle event. "exchange" lines are events as the exchange
-        // recorded them; "call" lines are a call's own stages; "pilot" lines are this body's
-        // checkpoints, printed after the awaited step before them has ended. A pilot line does not
-        // read the feed, which would take a main-actor turn; a failed wait still reports its link.
-        let trace = Trace()
-        let exchange = Exchange(trace: trace)
+        let exchange = Exchange()
         var events = exchange.events.makeAsyncIterator()
-        let feed = await MainActor.run {
-            AdapterUpdateFeed(connect: { exchange.connect() }, pause: { _ in throw CancellationError() })
-        }
-        func pilot(_ step: String) {
-            trace("pilot", "\(step)\(Task.isCancelled ? "; TEST TASK CANCELLED" : "")")
-        }
-        let follow: @MainActor @Sendable (String) -> Task<Void, Never> = { name in
-            Task.immediate { @MainActor in
-                trace("call", "\(name) enters follow")
-                await feed.follow()
-                trace("call", "\(name) left follow; cancelled \(Task.isCancelled)")
-                exchange.returned(name)
-            }
-        }
-        pilot("body started")
-
-        // One main-actor turn starts all three. Each starts immediately and runs until it first
-        // waits, so the calls reach the feed in this order with nothing else in between.
-        let (first, second, third) = await MainActor.run {
-            (follow("first"), follow("second"), follow("third"))
+        // One main-actor turn creates the feed and starts all three calls, so they reach the feed
+        // in this order with nothing else in between.
+        let (feed, first, second, third) = await MainActor.run {
+            let held = heldFeed(on: exchange)
+            return (held, follow(held, as: "first", in: exchange), follow(held, as: "second", in: exchange),
+                    follow(held, as: "third", in: exchange))
         }
         // A failed wait below must not leave a call following the feed after the test.
         defer { for call in [first, second, third] { call.cancel() } }
-        pilot("started first, second, third; awaiting opened(1)")
         await expectNext(&events, .opened(1), in: exchange, feed: feed)
-        pilot("wait for opened(1) ended")
         #expect(exchange.live == 1)
 
         // A waiting call that is cancelled returns without ever connecting.
-        pilot("cancelling second")
         second.cancel()
-        pilot("cancelled second; awaiting returned(second)")
         await expectNext(&events, .returned("second"), in: exchange, feed: feed)
-        pilot("wait for returned(second) ended")
         #expect(exchange.live == 1)
 
         // The next waiting call connects once the owner has let go.
-        pilot("cancelling first, the owner")
         first.cancel()
-        pilot("cancelled first; awaiting closed(1)")
         await expectNext(&events, .closed(1), in: exchange, feed: feed)
-        pilot("wait for closed(1) ended")
         await expectNext(&events, .returned("first"), in: exchange, feed: feed)
-        pilot("wait for returned(first) ended")
         await expectNext(&events, .opened(2), in: exchange, feed: feed)
-        pilot("wait for opened(2) ended")
         #expect(exchange.live == 1)
         exchange.send([fixture, other])
-        pilot("awaiting the feed to read the snapshot")
-        let read = await until { feed.updates == [fixture, other] }
-        pilot("wait for the snapshot ended; read \(read)")
-        if !read {
-            let seen = await progress(exchange, feed)
-            #expect(read, "the feed never read the snapshot; \(seen)")
-        }
+        await expectRead(in: exchange, feed: feed) { feed.updates == [fixture, other] }
 
-        pilot("cancelling third, the owner")
         third.cancel()
-        pilot("cancelled third; awaiting closed(2)")
         await expectNext(&events, .closed(2), in: exchange, feed: feed)
-        pilot("wait for closed(2) ended")
         await expectNext(&events, .returned("third"), in: exchange, feed: feed)
-        pilot("wait for returned(third) ended")
         #expect(exchange.live == 0)
 
         // Nothing still holds the feed: a later call connects at once. It is cancelled as soon as
         // its connection opens, before it has read anything.
-        let again = await MainActor.run { follow("again") }
+        let again = await MainActor.run { follow(feed, as: "again", in: exchange) }
         defer { again.cancel() }
-        pilot("started again; awaiting opened(3)")
         await expectNext(&events, .opened(3), in: exchange, feed: feed)
-        pilot("wait for opened(3) ended; cancelling again before its first snapshot")
         again.cancel()
-        pilot("cancelled again; awaiting closed(3)")
         await expectNext(&events, .closed(3), in: exchange, feed: feed)
-        pilot("wait for closed(3) ended")
         await expectNext(&events, .returned("again"), in: exchange, feed: feed)
-        pilot("wait for returned(again) ended; body finished")
         let live = exchange.live
         if live != 0 {
             let seen = await progress(exchange, feed)
@@ -389,22 +370,6 @@ private final class Attempts: @unchecked Sendable {
     }
 }
 
-/// Prints one line per milestone, each with the seconds since the trace began on a monotonic
-/// clock. Search a run log for `[issue-150-overlap]`. Lines are printed and flushed on the
-/// caller's own path, so they survive a test that ends at its time limit.
-private struct Trace: Sendable {
-    private let start = ContinuousClock.now
-
-    var elapsed: Duration { start.duration(to: .now) }
-
-    func callAsFunction(_ source: String, _ what: String, at time: Duration? = nil) {
-        let parts = (time ?? elapsed).components
-        let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
-        print("[issue-150-overlap] +\(String(format: "%.3f", seconds))s \(source): \(what)")
-        fflush(nil)
-    }
-}
-
 /// Connections that stay open until the feed lets go of them, with an ordered record of each one
 /// opening and closing and of each test call returning.
 private final class Exchange: @unchecked Sendable {
@@ -421,10 +386,8 @@ private final class Exchange: @unchecked Sendable {
     private var opened = 0
     /// Every event in the order it was recorded, whether or not the test has read it yet.
     private var history: [Event] = []
-    private let trace: Trace?
 
-    init(trace: Trace? = nil) {
-        self.trace = trace
+    init() {
         let stream = AsyncStream.makeStream(of: Event.self)
         events = stream.stream
         emit = stream.continuation
@@ -444,14 +407,10 @@ private final class Exchange: @unchecked Sendable {
 
     private func record(_ event: Event) {
         // Under one lock, so the history and the stream always agree on the order.
-        // The trace takes its number and time under the lock and prints after it, so a printed
-        // line can appear out of place but its number gives the recorded order.
-        let (number, time) = lock.withLock {
+        lock.withLock {
             history.append(event)
             _ = emit.yield(event)
-            return (history.count, trace?.elapsed)
         }
-        trace?("exchange", "#\(number) recorded \(event)", at: time)
     }
 
     func connect() -> AsyncThrowingStream<[AdapterUpdate], Error> {
@@ -461,8 +420,7 @@ private final class Exchange: @unchecked Sendable {
                 lines[opened] = line
                 return opened
             }
-            line.onTermination = { [self] reason in
-                trace?("exchange", "connection \(id) terminated: \(reason)")
+            line.onTermination = { [self] _ in
                 lock.withLock { lines[id] = nil }
                 record(.closed(id))
             }
@@ -471,9 +429,7 @@ private final class Exchange: @unchecked Sendable {
     }
 
     func send(_ updates: [AdapterUpdate]) {
-        let open = lock.withLock { Array(lines) }
-        for (_, line) in open { line.yield(updates) }
-        trace?("exchange", "sent a snapshot of \(updates.count) update(s) to connection(s) \(open.map(\.key).sorted())")
+        for line in lock.withLock({ Array(lines.values) }) { line.yield(updates) }
     }
 
     func returned(_ call: String) { record(.returned(call)) }
