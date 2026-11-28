@@ -155,6 +155,57 @@ func TestACPActivityProjection(t *testing.T) {
 	}
 }
 
+func TestACPSessionMessageKeepsExactScopedUpdates(t *testing.T) {
+	session := &model.SessionRef{HarnessInstance: "fixture", SessionId: "enclosing-session"}
+	publisher := newACPSourcePublisher()
+	fixtures := []struct{ cursor, turn, kind, id, update, preview string }{
+		{"epoch.1", "turn", "session_message", "alpha", `"senderSessionId":"private-sender","content":[{"type":"text","text":"private-snapshot"}]`, "[ACP session_message]"},
+		{"epoch.2", "turn", "session_message", "beta", `"content":[{"type":"text","text":"private-beta"}]`, "[ACP session_message]"},
+		{"epoch.3", "turn", "session_message_chunk", "alpha", `"content":{"type":"text","text":" appended"}`, "[ACP session_message_chunk]  appended"},
+		{"epoch.4", "turn", "session_message", "beta", `"senderSessionId":null,"content":[]`, "[ACP session_message]"},
+		{"epoch.5", "", "session_message", "alpha", `"content":null`, "[ACP session_message]"},
+		{"epoch.6", "", "session_message", "alpha", "", "[ACP session_message]"},
+	}
+	for _, fixture := range fixtures {
+		inner := `{"sessionUpdate":"` + fixture.kind + `","messageId":"` + fixture.id + `"`
+		if fixture.update != "" {
+			inner += "," + fixture.update
+		}
+		inner += "}"
+		original := `{"sessionId":"enclosing-session","update":` + inner + `}`
+		obs := &model.Observation{Session: session, Cursor: fixture.cursor, TurnId: fixture.turn,
+			SourceCursor: proto.String(fixture.cursor),
+			SourceRecord: &model.Extension{Type: runtime.ACPUpdateParamsSource, MediaType: "application/json", Data: []byte(original)}}
+		ref := publisher.captureObservation(t.Context(), obs)
+		if ref == nil || !ref.Valid() || ref.Kind != fixture.kind || ref.MessageID != fixture.id || ref.Source != "live" ||
+			ref.Cursor != fixture.cursor || ref.TurnID != fixture.turn {
+			t.Fatalf("wrong projected source for %s: %+v", fixture.cursor, ref)
+		}
+		decoded := acpprocessor.Decode([]byte(inner))
+		event := acpActivityEvent(&decoded, ref.Source, ref.Cursor)
+		if event.Kind != "output" || event.Text != fixture.preview {
+			t.Fatalf("changed Console preview for %s: %q", fixture.cursor, event.Text)
+		}
+		batch := publisher.queue.get(nil)
+		if len(batch) != 1 || batch[0].Kind != service.LiveSourcedObservationKind || batch[0].Cursor != fixture.cursor ||
+			batch[0].TurnID != fixture.turn || batch[0].Session != (service.NativeSession{HarnessInstance: "fixture", SessionID: "enclosing-session"}) {
+			t.Fatalf("wrong scoped history update for %s: %+v", fixture.cursor, batch)
+		}
+		var retained model.Observation
+		if err := protojson.Unmarshal(batch[0].Observation, &retained); err != nil ||
+			!proto.Equal(&retained, obs) || string(retained.GetSourceRecord().GetData()) != original {
+			t.Fatalf("lost incremental fields in %s: %v, %s", fixture.cursor, err, batch[0].Observation)
+		}
+		// Peers that use the SDK's wire callback keep the inner update at the same cursor.
+		publisher.capture(runtime.ACPUpdate{Session: session, Cursor: fixture.cursor, TurnID: fixture.turn, Body: json.RawMessage(inner)})
+		wire := publisher.queue.get(nil)
+		if len(wire) != 1 || wire[0].Session != batch[0].Session || wire[0].Cursor != fixture.cursor ||
+			wire[0].TurnID != fixture.turn || string(wire[0].Body) != inner {
+			t.Fatalf("lost wire callback fields in %s: %+v", fixture.cursor, wire)
+		}
+	}
+}
+
 func TestACPPlanUpdateProjectsScopedIdentityAndKeepsExactItemsPrivate(t *testing.T) {
 	const items = `[{"content":"private initial item","priority":"high","status":"pending","futureField":42}]`
 	const replacement = `[{"content":"private replacement","priority":"low","status":"completed"}]`
