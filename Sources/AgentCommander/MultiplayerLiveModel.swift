@@ -426,11 +426,28 @@ final class MultiplayerLiveModel {
             if let mine = known.first(where: { $0.resource == row.resource && abs($0.until.timeIntervalSince(row.until)) < 2 }) {
                 if row.handle.isEmpty { row.handle = mine.handle }
                 row.minutes = mine.minutes
-            } else if row.handle.isEmpty, let friend = friends.first(where: { !row.user.isEmpty && ($0.user == row.user || $0.id == row.user) }) {
-                row.handle = friend.handle
             }
-            return row
+            // A row kept from an earlier read may still be unnamed, so the friends list is asked either way.
+            return Self.named(row, friends: friends)
         }
+    }
+
+    /// A server's status arrived. Names the hand-overs already listed for it by account alone,
+    /// from that server's friends, without reading anything again. A row that has a handle, or
+    /// whose account no friend there has, is left as it is; so is everything else about a row.
+    func nameHolders(on server: String) {
+        guard let rows = handovers[server], let friends = status(server)?.friends else { return }
+        let next = rows.map { Self.named($0, friends: friends) }
+        if next != rows { handovers[server] = next }
+    }
+
+    /// The row with its holder's handle, when it has none and a friend has its account.
+    private static func named(_ row: MultiplayerHandover, friends: [MultiplayerFriend]) -> MultiplayerHandover {
+        guard row.handle.isEmpty, !row.user.isEmpty,
+              let friend = friends.first(where: { $0.user == row.user || $0.id == row.user }) else { return row }
+        var row = row
+        row.handle = friend.handle
+        return row
     }
 
     // MARK: - Requests sent

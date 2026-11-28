@@ -43,6 +43,8 @@ final class CockpitModel {
     let compactions: CompactionSummaryStore
     /// The link or text of each reply chunk that is a resource, read from its source record.
     let replyAttachments: ReplyAttachmentStore
+    /// The sender and text of each message from another session, read from its source records.
+    let sessionMessages: SessionMessageStore
 
     init(endpoint: ServiceEndpoint = .live) {
         api = ServiceClient(endpoint: endpoint)
@@ -53,6 +55,7 @@ final class CockpitModel {
         elicitations = .live(reader: reader)
         compactions = CompactionFixture.isRequested ? CompactionFixture.store : .live(reader: reader)
         replyAttachments = .live(reader: reader)
+        sessionMessages = .live(reader: reader)
         adapterUpdates = AdapterUpdateFeed { reader.watchAdapterUpdates() }
         toolDetails = ToolDetailStore(source: ToolDetailSource(
             page: { try await reader.toolDetails($0, after: $1) },
@@ -125,6 +128,7 @@ final class CockpitModel {
         toolDetails.serviceChanged()
         compactions.serviceChanged()
         replyAttachments.serviceChanged()
+        sessionMessages.serviceChanged()
         sending = []
         replyAttempts = [:]
         followUpAttempts = [:]

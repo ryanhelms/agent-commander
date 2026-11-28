@@ -178,9 +178,17 @@ enum ActivityFailureWords {
 
     /// The failure a result states. `status` is the shared tool status, so a declined or
     /// cancelled permission reads as blocked.
-    static func read(_ result: ToolResult, status: ToolStatus) -> ActivityFailure {
+    ///
+    /// The outcome and the fixed words are told from the message as it was sent. The texts the
+    /// failure shows (`reason` when it is the provider's sentence, `exact`, `rest`) are cut from
+    /// the message as `shown` gives it: with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) the whole message is masked first, so the failure line,
+    /// what VoiceOver reads and the opened Reason and Exact text never hold the value. A mask
+    /// can take part of a recognised phrase away; the outcome does not change with it. The
+    /// result and its stored record keep the text as sent, and Source shows that.
+    static func read(_ result: ToolResult, status: ToolStatus, hidesSecrets: Bool = false) -> ActivityFailure {
         let message = body(result)
-        let (first, rest) = firstSentence(message)
+        let (first, rest) = firstSentence(shown(message, hidesSecrets: hidesSecrets))
         switch status {
         case .declined:
             return ActivityFailure(outcome: .blocked, reason: "You denied this.", exact: first.isEmpty ? "Tool declined." : first, rest: rest)
@@ -201,6 +209,27 @@ enum ActivityFailureWords {
         }
         guard !first.isEmpty else { return ActivityFailure(outcome: .failed, reason: noReason, exact: noReason) }
         return ActivityFailure(outcome: .failed, reason: first, exact: first, rest: rest)
+    }
+
+    /// A failure's whole text as it is drawn: as sent, or with `hidesSecrets` masked as
+    /// `SecretValues.masked(prose:)` masks it. Mask the whole text, then cut: a cut secret no
+    /// longer looks like one. The mask writes whole JSON one property per line. A text sent as
+    /// one line stays one line: the masked JSON's lines are joined again, so the first sentence
+    /// is still cut from its contents and never reads as a bare bracket. The line breaks of
+    /// that JSON are only between its parts; one inside a string is written escaped. A text
+    /// sent on several lines keeps the lines the mask gives it.
+    static func shown(_ text: String, hidesSecrets: Bool) -> String {
+        guard hidesSecrets else { return text }
+        let masked = SecretValues.masked(prose: text).text
+        guard !text.contains(where: \.isNewline), masked.contains(where: \.isNewline) else { return masked }
+        return masked.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.joined()
+    }
+
+    /// The failure of a result that states one only in its wrapper (`ok: false`, a non-empty
+    /// `error`) and has no failure of its own: the wrapper's error, whole, as `shown` gives it.
+    static func wrapper(_ error: String?, hidesSecrets: Bool = false) -> ActivityFailure {
+        let reason = error.map { shown($0, hidesSecrets: hidesSecrets) } ?? noReason
+        return ActivityFailure(outcome: .failed, reason: reason, exact: reason)
     }
 
     /// The provider's message: the error and the output, without the service's `Tool failed.` line.
@@ -308,6 +337,13 @@ struct ActivityStep: Identifiable, Equatable {
         if let tag { parts.append(tag.word) }
         if let failure { parts.append(failure.reason) }
         return parts.joined(separator: ", ")
+    }
+
+    /// What VoiceOver reads for the failure line: the sentence, the outcome, then the reason
+    /// the line shows. It is built from the failure as drawn, so it hides what the line hides.
+    var failureLabel: String {
+        sentence.plain + ", " + (failure?.outcome == .blocked ? "blocked" : "failed")
+            + (failure.map { ", " + $0.reason } ?? "")
     }
 }
 
@@ -423,10 +459,30 @@ struct ActivityPlan: Identifiable, Equatable {
     var items: [PlanItem]?
     /// The item count the latest event carried, when it carried one.
     var count: Int?
+    /// The provider plan this card stands for, on an identified ACP plan (`TranscriptOrigin
+    /// .planIdentity`). Nil for a `TodoWrite` list and an ACP plan event that names no plan.
+    /// Opaque: it matches events to the card and is never drawn, spoken or copied.
+    var identity: String? = nil
+    /// The provider removed this plan: the card is the line "The plan was removed".
+    var isRemoved = false
+
+    static let removedLine = "The plan was removed"
 
     var fallback: String {
         guard let count else { return "Updated the plan" }
         return count == 1 ? "Updated the plan: 1 item" : "Updated the plan: \(count) items"
+    }
+
+    /// The one line drawn in place of the checklist: that the plan was removed, or the fallback.
+    var line: String { isRemoved ? Self.removedLine : fallback }
+
+    /// The items the card draws. Nil draws `line`: a removed plan, or one whose latest event has
+    /// no record. An identified ACP plan's items are the provider's own words, so with
+    /// `hidesSecrets` (the transcript setting, `ToolDetailStore.hidesSecrets`) each is masked
+    /// whole, for the eye and for VoiceOver alike. The stored record is unchanged.
+    func shown(hidesSecrets: Bool) -> [PlanItem]? {
+        guard !isRemoved, let items else { return nil }
+        return hidesSecrets && identity != nil ? items.map(\.masked) : items
     }
 }
 
@@ -448,6 +504,8 @@ enum PrettyItem: Identifiable, Equatable {
     case formOutcome(PrettyFormOutcome)
     /// One provider compaction, at its message's own position. Never folded.
     case compaction(PrettyCompaction)
+    /// One incoming message from another session, at its first reference. Never folded.
+    case message(SessionMessage)
 
     var id: String {
         switch self {
@@ -461,6 +519,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .turnEnd(let end): end.id + "#turn-end"
         case .formOutcome(let outcome): outcome.id + "#form-outcome"
         case .compaction(let compaction): compaction.id + "#compaction"
+        case .message(let message): message.id
         }
     }
 
@@ -473,6 +532,7 @@ enum PrettyItem: Identifiable, Equatable {
         case .live(let step), .approval(let step): step.entries
         case .card(let card): card.step.entries
         case .compaction(let compaction): [compaction.entry]
+        case .message(let message): message.entries
         case .turnEnd, .formOutcome: []
         }
     }
@@ -494,6 +554,12 @@ struct ActivityFacts {
     /// What was read from a marked reply chunk's own source record. Nil until it is read, and
     /// when no such record is kept: the chunk then stays a folded session update.
     var replyAttachment: (ReplyAttachmentMark) -> ReplyAttachment? = { _ in nil }
+    /// What is known about the source record of a session message update. Nil when nothing is:
+    /// the update then stays a folded session update.
+    var sessionMessage: (SessionMessageMark) -> SessionMessageDetail? = { _ in nil }
+    /// The transcript setting as the store answers it (`ToolDetailStore.hidesSecrets`): a
+    /// provider notice's title is masked where its line is built.
+    var hidesSecrets = false
 
     static var none: ActivityFacts { ActivityFacts() }
 
@@ -520,6 +586,19 @@ struct ActivityFacts {
         guard let worker, let sequence = PrettyRecordPlacement.sequence(of: entry, worker: worker, summary: summary)
         else { return nil }
         return plans[sequence]
+    }
+
+    /// The plan record of an identified ACP plan update: the record at the event's sequence,
+    /// only when the event was observed live and the record states that it was kept from this
+    /// very event, by the event's own cursor, plan identity and turn. A console rebuilt from
+    /// provider history numbers its events afresh while the records persist, so a later live
+    /// event can have the sequence of a record kept from another one. A record that states no
+    /// event, or another event, is not read: the card then shows its fallback.
+    func identifiedPlan(for entry: TranscriptEntry) -> ToolDetailSummary? {
+        guard let origin = entry.origin, origin.planIsLive, let record = plan(for: entry),
+              record.planEvent?.names(cursor: origin.planCursor, planIdentity: origin.planIdentity,
+                                      turnID: origin.planTurnID) == true else { return nil }
+        return record
     }
 
     private static func bySequence(_ records: [ToolDetailSummary]) -> [Int: ToolDetailSummary] {
@@ -557,6 +636,14 @@ enum ActivityWords {
             return String(name[range.upperBound...])
         }
         return name
+    }
+
+    /// A tool's name as a line shows it. A tool Commander does not know by name can carry the
+    /// provider's own title there, so with `hidesSecrets` (the transcript setting,
+    /// `ToolDetailStore.hidesSecrets`) a secret-looking value in it is hidden before the name
+    /// enters a sentence, its help or what VoiceOver reads. Mask before `bareName` cuts it.
+    static func shownName(_ name: String, hidesSecrets: Bool) -> String {
+        hidesSecrets ? SecretValues.masked(prose: name).text : name
     }
 
     static func fileName(_ path: String) -> String {
@@ -805,9 +892,11 @@ enum ActivityWords {
     }
 
     static func provider(name: String, detail: String?, summary: ToolDetailSummary? = nil,
-                         record: ToolDetailRecord? = nil) -> ActivityWording {
+                         record: ToolDetailRecord? = nil, hidesSecrets: Bool = false) -> ActivityWording {
         if let special = special(name: name, detail: detail, summary: summary, record: record) { return special }
         let kind = providerKind(name)
+        // Only the generic sentence of an unknown tool names the tool, and its help repeats it.
+        let name = kind == .other ? shownName(name, hidesSecrets: hidesSecrets) : name
         let fact = fact(name, detail: detail, summary: summary, record: record)
         func file(_ running: String, _ done: String, _ failed: String, fallback: String, key: String,
                   one: String, many: String) -> ActivityWording {
@@ -868,11 +957,13 @@ enum ActivityWords {
                                    fallback: ActivitySentence("Updated the plan"),
                                    failed: ActivitySentence("Couldn't update the plan"), phrase: nil, help: name)
         case .other:
+            // A tool Commander does not know takes its verb from the provider's own kind.
+            if let stated = self.kind(summary: summary, hidesSecrets: hidesSecrets) { return stated }
             let bare = bareName(name)
             return ActivityWording(
                 running: ActivitySentence(.text("Using "), .mono(bare)), done: ActivitySentence(.text("Used "), .mono(bare)),
                 fallback: ActivitySentence(.text("Used "), .mono(bare)), failed: ActivitySentence(.mono(bare), .text(" failed")),
-                phrase: ActivityPhrase(key: "other", one: "used another tool", many: "used %d other tools"), help: name)
+                phrase: otherToolPhrase, help: name)
         }
     }
 
@@ -978,13 +1069,14 @@ enum ActivityWords {
     /// coordinator or parent answers (`owner`), it names them and asks nothing of the reader:
     /// "Waiting for the coordinator's approval to run `command`".
     static func approval(name: String, detail: String?, summary: ToolDetailSummary?,
-                         owner: WorkerInputOwner? = nil) -> ActivitySentence {
+                         owner: WorkerInputOwner? = nil, hidesSecrets: Bool = false) -> ActivitySentence {
         let lead = owner.map { "Waiting for \($0.phrase)'s approval to " } ?? "Needs your approval to "
         if CommanderTool(name: name) == nil, providerKind(name) == .shell,
            let command = fact(name, detail: detail, summary: summary) {
             return ActivitySentence(.text(lead + "run "), .mono(middle(command)))
         }
-        return ActivitySentence(.text(lead + "use "), .mono(CommanderTool(name: name)?.rawValue ?? bareName(name)))
+        return ActivitySentence(.text(lead + "use "),
+                                .mono(CommanderTool(name: name)?.rawValue ?? bareName(shownName(name, hidesSecrets: hidesSecrets))))
     }
 }
 
@@ -1000,7 +1092,8 @@ enum ActivitySteps {
         }
     }
 
-    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?) {
+    private static func apply(_ wording: ActivityWording, to step: inout ActivityStep, status: ToolStatus, result: ToolResult?,
+                              hidesSecrets: Bool) {
         step.phrase = wording.phrase
         step.help = wording.help
         switch step.state {
@@ -1013,7 +1106,7 @@ enum ActivitySteps {
             step.tag = status == .interrupted ? ActivityTag(word: "cancelled", tone: .wait) : wording.tag
         case .failed:
             step.sentence = wording.failed
-            let failure = result.map { ActivityFailureWords.read($0, status: status) }
+            let failure = result.map { ActivityFailureWords.read($0, status: status, hidesSecrets: hidesSecrets) }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag
@@ -1028,11 +1121,12 @@ enum ActivitySteps {
         var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
         if status == .awaitingApproval {
             step.sentence = ActivityWords.approval(name: name, detail: detail, summary: summary,
-                                                   owner: facts.approvalOwner)
+                                                   owner: facts.approvalOwner, hidesSecrets: facts.hidesSecrets)
         }
         let record = facts.record(entry.detailKey)
-        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record),
-              to: &step, status: status, result: result)
+        apply(ActivityWords.provider(name: name, detail: detail, summary: summary, record: record,
+                                     hidesSecrets: facts.hidesSecrets),
+              to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         // The stored result is an image. Only the full record says so, so the tag shows once
         // that record has been read: nothing in the summary or the call's text is taken as one.
         if step.state == .done, step.tag == nil, record?.resultImages != nil { step.tag = .image }
@@ -1054,15 +1148,16 @@ enum ActivitySteps {
             var step = ActivityStep(id: entry.id, entries: [entry], state: state(status), sentence: ActivitySentence(""))
             let named = TranscriptEntry(id: entry.id, kind: .tool(name: name, detail: nil, result: result))
             let wording = CommanderCall(entry: named).map { ActivityWords.commander($0, detail: summary) }
-                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key))
-            apply(wording, to: &step, status: status, result: result)
+                ?? ActivityWords.provider(name: name, detail: nil, summary: summary, record: facts.record(key),
+                                          hidesSecrets: facts.hidesSecrets)
+            apply(wording, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
             // The record kept under the result's exact tool call ID holds that call's diff.
             if status == .done { step.change = facts.record(key)?.resultChanges?.counts }
             return step
         }
         var step = ActivityStep(id: entry.id, kind: .orphanResult, entries: [entry], state: state(status),
                                 sentence: ActivitySentence(""))
-        apply(ActivityWords.orphanResult, to: &step, status: status, result: result)
+        apply(ActivityWords.orphanResult, to: &step, status: status, result: result, hidesSecrets: facts.hidesSecrets)
         return step
     }
 
@@ -1109,7 +1204,7 @@ enum ActivitySteps {
             if first.tool == .wait, status == .done, first.status == .waitingForReply {
                 wording.tag = ActivityTag(word: "waiting", tone: .wait)
             }
-            apply(wording, to: &step, status: status, result: first.result)
+            apply(wording, to: &step, status: status, result: first.result, hidesSecrets: facts.hidesSecrets)
             return step
         }
         // Several calls: the workflow's own state speaks. A failed call inside it stays visible
@@ -1165,7 +1260,9 @@ enum ActivitySteps {
             let failing = calls.last { ToolStatus(result: $0.result) == .failed || ToolStatus(result: $0.result) == .declined } ?? last
             let wording = ActivityWords.commander(failing, detail: nil)
             step.sentence = wording.failed
-            let failure = failing.result.map { ActivityFailureWords.read($0, status: ToolStatus(result: $0)) }
+            let failure = failing.result.map {
+                ActivityFailureWords.read($0, status: ToolStatus(result: $0), hidesSecrets: facts.hidesSecrets)
+            }
                 ?? ActivityFailure(outcome: .failed, reason: ActivityFailureWords.noReason, exact: ActivityFailureWords.noReason)
             step.failure = failure
             step.tag = failure.tag
@@ -1196,13 +1293,26 @@ enum ActivitySteps {
 enum ActivityConversation {
     /// The Pretty conversation, in order. A run of consecutive finished calls and quiet lines
     /// inside one agent turn is one group. Agent prose, a prompt, a reported result, a pending
-    /// request, a plan, a compaction, an attention-tone event and the open call each end it. A
-    /// failed call is drawn under the group it follows and ends it too.
+    /// request, a plan, a compaction, an attention-tone event, a notice with no stated level and
+    /// the open call each end it. A failed call is drawn under the group it follows and ends it
+    /// too.
     static func items(_ source: [ConversationItem], awaitingToolID: String? = nil, facts: ActivityFacts = .none,
                       reportsAsCoordinator: Bool = false) -> [PrettyItem] {
         var out: [PrettyItem] = []
         var open: ActivityGroup?
         var planIndex: Int?
+        /// The identified ACP plans of the current turn: where each one's card or removal line is.
+        var identified: [String: Int] = [:]
+        // Messages from other sessions, each read from the source records of its own references.
+        let references = source.flatMap { item -> [TranscriptEntry] in
+            switch item {
+            case .entry(let entry): [entry]
+            case .activity(let activity): activity.entries
+            case .commander: []
+            }
+        }
+        let messages = references.contains { !$0.sessionMessages.isEmpty }
+            ? SessionMessages(entries: references, detail: facts.sessionMessage) : .none
 
         func flush() {
             if let group = open { out.append(.group(group)); open = nil }
@@ -1268,11 +1378,45 @@ enum ActivityConversation {
                 planIndex = out.count - 1
             }
         }
+        /// An ACP plan event that names its provider plan. Each plan has one card, where its
+        /// first update arrived, and a later update of the same plan changes that card alone.
+        /// A removal turns that plan's card into the removal line, in place.
+        ///
+        /// - An update states the whole plan: without its own record the card is the count
+        ///   line, never the list an earlier update held, nor another plan's.
+        /// - Only a live event reads a record. An event from provider history, or with any other
+        ///   source, is still matched to its plan's card by identity and shows the count line.
+        /// - A removal of a plan with no card in this turn is its own line, where it arrived.
+        ///   It is never applied to another plan. A repeated removal adds nothing.
+        /// - An update after the plan's removal is a new plan: a new card, where it arrived.
+        func identifiedPlan(_ entry: TranscriptEntry, identity: String) {
+            flush()
+            let removes = entry.origin?.kind == TranscriptOrigin.planRemovedKind
+            // The record kept from this very event: at its console sequence, and stating the
+            // event's own cursor, identity and turn. A removal has none, and neither has an event
+            // this console did not observe live: provider history is numbered afresh, so its
+            // sequence may be that of an unrelated older record.
+            let items = removes ? nil : facts.identifiedPlan(for: entry)?.plan
+            let count = removes ? nil : entry.origin?.itemCount
+            if let index = identified[identity], case .plan(var card) = out[index], !card.isRemoved || removes {
+                card.entries.append(entry)
+                if !card.isRemoved {
+                    card.items = items
+                    card.count = count
+                    card.isRemoved = removes
+                }
+                out[index] = .plan(card)
+            } else {
+                out.append(.plan(ActivityPlan(id: entry.id + "#plan", entries: [entry], items: items, count: count,
+                                              identity: identity, isRemoved: removes)))
+                identified[identity] = out.count - 1
+            }
+        }
         func classify(_ entry: TranscriptEntry) {
             switch entry.kind {
             case .prose(_, let fromUser):
                 flush()
-                if fromUser { planIndex = nil }
+                if fromUser { planIndex = nil; identified = [:] }
                 out.append(.entry(entry))
             case .tool(let name, let detail, let result):
                 if ActivityWords.providerKind(name) == .plan, ToolStatus(result: result) != .failed {
@@ -1292,7 +1436,14 @@ enum ActivityConversation {
             case .output:
                 if let step = ActivitySteps.step(orphan: entry, facts: facts) { route(step) }
             case .other:
-                if let compaction = PrettyCompaction(entry: entry) {
+                if let message = messages.anchored[entry.id] {
+                    // A message from another session, where its first reference arrived. It ends
+                    // the group, as prose does.
+                    flush()
+                    out.append(.message(message))
+                } else if messages.absorbed.contains(entry.id) {
+                    // A later reference of a message: it changed the row at the message's place.
+                } else if let compaction = PrettyCompaction(entry: entry) {
                     // One row per compaction, where its first update arrived. It ends the group.
                     flush()
                     out.append(.compaction(compaction))
@@ -1303,12 +1454,16 @@ enum ActivityConversation {
                     out.append(.entry(entry))
                 } else if let step = ActivitySteps.step(thought: entry, facts: facts) {
                     add(step)
+                } else if let identity = entry.origin?.planIdentity {
+                    identifiedPlan(entry, identity: identity)
                 } else if isPlanEvent(entry) {
                     // The record kept from this very event, by its console sequence.
                     plan(entry, items: facts.plan(for: entry)?.plan, count: entry.origin?.itemCount, replaces: true)
-                } else if let event = ActivityEvent(entry: entry), event.tone == .quiet {
+                } else if let event = ActivityEvent(entry: entry, hidesSecrets: facts.hidesSecrets), event.folds {
                     add(ActivitySteps.step(quiet: entry, event: event))
                 } else {
+                    // An attention event, a notice with no stated level, or a role note: in the
+                    // open, where it arrived. It ends the group.
                     flush()
                     out.append(.entry(entry))
                 }
@@ -1363,7 +1518,7 @@ enum ActivityConversation {
     ///   it as it is: replies, the report, the turn's end, a card, the live line.
     /// - Before that group: every failure of the turn, as failure lines without their group's
     ///   finished calls; the turn's latest report, when none follows; a pending question's line
-    ///   and a live line.
+    ///   and a live line; a provider notice that does not fold. Each keeps its place in order.
     /// - From any turn: a call awaiting approval, and every item holding an entry in `keeping`
     ///   (the request's own workflow), so the request is never cut off.
     ///
@@ -1418,7 +1573,12 @@ enum ActivityConversation {
                 if compaction.mark.status != .completed { shown.append(item) }
             case .report:
                 if index == earlierReport { shown.append(item) }
-            case .entry, .plan, .approval, .card, .turnEnd, .formOutcome:
+            case .entry(let entry):
+                // A provider notice that does not fold (a warning, an error, or one with no
+                // stated level) stays, where it arrived. Every other entry is left out.
+                // Chosen by the notice's level alone: no title is read or prepared here.
+                if entry.origin?.notice?.folds == false { shown.append(item) }
+            case .plan, .approval, .card, .turnEnd, .formOutcome, .message:
                 break
             }
         }

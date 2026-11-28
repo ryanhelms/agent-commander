@@ -590,10 +590,7 @@ struct ActivityFailureLine<Detail: View>: View {
     let toggle: () -> Void
     @ViewBuilder let detail: () -> Detail
 
-    private var spoken: String {
-        step.sentence.plain + ", " + (step.failure?.outcome == .blocked ? "blocked" : "failed")
-            + (step.failure.map { ", " + $0.reason } ?? "")
-    }
+    private var spoken: String { step.failureLabel }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: metrics.listRadius, style: .continuous)

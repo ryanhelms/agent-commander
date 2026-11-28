@@ -110,6 +110,11 @@ type Activity struct {
 	ItemCount   *int        `json:"itemCount,omitempty"`
 	Usage       *Usage      `json:"usage,omitempty"`
 	TurnTokens  *TokenUsage `json:"turnTokens,omitempty"`
+	// NoticeSeverity is present only for a notice with a known provider severity.
+	NoticeSeverity acp.NoticeSeverity `json:"noticeSeverity,omitempty"`
+
+	// PlanIdentity is an opaque reference to a plan in one bound ACP session.
+	PlanIdentity string `json:"planIdentity,omitempty"`
 }
 
 // TokenUsage is the last prompt result's optional usage snapshot. Preserve
@@ -173,8 +178,10 @@ func (a *Activity) Valid() bool {
 		a.PageCursor != "" && (a.Source != "provider" || bounded(a.PageCursor, ProviderCursorLimit) != a.PageCursor) ||
 		bounded(a.MessageID, 256) != a.MessageID ||
 		a.MessageOp != "" && (a.MessageID == "" || (a.MessageOp != "append" && a.MessageOp != "replace")) || bounded(a.ContentType, 32) != a.ContentType ||
+		a.PlanIdentity != "" && !a.validPlanIdentity() ||
 		bounded(a.MIMEType, 128) != a.MIMEType || bounded(a.ModeID, 128) != a.ModeID ||
-		a.ItemCount != nil && *a.ItemCount < 0 {
+		a.ItemCount != nil && *a.ItemCount < 0 ||
+		a.NoticeSeverity != "" && (a.Kind != "notice" || !knownNoticeSeverity(a.NoticeSeverity)) {
 		return false
 	}
 	if a.Usage != nil && a.Usage.Cost != nil {
@@ -184,6 +191,22 @@ func (a *Activity) Valid() bool {
 		}
 	}
 	return a.TurnTokens == nil || a.TurnTokens.reportable()
+}
+
+func knownNoticeSeverity(severity acp.NoticeSeverity) bool {
+	switch severity {
+	case acp.NoticeSeverityInfo, acp.NoticeSeverityWarning, acp.NoticeSeverityError:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Activity) validPlanIdentity() bool {
+	return (a.Kind == "plan_update" || a.Kind == "plan_removed") && len(a.PlanIdentity) == 64 &&
+		strings.IndexFunc(a.PlanIdentity, func(r rune) bool {
+			return (r < '0' || r > '9') && (r < 'a' || r > 'f')
+		}) == -1
 }
 
 const ProviderCursorLimit = 8192
@@ -245,6 +268,8 @@ func (u *Update) Activity(source, cursor string) *Activity {
 		count(len(v.PromptSuggestionsUpdate.Suggestions))
 	case v.CurrentModeUpdate != nil:
 		a.ModeID = bounded(string(v.CurrentModeUpdate.CurrentModeId), 128)
+	case v.Notice != nil && knownNoticeSeverity(v.Notice.Severity):
+		a.NoticeSeverity = v.Notice.Severity
 	case v.UsageUpdate != nil:
 		usage := v.UsageUpdate
 		a.Usage = &Usage{Used: usage.Used, Size: usage.Size}

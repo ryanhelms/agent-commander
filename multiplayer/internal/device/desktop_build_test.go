@@ -3,7 +3,10 @@ package device
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -57,11 +60,59 @@ func TestDesktopBuildProofAcrossRelayEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = bob.agent.remote(ctx, ownerSession, http.MethodPut, "/v1/resources/"+inbox, map[string]any{
-		"kind": "agent", "name": "Bob's coordinator", "actions": []string{"agent.message"},
+		"kind": "agent", "name": "Bob's relay coordinator", "actions": []string{"agent.message"},
+		"capabilities": &control.Capabilities{Harness: "claude", Model: "test-model"}, "listed": true,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	bob.must(t, ctx, "/tray/grant", input{Handle: alice.handle, Resource: inbox, Capability: "agent.message", Approval: "auto"}, nil)
+	noteExpiry := time.Now().UTC().Add(30 * time.Minute).Truncate(time.Second)
+	bob.must(t, ctx, "/tray/grant", input{Handle: alice.handle, Resource: inbox, Capability: "agent.message",
+		MaxUses: 3, ExpiresAt: noteExpiry, Approval: "auto"}, nil)
+	checkNote := func() {
+		t.Helper()
+		for _, g := range bob.state(t, ctx).Grants {
+			if g.Resource == inbox && g.Handle == alice.handle && g.Capability == "agent.message" &&
+				g.MaxUses == 3 && g.ExpiresAt.Equal(noteExpiry) && g.Approval == "auto" {
+				return
+			}
+		}
+		t.Fatal("the note grant limits changed")
+	}
+	checkNote()
+	matchesInbox := func(resource control.Resource) bool { return resource.ID == inbox }
+	checkOwnerOffer := func(want bool) {
+		t.Helper()
+		var owner struct{ Resources []control.Resource }
+		bob.must(t, ctx, "/tray/status", input{}, &owner)
+		index := slices.IndexFunc(owner.Resources, matchesInbox)
+		if index < 0 || slices.Contains(owner.Resources[index].Actions, "app.build") != want {
+			t.Fatalf("owner build-offer mismatch, wanted %v: %+v", want, owner.Resources)
+		}
+	}
+	checkRelayOffer := func(want bool) {
+		t.Helper()
+		rows, err := bob.agent.resources(ctx, ownerSession)
+		if err != nil {
+			t.Fatal(err)
+		}
+		index := slices.IndexFunc(rows, matchesInbox)
+		if index < 0 {
+			t.Fatal("coordinator enrollment missing")
+		}
+		r := rows[index]
+		if slices.Contains(r.Actions, "app.build") != want || !slices.Contains(r.Actions, "agent.message") ||
+			r.Name != "Bob's relay coordinator" || r.Capabilities == nil || r.Capabilities.Model != "test-model" || !r.Listed {
+			t.Fatalf("relay coordinator metadata mismatch, wanted build offer %v: %+v", want, r)
+		}
+	}
+	checkOwnerOffer(true)
+	checkRelayOffer(false)
+	if err := bob.agent.ensureDesktopBuildOffer(ctx, ownerSession, actions.Resource{
+		ID: inbox, Kind: "agent", Target: bob.actor, Run: bob.otherRun.run, Coordinator: true,
+	}); err == nil {
+		t.Fatal("rebound run could refresh the enrolled coordinator resource")
+	}
+	checkRelayOffer(false)
 	checkOffer := func(want bool) {
 		t.Helper()
 		var directory struct {
@@ -76,8 +127,18 @@ func TestDesktopBuildProofAcrossRelayEdges(t *testing.T) {
 		}
 	}
 	checkOffer(false)
-	bob.must(t, ctx, "/tray/resource-update", input{ID: inbox}, nil)
-	checkOffer(false) // Updating a resource never adds the new action to its existing note grant.
+	grantBuild := input{Handle: alice.handle, Resource: inbox, Capability: "app.build", Approval: "auto"}
+	foreignGrant := grantBuild
+	foreignGrant.Handle = bob.handle
+	if _, why := alice.call(t, ctx, "/tray/grant", foreignGrant); why == "" {
+		t.Fatal("another device could refresh the owner's resource")
+	}
+	invalidGrant := grantBuild
+	invalidGrant.MaxUses = -1
+	if _, why := bob.call(t, ctx, "/tray/grant", invalidGrant); why == "" {
+		t.Fatal("invalid grant unexpectedly succeeded")
+	}
+	checkRelayOffer(false)
 
 	operation := func(id, nonce string, issued time.Time) Submit {
 		t.Helper()
@@ -90,8 +151,10 @@ func TestDesktopBuildProofAcrossRelayEdges(t *testing.T) {
 	if _, reason := alice.call(t, ctx, "/coordinator/submit", operation("ungranted", strings.Repeat("a", 32), time.Now().UTC())); reason == "" || reads.Load() != 0 {
 		t.Fatalf("note-only grant let peer request build evidence: %q, reads=%d", reason, reads.Load())
 	}
-	bob.must(t, ctx, "/tray/grant", input{Handle: alice.handle, Resource: inbox, Capability: "app.build", Approval: "auto"}, nil)
+	bob.must(t, ctx, "/tray/grant", grantBuild, nil)
 	checkOffer(true)
+	checkRelayOffer(true)
+	checkNote()
 	for i, want := range []string{firstLaunch, firstLaunch, secondLaunch} {
 		launch.Store(want)
 		nonce := strings.Repeat(string(rune('a'+i)), 32)
@@ -193,6 +256,77 @@ func TestDesktopBuildProofAcrossRelayEdges(t *testing.T) {
 	bob.must(t, ctx, "/tray/approvals", input{}, &remaining)
 	if len(remaining.Approvals) != 0 {
 		t.Fatalf("expired approval remains visible: %+v", remaining.Approvals)
+	}
+	bob.ended.Store(true)
+	if _, why := bob.call(t, ctx, "/tray/grant", grantBuild); why == "" {
+		t.Fatal("ended coordinator accepted a new build grant")
+	}
+	// The independently published relay lifecycle lets the status menu hide
+	// the offer without an owner-socket request for an existing advertisement.
+	bob.agent.mu.Lock()
+	lease := bob.agent.lease
+	bob.agent.mu.Unlock()
+	ended := proof(lease)
+	ended["ended"] = true
+	if err := bob.agent.remote(ctx, ownerSession, http.MethodPut, "/v1/resources/"+inbox+"/coordinator-inbox", ended, nil); err != nil {
+		t.Fatal(err)
+	}
+	checkOwnerOffer(false)
+	checkRelayOffer(true) // The offer and prior grants survive coordinator reattachment.
+	checkNote()
+}
+
+func TestOwnerBuildActionsShareProbeBudget(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "ac-offer-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "commander.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := &http.Server{Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		<-r.Context().Done()
+	})}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+	a := &Agent{cfg: Config{CommanderSocket: socket, configureActions: func(cfg actions.Config) actions.Config {
+		cfg.ReadDesktopBuild = func(context.Context, string) (actions.DesktopBuild, error) {
+			t.Error("offering metadata must never read the native build")
+			return actions.DesktopBuild{}, actions.ErrDesktopBuildUnavailable
+		}
+		return cfg
+	}}}
+	s := identity.Session{User: "owner", Device: "owner-device"}
+	var local []actions.Resource
+	var stale []control.Resource
+	for i := range 24 {
+		id := fmt.Sprintf("coordinator-%d", i)
+		local = append(local, actions.Resource{ID: id, Kind: "agent", Coordinator: true, Target: id, Run: "run-" + id})
+		stale = append(stale, control.Resource{ID: id, Kind: "agent", Owner: s.User, Device: s.Device, Actions: []string{"agent.message"}})
+	}
+	modern := stale[0]
+	modern.Actions = []string{"agent.message", "app.build"}
+	if got := a.ownerBuildActions(t.Context(), s, modern, local); !slices.Equal(got, modern.Actions) || requests.Load() != 0 {
+		t.Fatalf("existing build offer needed a local probe: %v, requests=%d", got, requests.Load())
+	}
+	modern.InboxEnded = true
+	if got := a.ownerBuildActions(t.Context(), s, modern, local); slices.Contains(got, "app.build") || requests.Load() != 0 {
+		t.Fatalf("ended offer used a local probe: %v, requests=%d", got, requests.Load())
+	}
+	probe, cancel := context.WithTimeout(t.Context(), ownerBuildProbeBudget)
+	defer cancel()
+	for _, resource := range stale {
+		if got := a.ownerBuildActions(probe, s, resource, local); !slices.Equal(got, resource.Actions) {
+			t.Fatalf("unresponsive service exposed a stale build offer: %v", got)
+		}
+	}
+	if probe.Err() != context.DeadlineExceeded || requests.Load() != 1 {
+		t.Fatalf("stale offers exceeded their shared probe budget: %v, requests=%d", probe.Err(), requests.Load())
 	}
 }
 

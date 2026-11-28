@@ -469,7 +469,10 @@ struct ShellWallPage: View {
 
     var body: some View {
         if let run {
-            CoordinatorSplit(fraction: $fraction, showsFloating: false) {
+            CoordinatorSplit(fraction: $fraction,
+                             showsTrailing: WorkspaceSplitGeometry.showsWorkers(localWorkers: run.wall.workers.count,
+                                                                                zoomsRemoteWorker: false),
+                             showsFloating: false) {
                 RunHeader(run: run, canStop: false, showingDetails: $showingDetails, showRuns: {}, stop: {})
             } leading: {
                 VStack(spacing: 0) {
@@ -495,13 +498,14 @@ struct ShellWallPage: View {
                                             now: live.now, isBusy: live.isBusy, takeBack: takeBack,
                                             openShared: { go(NetworkPlace.shared) }, review: { _ in go(NetworkPlace.approvals) })
                         }
+                    } footer: {
+                        // Remote workers aren't zoomed in the preview: a tile goes to Hand-offs.
+                        WallRemoteBand(workers: live.remoteWorkers, work: live.work, now: live.now,
+                                       zoom: { _ in go(NetworkPlace.handoffs) },
+                                       openHandoffs: { go(NetworkPlace.handoffs) },
+                                       openWork: { item in go(WallLiveWork.place(for: item.kind)) })
+                            .padding(.top, live.remoteWorkers.isEmpty && live.work.isEmpty ? 0 : Metric.wallRowGap)
                     }
-                    // Remote workers aren't zoomed in the preview: a tile goes to Hand-offs.
-                    WallRemoteBand(workers: live.remoteWorkers, work: live.work, now: live.now,
-                                   zoom: { _ in go(NetworkPlace.handoffs) },
-                                   openHandoffs: { go(NetworkPlace.handoffs) },
-                                   openWork: { item in go(WallLiveWork.place(for: item.kind)) })
-                        .padding(.top, live.remoteWorkers.isEmpty && live.work.isEmpty ? 0 : Metric.wallRowGap)
                 }
             } floating: {
                 EmptyView()

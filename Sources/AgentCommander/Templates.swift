@@ -6,8 +6,9 @@ import SwiftUI
 // take their content as slots. They know nothing about runs, workers or requests.
 //
 //   CockpitShell      navigation | (banners over canvas), on the window's glass
-//   CoordinatorSplit  run header over a resizable coordinator | worker region, with a floating
-//                     anchor at the bottom trailing corner of the worker region
+//   CoordinatorSplit  run header over a resizable coordinator | worker region, or the coordinator
+//                     alone while the worker region is closed, with a side-panel anchor at the
+//                     trailing edge and a floating anchor at the bottom trailing corner
 //   TaskSheet         page header, form beside an aside, pinned footer
 
 // MARK: - CockpitShell
@@ -84,14 +85,26 @@ struct WindowGlass: ViewModifier {
 // MARK: - CoordinatorSplit
 
 /// The coordinator stays in the leading pane while the trailing region switches between wall and
-/// zoom. The divider is draggable, focusable and adjustable through accessibility.
-struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: View>: View {
+/// zoom. With the trailing region closed the coordinator takes the whole width and there is no
+/// divider. The leading slot is the same view in both forms, so opening or closing the trailing
+/// region never rebuilds it. The divider is draggable, focusable and adjustable through
+/// accessibility, and reports the width as drawn. The side panel and the floating stack are
+/// anchored to the region's trailing edge in both forms.
+struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: View, Drawer: View>: View {
+    /// The coordinator's remembered share of the width. Written only when the divider is moved.
     @Binding var fraction: Double
+    /// The trailing region is open.
+    var showsTrailing = true
     let showsFloating: Bool
+    /// The side panel is on screen, and whether it is pinned. Pinned, the pane beside it gives up
+    /// the panel's width while a readable tile is left; otherwise the panel lies over the pane.
+    var showsDrawer = false
+    var drawerPinned = false
     @ViewBuilder let header: Header
     @ViewBuilder let leading: Leading
     @ViewBuilder let trailing: Trailing
     @ViewBuilder let floating: Floating
+    @ViewBuilder let drawer: Drawer
     @State private var dragOrigin: Double?
 
     var body: some View {
@@ -99,42 +112,43 @@ struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: V
             header
             Hairline()
             GeometryReader { geo in
-                let width = geo.size.width
-                let left = leadingWidth(in: width)
+                let geometry = WorkspaceSplitGeometry(width: geo.size.width, fraction: fraction, showsWorkers: showsTrailing,
+                                                      showsDrawer: showsDrawer, drawerPinned: drawerPinned)
                 HStack(spacing: 0) {
                     leading
                         .padding(.horizontal, Metric.paneInset)
                         .padding(.bottom, Metric.paneBottom)
-                        .frame(width: max(0, left - 1))
-                    divider(totalWidth: width)
-                    ZStack(alignment: .bottomTrailing) {
+                        .padding(.trailing, showsTrailing ? 0 : geometry.drawerReservation)
+                        .frame(width: geometry.coordinatorWidth)
+                    if showsTrailing {
+                        divider(geometry)
                         trailing
                             .padding(.horizontal, Metric.paneInset)
                             .padding(.bottom, Metric.paneBottom)
-                        if showsFloating {
-                            floating
-                                .frame(width: min(Metric.pipWidth, max(250, width - left - 2 * Metric.paneInset)))
-                                .padding(.trailing, Metric.pipTrailing)
-                                .padding(.bottom, Metric.pipBottom)
-                        }
+                            .padding(.trailing, geometry.drawerReservation)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .overlay(alignment: .trailing) {
+                    if showsDrawer { drawer }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if showsFloating {
+                        floating
+                            .frame(width: geometry.floatingWidth)
+                            .padding(.trailing, Metric.pipTrailing)
+                            .padding(.bottom, Metric.pipBottom)
+                    }
                 }
             }
         }
     }
 
-    private func leadingWidth(in width: CGFloat) -> CGFloat {
-        let preferred = max(Metric.minimumCoordinatorWidth, width * fraction)
-        return max(220, min(preferred, width - Metric.minimumWorkerRegionWidth))
-    }
-
-    private func clamp(_ value: Double) -> Double { min(0.6, max(0.2, value)) }
-
-    private func divider(totalWidth: CGFloat) -> some View {
+    private func divider(_ geometry: WorkspaceSplitGeometry) -> some View {
         Rectangle()
             .fill(Color.white.opacity(0.2))
-            .frame(width: 1)
+            .frame(width: WorkspaceSplitGeometry.divider)
             .frame(maxHeight: .infinity)
             .overlay {
                 ZStack {
@@ -150,9 +164,11 @@ struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: V
                 .gesture(
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
-                            let origin = dragOrigin ?? fraction
+                            // A drag starts from where the divider is drawn, not from a remembered
+                            // share this window could not show.
+                            let origin = dragOrigin ?? geometry.renderedFraction
                             dragOrigin = origin
-                            fraction = clamp(origin + value.translation.width / max(1, totalWidth))
+                            fraction = geometry.fraction(from: origin, movedBy: value.translation.width / max(1, geometry.width))
                         }
                         .onEnded { _ in dragOrigin = nil }
                 )
@@ -160,16 +176,26 @@ struct CoordinatorSplit<Header: View, Leading: View, Trailing: View, Floating: V
             .zIndex(1)
             .focusable()
             .onMoveCommand { direction in
-                if direction == .left { fraction = clamp(fraction - 0.02) }
-                if direction == .right { fraction = clamp(fraction + 0.02) }
+                if direction == .left { fraction = geometry.fraction(movedBy: -0.02) }
+                if direction == .right { fraction = geometry.fraction(movedBy: 0.02) }
             }
             .help("Drag, or focus and use the arrow keys, to resize the coordinator")
             .accessibilityElement()
             .accessibilityLabel("Coordinator width")
-            .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
+            .accessibilityValue("\(geometry.percent) percent")
             .accessibilityAdjustableAction { direction in
-                fraction = clamp(fraction + (direction == .increment ? 0.04 : -0.04))
+                fraction = geometry.fraction(movedBy: direction == .increment ? 0.04 : -0.04)
             }
+    }
+}
+
+extension CoordinatorSplit where Drawer == EmptyView {
+    /// A split with no side panel.
+    init(fraction: Binding<Double>, showsTrailing: Bool = true, showsFloating: Bool,
+         @ViewBuilder header: () -> Header, @ViewBuilder leading: () -> Leading,
+         @ViewBuilder trailing: () -> Trailing, @ViewBuilder floating: () -> Floating) {
+        self.init(fraction: fraction, showsTrailing: showsTrailing, showsFloating: showsFloating,
+                  header: header, leading: leading, trailing: trailing, floating: floating, drawer: { EmptyView() })
     }
 }
 

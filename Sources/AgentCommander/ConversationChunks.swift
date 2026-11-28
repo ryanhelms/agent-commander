@@ -58,6 +58,27 @@ struct TranscriptOrigin: Equatable, Sendable {
     /// Set on a live reply chunk that is a resource link or a resource: the record behind it.
     /// Pretty draws what that record holds in the reply; see `ReplyAttachment`.
     var replyAttachment: ReplyAttachmentMark? = nil
+    /// Set on a live session message update: the record behind each update the message stands
+    /// for, in the order they arrived. Pretty draws the message those records hold; see
+    /// `SessionMessage`.
+    var sessionMessages: [SessionMessageMark] = []
+    /// Set on a provider notice: the level its reference states, when it states one. Pretty keeps
+    /// a warning, an error and a notice with no level in the open; see `NoticeMark`.
+    var notice: NoticeMark? = nil
+    /// Set on an ACP `plan_update` or `plan_removed` event the service could tie to one provider
+    /// plan: its fingerprint of the provider session and that plan's own ID. Two events are about
+    /// the same plan only when these are equal. It is opaque, and is never drawn, spoken or copied.
+    var planIdentity: String? = nil
+    /// The reference's source is exactly `live`: the event was observed by this console, so its
+    /// sequence is the one a stored plan record was kept under. A reopened worker's console is
+    /// provider history numbered afresh, while the records kept from its earlier live events
+    /// remain under their old sequences; such an event's sequence names no record.
+    var planIsLive = false
+    /// The cursor and the turn of an identified plan event's own reference, when each is a
+    /// non-empty string. A stored plan record is this event's only when it names both, and the
+    /// identity, exactly (`PlanEventBinding`). Never drawn, spoken or copied.
+    var planCursor: String? = nil
+    var planTurnID: String? = nil
 }
 
 enum ConversationChunks {
@@ -159,6 +180,28 @@ extension TranscriptOrigin {
         itemCount = acp["itemCount"]?.intValue
         compaction = CompactionMark(message: message, acp: acp)
         replyAttachment = ReplyAttachmentMark(message: message, acp: acp)
+        sessionMessages = SessionMessageMark.marks(message: message, acp: acp)
+        notice = NoticeMark(message: message, acp: acp)
+        planIdentity = Self.planIdentity(kind: kind, acp: acp)
+        planIsLive = planIdentity != nil && acp["source"]?.stringValue == ConversationChunks.liveSource
+        if planIdentity != nil {
+            planCursor = acp["cursor"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+            planTurnID = acp["turnId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
+    /// The ACP session update that states a plan as it now is, and the one that removes a plan.
+    static let planUpdateKind = "plan_update"
+    static let planRemovedKind = "plan_removed"
+
+    /// The plan an event is about: `planIdentity` on a `plan_update` or `plan_removed` reference,
+    /// when it is exactly 64 lower-case hexadecimal digits. Nil for any other kind or value; the
+    /// event is then the folded session update it has always been.
+    static func planIdentity(kind: String, acp: [String: AGUIValue]) -> String? {
+        guard kind == planUpdateKind || kind == planRemovedKind,
+              let text = acp["planIdentity"]?.stringValue, text.utf8.count == 64 else { return nil }
+        let digits = UInt8(ascii: "0")...UInt8(ascii: "9"), letters = UInt8(ascii: "a")...UInt8(ascii: "f")
+        return text.utf8.allSatisfy { digits.contains($0) || letters.contains($0) } ? text : nil
     }
 
     /// One line for a session update that reports state: usage, mode, commands, configuration.
@@ -384,12 +427,15 @@ extension ConsoleRecordDetail {
 /// Recognised: `usage_update` Context, `current_mode_update` Mode, `available_commands_update`
 /// Commands, `session_info_update` Session, `config_option_update` Config, `plan` Plan, and the
 /// service's relayed `[Provider stderr]`, `[Provider stdout]`, `[Provider event: …]` and
-/// `[Service …]` text. Any other record with an ACP kind is named by that kind and shows its own
-/// text. A record with no text has an empty detail: its content is only in its fields.
+/// `[Service …]` text. A provider `notice` is read by its reference's level alone (`NoticeMark`):
+/// Warning, Error or Notice, with its title as sent. Any other record with an ACP kind is named
+/// by that kind and shows its own text. A record with no text has an empty detail: its content is
+/// only in its fields.
 struct ActivityEvent: Equatable, Sendable {
     enum Tone: Equatable, Sendable {
         case quiet
-        /// May need the developer: harness stderr, or a provider event about a permission.
+        /// May need the developer: harness stderr, a provider event about a permission, or a
+        /// notice the provider sent as a warning or an error.
         case attention
     }
 
@@ -397,6 +443,9 @@ struct ActivityEvent: Equatable, Sendable {
     let label: String
     let detail: String
     let tone: Tone
+    /// The event joins the group of finished lines beside it. False for an event that stays in
+    /// the open at its own position: every attention event, and a notice with no stated level.
+    let folds: Bool
 
     var accessibilityLabel: String {
         label + ": " + (detail.isEmpty ? "no text, content in its fields" : detail)
@@ -404,13 +453,24 @@ struct ActivityEvent: Equatable, Sendable {
 
     /// Nil for an entry that is not activity: a prompt, reply, tool, result or thought, and a
     /// note with neither an ACP kind nor a relayed marker, which keeps its role note.
-    init?(entry: TranscriptEntry) {
+    /// - Parameter hidesSecrets: the transcript setting (`ToolDetailStore.hidesSecrets`). It
+    ///   masks a provider notice's title; every other event is unchanged by it.
+    init?(entry: TranscriptEntry, hidesSecrets: Bool = false) {
         guard case .other(let role, let text) = entry.kind, !entry.isThought,
               role != "user", role != "assistant" else { return nil }
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let kind = entry.origin?.kind ?? ""
 
-        if let rest = Self.after("[Provider stderr]", in: body) {
+        if SessionMessageMark.Kind(rawValue: kind) != nil {
+            // An update of a message from another session that is not drawn as that message: its
+            // record is not read, is still being read, or says the message is not incoming. The
+            // line names the update and nothing else. The service's text for one update may hold
+            // a piece of a value that only the whole message's text shows to be a secret.
+            self.init(symbol: "circle.dashed", label: Self.sessionMessageLabel, detail: "", tone: .quiet)
+        } else if let notice = entry.origin?.notice {
+            // Judged by its reference alone, before any text is read.
+            self.init(notice: notice, body: body, hidesSecrets: hidesSecrets)
+        } else if let rest = Self.after("[Provider stderr]", in: body) {
             self.init(symbol: "exclamationmark.bubble", label: "stderr", detail: rest, tone: .attention)
         } else if let rest = Self.after("[Provider stdout]", in: body) {
             self.init(symbol: "text.alignleft", label: "stdout", detail: rest, tone: .quiet)
@@ -454,13 +514,18 @@ struct ActivityEvent: Equatable, Sendable {
         }
     }
 
-    init(symbol: String, label: String, detail: String, tone: Tone) {
+    /// - Parameter folds: nil folds a quiet event and keeps an attention event in the open.
+    init(symbol: String, label: String, detail: String, tone: Tone, folds: Bool? = nil) {
         self.symbol = symbol
         self.label = label
         self.detail = detail
         self.tone = tone
+        self.folds = folds ?? (tone == .quiet)
     }
 
+    /// The line for a session message update that is not drawn as its message. It holds no text
+    /// of the update and names no sender.
+    static let sessionMessageLabel = "Session message"
     /// The provider event name the ACP runner gives a live input request.
     static let permissionRequested = "Permission requested"
     /// The line Commander appends to a question that offers choices, before one `Label [id]` line

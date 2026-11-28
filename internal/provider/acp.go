@@ -530,7 +530,11 @@ func workerObservations(ctx context.Context, client *agentacp.Sessions, ref *mod
 						}
 					}
 					screen.line(previewText(entry.TerminalText()))
-					screen.recordEvent(entry)
+					if entry.ACP != nil && entry.ACP.PlanIdentity != "" {
+						screen.recordDetailed(entry, planDetail(event, entry.ACP))
+					} else {
+						screen.recordEvent(entry)
+					}
 				}
 				continue
 			}
@@ -746,7 +750,7 @@ func runACPTurn(ctx context.Context, client *agentacp.Sessions, request *model.S
 					event.ACP.TurnID = e.TurnId
 				}
 				s.line(event.TerminalText())
-				s.recordDetailed(event, planDetail(e))
+				s.recordDetailed(event, planDetail(e, event.ACP))
 			case e.GetText() != nil && e.GetText().Speaker == model.Speaker_SPEAKER_SYSTEM:
 				flushText()
 				value := consoleText(e.GetText().Text)

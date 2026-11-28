@@ -21,9 +21,11 @@ import SwiftUI
 //                            TerminalComposer when the session accepts file links or snapshots)
 //                         (+ ElicitationPanel popover from the action list for a bound worker: the
 //                            agent's form and URL requests with accept, decline and cancel)
-//   NestedWorkerGroup   = disclosure header + WorkerTile row
+//                         (identityOnly: the title bar and the status line alone, for the parent
+//                            pinned over an opened group in a short pane)
+//   NestedWorkerGroup   = disclosure header (+ Open group) + WorkerTile row
 //   WorkerWall          = WorkerTile rows + NestedWorkerGroup
-//   CoordinatorConsole  = ConsoleTitleBar + TerminalWell + AttentionNotice + TerminalStatusLine
+//   CoordinatorConsole  = ConsoleTitleBar (CoordinatorAssignmentButton) + TerminalWell + AttentionNotice + TerminalStatusLine
 //                         (+ TerminalComposer as the footer line: the owner's follow-up to a
 //                            recovered coordinator the owner controls, else the preview's message)
 //   AttentionStack      = request controls + ConsoleTitleBar + TerminalWell + RequestPrompt
@@ -76,6 +78,9 @@ struct WorkerTile: View {
 
     let worker: WorkerPresentation
     var variant: Variant = .wall
+    /// The wall variant without its console: the title bar and the status line alone. An opened
+    /// group pins its parent this way where the pane is too short for the parent's tile.
+    var identityOnly = false
     var isKeyFocused = false
     /// Present in the focused variant when this worker's request is answered inline.
     var reply: ReplyContext? = nil
@@ -113,19 +118,22 @@ struct WorkerTile: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if isFocusedVariant { conversation } else { well }
+            if isFocusedVariant { conversation } else if !identityOnly { well }
             // While the service checks the session, the availability strip shows its explanation
             // as the restart reason, so it is not repeated here.
-            if let error = worker.error, !error.isEmpty, worker.availabilityStatement?.suppressesConsoleNotice != true {
+            if !identityOnly, let error = worker.error, !error.isEmpty,
+               worker.availabilityStatement?.suppressesConsoleNotice != true {
                 ConsoleNotice(text: error, state: worker.state)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, isFocusedVariant ? 21 : Metric.tileInset).padding(.vertical, 6)
                     .background(Term.background)
             }
-            availabilityRow
-            progressRow
-            interruptRow
-            followUpRow
+            if !identityOnly {
+                availabilityRow
+                progressRow
+                interruptRow
+                followUpRow
+            }
             footer
             // A follow-up cannot reach a disconnected worker, or a Claude adapter that has exited or
             // is being checked, so its compose line waits with it.
@@ -158,8 +166,11 @@ struct WorkerTile: View {
                     .lineLimit(1).fixedSize()
                     .help("Worker \(worker.id)").accessibilityLabel("Worker ID \(worker.id)")
             }
-            ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
-                                       source: source, terminal: NativeTerminalTarget(worker: worker))
+            // The display modes belong to a console, and the strip draws none.
+            if !identityOnly {
+                ConsoleModeTitlebarControl(consoleID: worker.id, consoleName: worker.name, client: worker.client,
+                                           source: source, terminal: NativeTerminalTarget(worker: worker))
+            }
             actionMenu
                 // The action list's own popover is on the button; the session panel is anchored
                 // beside it, so the two never share a presenter.
@@ -627,7 +638,8 @@ struct WorkerActionMenu: View {
 
 // MARK: - NestedWorkerGroup
 
-/// A parent worker with the workers it delegated to. The header is one disclosure button.
+/// A parent worker with the workers it delegated to. The header is a disclosure button, then,
+/// where the group can be opened, a separate Open group button.
 struct NestedWorkerGroup<Content: View>: View {
     let name: String
     let nestedCount: Int
@@ -639,145 +651,214 @@ struct NestedWorkerGroup<Content: View>: View {
     /// Shown on the collapsed header, where the tiles are hidden.
     var reconnectingHost: String? = nil
     let toggle: () -> Void
+    /// Opens the group in the worker pane: the parent pinned over its direct children. Folded or
+    /// expanded, the disclosure stays as it is. Nil where the group cannot be opened.
+    var open: (() -> Void)? = nil
     @ViewBuilder let content: Content
     /// The group is part of the wall's frame, so it follows the theme. The tiles inside do not.
     @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(spacing: 0) {
-            Button(action: toggle) {
-                HStack(spacing: 7) {
-                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 9, weight: .semibold)).frame(width: 12)
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
-                    Text(name).themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.color.foreground))
-                    Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
-                        .themeType(theme.wall.groupNoteType)
-                    Spacer(minLength: 8)
-                    if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
-                    if collapsed, let reconnectingHost {
-                        HostLinkStatus(host: reconnectingHost, style: .label, size: 10.5)
+            HStack(spacing: Space.s) {
+                Button(action: toggle) {
+                    HStack(spacing: 7) {
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold)).frame(width: 12)
+                        Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
+                        Text(name).themeType(theme.wall.groupTitleType).foregroundStyle(.theme(\.color.foreground))
+                            .lineLimit(1)
+                        Text(nestedCount == 1 ? "1 nested worker" : "\(nestedCount) nested workers")
+                            .themeType(theme.wall.groupNoteType).lineLimit(1)
+                        Spacer(minLength: 8)
+                        if collapsed && hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
+                        if collapsed, let reconnectingHost {
+                            HostLinkStatus(host: reconnectingHost, style: .label, size: 10.5)
+                        }
+                        if collapsed && hasRequest {
+                            StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
+                        }
                     }
-                    if collapsed && hasRequest {
-                        StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
-                    }
+                    .foregroundStyle(.inkSecondary)
+                    .frame(minHeight: Metric.groupHeaderHeight)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.inkSecondary)
-                .frame(minHeight: Metric.groupHeaderHeight)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(NestedWorkerGroupLabel.spoken(name: name, nestedCount: nestedCount, collapsed: collapsed,
+                                                                  hasRequest: hasRequest, hasDisconnected: hasDisconnected,
+                                                                  reconnectingHost: reconnectingHost))
+                .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+                .accessibilityHint("Shows or hides this worker group")
+                if let open {
+                    Button(action: open) {
+                        HStack(spacing: 5) {
+                            Text("Open group")
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        }
+                        .themeType(theme.type.state)
+                        .foregroundStyle(.theme(\.color.secondary))
+                        .frame(minHeight: Metric.groupHeaderHeight)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show \(name) over the workers it delegated to")
+                    .accessibilityLabel("Open group \(name)")
+                    .accessibilityHint("Shows this worker pinned over the workers it delegated to")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(name), \(nestedCount) nested" + (hasDisconnected ? ", a worker is disconnected" : "")
-                                + (reconnectingHost.map { ", host \($0) reconnecting" } ?? ""))
-            .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
-            .accessibilityHint("Shows or hides this worker group")
             if !collapsed { content }
         }
         .wallGroupFrame(bottom: collapsed ? 0 : WallFrameLayout.groupInset)
     }
 }
 
+/// What VoiceOver reads for a worker group's heading. A folded group hides its tiles, so the
+/// "Needs input" cue its heading shows is spoken with it; an open group's tiles say it themselves.
+enum NestedWorkerGroupLabel {
+    static func spoken(name: String, nestedCount: Int, collapsed: Bool, hasRequest: Bool,
+                       hasDisconnected: Bool, reconnectingHost: String?) -> String {
+        "\(name), \(nestedCount) nested" + (collapsed && hasRequest ? ", needs input" : "")
+            + (hasDisconnected ? ", a worker is disconnected" : "")
+            + (reconnectingHost.map { ", host \($0) reconnecting" } ?? "")
+    }
+}
+
 // MARK: - WorkerWall
 
-/// Multirow wall. Root workers without children fill rows of up to three; each parent with nested
-/// workers gets a collapsible group. The last row can give way to the attention stack.
-struct WorkerWall<Tile: View>: View {
+/// Multirow wall, laid out from a `WallPlan`. Standalone workers fill rows of up to three columns;
+/// each parent with nested workers gets a collapsible group. The last row can give way to the
+/// attention stack. Whatever follows the local workers (the remote band) is the `footer`, in the
+/// same scroll, so it never takes height the tiles need. Every tile is one child keyed by its
+/// worker's ID, so a new column count, or a worker moving into a group, moves tiles without
+/// rebuilding them.
+struct WorkerWall<Tile: View, Footer: View>: View {
     let layout: WallLayout
     let collapsed: Set<String>
     /// Width kept clear at the trailing edge of the last row for the PiP. Zero when no PiP is showing.
     var reservedTrailing: CGFloat = 0
+    /// Where the wall is scrolled to, kept by its owner so it survives a zoom and the way back.
+    /// The wall starts from it and reports every change. Nil keeps the offset to the wall itself.
+    var scrollOffset: Binding<CGFloat>? = nil
+    /// The worker whose tile is brought into view when this changes.
+    var reveal: WallReveal? = nil
     let toggleGroup: (String) -> Void
+    /// Opens a group in the worker pane, by its parent's ID. Nil offers no Open group.
+    var openGroup: ((String) -> Void)? = nil
     @ViewBuilder let tile: (WorkerPresentation) -> Tile
+    @ViewBuilder let footer: Footer
 
-    private struct Row: Identifiable {
-        let id: String
-        var leaves: [WorkerPresentation] = []
-        var group: WorkerGroup? = nil
-    }
+    /// The footer's laid-out height, so the local rows are planned in the height it leaves.
+    @State private var footerHeight: CGFloat = 0
+    @State private var position = ScrollPosition(edge: .top)
+    /// The offset as last reported. A reference, so scrolling never invalidates the wall.
+    @State private var tracker = WallScrollTracker()
 
     var body: some View {
         if layout.workers.isEmpty {
-            ContentUnavailableView("Waiting for workers", systemImage: "terminal",
-                                   description: Text("Delegated workers will appear here."))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                ContentUnavailableView("Waiting for workers", systemImage: "terminal",
+                                       description: Text("Delegated workers will appear here."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                footer
+            }
         } else {
             GeometryReader { geo in
-                let columns = max(1, min(3, Int((geo.size.width + Metric.tileGap) / (Metric.minimumTileWidth + Metric.tileGap))))
-                let rows = makeRows(columns: columns)
-                let heights = rowHeights(rows, columns: columns, available: geo.size.height)
+                let plan = WallPlan(WallPlan.Input(width: geo.size.width, height: geo.size.height, layout: layout,
+                                                   collapsed: collapsed, reservedTrailing: reservedTrailing,
+                                                   footerHeight: footerHeight))
                 ScrollView(.vertical) {
-                    VStack(spacing: Metric.wallRowGap) {
-                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                            rowView(row, columns: columns, height: heights[index])
-                                .padding(.trailing, reserve(for: row, isLast: index == rows.count - 1, count: rows.count))
+                    VStack(spacing: 0) {
+                        // Every tile on the wall is a child of this one layout, standalone or inside
+                        // a group, and each group's heading and frame is drawn under its tiles. So
+                        // a worker that gains its first nested worker moves into the new group as
+                        // the same view, with its keyboard focus and terminal.
+                        let shown = plan.shownWorkers
+                        let byID = Dictionary(layout.workers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                        WallFrames(frames: plan.groups.map(\.frame) + shown.map { plan.frame(of: $0) ?? .zero },
+                                   height: plan.tilesHeight) {
+                            ForEach(layout.groups) { group in groupFrame(group) }
+                            ForEach(shown.compactMap { byID[$0] }) { worker in tile(worker) }
                         }
+                        VStack(spacing: 0) { footer }
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
                     }
+                }
+                .scrollPosition($position)
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, offset in
+                    tracker.report(offset, to: scrollOffset)
                 }
                 // The clipped region tiles measure themselves against to report whether they are in view.
                 .coordinateSpace(.named(ConsoleVisibility.viewport))
-            }
-        }
-    }
-
-    private func makeRows(columns: Int) -> [Row] {
-        let leafRows = layout.leaves.chunked(into: columns).enumerated().map { index, chunk in
-            Row(id: "leaves-\(index)", leaves: chunk)
-        }
-        return leafRows + layout.groups.map { Row(id: "group-\($0.id)", group: $0) }
-    }
-
-    private func isCollapsed(_ row: Row) -> Bool {
-        row.group.map { collapsed.contains($0.id) } ?? false
-    }
-
-    private func reserve(for row: Row, isLast: Bool, count: Int) -> CGFloat {
-        isLast && count > 1 && !isCollapsed(row) ? reservedTrailing : 0
-    }
-
-    /// Leaf rows weigh 1.1 against 1 for a group's tile row, as in the concept (flex 1.1 : 1).
-    private func rowHeights(_ rows: [Row], columns: Int, available: CGFloat) -> [CGFloat] {
-        let collapsedHeight = Metric.groupHeaderHeight + 2
-        let weights: [CGFloat] = rows.map { row in
-            guard let group = row.group else { return 1.1 }
-            if collapsed.contains(group.id) { return 0 }
-            return CGFloat(max(1, group.all.chunked(into: columns).count))
-        }
-        let fixed = CGFloat(rows.filter(isCollapsed).count) * collapsedHeight
-        let gaps = CGFloat(max(0, rows.count - 1)) * Metric.wallRowGap
-        let total = max(1, weights.reduce(0, +))
-        let unit = max(0, available - fixed - gaps) / total
-        return weights.map { weight in
-            weight == 0 ? collapsedHeight : max(Metric.minimumWallRowHeight * max(1, weight.rounded(.down)), unit * weight)
-        }
-    }
-
-    @ViewBuilder private func rowView(_ row: Row, columns: Int, height: CGFloat) -> some View {
-        if let group = row.group {
-            let isClosed = collapsed.contains(group.id)
-            let reconnecting = Set(group.all.filter(\.hostIsReconnecting).map(\.host)).sorted()
-            NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
-                              hasRequest: group.all.contains { $0.request != nil },
-                              hasDisconnected: group.all.contains(where: \.isDisconnected),
-                              reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
-                              toggle: { toggleGroup(group.id) }) {
-                VStack(spacing: 9) {
-                    ForEach(Array(group.all.chunked(into: columns).enumerated()), id: \.offset) { _, chunk in
-                        tileRow(chunk)
-                    }
+                .onAppear { restore() }
+                // The same worker stays at the top when the wall is laid out again.
+                .onChange(of: plan) { old, new in
+                    let anchored = WallPlan.anchoredOffset(tracker.offset, from: old, to: new)
+                    if abs(anchored - tracker.offset) > 0.5 { scroll(to: anchored) }
+                }
+                .onChange(of: reveal) { _, reveal in
+                    guard let reveal, let offset = plan.offset(revealing: reveal.workerID, from: tracker.offset) else { return }
+                    scroll(to: offset)
                 }
             }
-            .frame(height: isClosed ? nil : height)
-        } else {
-            tileRow(row.leaves).frame(height: height)
         }
     }
 
-    private func tileRow(_ workers: [WorkerPresentation]) -> some View {
-        HStack(spacing: Metric.tileGap) {
-            ForEach(workers) { worker in
-                tile(worker).frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+    private func scroll(to offset: CGFloat) {
+        tracker.offset = offset
+        position.scrollTo(y: offset)
+    }
+
+    /// Returns to the offset the owner kept. Reports are held back until then, so the wall's
+    /// first layout at the top does not replace the kept offset.
+    private func restore() {
+        let kept = scrollOffset?.wrappedValue ?? 0
+        guard kept > 0.5 else { tracker.isRestored = true; return }
+        scroll(to: kept)
+        Task {
+            // Once more after the first layout, in case the content was not yet measured.
+            try? await Task.sleep(for: .milliseconds(60))
+            if !tracker.isRestored, abs(tracker.offset - kept) < 0.5 { position.scrollTo(y: kept) }
+            tracker.isRestored = true
         }
+    }
+
+    /// A group's heading and frame. Its tiles are the wall's own children, placed over it.
+    @ViewBuilder private func groupFrame(_ group: WorkerGroup) -> some View {
+        let isClosed = collapsed.contains(group.id)
+        let reconnecting = Set(group.all.filter(\.hostIsReconnecting).map(\.host)).sorted()
+        NestedWorkerGroup(name: group.parent.name, nestedCount: group.members.count, collapsed: isClosed,
+                          hasRequest: group.all.contains { $0.request != nil },
+                          hasDisconnected: group.all.contains(where: \.isDisconnected),
+                          reconnectingHost: reconnecting.isEmpty ? nil : reconnecting.joined(separator: ", "),
+                          toggle: { toggleGroup(group.id) },
+                          open: openGroup.map { open in { open(group.id) } }) {
+            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityHidden(true)
+        }
+    }
+}
+
+extension WorkerWall where Footer == EmptyView {
+    /// A wall with nothing after its local workers.
+    init(layout: WallLayout, collapsed: Set<String>, reservedTrailing: CGFloat = 0,
+         scrollOffset: Binding<CGFloat>? = nil, reveal: WallReveal? = nil,
+         toggleGroup: @escaping (String) -> Void, openGroup: ((String) -> Void)? = nil,
+         @ViewBuilder tile: @escaping (WorkerPresentation) -> Tile) {
+        self.init(layout: layout, collapsed: collapsed, reservedTrailing: reservedTrailing, scrollOffset: scrollOffset,
+                  reveal: reveal, toggleGroup: toggleGroup, openGroup: openGroup, tile: tile, footer: { EmptyView() })
+    }
+}
+
+/// The wall's scroll offset as last reported, held outside view state.
+@MainActor final class WallScrollTracker {
+    var offset: CGFloat = 0
+    /// The kept offset has been applied, so reports may replace it.
+    var isRestored = false
+
+    func report(_ offset: CGFloat, to binding: Binding<CGFloat>?) {
+        guard isRestored || offset > 0.5 else { return }
+        isRestored = true
+        self.offset = offset
+        if let binding, abs(binding.wrappedValue - offset) > 0.5 { binding.wrappedValue = offset }
     }
 }
 
@@ -790,8 +871,9 @@ extension Array {
 
 // MARK: - CoordinatorConsole
 
-/// The coordinator in the stationary left pane: who it is, the assignment the developer gave this
-/// run, its live terminal output and any request waiting inside the run.
+/// The coordinator in the stationary left pane: who it is, its live terminal output and any
+/// request waiting inside the run. The assignment the developer gave this run stays out of the
+/// scrollback in every display mode; the title bar's assignment button opens it in a sheet.
 struct CoordinatorConsole: View {
     let coordinator: WorkerPresentation
     let assignment: String
@@ -826,6 +908,10 @@ struct CoordinatorConsole: View {
             ConsoleTitleBar(title: coordinator.name, client: coordinator.client, host: coordinator.host,
                             platform: coordinator.platform, location: coordinator.location,
                             locationIsBranch: coordinator.locationIsBranch, density: .console) {
+                // The assignment is not in the scrollback in any mode; this opens it.
+                if CoordinatorAssignmentButton.isOffered(for: assignment) {
+                    CoordinatorAssignmentButton(assignment: assignment, startedAt: startedAt)
+                }
                 ConsoleModeTitlebarControl(consoleID: coordinator.id, consoleName: coordinator.name,
                                            client: coordinator.client, source: source,
                                            providerSession: providerSession,
@@ -834,15 +920,9 @@ struct CoordinatorConsole: View {
             if let session = prettySession {
                 prettyScrollback(session: session)
             } else {
-                // One scrollback: the assignment, the transcript, then any waiting request directly
-                // after it. A long transcript scrolls in place while the notices stay visible beneath it.
+                // One scrollback: the transcript, then any waiting request directly after it. A long
+                // transcript scrolls in place while the notices stay visible beneath it.
                 VStack(alignment: .leading, spacing: 0) {
-                    ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
-                                      rawOutput: coordinator.output) {
-                        AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                            .padding(.bottom, 9)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                     ConsoleScrollback(worker: coordinator, density: .regular, horizontalInset: 0,
                                       terminal: NativeTerminalTarget(worker: coordinator),
                                       live: PrettyLive(state: coordinator.state, workerName: coordinator.name,
@@ -908,17 +988,11 @@ struct CoordinatorConsole: View {
                             + (coordinator.hostIsReconnecting ? ", host reconnecting" : ""))
     }
 
-    /// Pretty on an ACP-bound coordinator: the assignment, the structured console at the
+    /// Pretty on an ACP-bound coordinator: the structured console at the
     /// console's own inset, then the error and the waiting-request notices. Each notice opens its
     /// request where it is answered; the coordinator holds no reply form.
     private func prettyScrollback(session: NativeSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ConsoleAssignment(consoleID: coordinator.id, assignment: assignment, entries: coordinator.transcript,
-                              rawOutput: coordinator.output) {
-                AssignmentBlock(label: "You", time: startedAt, text: assignment, fontSize: 12.5)
-                    .padding(.horizontal, 17).padding(.top, 12).padding(.bottom, 9)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
             // Stories open each waiting request through the same route as its notice below.
             PrettyACPConsole(worker: coordinator, session: session, density: .regular, inset: 17,
                              stories: .opens(awaiting) { request in openRequest(request) })

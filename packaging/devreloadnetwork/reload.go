@@ -68,6 +68,10 @@ func stopHelper(ctx context.Context, socket string, allowed map[string]bool, gra
 }
 
 func signalHelper(ctx context.Context, socket string, old process, signal syscall.Signal) (bool, error) {
+	return signalSocketOwner(ctx, socket, old, signal, nil)
+}
+
+func signalSocketOwner(ctx context.Context, socket string, old process, signal syscall.Signal, verifyRole func(process) error) (bool, error) {
 	current, err := socketOwner(ctx, socket)
 	if err != nil {
 		return false, err
@@ -85,6 +89,11 @@ func signalHelper(ctx context.Context, socket string, old process, signal syscal
 	}
 	if !current.same(old) {
 		return false, fmt.Errorf("ownership of %s changed to PID %d during shutdown; no signal sent to it", socket, current.pid)
+	}
+	if verifyRole != nil {
+		if err := verifyRole(*current); err != nil {
+			return false, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -126,31 +135,41 @@ func waitForStop(ctx context.Context, socket string, old process, duration time.
 }
 
 func verifyHelper(ctx context.Context, socket, expected string, built time.Time) (bool, error) {
-	last := "the socket has no bound helper"
+	var pending bool
+	err := verifyOwner(ctx, socket, expected, built, "network helper", func(ctx context.Context, _ process) error {
+		var err error
+		pending, err = readStatus(ctx, socket)
+		return err
+	})
+	return pending && err == nil, err
+}
+
+func verifyOwner(ctx context.Context, socket, expected string, built time.Time, name string, probe func(context.Context, process) error) error {
+	last := "the socket has no bound owner"
 	for {
 		owner, err := socketOwner(ctx, socket)
 		if errors.Is(err, errSocketOwnerUnknown) {
 			last = err.Error()
 		} else if err != nil {
-			return false, err
+			return err
 		}
 		if owner != nil {
 			if owner.path != expected {
-				return false, fmt.Errorf("PID %d bound %s with %s, expected %s", owner.pid, socket, owner.path, expected)
+				return fmt.Errorf("PID %d bound %s with %s, expected %s", owner.pid, socket, owner.path, expected)
 			}
 			if owner.started.Add(time.Microsecond).Before(built) {
-				return false, fmt.Errorf("PID %d predates the newly bundled helper at %s", owner.pid, expected)
+				return fmt.Errorf("PID %d predates the newly bundled %s at %s", owner.pid, name, expected)
 			}
-			probe, cancel := context.WithTimeout(ctx, time.Second)
-			pending, err := readStatus(probe, socket)
+			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			err = probe(probeCtx, *owner)
 			cancel()
 			if err == nil {
 				confirmed, err := socketOwner(ctx, socket)
 				if err != nil && !errors.Is(err, errSocketOwnerUnknown) {
-					return false, err
+					return err
 				}
 				if confirmed != nil && confirmed.same(*owner) {
-					return pending, nil
+					return nil
 				}
 				last = "the socket owner changed while reading status"
 			} else {
@@ -158,7 +177,7 @@ func verifyHelper(ctx context.Context, socket, expected string, built time.Time)
 			}
 		}
 		if err := pause(ctx); err != nil {
-			return false, fmt.Errorf("could not verify the newly bundled helper on %s: %s", socket, last)
+			return fmt.Errorf("could not verify the newly bundled %s on %s: %s", name, socket, last)
 		}
 	}
 }

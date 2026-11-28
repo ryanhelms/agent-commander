@@ -8,12 +8,15 @@ import SwiftUI
 //
 //   WallCount          a pane heading's count (atom)
 //   WallHeading        symbol + title + count, the heading over a pane (molecule)
-//   WallCrumb          "Worker wall / name" over a zoomed worker (molecule)
+//   WallCrumb          "Worker wall / name" over a zoomed worker or an opened group, with the
+//                      opened groups between (molecule)
 //   wallGroupFrame     the container a group of tiles sits in (atom, as a modifier)
 //   WallWorkRow        a review or fan-out you sent: kind glyph, title, state (molecule)
 //   WallRemoteBand     hand-offs as remote worker tiles, then reviews and fan-outs (organism)
 //   WallSuggestionRow  a waiting Co-pilot suggestion and the way to its review (molecule)
 //   WallControlDock    under a held worker's tile: who holds it, how long, Take back (organism)
+//   WallBranchDock     under a child's tile in an opened group: what is under it, Open group (molecule)
+//   GroupZoomFrame     an opened group: pinned parent slot, content, hints (template)
 //
 // The band composes the tray's RemoteWorkerTile, and the dock the tray's holder row, as they are.
 
@@ -95,26 +98,38 @@ struct WallHeading: View {
     }
 }
 
-/// Over a zoomed worker: the way back to the wall, then the worker's name and what marks it.
+/// Over a zoomed worker or an opened group: the way back, then the name of what is shown and
+/// what marks it. `trail` names the opened groups between the wall and what is shown, outermost
+/// first. The back button holds the whole path before the name and goes back one level, to the
+/// last name in it; that name is in the heading ink and the levels before it are quieter.
 struct WallCrumb<Accessory: View>: View {
     @Environment(\.theme) private var theme
+    var trail: [String] = []
     let name: String
     let back: () -> Void
     @ViewBuilder var accessory: Accessory
 
     var body: some View {
         let heading = theme.wall.headingType
+        let path = ["Worker wall"] + trail
         HStack(spacing: Space.s) {
             Button(action: back) {
                 HStack(spacing: Space.s) {
                     Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.theme(\.color.secondary))
-                    Text("Worker wall").themeType(heading).foregroundStyle(.theme(\.wall.headingInk))
+                    ForEach(Array(path.enumerated()), id: \.offset) { index, level in
+                        if index > 0 {
+                            Text("/").themeType(heading).foregroundStyle(.theme(\.color.secondary)).opacity(0.6)
+                        }
+                        Text(level).themeType(heading).lineLimit(1)
+                            .foregroundStyle(.theme(index == path.count - 1 ? \.wall.headingInk : \.color.secondary))
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Return to worker wall")
+            .help(WallCrumbLabel.back(trail: trail))
+            .accessibilityLabel(WallCrumbLabel.back(trail: trail))
             Text("/").themeType(heading).foregroundStyle(.theme(\.color.secondary)).opacity(0.6)
                 .accessibilityHidden(true)
             Text(name)
@@ -127,8 +142,15 @@ struct WallCrumb<Accessory: View>: View {
 }
 
 extension WallCrumb where Accessory == EmptyView {
-    init(name: String, back: @escaping () -> Void) {
-        self.init(name: name, back: back) { EmptyView() }
+    init(trail: [String] = [], name: String, back: @escaping () -> Void) {
+        self.init(trail: trail, name: name, back: back) { EmptyView() }
+    }
+}
+
+/// What a wall crumb's back button says it does, for VoiceOver, the pointer and the ⌘[ hint.
+enum WallCrumbLabel {
+    static func back(trail: [String]) -> String {
+        trail.last.map { "Back to \($0)" } ?? "Return to worker wall"
     }
 }
 
@@ -208,6 +230,8 @@ struct WallRemoteBand: View {
     let openHandoffs: () -> Void
     /// Opens a review or a fan-out on its page.
     let openWork: (MultiplayerRemoteWork) -> Void
+    /// The owner's keyboard focus among the remote tiles, by remote worker ID.
+    var focus: FocusState<String?>.Binding? = nil
 
     var body: some View {
         if !workers.isEmpty || !work.isEmpty {
@@ -215,7 +239,7 @@ struct WallRemoteBand: View {
             VStack(spacing: Metric.wallRowGap) {
                 // The network's own worker group: its heading, its tiles and its frame follow the theme.
                 if !workers.isEmpty {
-                    RemoteWorkerGroup(workers: workers, now: now, onOpen: zoom, onOpenAll: openHandoffs)
+                    RemoteWorkerGroup(workers: workers, now: now, onOpen: zoom, onOpenAll: openHandoffs, focus: focus)
                 }
                 if !rows.isEmpty {
                     VStack(spacing: 0) {
@@ -264,6 +288,90 @@ struct WallRemoteBand: View {
             .accessibilityLabel(hidden > 0 ? "Open Hand-offs, \(WallLiveWork.more(hidden)) there" : "Open Hand-offs")
         }
         .frame(minHeight: Metric.groupHeaderHeight)
+    }
+}
+
+/// Docked under a child's tile inside an opened group, when that child delegated workers of its
+/// own. None of them is tiled here: the dock counts them, says what they wait for, and opens the
+/// child's own group. It sits outside the tile, so the child is a peer of the other children in
+/// the grid and its console and controls are as they always are.
+struct WallBranchDock: View {
+    @Environment(\.theme) private var theme
+    /// The child the workers are under.
+    let name: String
+    let status: GroupBranchStatus
+    let open: () -> Void
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: min(theme.radius.tile, theme.wall.groupRadius), style: .continuous)
+        HStack(spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 11))
+                    .foregroundStyle(.theme(\.color.secondary))
+                    .accessibilityHidden(true)
+                Text(status.countLabel).themeType(theme.wall.groupNoteType)
+                    .foregroundStyle(.theme(\.color.secondary)).lineLimit(1)
+                Spacer(minLength: Space.s)
+                if status.hasDisconnected { StatusLabel(.disconnected, size: 10.5) }
+                if let host = status.reconnectingHost { HostLinkStatus(host: host, style: .label, size: 10.5) }
+                if status.hasRequest {
+                    StatusLabel(text: "Needs input", tone: .attention, symbol: "questionmark.circle.fill", size: 10.5)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(status.spoken(name: name))
+            Button(action: open) {
+                HStack(spacing: 5) {
+                    Text("Open group")
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                }
+                .themeType(theme.type.state)
+                .foregroundStyle(.theme(\.color.secondary))
+                .frame(minHeight: WallFrameLayout.workRow)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Show \(name) over the workers it delegated to")
+            .accessibilityLabel("Open group \(name)")
+            .accessibilityHint("Shows this worker pinned over the workers it delegated to")
+        }
+        .padding(.horizontal, WallFrameLayout.groupInset + 1)
+        .frame(minHeight: WallFrameLayout.workRow)
+        .background(theme.wall.groupFill.color, in: shape)
+        .overlay {
+            shape.strokeBorder(.theme(status.hasRequest ? \.surface.attentionEdge : \.wall.groupEdge), lineWidth: theme.line.hairline)
+        }
+        .padding(.top, WallFrameLayout.dockGap)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+// MARK: - Templates
+
+/// An opened group under its crumb: the pinned parent's slot, then the content (the children's
+/// grid or one zoomed child), then the hints under a grid. The parent's slot is the first child of
+/// one stack and is planned from the height alone (`GroupZoomPlan`), so swapping the content never
+/// rebuilds or resizes the parent: its keyboard focus and terminal stay with it.
+struct GroupZoomFrame<Parent: View, Content: View, Hints: View>: View {
+    /// A child is zoomed under the parent, so no hints are drawn.
+    let zoomsChild: Bool
+    @ViewBuilder let parent: (GroupZoomPlan.Parent) -> Parent
+    @ViewBuilder let content: Content
+    @ViewBuilder let hints: Hints
+
+    var body: some View {
+        GeometryReader { geo in
+            let plan = GroupZoomPlan(height: geo.size.height, zoomsChild: zoomsChild)
+            VStack(spacing: 0) {
+                parent(plan.parent)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, Metric.wallRowGap)
+                // The hints take `GroupZoomPlan.hintsHeight` of the stack, as under the wall.
+                if !zoomsChild { hints }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+        }
     }
 }
 

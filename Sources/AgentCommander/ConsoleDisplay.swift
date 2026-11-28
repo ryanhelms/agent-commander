@@ -342,6 +342,7 @@ struct PrettyConsoleView: View {
     @Environment(ToolDetailStore.self) private var details: ToolDetailStore?
     @Environment(CompactionSummaryStore.self) private var compactions: CompactionSummaryStore?
     @Environment(ReplyAttachmentStore.self) private var replyAttachments: ReplyAttachmentStore?
+    @Environment(SessionMessageStore.self) private var sessionMessages: SessionMessageStore?
     @Environment(\.consoleRecordAccess) private var access
     @State private var localExpanded: Set<String> = []
     /// The reader is at the end of the conversation, so new content keeps the end in view.
@@ -399,6 +400,9 @@ struct PrettyConsoleView: View {
         facts.approvalOwner = approvalOwner
         let attachments = replyAttachments
         facts.replyAttachment = { mark in attachments?.attachment(worker: worker, mark: mark) }
+        let messages = sessionMessages
+        facts.sessionMessage = { mark in messages?.detail(worker: worker, mark: mark) }
+        facts.hidesSecrets = store?.hidesSecrets ?? false
         // The older runner sends no console event for a thought: its record is placed by sequence.
         let lookup: (String) -> ToolDetailSummary? = { key in store?.summary(worker: worker, key: key) }
         let records = Array(summaries.values)
@@ -431,12 +435,31 @@ struct PrettyConsoleView: View {
                       thinkingStarted: record?.started)
     }
 
-    /// Changes when the transcript gains an entry or a call gains its result: the moments the
-    /// service may hold new details. Nothing is read on a timer.
-    private var detailRevision: String {
-        var results = 0
-        for entry in entries { if case .tool(_, _, let result) = entry.kind, result != nil { results += 1 } }
-        return "\(consoleID) \(entries.count) \(results)"
+    /// What the read of stored details is keyed on: the worker, the number of entries, the IDs of
+    /// the material entries in order, and the IDs of the calls that hold their result. A material
+    /// entry is a call, a result without its call, a prompt or a message of another role: every
+    /// entry but the agent's own prose. The key changes when the transcript gains or loses an
+    /// entry or a call gains its result, the moments the service may hold new details. A full
+    /// window of calls that advances keeps its counts and changes its IDs, so it changes then too.
+    /// The agent's prose counts only towards the number: a reply that grows under its ID, or a
+    /// full window whose streamed chunks are replaced one for one, reads nothing. Nothing is read
+    /// on a timer.
+    struct DetailRevision: Equatable {
+        let worker: String
+        let count: Int
+        let material: [String]
+        let completed: [String]
+
+        init(worker: String, entries: [TranscriptEntry]) {
+            self.worker = worker
+            count = entries.count
+            material = entries.compactMap { entry in
+                if case .prose(_, fromUser: false) = entry.kind { nil } else { entry.id }
+            }
+            completed = entries.compactMap { entry in
+                if case .tool(_, _, let result) = entry.kind, result != nil { entry.id } else { nil }
+            }
+        }
     }
 
     var body: some View {
@@ -499,7 +522,7 @@ struct PrettyConsoleView: View {
         .textSelection(.enabled)
         .tint(Palette.focus)
         .environment(\.openURL, PrettyContent.linkPolicy)
-        .task(id: detailRevision) {
+        .task(id: DetailRevision(worker: consoleID, entries: entries)) {
             // The saved setting first, on any surface: until it is known, job text is drawn hidden.
             await details?.loadSettingsIfNeeded()
             await details?.refresh(worker: consoleID)
@@ -525,8 +548,20 @@ struct PrettyConsoleView: View {
             // Latest first, a few at a time: a long transcript does not start every read at once.
             await store.load(worker: consoleID, marks: marks)
         }
+        // A message from another session is read from the records of its own updates. One read
+        // serves every update of a turn, and a later one starts where the last one stopped.
+        .task(id: sessionMessageRevision) {
+            let marks = entries.flatMap(\.sessionMessages)
+            guard let store = sessionMessages, !marks.isEmpty else { return }
+            await store.load(worker: consoleID, marks: marks)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
+    }
+
+    /// Changes when the console gains or loses a session message update. Nothing is read on a timer.
+    private var sessionMessageRevision: String {
+        ([consoleID] + entries.flatMap { $0.sessionMessages.map(\.cursor) }).joined(separator: "\u{1F}")
     }
 
     /// Changes when the console gains or loses a marked reply chunk. Nothing is read on a timer.
@@ -564,13 +599,18 @@ struct PrettyConsoleView: View {
             PrettyReportBlock(report: report, isExpanded: isExpanded(report.id), metrics: metrics,
                               toggle: { toggle(report.id) }) { reportDetail(report, metrics: metrics) }
         case .plan(let plan):
-            if let items = plan.items {
+            // An identified ACP plan's items are the provider's words: masked as the setting asks.
+            if let items = plan.shown(hidesSecrets: details?.hidesSecrets ?? false) {
                 PrettyPlanCard(items: items, metrics: metrics, isLive: live?.isActive == true)
             } else {
-                Text(verbatim: plan.fallback).font(metrics.body).foregroundStyle(.inkSecondary)
-                    // The older runner keeps the items in the call's stored arguments.
+                // The removal line or the fallback: quiet text, read as it is written.
+                Text(verbatim: plan.line).font(metrics.body).foregroundStyle(.inkSecondary)
+                    // The older runner keeps the items in the call's stored arguments. An
+                    // identified ACP plan reads only the record of its own event.
                     .task(id: plan.entries.last?.id) {
-                        if let key = plan.entries.last?.id { await details?.open(worker: consoleID, key: key) }
+                        if plan.identity == nil, let key = plan.entries.last?.id {
+                            await details?.open(worker: consoleID, key: key)
+                        }
                     }
             }
         case .live(let step):
@@ -584,6 +624,13 @@ struct PrettyConsoleView: View {
             PrettyFormOutcomeLine(outcome: outcome, metrics: metrics)
         case .compaction(let compaction):
             self.compaction(compaction, itemID: item.id, metrics: metrics)
+        case .message(let message):
+            // Drawn, selected and said as the transcript setting allows. The fields are those of
+            // the message's first update.
+            if let first = message.entries.first {
+                PrettySessionMessage(message: message, metrics: metrics, hidesSecrets: details?.hidesSecrets ?? false)
+                    .recordDetail(consoleID: consoleID, entry: first, face: .pretty(below: false), density: density)
+            }
         case .card(let card):
             let key = card.entry?.detailKey ?? card.step.id
             PrettyToolCardView(card: card, summary: details?.summary(worker: consoleID, key: key),
@@ -730,7 +777,8 @@ struct PrettyConsoleView: View {
                 ToolLocationAction(workerID: consoleID, detailKey: entry.detailKey, location: location, intents: intents,
                                    metrics: metrics)
             }
-            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary),
+            ActivityResultView(source: ActivityResultSource(entry: entry, step: step, record: record, summary: summary,
+                                                            hidesSecrets: details?.hidesSecrets ?? false),
                                metrics: metrics, hidesSecrets: details?.settings.hideSecrets ?? false,
                                hidesChangeText: details?.hidesSecrets, copy: copy)
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
@@ -798,9 +846,10 @@ struct PrettyConsoleView: View {
                     }
                 }
                 .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
-            } else if let event = ActivityEvent(entry: entry) {
+            } else if let event = ActivityEvent(entry: entry, hidesSecrets: details?.hidesSecrets ?? false) {
                 // A warning, harness stderr or a permission notice: one visible line in the
                 // attention ink. It never carries a reply; a request is answered only in its form.
+                // A provider notice's title is drawn and spoken as the transcript setting allows.
                 PrettyActivityRow(event: event, metrics: metrics)
                     .recordDetail(consoleID: consoleID, entry: entry, face: .pretty(below: false), density: density)
             } else {
