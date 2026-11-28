@@ -63,7 +63,7 @@ func (keychain) KeychainBacked() bool { return true }
 func keychainError(operation string, status C.OSStatus) error {
 	switch status {
 	case C.errSecUserCanceled, C.errSecAuthFailed, C.errSecInteractionNotAllowed, C.errSecInteractionRequired, C.errSecNotAvailable,
-		C.errAuthorizationInternal:
+		C.errSecInDarkWake, C.errAuthorizationInternal:
 		return fmt.Errorf("%s Keychain item (OSStatus %d): %w", operation, status, ErrKeychainAccess)
 	default:
 		return fmt.Errorf("%s Keychain item (OSStatus %d)", operation, status)
